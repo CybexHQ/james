@@ -5,7 +5,7 @@ use axum::{
 };
 
 use crate::{
-    AppState, assets,
+    AppState, assets, cache_egress,
     error::{AppError, AppResult},
 };
 
@@ -43,7 +43,18 @@ pub async fn cache_file(
     Path(path): Path<String>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
-    assets::serve_binary_cache_member_from_root(&state.config.cache.root_dir, &path, &headers).await
+    // Egress accounting for the James report: 200/206 add their
+    // Content-Length to the served totals, and a 404 for a well-formed
+    // binary-cache member path counts as a miss. Garbage paths, unsatisfiable
+    // ranges, and refused symlinks are never counted.
+    let path_valid = assets::is_binary_cache_member_path(&path);
+    let result =
+        assets::serve_binary_cache_member_from_root(&state.config.cache.root_dir, &path, &headers)
+            .await;
+    state
+        .cache_egress
+        .record(cache_egress::classify_cache_response(&result, path_valid));
+    result
 }
 
 #[cfg(test)]

@@ -1215,7 +1215,7 @@ async fn report_james_state(
     let local_cache_build_state_valid =
         build_listing_valid && cache_scrub_valid && cache_listing_valid && cache_inventory_valid;
     let cache = cache_status_for_local_state(
-        crate::cache::status_report(&state.config, &state.db).await,
+        crate::cache::status_report(&state.config, &state.db, state.cache_egress.snapshot()).await,
         local_cache_build_state_valid,
     );
     let workstation_netboot = match crate::netboot::report(state).await {
@@ -5273,6 +5273,10 @@ mod tests {
             total_size_bytes: 1234,
             artifact_count: 3,
             error: String::new(),
+            served_bytes_total: 5678,
+            served_requests_total: 9,
+            missing_requests_total: 2,
+            counters_since: "2026-09-03T00:00:00Z".to_string(),
         };
 
         let degraded = cache_status_for_local_state(report.clone(), false);
@@ -5287,6 +5291,13 @@ mod tests {
         assert_eq!(degraded.base_url, report.base_url);
         assert_eq!(degraded.total_size_bytes, report.total_size_bytes);
         assert_eq!(degraded.artifact_count, report.artifact_count);
+        assert_eq!(degraded.served_bytes_total, report.served_bytes_total);
+        assert_eq!(degraded.served_requests_total, report.served_requests_total);
+        assert_eq!(
+            degraded.missing_requests_total,
+            report.missing_requests_total
+        );
+        assert_eq!(degraded.counters_since, report.counters_since);
         assert_eq!(
             cache_inventory_generation_for_peer(41, false, true, false),
             41,
@@ -5420,6 +5431,10 @@ mod tests {
                 total_size_bytes: 0,
                 artifact_count: 0,
                 error: String::new(),
+                served_bytes_total: 0,
+                served_requests_total: 0,
+                missing_requests_total: 0,
+                counters_since: "2026-08-10T18:00:00Z".to_string(),
             },
             build_jobs,
             cache_artifacts: vec![],
