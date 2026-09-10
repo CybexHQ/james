@@ -5432,12 +5432,11 @@ fn james_nixos_flake(
     let
       system = "{system}";
       pkgs = import nixpkgs {{ inherit system; }};
-      cybexAgent = pkgs.rustPlatform.buildRustPackage {{
-        pname = "cybex-agent";
-        version = "installer-target";
-        src = manage + "/agent/cybex-agent";
-        cargoLock.lockFile = manage + "/agent/cybex-agent/Cargo.lock";
-        doCheck = false;
+      # Keep the shared protocol files and source layout required by this
+      # signed runtime's agent, using the same recipe as its netboot bundle.
+      cybexAgent = import (manage + "/deploy/nixos/cybex-agent-package.nix") {{
+        inherit pkgs;
+        repoRoot = manage;
       }};
     in {{
       packages.${{system}}.desktop-experience =
@@ -9313,6 +9312,9 @@ esac
             source_dir.display()
         )));
         assert!(!flake.contains("github:CybexHQ/manage"));
+        assert!(flake.contains("import (manage + \"/deploy/nixos/cybex-agent-package.nix\")"));
+        assert!(flake.contains("repoRoot = manage;"));
+        assert!(!flake.contains("src = manage + \"/agent/cybex-agent\""));
         let configuration =
             std::fs::read_to_string(root.join("work/job-44-input/configuration.nix")).unwrap();
         assert!(configuration.contains("(manageSource + \"/deploy/nixos/cybex-blueprints.nix\")"));
