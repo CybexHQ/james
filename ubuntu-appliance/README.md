@@ -7,10 +7,10 @@ James appliance and installation implementation.
 
 ## Build inputs and outputs
 
-`base-iso.json` pins a dated Ubuntu 26.04 Server image that passed Canonical's
-automated image tests by canonical HTTPS URL, filename, byte length, SHA-256,
-and Canonical checksum/signature URLs. Dated URLs keep the build reproducible;
-the moving `current` alias is never consumed. `build-template.sh` downloads those inputs, verifies the signed
+`base-iso.json` pins the Ubuntu 26.04 Server release image by canonical HTTPS
+URL, filename, byte length, SHA-256, and Canonical checksum/signature URLs.
+The release image replaces a retired daily-build URL; the moving `current`
+alias is never consumed. `build-template.sh` downloads those inputs, verifies the signed
 `SHA256SUMS` with `/usr/share/keyrings/ubuntu-archive-keyring.gpg`, verifies the
 exact ISO bytes, extracts it, and preserves every EFI binary byte-for-byte.
 Canonical's signed shim, GRUB, kernel, and modules therefore remain the Secure
