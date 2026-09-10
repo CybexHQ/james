@@ -106,6 +106,10 @@ build_package "$bootstrap_root" cybex-james-bootstrap
 appliance_root="$work_dir/cybex-james-appliance"
 mkdir -p -- "$appliance_root/DEBIAN" "$appliance_root/usr/share/cybex-james"
 cp -a "$repository_root/ubuntu-appliance/rootfs/." "$appliance_root/"
+# The repository rootfs contains public package data only. Normalize checkout
+# permissions so a restrictive checkout umask cannot break service assets.
+# Node credentials are provisioned later into separate protected state.
+chmod -R u=rwX,go=rX "$appliance_root"
 install -D -m 0644 "$repository_root/assets/pxe-menu.png" \
   "$appliance_root/usr/share/cybex-james/assets/pxe-menu.png"
 printf '%s\n' "$release_public_key" > "$appliance_root/usr/share/cybex-james/release-public-key"
@@ -128,9 +132,10 @@ Section: admin
 Priority: optional
 Architecture: amd64
 Maintainer: Cybex <support@cybex.net>
-Depends: cybex-james (= ${version}-1), cybex-james-bootstrap (= ${version}-1), systemd, nginx-core, tftpd-hpa, ipxe, iproute2, openssh-server, nftables, netplan.io, btrfs-progs, watchdog, nix-bin, nix-setup-systemd, curl, dnsutils, jq, python3, mokutil, sbsigntool, shim-signed, grub-efi-amd64-signed, secureboot-db, linux-generic, linux-firmware, intel-microcode, amd64-microcode
+Depends: cybex-james (= ${version}-1), cybex-james-bootstrap (= ${version}-1), systemd, nginx-core, tftpd-hpa, dnsmasq-base, ipxe, iproute2, openssh-server, nftables, netplan.io, btrfs-progs, watchdog, nix-bin, nix-setup-systemd, curl, dnsutils, jq, python3, mokutil, sbsigntool, shim-signed, grub-efi-amd64-signed, secureboot-db, linux-generic, linux-firmware, intel-microcode, amd64-microcode
 Description: Managed Ubuntu host integration for Cybex James
 EOF
+printf '%s\n' /etc/cybex-james/pxe-discovery.json > "$appliance_root/DEBIAN/conffiles"
 build_package "$appliance_root" cybex-james-appliance
 
 sha256sum "$output"/*.deb | LC_ALL=C sort -k2 > "$output/CYBEX-PACKAGES.sha256"

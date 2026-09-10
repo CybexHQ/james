@@ -123,6 +123,8 @@ struct ComponentCompatibilityContract {
 #[derive(Debug, Deserialize)]
 struct AgentBootConfigResponse {
     #[serde(default)]
+    pxe_discovery: Option<crate::pxe_discovery::Desired>,
+    #[serde(default)]
     compatibility: Option<ComponentCompatibilityContract>,
     settings: ManagedBootSettings,
     profiles: Vec<ManagedBootProfile>,
@@ -809,6 +811,13 @@ async fn fetch_boot_config_for_config(
     let config: AgentBootConfigResponse =
         parse_success_json(response, "fetch managed boot config").await?;
     validate_component_compatibility(config.compatibility.as_ref())?;
+    if config
+        .pxe_discovery
+        .as_ref()
+        .is_some_and(|pxe| pxe.server_device_id != device_id)
+    {
+        bail!("PXE discovery inventory belongs to another appliance");
+    }
     Ok(config)
 }
 
@@ -1838,6 +1847,11 @@ async fn apply_boot_config(state: &AppState, config: &AgentBootConfigResponse) -
     )
     .await?;
     tx.commit().await?;
+    let mut discovery = config.pxe_discovery.clone();
+    if let Some(desired) = &mut discovery {
+        desired.complete &= config.clients_complete && config.profiles_complete;
+    }
+    crate::pxe_discovery::persist(state, discovery.as_ref())?;
     state.update_runtime_settings(RuntimeSettings {
         public_base_url: settings.public_base_url,
         bootloader_filename: settings.bootloader_filename,
@@ -2324,6 +2338,7 @@ fn james_capabilities(_config: &AppConfig) -> Vec<&'static str> {
         CAPABILITY_WORKSTATION_NETBOOT_V1,
         CAPABILITY_JAMES_BOOT_GRANT_V1,
     ];
+    capabilities.push(crate::pxe_discovery::CAPABILITY);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V1);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V2);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1);
@@ -4257,6 +4272,7 @@ mod tests {
                 "cache_replica_v1",
                 "workstation_netboot_v1",
                 "james_boot_grant_v1",
+                "pxe_proxy_v1",
                 "appliance_update_v1",
                 "appliance_update_v2",
                 "appliance_update_qualification_transport_v1"
@@ -4933,6 +4949,7 @@ mod tests {
 
     fn sample_boot_config() -> AgentBootConfigResponse {
         AgentBootConfigResponse {
+            pxe_discovery: None,
             compatibility: Some(ComponentCompatibilityContract {
                 protocol_version: CYBEX_COMPONENT_PROTOCOL_VERSION,
                 minimum_james_protocol: 1,

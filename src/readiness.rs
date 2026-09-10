@@ -772,11 +772,11 @@ mod tests {
         assert_eq!(script.matches("dhcp net0 ||").count(), 2);
         assert_eq!(
             script
-                .matches("chain --autofree http://${next-server}/boot/${net0/mac:hexhyp}")
+                .matches("chain --autofree http://${cybex-boot-server}/boot/${net0/mac:hexhyp}")
                 .count(),
             2
         );
-        assert!(script.contains("isset ${next-server}"));
+        assert!(script.contains("isset ${proxydhcp/next-server}"));
         assert!(script.contains("isset ${net0/mac}"));
         assert!(!script.contains("organization"));
         assert!(!script.contains("token"));

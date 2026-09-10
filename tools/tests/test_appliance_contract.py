@@ -327,13 +327,19 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
             ]
             for output in (first, second):
-                result = subprocess.run(
-                    [str(BUILD_PACKAGES), "--output", str(output), *arguments],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    check=False,
-                )
+                original_mode = IPXE_AUTOEXEC.stat().st_mode & 0o777
+                try:
+                    # A private developer checkout must produce the same public package.
+                    IPXE_AUTOEXEC.chmod(0o600 if output == first else 0o644)
+                    result = subprocess.run(
+                        [str(BUILD_PACKAGES), "--output", str(output), *arguments],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        check=False,
+                    )
+                finally:
+                    IPXE_AUTOEXEC.chmod(original_mode)
                 self.assertEqual(result.returncode, 0, result.stderr.decode())
                 time.sleep(1.05)
 
@@ -358,6 +364,14 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 for package in first_packages
                 if package.name.startswith("cybex-james_")
             )
+            appliance_data = directory / "appliance-data"
+            subprocess.run(["dpkg-deb", "--extract", str(appliance), str(appliance_data)], check=True)
+            public_script = appliance_data / "usr/share/cybex-james/autoexec.ipxe"
+            self.assertEqual(public_script.stat().st_mode & 0o777, 0o644)
+            self.assertTrue((appliance_data / "etc/systemd/system/cybex-james-pxe.service").is_file())
+            self.assertTrue(os.access(appliance_data / "usr/lib/cybex-james/cybex-james-pxe", os.X_OK))
+            depends = subprocess.check_output(["dpkg-deb", "-f", str(appliance), "Depends"], text=True)
+            self.assertIn("dnsmasq-base", depends)
             james_data_root = directory / "james-data"
             subprocess.run(
                 ["dpkg-deb", "--extract", str(james_package), str(james_data_root)],
@@ -1217,7 +1231,7 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
         self.assertNotIn("systemctl enable --now", script)
         self.assertIn(
             "systemctl enable nix-daemon nginx tftpd-hpa "
-            "cybex-james-firewall ssh\n",
+            "cybex-james-pxe cybex-james-firewall ssh\n",
             script,
         )
 
@@ -1778,7 +1792,7 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
         self.assertEqual(autoexec.count("dhcp net0 ||"), 2)
         self.assertEqual(
             autoexec.count(
-                "chain --autofree http://${next-server}/boot/${net0/mac:hexhyp}"
+                "chain --autofree http://${cybex-boot-server}/boot/${net0/mac:hexhyp}"
             ),
             2,
         )
@@ -1790,7 +1804,7 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
             2,
         )
         self.assertIn(":cybex_local_handoff\nexit 1", autoexec)
-        self.assertIn("isset ${next-server}", autoexec)
+        self.assertIn("isset ${proxydhcp/next-server}", autoexec)
         self.assertIn("isset ${net0/mac}", autoexec)
         self.assertNotIn("organization", autoexec)
         self.assertNotIn("token", autoexec)

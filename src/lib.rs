@@ -17,6 +17,7 @@ pub(crate) mod nix_command;
 pub mod nix_log;
 pub(crate) mod protected_material;
 pub mod provisioning;
+pub mod pxe_discovery;
 pub mod readiness;
 pub(crate) mod redact;
 pub(crate) mod release_transport;

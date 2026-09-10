@@ -209,7 +209,7 @@ ln -sfn /etc/nginx/sites-available/cybex-james /etc/nginx/sites-enabled/cybex-ja
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
 sshd -t
-systemctl enable nix-daemon nginx tftpd-hpa cybex-james-firewall ssh
+systemctl enable nix-daemon nginx tftpd-hpa cybex-james-pxe cybex-james-firewall ssh
 systemctl enable cybex-james.service cybex-james-appliance-update.timer
 systemctl enable cybex-james-network-runtime.timer
 

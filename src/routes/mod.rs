@@ -28,6 +28,7 @@ const CONTENT_SECURITY_POLICY: &str = concat!(
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/healthz/pxe", get(crate::pxe_discovery::candidate))
         .route("/boot", get(boot::boot_root))
         .route("/boot.ipxe", get(boot::boot_root))
         .route("/boot/:mac", get(boot::boot_mac))
@@ -86,7 +87,14 @@ async fn healthz(
     } else {
         crate::readiness::probe(&state).await
     };
-    if readiness.ready {
+    let discovery_ready = !crate::appliance::is_managed_ubuntu()
+        || matches!(
+            crate::pxe_discovery::status()
+                .get("status")
+                .and_then(serde_json::Value::as_str),
+            Some("active" | "standby" | "external")
+        );
+    if readiness.ready && discovery_ready {
         ([(header::CONTENT_TYPE, "text/plain")], "ok\n").into_response()
     } else {
         (

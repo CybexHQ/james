@@ -148,6 +148,7 @@ declare -a packages=(
   shim-signed
   systemd
   tftpd-hpa
+  dnsmasq-base
   ubuntu-keyring
   util-linux
   watchdog

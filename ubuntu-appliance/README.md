@@ -473,3 +473,22 @@ automatically, releasing its unused reserved device identity.
 Production qualification must also cover the documented VM controller matrix
 and representative Dell, HP, Lenovo, Intel/AMD, Ethernet, SATA/NVMe/VMD, and
 firmware generations before the release is promoted.
+
+## Automatic workstation network boot
+
+The appliance includes `dnsmasq-base` and `cybex-james-pxe.service` for IPv4
+ProxyDHCP on the approved wired interface. Existing DHCP retains ownership of
+addresses. Signed organization inventory controls responder election and
+per-computer James placement; missing or stale inventory stops advertising.
+UEFI architectures 7 and 9 are supported. Workstation Secure Boot must be off;
+James itself continues to require Secure Boot on. `/healthz/pxe` and appliance
+health report discovery readiness. Set the preserved conffile
+`/etc/cybex-james/pxe-discovery.json` to `{"mode":"external"}` when an existing
+PXE service is authoritative.
+
+Package assembly normalizes the public rootfs file permissions independently
+of the checkout umask. Private node credentials are provisioned separately.
+The package regression builds from both private and public boot-script source
+modes and verifies the resulting readable asset and installed PXE service.
+`qualification/run-pxe-discovery.py` verifies actual OVMF → ProxyDHCP → TFTP
+→ HTTP boot in disposable network namespaces without DHCP boot options.
