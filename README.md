@@ -77,6 +77,11 @@ Maintenance also repairs stale runtime evidence after an upgrade, even when
 the bundle was checked recently; a corrupt or predecessor bundle cannot renew
 the active runtime's evidence.
 
+The migration history retains the multicast state migration already used by
+the `.19` development appliances. Later builds must preserve that migration
+and its checksum even when the multicast capability is unavailable, so those
+appliances can restart or upgrade without discarding their state.
+
 ## Ubuntu appliance
 
 The active implementation is under [`ubuntu-appliance/`](ubuntu-appliance/).

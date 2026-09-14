@@ -2994,6 +2994,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn migrations_preserve_the_deployed_multicast_state_on_restart() {
+        let pool = test_pool().await;
+        sqlx::query("UPDATE workstation_multicast_policy SET generation = 7, policy_sha256 = 'retained', lane_authorized = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // The .19 dev appliances already applied this migration. Removing it
+        // from a later release makes sqlx reject their database on startup.
+        migrate(&pool).await.unwrap();
+        let historical_migration_applied: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 20260829000000 AND success = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let retained: (i64, String, i64) = sqlx::query_as(
+            "SELECT generation, policy_sha256, lane_authorized FROM workstation_multicast_policy WHERE singleton_id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(historical_migration_applied, 1);
+        assert_eq!(retained, (7, "retained".into(), 1));
+    }
+
+    #[tokio::test]
     async fn migrations_forward_drop_retired_system_release_schema() {
         let pool = test_pool().await;
         let historical_migration_applied: i64 = sqlx::query_scalar(
