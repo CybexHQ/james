@@ -60,7 +60,8 @@ const BOOT_GRANT_LIFETIME_SECONDS: i64 = 10 * 60;
 const BOOT_SESSION_RETENTION_SECONDS: i64 = 24 * 60 * 60;
 const BOOT_CONTEXT_MAX_BYTES: usize = 64 * 1024;
 const BUNDLE_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
-const SCRUB_INTERVAL_SECONDS: i64 = 24 * 60 * 60;
+// Renew verified evidence with headroom before Manage's 24-hour freshness gate.
+const SCRUB_INTERVAL_SECONDS: i64 = 12 * 60 * 60;
 const MAINTENANCE_INTERVAL_SECONDS: u64 = 60 * 60;
 const RECONCILE_RETRY_BASE_SECONDS: i64 = 30;
 const RECONCILE_RETRY_MAX_SECONDS: i64 = 30 * 60;
@@ -2229,10 +2230,14 @@ async fn scrub_due_bundles(state: &AppState) -> Result<usize> {
          WHERE bundle.retention_state = 'verified'
            AND (bundle.bundle_sha256 = runtime.active_bundle_sha256
                 OR bundle.bundle_sha256 = runtime.previous_bundle_sha256)
-           AND (bundle.last_scrubbed_at IS NULL OR bundle.last_scrubbed_at < ?)
+           AND (bundle.last_scrubbed_at IS NULL OR bundle.last_scrubbed_at < ?
+                OR (bundle.bundle_sha256 = runtime.active_bundle_sha256
+                    AND runtime.state = 'ready'
+                    AND (runtime.last_verified_at IS NULL OR runtime.last_verified_at < ?)))
          ORDER BY CASE WHEN bundle.bundle_sha256 = runtime.active_bundle_sha256 THEN 0 ELSE 1 END",
     )
-    .bind(cutoff)
+    .bind(&cutoff)
+    .bind(&cutoff)
     .fetch_all(&state.db)
     .await?;
     let mut scrubbed = 0;
@@ -2241,16 +2246,32 @@ async fn scrub_due_bundles(state: &AppState) -> Result<usize> {
             verify_stored_bundle(state, &bundle_sha256, &descriptor_json, &root_path).await;
         match verification {
             Ok(()) => {
+                let verified_at = runtime_verification_timestamp(Utc::now());
+                let mut tx = state.db.begin().await?;
                 sqlx::query(
                     "UPDATE workstation_netboot_bundles
                      SET last_scrubbed_at = ?, updated_at = ?
                      WHERE bundle_sha256 = ? AND retention_state = 'verified'",
                 )
-                .bind(now())
-                .bind(now())
+                .bind(&verified_at)
+                .bind(&verified_at)
                 .bind(&bundle_sha256)
-                .execute(&state.db)
+                .execute(&mut *tx)
                 .await?;
+                // A retained predecessor is verified too, but it must not
+                // renew evidence for another active bundle or a failed state.
+                sqlx::query(
+                    "UPDATE workstation_netboot_runtime
+                     SET last_verified_at = ?, updated_at = ?
+                     WHERE singleton_id = 1 AND state = 'ready'
+                       AND active_bundle_sha256 = ?",
+                )
+                .bind(&verified_at)
+                .bind(&verified_at)
+                .bind(&bundle_sha256)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
                 scrubbed += 1;
             }
             Err(_) => {
@@ -3712,11 +3733,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_scrub_renews_reported_verification_before_manage_freshness_expires() {
+        let fixture = RuntimeFilesystemFixture::new().await;
+        let active = fixture.install_bundle("1.0.0", &"a".repeat(64)).await;
+        fixture.activate(&active, None).await;
+        let old = runtime_verification_timestamp(Utc::now() - chrono::Duration::hours(13));
+        sqlx::query("UPDATE workstation_netboot_runtime SET last_verified_at = ?")
+            .bind(&old)
+            .execute(&fixture.state.db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE workstation_netboot_bundles SET last_scrubbed_at = ?")
+            .bind(&old)
+            .execute(&fixture.state.db)
+            .await
+            .unwrap();
+
+        assert_eq!(scrub_due_bundles(&fixture.state).await.unwrap(), 1);
+        let renewed = report(&fixture.state).await.unwrap();
+        assert_eq!(renewed.state, "ready");
+        assert_eq!(renewed.active_bundle_sha256, active.sha256);
+        assert_ne!(renewed.last_verified_at.as_deref(), Some(old.as_str()));
+        let verified =
+            DateTime::parse_from_rfc3339(renewed.last_verified_at.as_ref().unwrap()).unwrap();
+        assert!(verified > Utc::now() - chrono::Duration::minutes(1));
+        assert_eq!(scrub_due_bundles(&fixture.state).await.unwrap(), 0);
+        assert_eq!(
+            report(&fixture.state).await.unwrap().last_verified_at,
+            renewed.last_verified_at
+        );
+
+        // Existing appliances can have a recent bundle scrub and stale runtime
+        // evidence. Maintenance must repair that mismatch after restart.
+        sqlx::query("UPDATE workstation_netboot_runtime SET last_verified_at = ?")
+            .bind(&old)
+            .execute(&fixture.state.db)
+            .await
+            .unwrap();
+        assert_eq!(scrub_due_bundles(&fixture.state).await.unwrap(), 1);
+        assert_ne!(
+            report(&fixture.state)
+                .await
+                .unwrap()
+                .last_verified_at
+                .as_deref(),
+            Some(old.as_str())
+        );
+        fixture.cleanup();
+    }
+
+    #[tokio::test]
+    async fn scrubbing_a_previous_bundle_does_not_renew_active_runtime_evidence() {
+        let fixture = RuntimeFilesystemFixture::new().await;
+        let previous = fixture.install_bundle("1.0.0", &"b".repeat(64)).await;
+        let active = fixture.install_bundle("2.0.0", &"a".repeat(64)).await;
+        fixture.activate(&active, Some(&previous)).await;
+        sqlx::query(
+            "UPDATE workstation_netboot_bundles SET last_scrubbed_at = ? WHERE bundle_sha256 = ?",
+        )
+        .bind(now())
+        .bind(&active.sha256)
+        .execute(&fixture.state.db)
+        .await
+        .unwrap();
+        let before = report(&fixture.state).await.unwrap().last_verified_at;
+        assert_eq!(scrub_due_bundles(&fixture.state).await.unwrap(), 1);
+        assert_eq!(
+            report(&fixture.state).await.unwrap().last_verified_at,
+            before
+        );
+        fixture.cleanup();
+    }
+
+    #[tokio::test]
     async fn corrupt_active_runtime_falls_back_with_the_fallback_runtime_version() {
         let fixture = RuntimeFilesystemFixture::new().await;
         let fallback = fixture.install_bundle("1.0.0", &"b".repeat(64)).await;
         let corrupt = fixture.install_bundle("2.0.0", &"a".repeat(64)).await;
         fixture.activate(&corrupt, Some(&fallback)).await;
+        let verified_before = report(&fixture.state).await.unwrap().last_verified_at;
         fs::write(fixture.bundle_root(&corrupt).join("bzImage"), b"corrupt").unwrap();
 
         scrub_due_bundles(&fixture.state).await.unwrap();
@@ -3726,6 +3821,7 @@ mod tests {
         assert_eq!(report.active_bundle_sha256, fallback.sha256);
         assert_eq!(report.runtime_version, fallback.runtime_version);
         assert_eq!(report.failure_kind, FAILURE_INTEGRITY_MISMATCH);
+        assert_eq!(report.last_verified_at, verified_before);
         assert!(report.warning_kind.is_none());
         let launch = create_boot_session(&fixture.state, "02:00:00:00:00:01", None, None, None)
             .await

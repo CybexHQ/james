@@ -70,6 +70,13 @@ qualified tool providers are admitted by strict fingerprints, while an
 unrecognized source-producing derivation remains blocked and is reported in
 bounded `source_build_candidates` diagnostics.
 
+Runtime integrity maintenance rechecks retained bundles every 12 hours and
+renews the active runtime's reported verification time only after a successful
+check. This keeps healthy nodes within Manage's 24-hour verification window.
+Maintenance also repairs stale runtime evidence after an upgrade, even when
+the bundle was checked recently; a corrupt or predecessor bundle cannot renew
+the active runtime's evidence.
+
 ## Ubuntu appliance
 
 The active implementation is under [`ubuntu-appliance/`](ubuntu-appliance/).
