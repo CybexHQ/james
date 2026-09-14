@@ -1254,9 +1254,10 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
 
     def test_production_workflow_is_byte_identical(self) -> None:
         workflow = (REPOSITORY / ".github/workflows/release.yml").read_bytes()
+        # Includes dnsmasq-base for the executable PXE configuration checks.
         self.assertEqual(
             digest(workflow),
-            "c0db17d77cce125bf60f2ae6e50ae62316fc81071f019218dc76414a8663764b",
+            "7e5251d593ee4cd4ffa9ae3613f6dc9984cf844f43aca1fafeebf352bf43da75",
         )
 
 
