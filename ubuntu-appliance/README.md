@@ -134,7 +134,12 @@ qualification is forbidden.
 `cybex-james-appliance` Debian packages. The appliance dependency closure
 includes systemd, nginx, TFTP/iPXE, OpenSSH, nftables, Netplan, Btrfs/watchdog,
 Nix, `linux-generic`, `linux-firmware`, `intel-microcode`, and
-`amd64-microcode`. The snapshot also carries `grub-efi-amd64`, Canonical's
+`amd64-microcode`, plus the exact `udpcast` `20120424-2build2` sender used only
+by qualified wired classroom rootfs delivery. Its version is both an exact
+package dependency and part of
+`required_package_versions`; `CYBEX-SBOM.spdx.json`, `UDPCAST-COPYRIGHT`, and
+the authenticated `.dsc` and complete Ubuntu source payload ship beside the
+binary as the GPL source offer. The snapshot also carries `grub-efi-amd64`, Canonical's
 signed GRUB and shim packages, and `secureboot-db`; the target therefore does
 not depend on Ubuntu's removed media pool to create its signed UEFI boot chain.
 The pinned Subiquity/Curtin runtime bind-mounts `/run` into the chrootable
@@ -282,7 +287,11 @@ verified release prerequisite.
 login, permits only that user and the exact device principal, and trusts active
 plus next Cybex CA public keys. Forwarding works only when the short-lived user
 certificate explicitly contains its permission extension. nftables drops SSH
-from outside the plan's management CIDRs.
+from outside the plan's management CIDRs. Its input policy otherwise remains
+accepting, so multicast needs neither a root firewall reconciler nor wider
+service privileges: the unprivileged, policy-gated high-UDP sender socket is
+the runtime boundary, and `cybex-james.service` retains empty capability and
+ambient-capability sets.
 
 `/nix` is an executable `nodev,nosuid` bind mount backed by
 `CYBEX_CACHE`. Appliance installation requires a fixed disk of at least

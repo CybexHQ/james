@@ -572,6 +572,11 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 pxe_nginx,
             )
             self.assertIn(
+                'location ~ "^/boot-session/[A-Za-z0-9_-]{22}/context\\.cpio$" {',
+                pxe_nginx,
+            )
+            self.assertIn("access_log off;", pxe_nginx)
+            self.assertIn(
                 'location ~ "^/manage-source/(?<source_file>[0-9a-f]{40}\\.(?:tar|json))$" {',
                 pxe_nginx,
             )
@@ -841,8 +846,29 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
         self.assertIn("build-manage-source-archive.sh", package_builder)
         self.assertIn("usr/share/cybex-james/manage-source", package_builder)
         self.assertIn("iputils-arping", package_builder)
+        self.assertIn("udpcast", package_builder)
         offline_builder = BUILD_OFFLINE_REPOSITORY.read_text(encoding="utf-8")
         self.assertIn("iputils-arping", offline_builder)
+        self.assertIn(
+            'apt-get "${apt_options[@]}" --download-only source '
+            '"udpcast=$udpcast_expected_version"',
+            offline_builder,
+        )
+        self.assertIn("udpcast_expected_version=20120424-2build2", offline_builder)
+        self.assertIn('"udpcast=$udpcast_expected_version"', offline_builder)
+        self.assertIn("udpcast (= ${udpcast_version})", package_builder)
+        self.assertIn("CYBEX-SBOM.spdx.json", offline_builder)
+        self.assertIn("GPL-2.0-only AND BSD-2-Clause", offline_builder)
+        self.assertIn("UDPCAST-COPYRIGHT", offline_builder)
+        self.assertIn("udpcast", snapshot)
+        service = SERVICE.read_text(encoding="utf-8")
+        self.assertIn("CapabilityBoundingSet=\n", service)
+        self.assertIn("AmbientCapabilities=\n", service)
+        firewall = FIRST_BOOT.with_name("cybex-james-firewall").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("policy accept", firewall)
+        self.assertNotIn("udp dport", firewall)
         source_builder = BUILD_MANAGE_SOURCE_ARCHIVE.read_text(encoding="utf-8")
         self.assertIn("git -c tar.umask=0022", source_builder)
         self.assertIn("git get-tar-commit-id", source_builder)

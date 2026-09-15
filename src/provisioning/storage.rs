@@ -1091,6 +1091,7 @@ fn james_config(
          [[build.targets]]\nartifact_type = {}\ntarget = {}\nsystem = {}\nflake = {}\nattr = {}\n\n\
          [cache]\nroot_dir = \"/var/cache/cybex-james/www/cache\"\nprivate_key_path = \"/var/lib/cybex-james/state/agent/cache-private.pem\"\npublic_key_path = \"/var/lib/cybex-james/state/agent/cache-public.pem\"\n\n\
          [update]\ntrusted_public_key = {}\n\n\
+         [workstation_netboot]\nallow_private_release_urls = false\nmulticast_emergency_disabled = false\nudp_sender_path = \"/usr/bin/udp-sender\"\n\n\
          [manage]\nenabled = true\napi_url = {}\norganization_id = {}\norganization_slug = {}\nstate_path = \"/var/lib/cybex-james/state/agent/manage-state.json\"\nsync_interval_seconds = 30\nhttp_timeout_seconds = 30\n",
         toml_string(public_base_url),
         toml_string(&admin_token),

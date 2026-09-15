@@ -55,6 +55,7 @@ const CAPABILITY_CACHE_REPLICA_V1: &str = "cache_replica_v1";
 const CAPABILITY_WORKSTATION_NETBOOT_V1: &str = "workstation_netboot_v1";
 const CAPABILITY_WORKSTATION_ROOTFS_MULTICAST_V1: &str = crate::netboot_multicast::CAPABILITY;
 const CAPABILITY_JAMES_BOOT_GRANT_V1: &str = "james_boot_grant_v1";
+const CAPABILITY_WAKE_ON_LAN_V1: &str = crate::wake_on_lan::CAPABILITY;
 const CAPABILITY_APPLIANCE_UPDATE_V1: &str = crate::appliance::APPLIANCE_UPDATE_CAPABILITY;
 const CAPABILITY_APPLIANCE_UPDATE_V2: &str = crate::appliance::APPLIANCE_UPDATE_CAPABILITY_V2;
 const CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1: &str =
@@ -164,6 +165,8 @@ struct AgentJamesConfigResponse {
     workstation_netboot: Option<Value>,
     #[serde(default)]
     workstation_multicast: Option<Value>,
+    #[serde(default)]
+    wake_on_lan: Vec<crate::wake_on_lan::ManagedWakeRequest>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,6 +176,8 @@ struct JamesReportResponse {
     workstation_netboot: Option<WorkstationNetbootReportReceipt>,
     #[serde(default)]
     workstation_multicast: Option<Value>,
+    #[serde(default)]
+    wake_on_lan: Vec<String>,
     #[serde(default)]
     warnings: JamesReportWarnings,
 }
@@ -452,6 +457,7 @@ struct JamesAgentReportRequest {
     workstation_netboot: Option<crate::netboot::WorkstationNetbootReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     workstation_multicast: Option<crate::netboot_multicast::WorkstationMulticastReport>,
+    wake_on_lan: Vec<crate::wake_on_lan::WakeReport>,
     appliance: Option<crate::appliance::ApplianceReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     appliance_report_error: Option<&'static str>,
@@ -935,6 +941,9 @@ async fn apply_james_desired(
     desired: AgentJamesConfigResponse,
     first_failure: &mut Option<anyhow::Error>,
 ) {
+    if let Err(error) = crate::wake_on_lan::apply_requests(&state.db, &desired.wake_on_lan).await {
+        retain_sync_failure(first_failure, "Wake-on-LAN desired state", error.into());
+    }
     let multicast_desired = desired.workstation_multicast.clone();
     if let Err(error) =
         crate::netboot_multicast::apply_desired_policy(state, multicast_desired).await
@@ -1277,6 +1286,13 @@ async fn report_james_state(
             None
         }
     };
+    let wake_on_lan = match crate::wake_on_lan::report(&state.db).await {
+        Ok(report) => report,
+        Err(error) => {
+            warn!(error = %error, "Wake-on-LAN report generation failed");
+            Vec::new()
+        }
+    };
     let (appliance, appliance_report_error) = match crate::appliance::report(state).await {
         Ok(report) => (report, None),
         Err(error) => {
@@ -1326,6 +1342,7 @@ async fn report_james_state(
         host: crate::host::sample().await,
         workstation_netboot,
         workstation_multicast,
+        wake_on_lan,
         appliance,
         appliance_report_error,
     };
@@ -1343,6 +1360,9 @@ async fn report_james_state(
         parse_success_json::<JamesReportResponse>(response, "report managed james state").await?;
     accept_james_report_response(&response, managed, &body)?;
     accept_workstation_multicast_receipt(state, &response, &body).await;
+    if let Err(error) = crate::wake_on_lan::acknowledge(&state.db, &response.wake_on_lan).await {
+        debug!(error = %error, "Wake-on-LAN receipts remain queued for acknowledgement");
+    }
     Ok(JamesReportReceipt)
 }
 
@@ -2450,6 +2470,7 @@ fn james_capabilities(config: &AppConfig) -> Vec<&'static str> {
         CAPABILITY_CACHE_REPLICA_V1,
         CAPABILITY_WORKSTATION_NETBOOT_V1,
         CAPABILITY_JAMES_BOOT_GRANT_V1,
+        CAPABILITY_WAKE_ON_LAN_V1,
     ];
     capabilities.push(crate::pxe_discovery::CAPABILITY);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V1);
@@ -4388,6 +4409,7 @@ mod tests {
                 "cache_replica_v1",
                 "workstation_netboot_v1",
                 "james_boot_grant_v1",
+                "wake_on_lan_v1",
                 "pxe_proxy_v1",
                 "appliance_update_v1",
                 "appliance_update_v2",
@@ -5606,6 +5628,7 @@ mod tests {
             host: None,
             workstation_netboot: None,
             workstation_multicast: None,
+            wake_on_lan: vec![],
             appliance: None,
             appliance_report_error: None,
         }

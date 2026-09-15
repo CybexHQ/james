@@ -24,6 +24,7 @@ pub mod readiness;
 pub(crate) mod redact;
 pub(crate) mod release_transport;
 pub mod routes;
+pub mod wake_on_lan;
 
 use std::sync::{Arc, RwLock};
 
