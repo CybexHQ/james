@@ -2003,6 +2003,7 @@ pub async fn create_boot_session(
     OsRng.fill_bytes(&mut nonce_bytes);
     OsRng.fill_bytes(&mut session_bytes);
     let nonce = URL_SAFE_NO_PAD.encode(nonce_bytes);
+    let multicast_join_token_sha256 = crate::netboot_multicast::stored_join_token_hash(&nonce);
     let session_id = URL_SAFE_NO_PAD.encode(session_bytes);
     let claims = BootGrantClaims {
         schema: "cybex.james.boot-grant.v1",
@@ -2057,13 +2058,15 @@ pub async fn create_boot_session(
 
     let insert_result = sqlx::query(
         "INSERT INTO james_boot_sessions
-         (session_id, nonce_sha256, normalized_mac, profile_id, managed_device_id,
+         (session_id, nonce_sha256, multicast_join_token_sha256,
+          normalized_mac, profile_id, managed_device_id,
           reinstall_request_id, bundle_sha256, context_path, issued_at, expires_at,
           cleanup_after)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&session_id)
     .bind(sha256_bytes(&nonce_bytes))
+    .bind(multicast_join_token_sha256)
     .bind(normalized_mac)
     .bind(profile_id)
     .bind(managed_device_id)
@@ -2215,6 +2218,7 @@ pub fn spawn_maintenance(state: AppState) {
 
 async fn maintain_once(state: &AppState) -> Result<()> {
     cleanup_expired_sessions(state).await?;
+    crate::netboot_multicast::cleanup_retained_transfers(state).await?;
     scrub_due_bundles(state).await?;
     prune_expired_bundles(state).await?;
     Ok(())
@@ -2315,6 +2319,7 @@ async fn verify_stored_bundle(
 
 async fn quarantine_bundle(state: &AppState, bundle_sha256: &str, root_path: &str) -> Result<()> {
     validate_sha256(bundle_sha256, "quarantined bundle SHA-256")?;
+    crate::netboot_multicast::cancel_for_bundle(state, bundle_sha256).await?;
     let expected_root = state
         .config
         .paths
@@ -2462,6 +2467,7 @@ async fn quarantine_tree_only(
     bundle_sha256: &str,
     root_path: &str,
 ) -> Result<()> {
+    crate::netboot_multicast::cancel_for_bundle(state, bundle_sha256).await?;
     let expected_root = state
         .config
         .paths
@@ -2520,6 +2526,11 @@ async fn prune_expired_bundles(state: &AppState) -> Result<usize> {
              SELECT 1 FROM james_boot_sessions session
              WHERE session.bundle_sha256 = bundle.bundle_sha256 AND session.expires_at >= ?
            )
+           AND NOT EXISTS (
+             SELECT 1 FROM workstation_multicast_transfers transfer
+             WHERE transfer.bundle_sha256 = bundle.bundle_sha256
+               AND transfer.state IN ('gathering', 'sender_starting', 'sending')
+           )
          ORDER BY bundle.retained_until LIMIT 8",
     )
     .bind(&now_text)
@@ -2546,7 +2557,12 @@ async fn prune_expired_bundles(state: &AppState) -> Result<usize> {
         }
         let result = sqlx::query(
             "DELETE FROM workstation_netboot_bundles
-             WHERE bundle_sha256 = ? AND retention_state = 'verified' AND retained_until < ?",
+             WHERE bundle_sha256 = ? AND retention_state = 'verified' AND retained_until < ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM workstation_multicast_transfers transfer
+                 WHERE transfer.bundle_sha256 = workstation_netboot_bundles.bundle_sha256
+                   AND transfer.state IN ('gathering', 'sender_starting', 'sending')
+               )",
         )
         .bind(&bundle_sha256)
         .bind(&now_text)

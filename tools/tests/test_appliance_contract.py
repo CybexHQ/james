@@ -478,6 +478,15 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 ["dpkg-deb", "--control", str(appliance), str(control_root)],
                 check=True,
             )
+            proxy_helper = data_root / 'usr/lib/cybex-james/cybex-james-pxe'
+            proxy_unit = data_root / 'etc/systemd/system/cybex-james-pxe.service'
+            proxy_policy = data_root / 'etc/cybex-james/pxe-discovery.json'
+            self.assertEqual(proxy_helper.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(proxy_unit.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(json.loads(proxy_policy.read_text()), {'mode':'automatic'})
+            self.assertIn('dnsmasq-base', (control_root / 'control').read_text())
+            self.assertIn('/etc/cybex-james/pxe-discovery.json', (control_root / 'conffiles').read_text())
+            self.assertIn('cybex-james-pxe', (control_root / 'postinst').read_text())
             packaged_first_boot = (
                 data_root
                 / "usr/lib/cybex-james/cybex-james-first-boot"
