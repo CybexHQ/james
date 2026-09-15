@@ -454,6 +454,58 @@ index, bytes, signatures, origin, or packaged updater changed. These local
 commands do not alter the GitHub production identity commands or release
 workflow.
 
+#### Historical local release preparation
+
+Older development releases may have private directory modes, hardlinks to
+build output, and extra signer metadata. Their signed runtime may intentionally
+retain an older release's URL. Do not chmod or rewrite those published trees,
+change signed URLs, or pass them off as new immutable publications.
+
+Prepare a separate, unpublished qualification snapshot instead:
+
+```bash
+ubuntu-appliance/qualification/legacy-bridge-gate.py \
+  prepare-local-predecessor \
+  --artifact-root /absolute/served/releases \
+  --prepared-release /absolute/private/predecessor-snapshot \
+  --staging-state-dir /absolute/private/cybex-james-stage-state \
+  --served-prefix https://manage.example/james-dev-artifacts \
+  --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
+  --release-verifier tools/james-release.py
+```
+
+Pass the same `--prepared-release` and original `--artifact-root` to both
+`identify-local-predecessor` and `recheck-local-predecessor` above. The helper
+selects the highest source SemVer, allowing a higher package-only stage only
+with the existing exact ownership journal. It never falls back past an
+unrecognized newer entry. It independently verifies signatures, copies only
+the six authenticated artifacts without hardlinks, checks the original
+checksum index (including the historical five-file index for a reused runtime),
+and verifies every source file over its exact canonical HTTPS URL.
+
+The output contains an immutable seven-file release snapshot and a canonical
+read-only `origin.json` receipt. The snapshot's generated checksum index is
+private qualification evidence; it never replaces the published checksum index.
+The receipt binds the original directory index, original checksum bytes, and
+snapshot digest. Unrelated signer metadata stays untouched in the served tree.
+An older runtime URL must stay beneath the same canonical served prefix and
+use an older, unambiguous SemVer directory and the exact signed filename.
+
+Identification and post-qualification recheck validate the immutable snapshot,
+signatures, original index, original bytes, and HTTPS responses again. Changing
+either source or snapshot invalidates the evidence. The identity counts the
+one fully verified snapshot; all original SemVer entries remain index-bound.
+Keep the existing publication release lock and qualification markers throughout
+the usual workflow. Preparation also holds an exclusive directory flock on the
+original artifact root and snapshot reads hold a shared flock; these do not
+replace publication's release lock or the required final recheck.
+
+An existing snapshot is never overwritten. A failed preparation removes only
+its own newly created output. After an interrupted process, an incomplete
+snapshot cannot pass immutable-metadata checks; inspect and remove only that
+generated output before retrying. Reuse a successful snapshot while its origin
+binding is unchanged, and clean it after successful qualification/publication.
+
 The bridge address is discovered automatically. A runner with more than one
 private bridge address can select an address already assigned to that bridge
 with `CYBEX_JAMES_QUALIFICATION_PACKAGE_BIND_ADDRESS`; loopback and public

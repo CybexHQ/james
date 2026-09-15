@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
+import runpy
 import ssl
 import stat
 import subprocess
@@ -1476,6 +1477,23 @@ def require_local_asset_url(
     return expected
 
 
+def require_local_runtime_url(value: object, served_prefix: str, release_id: str,
+                              filename: str) -> str:
+    # An unchanged runtime descriptor retains its signed older release URL.
+    prefix = served_prefix + "/"
+    if not isinstance(value, str) or not value.startswith(prefix):
+        fail("local workstation URL is outside the canonical release origin")
+    parts = value[len(prefix):].split("/")
+    if len(parts) != 2 or parts[1] != filename:
+        fail("local workstation URL is not a canonical release artifact")
+    origin_version = semver_parts(parts[0], "local workstation origin release")
+    current_version = semver_parts(release_id, "local predecessor release")
+    precedence = semver_compare(origin_version, current_version)
+    if precedence > 0 or (precedence == 0 and parts[0] != release_id):
+        fail("local workstation URL references a newer or ambiguous release")
+    return value
+
+
 def verify_local_predecessor_descriptors(
     *,
     release_set: dict[str, object],
@@ -1619,12 +1637,8 @@ def verify_local_predecessor_descriptors(
         fail("local published predecessor package identity is inconsistent")
     netboot_name = str(release_set["netboot_filename"])
     netboot_artifact = artifacts[netboot_name]
-    require_local_asset_url(
-        workstation.get("url"),
-        served_prefix=served_prefix,
-        release_id=release_id,
-        filename=netboot_name,
-        label="local published predecessor workstation bundle",
+    require_local_runtime_url(
+        workstation.get("url"), served_prefix, release_id, netboot_name,
     )
     if (
         workstation.get("sha256") != netboot_artifact["sha256"]
@@ -1999,11 +2013,7 @@ def build_local_predecessor_identity(
     arguments: argparse.Namespace,
 ) -> dict[str, object]:
     served_prefix = canonical_https_prefix(arguments.served_prefix)
-    releases, release_index_sha256 = local_published_release_index(
-        arguments.artifact_root,
-        served_prefix,
-        arguments.staging_state_dir,
-    )
+    releases, release_index_sha256 = discover_local_predecessor(arguments, served_prefix)
     selected = releases[-1]
     descriptor = verify_local_predecessor_descriptors(
         release_set=selected,
@@ -2015,10 +2025,18 @@ def build_local_predecessor_identity(
     assert isinstance(artifacts, list)
     for artifact in artifacts:
         filename = str(artifact["filename"])
+        remote = artifact
+        url = local_asset_url(served_prefix, str(selected["release_id"]), filename)
+        if filename == selected["netboot_filename"]:
+            manifest, _body = load_json(selected["directory"] / RELEASE_MANIFEST_FILENAME,
+                                       "verified manifest", MAX_MANIFEST_BYTES)
+            url = manifest["workstation_netboot"]["url"]
+        if filename == "SHA256SUMS" and "origin_checksum" in selected:
+            remote = selected["origin_checksum"]
         stream_https_artifact(
-            local_asset_url(served_prefix, str(selected["release_id"]), filename),
-            expected_sha256=str(artifact["sha256"]),
-            expected_size=int(artifact["size_bytes"]),
+            url,
+            expected_sha256=str(remote["sha256"]),
+            expected_size=int(remote["size_bytes"]),
             label=f"local published predecessor artifact {filename}",
         )
     selected_directory = selected["directory"]
@@ -2058,11 +2076,7 @@ def build_local_predecessor_identity(
         or stable_package_size != descriptor["package_snapshot_size_bytes"]
     ):
         fail("local published predecessor package changed during inspection")
-    stable_releases, stable_index_sha256 = local_published_release_index(
-        arguments.artifact_root,
-        served_prefix,
-        arguments.staging_state_dir,
-    )
+    stable_releases, stable_index_sha256 = discover_local_predecessor(arguments, served_prefix)
     if (
         stable_index_sha256 != release_index_sha256
         or stable_releases[-1]["release_id"] != selected["release_id"]
@@ -2092,6 +2106,22 @@ def build_local_predecessor_identity(
     }
     validate_local_predecessor_identity(identity)
     return identity
+
+
+def snapshot_helper(arguments: argparse.Namespace, served_prefix: str):
+    module = runpy.run_path(str(Path(__file__).with_name("local_predecessor_snapshot.py")))
+    return module["Snapshot"](globals(), arguments, served_prefix)
+
+
+def discover_local_predecessor(arguments: argparse.Namespace, served_prefix: str):
+    if getattr(arguments, "prepared_release", None) is not None:
+        return snapshot_helper(arguments, served_prefix).load()
+    return local_published_release_index(arguments.artifact_root, served_prefix,
+                                         arguments.staging_state_dir)
+
+
+def prepare_local_predecessor(arguments: argparse.Namespace) -> None:
+    snapshot_helper(arguments, canonical_https_prefix(arguments.served_prefix)).prepare()
 
 
 def identify_local_predecessor(arguments: argparse.Namespace) -> None:
@@ -2728,6 +2758,7 @@ def parser() -> argparse.ArgumentParser:
         "--release-verifier", required=True, type=Path
     )
     identify_local_parser.add_argument("--output", required=True, type=Path)
+    identify_local_parser.add_argument("--prepared-release", type=Path)
     identify_local_parser.set_defaults(handler=identify_local_predecessor)
 
     recheck_local_parser = commands.add_parser("recheck-local-predecessor")
@@ -2740,10 +2771,19 @@ def parser() -> argparse.ArgumentParser:
     recheck_local_parser.add_argument("--staging-state-dir", type=Path)
     recheck_local_parser.add_argument("--served-prefix", required=True)
     recheck_local_parser.add_argument("--trusted-public-key", required=True)
+    recheck_local_parser.add_argument("--prepared-release", type=Path)
     recheck_local_parser.add_argument(
         "--release-verifier", required=True, type=Path
     )
     recheck_local_parser.set_defaults(handler=recheck_local_predecessor)
+    prepare_parser = commands.add_parser("prepare-local-predecessor")
+    prepare_parser.add_argument("--artifact-root", required=True, type=Path)
+    prepare_parser.add_argument("--prepared-release", required=True, type=Path)
+    prepare_parser.add_argument("--staging-state-dir", type=Path)
+    prepare_parser.add_argument("--served-prefix", required=True)
+    prepare_parser.add_argument("--trusted-public-key", required=True)
+    prepare_parser.add_argument("--release-verifier", required=True, type=Path)
+    prepare_parser.set_defaults(handler=prepare_local_predecessor)
     return result
 
 

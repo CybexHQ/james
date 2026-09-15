@@ -1044,6 +1044,58 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
         self.assertEqual(value["release_id"], "0.2.1-dev.12")
         self.assertEqual(body, canonical(identity))
 
+    def historical_release(self) -> Path:
+        current = self.artifacts / "0.2.1-dev.12"
+        previous = self.artifacts / "0.2.1-dev.11"
+        current.chmod(0o700)
+        manifest_path = current / "cybex-james-release.json"
+        manifest = json.loads(manifest_path.read_bytes())
+        (current / manifest["workstation_netboot"]["url"].rsplit("/", 1)[1]).unlink()
+        manifest["workstation_netboot"] = json.loads(
+            (previous / "cybex-james-release.json").read_bytes()
+        )["workstation_netboot"]
+        manifest_path.chmod(0o600)
+        manifest_path.write_bytes(canonical(manifest))
+        compatibility_path = current / "cybex-james-release-compatibility.json"
+        compatibility = json.loads(compatibility_path.read_bytes())
+        compatibility["release_manifest"]["sha256"] = digest(manifest_path.read_bytes())
+        compatibility_path.chmod(0o600)
+        compatibility_path.write_bytes(canonical(compatibility))
+        checksum_order = [
+            "cybex-james-x86_64-linux",
+            "cybex-james-appliance-template-0.2.1-dev.12-x86_64-linux.iso",
+            "cybex-james-appliance-packages-0.2.1-dev.12-x86_64-linux.tar.zst",
+            manifest_path.name, compatibility_path.name,
+        ]
+        (current / "SHA256SUMS").chmod(0o600)
+        (current / "SHA256SUMS").write_text("".join(
+            f"{digest((current / name).read_bytes())}  {name}\n" for name in checksum_order),
+            encoding="ascii")
+        os.link(manifest_path, self.root / "retained-manifest.json")
+        (current / "signer-metadata.json").write_bytes(b"preserve unrelated metadata\n")
+        return current
+
+    def test_prepared_historical_snapshot_preserves_signed_runtime_reuse(self) -> None:
+        current = self.historical_release()
+        before = {p.name: (p.read_bytes(), p.stat().st_mode, p.stat().st_nlink)
+                  for p in current.iterdir()}
+        arguments = self.arguments()
+        arguments.prepared_release = self.root / "prepared"
+        self.namespace["prepare_local_predecessor"](arguments)
+        self.namespace["identify_local_predecessor"](arguments)
+        identity = json.loads(arguments.output.read_bytes())
+        self.assertEqual(identity["release_id"], "0.2.1-dev.12")
+        self.assertEqual(identity["update_contract"], "selective_roots_v2")
+        self.assertEqual(before, {p.name: (p.read_bytes(), p.stat().st_mode, p.stat().st_nlink)
+                                 for p in current.iterdir()})
+        sealed = arguments.prepared_release / "0.2.1-dev.12"
+        self.assertEqual(len(list(sealed.iterdir())), 7)
+        self.assertEqual((sealed / "cybex-james-release.json").read_bytes(),
+                         (current / "cybex-james-release.json").read_bytes())
+        self.assertEqual((sealed / "cybex-james-release.json").stat().st_nlink, 1)
+        arguments.qualified_identity = arguments.output
+        self.namespace["recheck_local_predecessor"](arguments)
+
     def test_exact_local_recheck_passes_then_rejects_a_new_highest_release(self) -> None:
         identity, identity_path = self.identify()
         arguments = self.arguments(output="unused.json")
@@ -1057,6 +1109,120 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
         ):
             self.namespace["recheck_local_predecessor"](arguments)
         self.assertEqual(identity["release_id"], "0.2.1-dev.12")
+
+    def prepared_arguments(self):
+        self.historical_release()
+        arguments = self.arguments()
+        arguments.prepared_release = self.root / "prepared"
+        self.namespace["prepare_local_predecessor"](arguments)
+        return arguments
+
+    def test_snapshot_does_not_admit_the_mutable_origin_without_preparation(self):
+        self.historical_release()
+        with self.assertRaises(self.namespace["GateError"]):
+            self.namespace["build_local_predecessor_identity"](self.arguments())
+
+    def test_snapshot_recheck_rejects_a_changed_origin_alias(self):
+        arguments = self.prepared_arguments()
+        (self.root / "retained-manifest.json").write_bytes(b"changed through hardlink")
+        with self.assertRaisesRegex(self.namespace["GateError"], "origin changed"):
+            self.namespace["build_local_predecessor_identity"](arguments)
+
+    def test_snapshot_recheck_rejects_a_new_highest_release(self):
+        arguments = self.prepared_arguments()
+        self.write_release("0.2.1-dev.14", "20260806T000000Z", selective=True)
+        with self.assertRaisesRegex(self.namespace["GateError"], "origin changed"):
+            self.namespace["build_local_predecessor_identity"](arguments)
+
+    def test_snapshot_rejects_sealed_file_tampering_and_hardlinks(self):
+        arguments = self.prepared_arguments()
+        binary = arguments.prepared_release / "0.2.1-dev.12/cybex-james-x86_64-linux"
+        original = binary.read_bytes()
+        binary.chmod(0o755)
+        binary.write_bytes(b"tampered")
+        binary.chmod(0o555)
+        with self.assertRaisesRegex(self.namespace["GateError"], "checksum"):
+            self.namespace["build_local_predecessor_identity"](arguments)
+        binary.chmod(0o755)
+        binary.write_bytes(original)
+        binary.chmod(0o555)
+        os.link(binary, self.root / "forbidden-snapshot-alias")
+        with self.assertRaisesRegex(self.namespace["GateError"], "metadata"):
+            self.namespace["build_local_predecessor_identity"](arguments)
+
+    def test_snapshot_cannot_overwrite_existing_output(self):
+        arguments = self.prepared_arguments()
+        before = (arguments.prepared_release / "origin.json").read_bytes()
+        with self.assertRaisesRegex(self.namespace["GateError"], "already exists"):
+            self.namespace["prepare_local_predecessor"](arguments)
+        self.assertEqual((arguments.prepared_release / "origin.json").read_bytes(), before)
+
+    def test_snapshot_preparation_fails_closed_on_bad_signature(self):
+        self.historical_release()
+        self.verifier.write_bytes(b"raise SystemExit(1)\n")
+        arguments = self.arguments()
+        arguments.prepared_release = self.root / "prepared"
+        with self.assertRaisesRegex(self.namespace["GateError"], "signature verification"):
+            self.namespace["prepare_local_predecessor"](arguments)
+        self.assertFalse(arguments.prepared_release.exists())
+
+    def test_snapshot_preparation_rejects_changed_https_bytes_and_cleans_output(self):
+        self.historical_release()
+        arguments = self.arguments()
+        arguments.prepared_release = self.root / "prepared"
+        def reject(*_args, **_kwargs):
+            self.namespace["fail"]("HTTPS bytes changed")
+        self.namespace["prepare_local_predecessor"].__globals__["stream_https_artifact"] = reject
+        with self.assertRaisesRegex(self.namespace["GateError"], "HTTPS bytes changed"):
+            self.namespace["prepare_local_predecessor"](arguments)
+        self.assertFalse(arguments.prepared_release.exists())
+
+    def test_snapshot_detects_concurrent_origin_change(self):
+        current = self.historical_release()
+        arguments = self.arguments()
+        arguments.prepared_release = self.root / "prepared"
+        globals_ = self.namespace["prepare_local_predecessor"].__globals__
+        original_stream = globals_["stream_https_artifact"]
+        def mutate(*args, **kwargs):
+            original_stream(*args, **kwargs)
+            (current / "concurrent-build-metadata").write_bytes(b"changed")
+        globals_["stream_https_artifact"] = mutate
+        with self.assertRaisesRegex(self.namespace["GateError"], "changed during preparation"):
+            self.namespace["prepare_local_predecessor"](arguments)
+        self.assertFalse(arguments.prepared_release.exists())
+
+    def test_snapshot_rejects_symlinked_reused_runtime(self):
+        self.historical_release()
+        previous = self.artifacts / "0.2.1-dev.11"
+        runtime = next(previous.glob("cybex-workstation-netboot-*.tar.zst"))
+        saved = self.root / "outside-runtime"
+        saved.write_bytes(runtime.read_bytes())
+        previous.chmod(0o755)
+        runtime.unlink()
+        runtime.symlink_to(saved)
+        arguments = self.arguments()
+        arguments.prepared_release = self.root / "prepared"
+        with self.assertRaisesRegex(self.namespace["GateError"], "without symlinks"):
+            self.namespace["prepare_local_predecessor"](arguments)
+        self.assertFalse(arguments.prepared_release.exists())
+
+    def test_local_runtime_reference_requires_canonical_same_or_older_origin(self):
+        validate = self.namespace["require_local_runtime_url"]
+        filename = "cybex-workstation-netboot-1.0.61-aaaaaaaaaaaa-x86_64-linux.tar.zst"
+        for version in ("0.2.1-dev.11", "0.2.1-dev.12"):
+            url = f"{self.served_prefix}/{version}/{filename}"
+            self.assertEqual(validate(url, self.served_prefix, "0.2.1-dev.12", filename), url)
+        for relative in ("0.2.1-dev.13/" + filename,
+                         "0.2.1-dev.12+alias/" + filename,
+                         "../" + filename, "0.2.1-dev.11/%2e%2e/" + filename,
+                         "0.2.1-dev.11/" + filename + "?token=invalid",
+                         "0.2.1-dev.11/" + filename + "#fragment"):
+            with self.subTest(relative=relative), self.assertRaises(self.namespace["GateError"]):
+                validate(self.served_prefix + "/" + relative, self.served_prefix,
+                         "0.2.1-dev.12", filename)
+        with self.assertRaises(self.namespace["GateError"]):
+            validate("https://untrusted.example/" + filename, self.served_prefix,
+                     "0.2.1-dev.12", filename)
 
     def test_higher_malformed_semver_entry_is_never_silently_skipped(self) -> None:
         hostile = self.artifacts / "0.2.1-dev.99"

@@ -146,6 +146,13 @@ This transport helper accepts exact v1 and source-bound v2 descriptors so older
 staging journals remain verifiable and cleanable. New-candidate admission still
 requires v2; staging never substitutes for independent signature verification.
 
+Historical development predecessors with mutable build layouts use the private
+`prepare-local-predecessor` snapshot workflow in
+`ubuntu-appliance/README.md`. It preserves signed descriptors and reused runtime
+URLs, authenticates the complete artifact closure, and binds immutable copies
+to the original served index for identification and post-qualification recheck.
+It does not republish or normalize the historical served directories in place.
+
 Production manifests currently bind package assets to GitHub immutable-release
 download URLs. GitHub draft assets do not provide anonymous canonical transport
 to the frozen predecessor, and early publication would make the package-only
