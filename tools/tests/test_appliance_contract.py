@@ -1269,15 +1269,11 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
     def test_qualification_proves_greenfield_runtime_and_builtin_delivery(self) -> None:
         script = QUALIFICATION_LIFECYCLE.read_text(encoding="utf-8")
         self.assertIn(".source_builds_allowed' \"$delivery_policy\"", script)
-        for slug in (
-            "standard_taskbar_workstation",
-            "dock_workstation",
-            "hyprland_developer",
-        ):
-            self.assertIn(slug, script)
-        self.assertIn(".package_ref? // empty", script)
-        self.assertIn('index("deno") != null', script)
-        self.assertIn('index("nodejs") == null', script)
+        self.assertIn('blueprint-catalog.py', script)
+        self.assertIn('--baseline "$blueprints"', script)
+        self.assertIn('($blueprints[0].blueprints | map(.slug)) as $expected', script)
+        self.assertIn('.ready_replicas == .required_replicas', script)
+        self.assertLess(script.index('blueprint-catalog.py'), script.index('package_delivery='))
         self.assertIn(
             'api GET "/v1/james/nodes/$device_id/workstation-netboot"', script
         )

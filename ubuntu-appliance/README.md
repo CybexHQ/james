@@ -349,9 +349,16 @@ DHCP network change, verifies an exact-principal/non-forwarding SSH
 certificate, and then proves the greenfield delivery invariant. The new James
 must report an operational and converged verified workstation runtime; the
 default source-free policy must remain effective; and the exact current
-revisions of Standard Taskbar Workstation, Standard Dock Workstation, and
-Hyprland Developer must all prepare successfully on that node and be ready on
-every required replica. The Hyprland seed must contain Deno rather than Node.js.
+revisions of Standard Workstation (`standard_workstation`), Dock Workstation
+(`dock_workstation`), and an explicit rehearsal-only Tiling Blueprint
+(`qualification_tiling`, override with `CYBEX_JAMES_QUALIFICATION_TILING_BLUEPRINT`) must all prepare successfully on that node and be ready on
+every required replica. The Tiling fixture selects an App List containing Deno rather than Node.js. It is
+not a built-in; prepare and release it in the disposable organization before
+admission, without assigning computers. Never reset built-ins to revision 1.
+`blueprint-catalog.py` captures exact current revision IDs/numbers, effective
+configuration hashes, and Taskbar/Dock/Tiling coverage before staging or boot.
+The final check rejects changes during qualification. Both built-in settings
+and administrator edits remain untouched.
 A source-policy failure records its bounded offending derivations before the
 qualification fails. Publication requires these assertions in the run evidence,
 so an official built-in that is incompatible with the current James classifier
@@ -544,3 +551,21 @@ The package regression builds from both private and public boot-script source
 modes and verifies the resulting readable asset and installed PXE service.
 `qualification/run-pxe-discovery.py` verifies actual OVMF → ProxyDHCP → TFTP
 → HTTP boot in disposable network namespaces without DHCP boot options.
+
+### Reconstructing missing local predecessor lifecycle evidence
+
+Do not fabricate predecessor evidence or relabel historical bytes as a new
+candidate. Run `run-lifecycle.sh` with the published predecessor's original
+manifest/template plus `--published-predecessor-inputs /private/inputs.json`.
+The JSON has exactly `qualified_identity`, `artifact_root`, `prepared_release`,
+`staging_state_dir`, `served_prefix`, and `trusted_public_key`, using the same
+values as `recheck-local-predecessor` above. This mode rechecks the authenticated
+original release index and complete prepared closure, then binds the manifest
+SHA-256 to that identity before any VM work. All Secure Boot, installation,
+source-free desktop preparation, runtime, network and SSH checks still run.
+Evidence records `qualification_kind: published_predecessor`, the harness
+revision, original manifest digest, and exact desktop catalog. Candidate mode
+still requires appliance-release.v2 at the harness's exact HEAD; historical
+mode never qualifies a successor for publication. Keep the resulting real
+lifecycle evidence for `run-update-lifecycle.sh` and repeat the final predecessor
+index recheck before dependent release work.
