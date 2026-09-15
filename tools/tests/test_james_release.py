@@ -524,6 +524,18 @@ class JamesReleaseToolTests(unittest.TestCase):
         self.assertEqual(verified.returncode, 0, verified.stderr.decode())
 
         package_metadata = self.directory / "package-snapshot.json"
+        manifest["appliance_release_v1"]["source_revision"] = "e" * 40
+        output.write_text(json.dumps(manifest), encoding="utf-8")
+        tampered = self.run_tool(
+            *self.verify_arguments(output),
+            "--appliance-package-snapshot",
+            str(snapshot),
+        )
+        self.assertEqual(tampered.returncode, 2)
+        self.assertIn(b"signature", tampered.stderr)
+        manifest["appliance_release_v1"]["source_revision"] = "d" * 40
+        output.write_text(json.dumps(manifest), encoding="utf-8")
+
         mismatched_metadata = json.loads(package_metadata.read_text(encoding="utf-8"))
         mismatched_metadata["manage_origin"] = "https://manage.cybex.net"
         package_metadata.write_text(json.dumps(mismatched_metadata), encoding="utf-8")

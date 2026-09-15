@@ -24,13 +24,24 @@ while (($#)); do
   esac
 done
 test -f "$template" && test -f "$manifest" && test -f "$token_file" && test -n "$output"
-for command_name in curl ip jq python3 qemu-system-x86_64 truncate sha256sum openssl ssh-keygen; do
+for command_name in curl git ip jq python3 qemu-system-x86_64 truncate sha256sum openssl ssh-keygen; do
   command -v "$command_name" >/dev/null || { echo "error: missing $command_name" >&2; exit 1; }
 done
 python3 -B "$repository_root/tools/james-release.py" validate-manage-origin \
   --expected-manage-origin "$manage_origin" >/dev/null
 test "$(jq -er '.installer_iso_template_v2.manage_origin' "$manifest")" = \
   "$manage_origin"
+# New candidates must bind the same exact James source used by this harness.
+# Legacy descriptors remain supported only when verifying published predecessors.
+source_revision="$(git -C "$repository_root" rev-parse HEAD)"
+jq -e --arg source_revision "$source_revision" '
+  .appliance_release_v1
+  | .schema == "cybex.james.appliance-release.v2"
+    and .source_revision == $source_revision
+' "$manifest" >/dev/null || {
+  echo 'error: qualification requires an appliance-release.v2 candidate bound to this James checkout' >&2
+  exit 1
+}
 bridge="${CYBEX_JAMES_QUALIFICATION_BRIDGE:?set the isolated qualification bridge}"
 management_cidr="${CYBEX_JAMES_QUALIFICATION_MANAGEMENT_CIDR:?set the qualification Management CIDR}"
 token="$(tr -d '\r\n' < "$token_file")"
@@ -93,8 +104,6 @@ package_transport_url=""
 case "$package_delivery" in
   embedded) ;;
   network-snapshot-v1)
-    test "$(jq -er '.appliance_release_v1.schema' "$manifest")" = \
-      cybex.james.appliance-release.v1
     package_filename="cybex-james-appliance-packages-$release_version-x86_64-linux.tar.zst"
     signed_package_url="$(jq -er '.appliance_release_v1.cybex_repository_snapshot.url' "$manifest")"
     [[ "$signed_package_url" = */"$package_filename" ]]

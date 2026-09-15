@@ -10,7 +10,9 @@ The signed `cybex.james.release.v1` manifest contains:
   personalization slot, `network-snapshot-v1` delivery contract, accepted
   provisioning keys, canonical `manage_origin`, and signature;
 - `appliance_release_v1`: the separately delivered APT repository snapshot, required
-  package versions, kernel, rollback contract, and signature;
+  package versions, kernel, rollback contract, and signature. New candidates use
+  schema `cybex.james.appliance-release.v2` under this retained field name and
+  sign the exact James Git commit in `source_revision`;
 - `workstation_netboot`: the signed workstation kernel, bootstrap initrd, and
   Nix store squashfs bundle.
 
@@ -82,6 +84,15 @@ immutable publication.
 
 Local release-tool verification:
 
+When creating a candidate with `tools/james-release.py manifest`, pass
+`--appliance-source-revision "$(git rev-parse HEAD)"` from the exact reviewed
+James build checkout. Greenfield and predecessor-update lifecycle qualification
+require that v2 descriptor and the same checkout revision before any network or
+VM operation. Legacy v1
+verification remains available for published predecessors; it is not the
+new-candidate contract. This check supplements the independent signature and
+artifact verification above; it does not replace them.
+
 ```sh
 python3 -B -m unittest discover -s tools/tests -v
 python3 tools/james-release.py verify \
@@ -131,6 +142,9 @@ only that exact package through Manage's `/james-dev-artifacts` directory with
 `ubuntu-appliance/qualification/stage-canonical-package.py`; the helper binds
 the URL, manifest digest, snapshot digest and size, and cleanup owner in private
 state and will neither overwrite nor remove unowned bytes.
+This transport helper accepts exact v1 and source-bound v2 descriptors so older
+staging journals remain verifiable and cleanable. New-candidate admission still
+requires v2; staging never substitutes for independent signature verification.
 
 Production manifests currently bind package assets to GitHub immutable-release
 download URLs. GitHub draft assets do not provide anonymous canonical transport

@@ -33,7 +33,7 @@ test -f "$candidate_manifest" && test ! -L "$candidate_manifest"
 test -f "$token_file" && test ! -L "$token_file"
 test -n "$server_device_id" && test -n "$output"
 [[ "$server_device_id" =~ ^[0-9A-Za-z][0-9A-Za-z._:-]{0,255}$ ]]
-for command_name in base64 curl date jq python3 sha256sum; do
+for command_name in base64 curl date git jq python3 sha256sum; do
   command -v "$command_name" >/dev/null || {
     echo "error: missing $command_name" >&2
     exit 1
@@ -76,8 +76,16 @@ candidate_manage_revision="$(jq -er '.workstation_netboot.manage_source_revision
 candidate_runtime_architecture="$(jq -er '.workstation_netboot.architecture' "$candidate_manifest")"
 
 test "$(jq -er '.schema' "$candidate_manifest")" = cybex.james.release.v1
-test "$(jq -er '.appliance_release_v1.schema' "$candidate_manifest")" = \
-  cybex.james.appliance-release.v1
+# Qualify the same source-bound candidate as the greenfield lifecycle gate.
+source_revision="$(git -C "$repository_root" rev-parse HEAD)"
+jq -e --arg source_revision "$source_revision" '
+  .appliance_release_v1
+  | .schema == "cybex.james.appliance-release.v2"
+    and .source_revision == $source_revision
+' "$candidate_manifest" >/dev/null || {
+  echo 'error: update qualification requires an appliance-release.v2 candidate bound to this James checkout' >&2
+  exit 1
+}
 test "$(jq -er '.appliance_release_v1.release_id' "$candidate_manifest")" = \
   "$candidate_release"
 test "$(jq -er '.appliance_release_v1.minimum_protocol' "$candidate_manifest")" = 4

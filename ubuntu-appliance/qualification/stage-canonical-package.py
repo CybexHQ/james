@@ -27,7 +27,8 @@ from urllib.parse import unquote, urlsplit
 
 
 MANIFEST_SCHEMA = "cybex.james.release.v1"
-APPLIANCE_SCHEMA = "cybex.james.appliance-release.v1"
+APPLIANCE_SCHEMA_V1 = "cybex.james.appliance-release.v1"
+APPLIANCE_SCHEMA_V2 = "cybex.james.appliance-release.v2"
 LEDGER_SCHEMA = "cybex.james.canonical-package-stage.v1"
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_PACKAGE_BYTES = 4 * 1024 * 1024 * 1024
@@ -40,6 +41,7 @@ SEMVER_RE = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
@@ -234,8 +236,18 @@ def parse_manifest(
         or not SEMVER_RE.fullmatch(version)
     ):
         fail("candidate release version is invalid")
+    descriptor = manifest.get("appliance_release_v1")
+    if not isinstance(descriptor, dict):
+        fail("appliance release descriptor must be an object")
+    schema = descriptor.get("schema")
+    if schema not in (APPLIANCE_SCHEMA_V1, APPLIANCE_SCHEMA_V2):
+        fail("appliance release descriptor schema is invalid")
+    # Preserve exact legacy staging/cleanup ownership while admitting current
+    # source-bound descriptors. Independent signature verification is required
+    # by the caller for both schemas before this transport-only helper runs.
+    source_keys = {"source_revision"} if schema == APPLIANCE_SCHEMA_V2 else set()
     appliance = exact_keys(
-        manifest.get("appliance_release_v1"),
+        descriptor,
         {
             "schema",
             "release_id",
@@ -248,10 +260,15 @@ def parse_manifest(
             "rollback_compatible",
             "release_notes",
             "signature",
-        },
+        } | source_keys,
         "appliance release descriptor",
     )
-    if appliance["schema"] != APPLIANCE_SCHEMA or appliance["release_id"] != version:
+    if schema == APPLIANCE_SCHEMA_V2 and (
+        not isinstance(appliance["source_revision"], str)
+        or not REVISION_RE.fullmatch(appliance["source_revision"])
+    ):
+        fail("appliance source revision is invalid")
+    if appliance["release_id"] != version:
         fail("appliance release descriptor does not match the candidate")
     canonical_base64(appliance["signature"], "appliance release signature", 64)
     snapshot = exact_keys(

@@ -150,6 +150,33 @@ class CanonicalPackageStageTests(unittest.TestCase):
         self.assertFalse(self.private_package_temp.exists())
         self.assertEqual(self.target.read_bytes(), self.package.read_bytes())
 
+    def test_v2_stage_verify_and_cleanup_preserve_exact_source_binding(self) -> None:
+        value = json.loads(self.manifest.read_bytes())
+        value["appliance_release_v1"]["schema"] = "cybex.james.appliance-release.v2"
+        value["appliance_release_v1"]["source_revision"] = "d" * 40
+        self.manifest.write_bytes(canonical(value))
+        self.test_stage_verify_and_cleanup_are_exact_and_idempotent()
+
+    def test_invalid_v2_source_or_schema_is_rejected_before_exposure(self) -> None:
+        original = json.loads(self.manifest.read_bytes())
+        for schema, source in (
+            ("cybex.james.appliance-release.v2", None),
+            ("cybex.james.appliance-release.v2", "HEAD"),
+            ("cybex.james.appliance-release.v2", "D" * 40),
+            ("cybex.james.appliance-release.v2", 123),
+            ("cybex.james.appliance-release.v3", "d" * 40),
+            ("cybex.james.appliance-release.v1", "d" * 40),
+        ):
+            with self.subTest(schema=schema, source=source):
+                value = json.loads(json.dumps(original))
+                value["appliance_release_v1"]["schema"] = schema
+                if source is not None:
+                    value["appliance_release_v1"]["source_revision"] = source
+                self.manifest.write_bytes(canonical(value))
+                result = self.command("stage")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.target_directory.exists())
+
     def test_does_not_publish_manifest_or_compatibility(self) -> None:
         result = self.command("stage")
         self.assertEqual(result.returncode, 0, result.stderr)

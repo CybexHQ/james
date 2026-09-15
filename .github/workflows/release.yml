@@ -589,6 +589,7 @@ jobs:
             --release-url "$release_base/tag/$GITHUB_REF_NAME" \
             --notes-url "$release_base/tag/$GITHUB_REF_NAME" \
             "${template_args[@]}" \
+            --appliance-source-revision "$(git rev-parse HEAD)" \
             --appliance-package-snapshot "dist/cybex-james-appliance-packages-$version-x86_64-linux.tar.zst" \
             --appliance-package-snapshot-metadata "$RUNNER_TEMP/cybex-james-appliance-packages-metadata.json" \
             --appliance-package-snapshot-url "$artifact_base/cybex-james-appliance-packages-$version-x86_64-linux.tar.zst" \

@@ -27,6 +27,9 @@ PACKAGE_SHA256 = hashlib.sha256(PACKAGE_BYTES).hexdigest()
 PACKAGE_SIZE = len(PACKAGE_BYTES)
 RUNTIME_SHA256 = "b" * 64
 MANAGE_REVISION = "c" * 40
+JAMES_REVISION = subprocess.check_output(
+    ["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "HEAD"], text=True
+).strip()
 ATTEMPT_ID = "11111111-2222-4333-8444-555555555555"
 CACHE_FINGERPRINT = "d" * 64
 DEVICE_INCARNATION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
@@ -45,7 +48,8 @@ def candidate_manifest():
             "manage_origin": "https://manage.example",
         },
         "appliance_release_v1": {
-            "schema": "cybex.james.appliance-release.v1",
+            "schema": "cybex.james.appliance-release.v2",
+            "source_revision": JAMES_REVISION,
             "release_id": CANDIDATE_RELEASE,
             "ubuntu_snapshot_id": CANDIDATE_SNAPSHOT,
             "cybex_repository_snapshot": {
@@ -474,6 +478,27 @@ esac
             ).hexdigest(),
             request["candidate"]["release_manifest_sha256"],
         )
+
+    def test_candidate_schema_and_source_are_checked_before_network_access(self):
+        for schema, source in (
+            ("cybex.james.appliance-release.v1", None),
+            ("cybex.james.appliance-release.v2", None),
+            ("cybex.james.appliance-release.v2", "0" * 40),
+            ("cybex.james.appliance-release.v2", "HEAD"),
+            ("cybex.james.appliance-release.v3", JAMES_REVISION),
+        ):
+            with self.subTest(schema=schema, source=source):
+                manifest = candidate_manifest()
+                manifest["appliance_release_v1"]["schema"] = schema
+                if source is None:
+                    del manifest["appliance_release_v1"]["source_revision"]
+                else:
+                    manifest["appliance_release_v1"]["source_revision"] = source
+                self._write_json("candidate.json", manifest)
+                result = self._run()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.curl_log.exists(), result.stderr)
+                self.assertFalse((self.root / "evidence.json").exists())
 
     def test_mismatched_admission_target_is_rejected(self):
         requested = json.loads((self.root / "requested.json").read_text())
