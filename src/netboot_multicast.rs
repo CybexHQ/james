@@ -1596,9 +1596,7 @@ pub async fn report_page(state: &AppState) -> Result<Option<WorkstationMulticast
         ("disabled", "emergency_disabled")
     } else if policy.mode == WorkstationMulticastMode::HttpOnly {
         ("disabled", "http_only")
-    } else if !binary {
-        ("degraded", "sender_unavailable")
-    } else if cooldown_active {
+    } else if !binary || cooldown_active {
         ("degraded", "sender_unavailable")
     } else if network.is_err() {
         ("degraded", "network_unqualified")
