@@ -32,7 +32,7 @@ allowed_systems = ["x86_64-linux"]
 work_dir = "/var/lib/cybex-pulse/build"
 output_dir = "/var/lib/cybex-pulse/build-outputs"
 nix_binary = "/nix/var/nix/profiles/default/bin/nix"
-manage_source_url_template = "github:CybexHQ/manage/{revision}"
+manage_source_url_template = "tarball+file:///usr/share/cybex-pulse/manage-source/{revision}.tar"
 
 # Add one or more allowlisted Nix targets before queueing production jobs.
 # For generated Blueprint closure builds, flake is the nixpkgs input

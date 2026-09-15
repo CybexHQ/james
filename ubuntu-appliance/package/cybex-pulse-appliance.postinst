@@ -17,12 +17,67 @@ if ! getent passwd cybex-support >/dev/null 2>&1; then
 fi
 passwd -l cybex-support >/dev/null 2>&1 || true
 
-install -d -m 0750 -o cybex-pulse -g cybex-pulse /var/lib/cybex-pulse
-install -d -m 0700 -o cybex-pulse -g cybex-pulse /var/lib/cybex-pulse/state
+legacy_state=false
+if [ -f /etc/cybex-pulse/config.toml ] \
+  && grep -F 'database_path = "/var/lib/cybex-pulse/state/cybex-pulse.sqlite"' /etc/cybex-pulse/config.toml >/dev/null \
+  && grep -F 'state_path = "/var/lib/cybex-pulse/state/manage-state.json"' /etc/cybex-pulse/config.toml >/dev/null
+then
+  legacy_state=true
+  install -m 0644 -o root -g root /dev/null /etc/cybex-pulse/legacy-state-layout
+fi
+pulse_root=/var/lib/cybex-pulse
+if [ -e "$pulse_root" ] || [ -L "$pulse_root" ]; then
+  [ -d "$pulse_root" ] && [ ! -L "$pulse_root" ] || exit 1
+else
+  mkdir "$pulse_root"
+fi
+chown root:cybex-pulse "$pulse_root"
+chmod 0750 "$pulse_root"
+for protected in "$pulse_root/control" "$pulse_root/status"; do
+  if [ -e "$protected" ] || [ -L "$protected" ]; then
+    [ -d "$protected" ] && [ ! -L "$protected" ] || exit 1
+    [ "$(stat -c '%U:%G:%a' "$protected")" = root:cybex-pulse:750 ] || exit 1
+  else
+    mkdir "$protected"
+  fi
+  chown root:cybex-pulse "$protected"
+  chmod 0750 "$protected"
+done
+if [ "$legacy_state" = false ]; then
+  install -d -m 0750 -o root -g cybex-pulse /var/lib/cybex-pulse/state
+  install -d -m 0700 -o cybex-pulse -g cybex-pulse /var/lib/cybex-pulse/state/agent
+fi
+install -d -m 0700 -o cybex-pulse -g cybex-pulse /var/lib/cybex-pulse/state/inbox
 install -d -m 0755 -o root -g root /var/cache/cybex-pulse
 install -d -m 0755 -o root -g root /var/cache/cybex-pulse/nix
+# HOME cannot be the root-owned appliance trust boundary: Nix creates
+# per-client evaluator state below HOME/XDG paths before it can evaluate a
+# Blueprint. Keep the path names root-controlled and expose only these private
+# leaves to the unprivileged service.
+agent_cache=/var/cache/cybex-pulse/agent
+if [ -e "$agent_cache" ] || [ -L "$agent_cache" ]; then
+  [ -d "$agent_cache" ] && [ ! -L "$agent_cache" ] || exit 1
+fi
+install -d -m 0750 -o root -g cybex-pulse "$agent_cache"
+for private in home cache config state tmp; do
+  path="$agent_cache/$private"
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    [ -d "$path" ] && [ ! -L "$path" ] || exit 1
+  fi
+  install -d -m 0700 -o cybex-pulse -g cybex-pulse "$path"
+done
 install -d -m 0750 -o cybex-pulse -g cybex-pulse /var/cache/cybex-pulse/www
-install -d -m 0750 -o cybex-pulse -g cybex-pulse /var/cache/cybex-pulse/tftp
+getent passwd tftp >/dev/null
+getent group tftp >/dev/null
+# tftpd-hpa deliberately applies its public-readability policy after dropping
+# privileges. The TFTP root contains only immutable package-provided EFI
+# launchers and their credential-free iPXE handoff script, so make that narrow
+# tree traversable/readable while retaining root-only mutation. Runtime and
+# secret-bearing state remain private above.
+if [ -e /var/cache/cybex-pulse/tftp ] || [ -L /var/cache/cybex-pulse/tftp ]; then
+  [ -d /var/cache/cybex-pulse/tftp ] && [ ! -L /var/cache/cybex-pulse/tftp ] || exit 1
+fi
+install -d -m 0755 -o root -g root /var/cache/cybex-pulse/tftp
 install -d -m 0755 /etc/cybex-pulse /etc/ssh/sshd_config.d
 
 systemctl mask apt-daily.service apt-daily-upgrade.service \
@@ -30,6 +85,7 @@ systemctl mask apt-daily.service apt-daily-upgrade.service \
 systemctl daemon-reload >/dev/null 2>&1 || true
 systemctl enable cybex-pulse-first-boot.service cybex-pulse-firewall.service cybex-pulse.service \
   cybex-pulse-generation-commit.service cybex-pulse-appliance-update.timer \
-  cybex-pulse-network-change.path nginx tftpd-hpa nix-daemon ssh >/dev/null 2>&1 || true
+  cybex-pulse-network-change.path cybex-pulse-network-runtime.timer \
+  getty@tty1.service nginx tftpd-hpa nix-daemon ssh >/dev/null 2>&1 || true
 
 exit 0

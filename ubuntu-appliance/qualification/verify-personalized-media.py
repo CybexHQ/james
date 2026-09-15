@@ -81,6 +81,8 @@ def main() -> None:
         fail("envelope media secret does not match the visible session")
     if value.get("template_sha256") != descriptor["template_sha256"]:
         fail("envelope template binding does not match")
+    if value.get("manage_origin") != descriptor.get("manage_origin"):
+        fail("envelope Management origin does not match the signed template descriptor")
     signature_text = value.pop("signature", None)
     value.pop("zero_padding", None)
     try:

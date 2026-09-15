@@ -10,6 +10,13 @@ server {
         proxy_set_header X-Forwarded-For $remote_addr;
     }
 
+    # This immutable, package-owned image is referenced by the signed iPXE
+    # menu. Keep it outside the mutable Pulse cache so appliance generation
+    # updates cannot leave the old or missing asset hidden by the cache mount.
+    location = /files/assets/pxe-menu.png {
+        alias /usr/share/cybex-pulse/assets/pxe-menu.png;
+    }
+
     location /assets/ {
         alias /var/cache/cybex-pulse/www/assets/;
         autoindex off;

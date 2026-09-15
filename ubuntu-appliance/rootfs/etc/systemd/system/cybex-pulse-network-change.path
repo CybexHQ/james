@@ -2,7 +2,7 @@
 Description=Watch for signed Cybex Pulse Netplan changes
 
 [Path]
-PathExists=/var/lib/cybex-pulse/state/appliance-network-change-request.json
+PathExists=/var/lib/cybex-pulse/state/inbox/appliance-network-change-request.json
 Unit=cybex-pulse-network-change.service
 
 [Install]

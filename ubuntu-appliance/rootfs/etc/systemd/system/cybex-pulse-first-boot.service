@@ -1,15 +1,17 @@
 [Unit]
 Description=Verify and activate the managed Cybex Pulse appliance
 After=local-fs.target systemd-udev-settle.service
-Before=network-online.target nix-daemon.service cybex-pulse.service
+Before=network-online.target nix-daemon.service nginx.service tftpd-hpa.service cybex-pulse.service
 Wants=systemd-udev-settle.service
-ConditionPathExists=/var/lib/cybex-pulse/state/install-plan.json
+RequiresMountsFor=/var/lib/cybex-pulse/state
 
 [Service]
 Type=oneshot
 ExecStart=/usr/lib/cybex-pulse/cybex-pulse-first-boot
 RemainAfterExit=yes
-TimeoutStartSec=180s
+# A dev.3 bridge re-pins up to 16 GiB and performs two independently bounded
+# 32-GiB expanded-stream passes before any privileged state is promoted.
+TimeoutStartSec=4h
 
 [Install]
 WantedBy=multi-user.target

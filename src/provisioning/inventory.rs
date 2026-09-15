@@ -17,6 +17,10 @@ const MIN_DISK_BYTES: u64 = 128 * 1024 * 1024 * 1024;
 const STATIC_PREFLIGHT_ROUTE_TABLE: &str = "42666";
 const STATIC_PREFLIGHT_RULE_PRIORITY: &str = "42666";
 const STATIC_PREFLIGHT_OUTPUT_LIMIT: usize = 16 * 1024;
+// `prepare` runs from the stock Ubuntu live filesystem, before the signed
+// appliance package snapshot (and its iputils-arping dependency) is installed.
+// The pinned live image ships this BusyBox applet; the ISO builder verifies it.
+const LIVE_INSTALLER_BUSYBOX: &str = "/usr/bin/busybox";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -235,9 +239,8 @@ pub(crate) async fn preflight_network(
             if dns_servers.is_empty() {
                 bail!("static DNS configuration is invalid")
             }
-            let manage_host = manage_https_host(manage_origin)?;
-            let duplicate_free = bounded_command_success(
-                "arping",
+            let (manage_host, manage_port) = manage_https_endpoint(manage_origin)?;
+            let duplicate_free = bounded_live_arping_success(
                 &[
                     "-D",
                     "-q",
@@ -250,7 +253,9 @@ pub(crate) async fn preflight_network(
                 Duration::from_secs(8),
             )
             .await
-            .context("run duplicate-address detection")?;
+            .context(
+                "Pulse setup media cannot run its network safety check; create a new Pulse ISO in Cybex Manage and try again",
+            )?;
             if !duplicate_free {
                 bail!("static address is already in use or duplicate detection failed")
             }
@@ -336,8 +341,7 @@ pub(crate) async fn preflight_network(
             .context("install candidate static source-policy rule")?;
             probe.rule_owned = true;
 
-            let gateway_reachable = bounded_command_success(
-                "arping",
+            let gateway_reachable = bounded_live_arping_success(
                 &[
                     "-q",
                     "-c",
@@ -351,7 +355,9 @@ pub(crate) async fn preflight_network(
                 Duration::from_secs(8),
             )
             .await
-            .context("probe approved static gateway")?;
+            .context(
+                "Pulse setup media cannot run its network safety check; create a new Pulse ISO in Cybex Manage and try again",
+            )?;
             if !gateway_reachable {
                 bail!("approved static gateway did not answer on the selected interface")
             }
@@ -394,7 +400,7 @@ pub(crate) async fn preflight_network(
             let mut https_reachable = false;
             for resolved in resolved_addresses {
                 let resolved = resolved.to_string();
-                let resolve = format!("{manage_host}:443:{resolved}");
+                let resolve = format!("{manage_host}:{manage_port}:{resolved}");
                 let reachable = bounded_command_success(
                     "curl",
                     &[
@@ -563,6 +569,13 @@ async fn bounded_command_success(
         .success())
 }
 
+async fn bounded_live_arping_success(arguments: &[&str], timeout: Duration) -> Result<bool> {
+    let mut busybox_arguments = Vec::with_capacity(arguments.len() + 1);
+    busybox_arguments.push("arping");
+    busybox_arguments.extend_from_slice(arguments);
+    bounded_command_success(LIVE_INSTALLER_BUSYBOX, &busybox_arguments, timeout).await
+}
+
 async fn bounded_command(program: &str, arguments: &[&str], timeout: Duration) -> Result<Output> {
     let mut command = Command::new(program);
     command.args(arguments).kill_on_drop(true);
@@ -578,22 +591,26 @@ async fn bounded_command(program: &str, arguments: &[&str], timeout: Duration) -
     Ok(output)
 }
 
-fn manage_https_host(manage_origin: &str) -> Result<String> {
+fn manage_https_endpoint(manage_origin: &str) -> Result<(String, u16)> {
     let url = reqwest::Url::parse(manage_origin).context("Management origin is not a valid URL")?;
     if url.scheme() != "https"
-        || url.port_or_known_default() != Some(443)
         || !url.username().is_empty()
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
         || url.path() != "/"
     {
-        bail!("Management origin must be an HTTPS origin on port 443")
+        bail!("Management origin must be a canonical HTTPS origin")
     }
-    url.host_str()
+    let host = url
+        .host_str()
         .filter(|host| !host.is_empty())
         .map(str::to_owned)
-        .ok_or_else(|| anyhow!("Management origin omitted its host"))
+        .ok_or_else(|| anyhow!("Management origin omitted its host"))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| anyhow!("Management origin omitted its HTTPS port"))?;
+    Ok((host, port))
 }
 
 fn ipv4_network(address: Ipv4Addr, prefix: u8) -> Ipv4Addr {
@@ -1001,19 +1018,22 @@ mod tests {
     }
 
     #[test]
-    fn management_connectivity_probe_accepts_only_a_bare_https_origin() {
+    fn management_connectivity_probe_preserves_an_explicit_https_port() {
         assert_eq!(
-            manage_https_host("https://manage.cybex.net").unwrap(),
-            "manage.cybex.net"
+            manage_https_endpoint("https://manage.cybex.net").unwrap(),
+            ("manage.cybex.net".to_string(), 443)
+        );
+        assert_eq!(
+            manage_https_endpoint("https://manage.cybex.net:8443").unwrap(),
+            ("manage.cybex.net".to_string(), 8443)
         );
         for invalid in [
             "http://manage.cybex.net",
-            "https://manage.cybex.net:8443",
             "https://user@manage.cybex.net",
             "https://manage.cybex.net/path",
             "https://manage.cybex.net?query=yes",
         ] {
-            assert!(manage_https_host(invalid).is_err(), "{invalid}");
+            assert!(manage_https_endpoint(invalid).is_err(), "{invalid}");
         }
     }
 

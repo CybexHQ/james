@@ -7,7 +7,7 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
     fs,
-    io::Write,
+    io::{self, Write},
     path::{Path, PathBuf},
     str::FromStr,
     time::Duration,
@@ -49,6 +49,9 @@ const CAPABILITY_CACHE_V1: &str = "cache_v1";
 const CAPABILITY_WORKSTATION_NETBOOT_V1: &str = "workstation_netboot_v1";
 const CAPABILITY_PULSE_BOOT_GRANT_V1: &str = "pulse_boot_grant_v1";
 const CAPABILITY_APPLIANCE_UPDATE_V1: &str = crate::appliance::APPLIANCE_UPDATE_CAPABILITY;
+const CAPABILITY_APPLIANCE_UPDATE_V2: &str = crate::appliance::APPLIANCE_UPDATE_CAPABILITY_V2;
+const CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1: &str =
+    crate::appliance::APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_CAPABILITY;
 const CYBEX_COMPONENT_PROTOCOL_VERSION: u32 = 4;
 const CYBEX_MINIMUM_MANAGE_PROTOCOL_VERSION: u32 = 4;
 const CYBEX_MAXIMUM_MANAGE_PROTOCOL_VERSION: u32 = 4;
@@ -62,6 +65,7 @@ const MAX_REPORT_EVENTS: i64 = 500;
 const MAX_REPORT_BUILD_JOBS: usize = 500;
 const MAX_REPORT_CACHE_ARTIFACTS: usize = 2_000;
 const MAX_MANAGED_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PULSE_REPORT_WARNING_RECEIPTS: usize = 32;
 const MAX_BOOT_REPORT_BODY_BYTES: usize = 3 * 1024 * 1024;
 // Closure-bearing cache metadata is bounded to 24 MiB. Leave
 // room for the remainder of the authenticated node report so a verified
@@ -75,7 +79,10 @@ const MAX_DEVICE_TAGS: usize = 50;
 const MAX_DEVICE_TAG_CHARS: usize = 64;
 const MAX_PROFILE_DESCRIPTION_CHARS: usize = 2_000;
 const MAX_PROFILE_RAW_SCRIPT_BYTES: usize = 64 * 1024;
-const RELIABILITY_STATE_PATH: &str = "/var/lib/cybex-pulse/reliability-state.json";
+// Root-produced appliance health evidence belongs to the generation-local,
+// Pulse-readable status boundary.  Keeping it out of the persistent agent
+// mount ensures it can never become a privileged trust input.
+const RELIABILITY_STATE_PATH: &str = "/var/lib/cybex-pulse/status/reliability-state.json";
 const MAX_RELIABILITY_STATE_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -86,6 +93,14 @@ struct ManagedState {
     public_key_fingerprint: Option<String>,
     device_id: Option<String>,
     last_reported_event_id: Option<i64>,
+    pulse_active_report_cursor: Option<i64>,
+    pulse_terminal_report_cursor: Option<i64>,
+    pulse_rejection_report_cursor: Option<i64>,
+    pulse_cache_artifact_report_cursor: Option<i64>,
+    pulse_cache_report_instance_id: Option<String>,
+    pulse_cache_report_generation: Option<i64>,
+    pulse_report_rotation_round: u8,
+    pulse_report_warning_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,6 +160,104 @@ struct PulseReportResponse {
     status: String,
     #[serde(default)]
     workstation_netboot: Option<WorkstationNetbootReportReceipt>,
+    #[serde(default)]
+    warnings: PulseReportWarnings,
+}
+
+#[derive(Debug, Default)]
+struct PulseReportWarnings {
+    codes: Vec<PulseReportWarningCode>,
+    truncated: bool,
+}
+
+impl<'de> Deserialize<'de> for PulseReportWarnings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Warning receipts are additive advisory data. Decode them through a
+        // generic JSON value so null, future envelopes, malformed entries and
+        // non-string codes can never reject an otherwise accepted report.
+        // The HTTP response itself is already bounded to 8 MiB.
+        let value = Value::deserialize(deserializer)?;
+        let Some(receipts) = value.as_array() else {
+            return Ok(Self::default());
+        };
+        Ok(Self {
+            codes: receipts
+                .iter()
+                .take(MAX_PULSE_REPORT_WARNING_RECEIPTS)
+                .map(|receipt| {
+                    PulseReportWarningCode::from_untrusted(
+                        receipt.get("diagnostic_code").and_then(Value::as_str),
+                    )
+                })
+                .collect(),
+            truncated: receipts.len() > MAX_PULSE_REPORT_WARNING_RECEIPTS,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum PulseReportWarningCode {
+    PulseApplianceReportInvalid,
+    PulseArtifactReportConflict,
+    PulseArtifactReportInvalid,
+    PulseBuildReportConflict,
+    PulseBuildReportInvalid,
+    PulseCacheReportInvalid,
+    PulseDiskReportInvalid,
+    PulseHostReportInvalid,
+    PulseReleaseJobIdentityMismatch,
+    PulseReleaseSourceContainsProtectedMaterial,
+    PulseReleaseSourceIdentityMismatch,
+    PulseReleaseSourceLockMissing,
+    #[default]
+    Unknown,
+}
+
+impl PulseReportWarningCode {
+    fn from_untrusted(value: Option<&str>) -> Self {
+        match value {
+            Some("pulse_appliance_report_invalid") => Self::PulseApplianceReportInvalid,
+            Some("pulse_artifact_report_conflict") => Self::PulseArtifactReportConflict,
+            Some("pulse_artifact_report_invalid") => Self::PulseArtifactReportInvalid,
+            Some("pulse_build_report_conflict") => Self::PulseBuildReportConflict,
+            Some("pulse_build_report_invalid") => Self::PulseBuildReportInvalid,
+            Some("pulse_cache_report_invalid") => Self::PulseCacheReportInvalid,
+            Some("pulse_disk_report_invalid") => Self::PulseDiskReportInvalid,
+            Some("pulse_host_report_invalid") => Self::PulseHostReportInvalid,
+            Some("pulse_release_job_identity_mismatch") => Self::PulseReleaseJobIdentityMismatch,
+            Some("pulse_release_source_contains_protected_material") => {
+                Self::PulseReleaseSourceContainsProtectedMaterial
+            }
+            Some("pulse_release_source_identity_mismatch") => {
+                Self::PulseReleaseSourceIdentityMismatch
+            }
+            Some("pulse_release_source_lock_missing") => Self::PulseReleaseSourceLockMissing,
+            _ => Self::Unknown,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::PulseApplianceReportInvalid => "pulse_appliance_report_invalid",
+            Self::PulseArtifactReportConflict => "pulse_artifact_report_conflict",
+            Self::PulseArtifactReportInvalid => "pulse_artifact_report_invalid",
+            Self::PulseBuildReportConflict => "pulse_build_report_conflict",
+            Self::PulseBuildReportInvalid => "pulse_build_report_invalid",
+            Self::PulseCacheReportInvalid => "pulse_cache_report_invalid",
+            Self::PulseDiskReportInvalid => "pulse_disk_report_invalid",
+            Self::PulseHostReportInvalid => "pulse_host_report_invalid",
+            Self::PulseReleaseJobIdentityMismatch => "pulse_release_job_identity_mismatch",
+            Self::PulseReleaseSourceContainsProtectedMaterial => {
+                "pulse_release_source_contains_protected_material"
+            }
+            Self::PulseReleaseSourceIdentityMismatch => "pulse_release_source_identity_mismatch",
+            Self::PulseReleaseSourceLockMissing => "pulse_release_source_lock_missing",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -345,10 +458,12 @@ struct PulseBuildJobReport {
     progress_message: Option<String>,
     logs: String,
     error: String,
-    /// Enumerated rejection reason, omitted when the job was not refused.
+    /// Enumerated rejection reason, explicitly null when the job was not
+    /// refused. Current Manage documents this canonical shape while retaining
+    /// additive compatibility with older Pulse versions that omitted `None`.
+    ///
     /// Manage screens reported prose for credential-shaped words and blanks
     /// the whole field, so the reason has to travel as a code to survive.
-    #[serde(skip_serializing_if = "Option::is_none")]
     rejection_code: Option<String>,
     output_path: String,
     output_sha256: String,
@@ -553,7 +668,7 @@ async fn sync_once_with_outcome(state: &AppState) -> Result<SyncOnceReport> {
     if let Err(error) = sync_boot_foundation(state, &mut managed).await {
         retain_sync_failure(&mut first_failure, "boot configuration and report", error);
     }
-    let pulse_report = match sync_pulse_foundation(state, &managed).await {
+    let pulse_report = match sync_pulse_foundation(state, &mut managed).await {
         Ok(report) => Some(report),
         Err(error) => {
             retain_sync_failure(&mut first_failure, "Pulse configuration and report", error);
@@ -761,7 +876,7 @@ async fn report_boot_state(state: &AppState, managed: &mut ManagedState) -> Resu
 
 async fn sync_pulse_foundation(
     state: &AppState,
-    managed: &ManagedState,
+    managed: &mut ManagedState,
 ) -> Result<PulseReportReceipt> {
     let mut first_failure = None;
     let mut peer_runtime_epoch = None;
@@ -996,10 +1111,20 @@ async fn fetch_pulse_config(
 
 async fn report_pulse_state(
     state: &AppState,
-    managed: &ManagedState,
+    managed: &mut ManagedState,
     peer_supports_runtime_fencing: bool,
 ) -> Result<PulseReportReceipt> {
-    let (build_jobs, build_listing_valid) = match db::list_build_jobs(&state.db).await {
+    let (build_jobs, build_listing_valid) = match db::list_build_jobs_report_page(
+        &state.db,
+        managed.pulse_active_report_cursor,
+        managed.pulse_rejection_report_cursor,
+        managed.pulse_terminal_report_cursor,
+        managed.pulse_report_rotation_round,
+        MAX_REPORT_BUILD_JOBS,
+        MAX_PULSE_REPORT_BODY_BYTES,
+    )
+    .await
+    {
         Ok(jobs) => (jobs, true),
         Err(_) => {
             warn!(
@@ -1028,20 +1153,6 @@ async fn report_pulse_state(
             false
         }
     };
-    let (cache_artifacts, cache_listing_complete, cache_listing_valid) =
-        match db::list_cache_artifacts(&state.db).await {
-            Ok(artifacts) => {
-                let complete = artifacts.len() <= MAX_REPORT_CACHE_ARTIFACTS;
-                (artifacts, complete, true)
-            }
-            Err(_) => {
-                warn!(
-                    error_code = "cache_artifact_report_storage_unavailable",
-                    "could not read cache artifact reports; sending a non-authoritative cache lane"
-                );
-                (Vec::new(), false, false)
-            }
-        };
     let (cache_inventory_instance_id, cache_inventory_generation, cache_inventory_valid) =
         match db::cache_inventory_state(&state.db).await {
             Ok(inventory) => (inventory.instance_id, inventory.generation, true),
@@ -1051,6 +1162,30 @@ async fn report_pulse_state(
                     "could not read cache inventory generation; isolating the cache lane"
                 );
                 (String::new(), 0, false)
+            }
+        };
+    let cache_report_cursor = pulse_cache_report_cursor(
+        managed,
+        &cache_inventory_instance_id,
+        cache_inventory_generation,
+        cache_inventory_valid,
+    );
+    let (cache_artifacts, cache_listing_complete, cache_listing_valid) =
+        match db::list_cache_artifacts_report_page(
+            &state.db,
+            cache_report_cursor,
+            MAX_REPORT_CACHE_ARTIFACTS,
+            MAX_PULSE_REPORT_BODY_BYTES,
+        )
+        .await
+        {
+            Ok((artifacts, complete)) => (artifacts, complete, true),
+            Err(_) => {
+                warn!(
+                    error_code = "cache_artifact_report_storage_unavailable",
+                    "could not read cache artifact reports; sending a non-authoritative cache lane"
+                );
+                (Vec::new(), false, false)
             }
         };
     let cache_inventory_generation = cache_inventory_generation_for_peer(
@@ -1081,7 +1216,7 @@ async fn report_pulse_state(
             None
         }
     };
-    let (appliance, appliance_report_error) = match crate::appliance::report().await {
+    let (appliance, appliance_report_error) = match crate::appliance::report(state).await {
         Ok(report) => (report, None),
         Err(error) => {
             warn!(
@@ -1091,20 +1226,38 @@ async fn report_pulse_state(
             (None, Some("local_state_unavailable"))
         }
     };
+    let report_priority = PulseReportPriority::from_round(managed.pulse_report_rotation_round);
+    let build_jobs = select_build_job_reports(
+        build_jobs
+            .into_iter()
+            .map(PulseBuildJobReport::from)
+            // Manage cannot correlate local-only jobs and deliberately ignores
+            // them. Do not let them consume the managed evidence budget.
+            .filter(|job| job.managed_job_id.is_some())
+            .collect(),
+        managed.pulse_active_report_cursor,
+        managed.pulse_rejection_report_cursor,
+        managed.pulse_terminal_report_cursor,
+        MAX_REPORT_BUILD_JOBS,
+        report_priority,
+    )?;
+    let cache_artifacts = rotate_report_items_after_cursor(
+        cache_artifacts
+            .into_iter()
+            .map(PulseCacheArtifactReport::from)
+            .collect(),
+        cache_report_cursor,
+        |artifact| artifact.local_id,
+    )
+    .into_iter()
+    .take(MAX_REPORT_CACHE_ARTIFACTS)
+    .collect();
     let body = PulseAgentReportRequest {
         protocol_version: CYBEX_COMPONENT_PROTOCOL_VERSION,
         capabilities: pulse_capabilities(&state.config),
         cache,
-        build_jobs: build_jobs
-            .into_iter()
-            .take(MAX_REPORT_BUILD_JOBS)
-            .map(PulseBuildJobReport::from)
-            .collect(),
-        cache_artifacts: cache_artifacts
-            .into_iter()
-            .take(MAX_REPORT_CACHE_ARTIFACTS)
-            .map(PulseCacheArtifactReport::from)
-            .collect(),
+        build_jobs,
+        cache_artifacts,
         cache_inventory_instance_id,
         cache_inventory_generation,
         cache_artifacts_complete,
@@ -1114,7 +1267,8 @@ async fn report_pulse_state(
         appliance,
         appliance_report_error,
     };
-    let (_body, body_bytes) = fit_pulse_report_body(body, MAX_PULSE_REPORT_BODY_BYTES)?;
+    let (body, body_bytes) =
+        fit_pulse_report_body(body, MAX_PULSE_REPORT_BODY_BYTES, report_priority)?;
     let device_id = managed_device_id(managed)?;
     let path = format!("/v1/agent/devices/{device_id}/pulse/report");
     let response = signed_request(state, managed, Method::POST, &path, body_bytes)
@@ -1125,14 +1279,82 @@ async fn report_pulse_state(
         .context("report managed pulse state request failed")?;
     let response =
         parse_success_json::<PulseReportResponse>(response, "report managed pulse state").await?;
-    validate_pulse_report_response(&response)?;
+    accept_pulse_report_response(&response, managed, &body)?;
     Ok(PulseReportReceipt)
 }
 
+fn accept_pulse_report_response(
+    response: &PulseReportResponse,
+    managed: &mut ManagedState,
+    body: &PulseAgentReportRequest,
+) -> Result<()> {
+    validate_pulse_report_status(response)?;
+    // Overall status=ok means Manage committed every independently valid
+    // lane, even when the isolated workstation runtime receipt below is a
+    // rejection. Advance those accepted pages before surfacing the runtime
+    // retry so a persistent runtime problem cannot pin build/cache prefixes.
+    advance_pulse_report_rotation(managed, body);
+    log_pulse_report_warnings(&response.warnings, managed);
+    validate_workstation_netboot_report_receipt(response)
+}
+
+fn log_pulse_report_warnings(warnings: &PulseReportWarnings, managed: &mut ManagedState) -> bool {
+    let fingerprint = pulse_report_warning_fingerprint(warnings);
+    if fingerprint.is_none() {
+        managed.pulse_report_warning_fingerprint = None;
+        return false;
+    }
+    if managed.pulse_report_warning_fingerprint == fingerprint {
+        return false;
+    }
+    managed.pulse_report_warning_fingerprint = fingerprint;
+    if warnings.codes.is_empty() {
+        return false;
+    }
+    let mut diagnostic_codes = warnings
+        .codes
+        .iter()
+        .map(|code| code.as_str())
+        .collect::<Vec<_>>();
+    diagnostic_codes.sort_unstable();
+    diagnostic_codes.dedup();
+    warn!(
+        warning_count = warnings.codes.len(),
+        warning_receipts_truncated = warnings.truncated,
+        diagnostic_codes = ?diagnostic_codes,
+        "Manage isolated one or more invalid Pulse report lanes; the accepted lanes remain healthy and rejected evidence will be reported again"
+    );
+    true
+}
+
+fn pulse_report_warning_fingerprint(warnings: &PulseReportWarnings) -> Option<String> {
+    if warnings.codes.is_empty() {
+        return None;
+    }
+    let mut codes = warnings
+        .codes
+        .iter()
+        .map(|code| code.as_str())
+        .collect::<Vec<_>>();
+    codes.sort_unstable();
+    codes.dedup();
+    Some(format!("{}:{}", warnings.truncated, codes.join(",")))
+}
+
+#[cfg(test)]
 fn validate_pulse_report_response(response: &PulseReportResponse) -> Result<()> {
+    validate_pulse_report_status(response)?;
+    validate_workstation_netboot_report_receipt(response)
+}
+
+fn validate_pulse_report_status(response: &PulseReportResponse) -> Result<()> {
     if response.status != "ok" {
         bail!("Manage returned an invalid Pulse report status");
     }
+    Ok(())
+}
+
+fn validate_workstation_netboot_report_receipt(response: &PulseReportResponse) -> Result<()> {
     let Some(receipt) = response.workstation_netboot.as_ref() else {
         // Older Manage releases predate isolated runtime receipts.
         return Ok(());
@@ -1201,54 +1423,219 @@ fn cache_status_for_local_state(
     report
 }
 
+fn rotate_report_items_after_cursor<T, F>(
+    mut items: Vec<T>,
+    cursor: Option<i64>,
+    local_id: F,
+) -> Vec<T>
+where
+    F: Fn(&T) -> i64,
+{
+    // Local ids are monotonic. Sorting here makes the cursor a durable
+    // watermark even when the exact row was deleted between accepted pages:
+    // older ids continue first, then the sequence wraps to newer rows.
+    items.sort_by_key(|item| std::cmp::Reverse(local_id(item)));
+    let Some(cursor) = cursor else {
+        return items;
+    };
+    let split = items.partition_point(|item| local_id(item) >= cursor);
+    if split < items.len() {
+        items.rotate_left(split);
+    }
+    items
+}
+
+fn pulse_cache_report_cursor(
+    managed: &ManagedState,
+    inventory_instance_id: &str,
+    inventory_generation: i64,
+    inventory_valid: bool,
+) -> Option<i64> {
+    (inventory_valid
+        && managed.pulse_cache_report_instance_id.as_deref() == Some(inventory_instance_id)
+        && managed.pulse_cache_report_generation == Some(inventory_generation))
+    .then_some(managed.pulse_cache_artifact_report_cursor)
+    .flatten()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PulseReportPriority {
+    ActiveBuilds,
+    TerminalBuilds,
+    RejectedBuilds,
+    CacheArtifacts,
+}
+
+impl PulseReportPriority {
+    fn from_round(round: u8) -> Self {
+        match round % 4 {
+            0 => Self::ActiveBuilds,
+            1 => Self::TerminalBuilds,
+            2 => Self::RejectedBuilds,
+            _ => Self::CacheArtifacts,
+        }
+    }
+
+    fn build_group_order(self) -> [usize; 3] {
+        // active, rejected, ordinary terminal
+        match self {
+            Self::ActiveBuilds => [0, 1, 2],
+            Self::TerminalBuilds => [2, 1, 0],
+            Self::RejectedBuilds => [1, 0, 2],
+            Self::CacheArtifacts => [0, 1, 2],
+        }
+    }
+}
+
+fn pulse_build_job_is_terminal(job: &PulseBuildJobReport) -> bool {
+    matches!(job.status.as_str(), "succeeded" | "failed" | "cancelled")
+}
+
+fn select_build_job_reports(
+    reports: Vec<PulseBuildJobReport>,
+    active_cursor: Option<i64>,
+    rejection_cursor: Option<i64>,
+    terminal_cursor: Option<i64>,
+    max_reports: usize,
+    priority: PulseReportPriority,
+) -> Result<Vec<PulseBuildJobReport>> {
+    let mut active = Vec::new();
+    let mut rejected = Vec::new();
+    let mut terminal = Vec::new();
+    for report in reports {
+        if !pulse_build_job_is_terminal(&report) {
+            active.push(report);
+        } else if report.rejection_code.is_some() {
+            rejected.push(report);
+        } else {
+            terminal.push(report);
+        }
+    }
+    let active = rotate_report_items_after_cursor(active, active_cursor, |job| job.local_id);
+    let rejected = rotate_report_items_after_cursor(rejected, rejection_cursor, |job| job.local_id);
+    let terminal = rotate_report_items_after_cursor(terminal, terminal_cursor, |job| job.local_id);
+    let lengths = [active.len(), rejected.len(), terminal.len()];
+    let mut take = [0usize; 3];
+    let mut selected = 0usize;
+    while selected < max_reports {
+        let mut progressed = false;
+        for group in priority.build_group_order() {
+            if selected == max_reports {
+                break;
+            }
+            if take[group] < lengths[group] {
+                take[group] += 1;
+                selected += 1;
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    let mut selected = Vec::with_capacity(selected);
+    selected.extend(active.into_iter().take(take[0]));
+    selected.extend(rejected.into_iter().take(take[1]));
+    selected.extend(terminal.into_iter().take(take[2]));
+    Ok(selected)
+}
+
+fn advance_pulse_report_rotation(managed: &mut ManagedState, body: &PulseAgentReportRequest) {
+    if let Some(job) = body
+        .build_jobs
+        .iter()
+        .rev()
+        .find(|job| !pulse_build_job_is_terminal(job))
+    {
+        managed.pulse_active_report_cursor = Some(job.local_id);
+    }
+    if let Some(job) = body
+        .build_jobs
+        .iter()
+        .rev()
+        .find(|job| job.rejection_code.is_some())
+    {
+        managed.pulse_rejection_report_cursor = Some(job.local_id);
+    }
+    if let Some(job) = body
+        .build_jobs
+        .iter()
+        .rev()
+        .find(|job| pulse_build_job_is_terminal(job) && job.rejection_code.is_none())
+    {
+        managed.pulse_terminal_report_cursor = Some(job.local_id);
+    }
+    if body.cache_inventory_generation >= 0 && !body.cache_inventory_instance_id.is_empty() {
+        let same_generation = managed.pulse_cache_report_instance_id.as_deref()
+            == Some(body.cache_inventory_instance_id.as_str())
+            && managed.pulse_cache_report_generation == Some(body.cache_inventory_generation);
+        if !same_generation {
+            managed.pulse_cache_artifact_report_cursor = None;
+        }
+        managed.pulse_cache_report_instance_id = Some(body.cache_inventory_instance_id.clone());
+        managed.pulse_cache_report_generation = Some(body.cache_inventory_generation);
+        if body.cache_artifacts_complete {
+            // The next accepted report begins a fresh traversal of the same
+            // generation. The just-completed page is authoritative because
+            // every earlier page was stamped with this generation by Manage.
+            managed.pulse_cache_artifact_report_cursor = None;
+        } else if let Some(artifact) = body.cache_artifacts.last() {
+            managed.pulse_cache_artifact_report_cursor = Some(artifact.local_id);
+        }
+    }
+    managed.pulse_report_rotation_round = (managed.pulse_report_rotation_round + 1) % 4;
+}
+
 fn fit_pulse_report_body(
     mut body: PulseAgentReportRequest,
     max_bytes: usize,
+    priority: PulseReportPriority,
 ) -> Result<(PulseAgentReportRequest, Vec<u8>)> {
     let original_jobs = body.build_jobs.len();
     let original_artifacts = body.cache_artifacts.len();
-    let mut body_bytes = serialize_pulse_report_body(&body)?;
-    if body_bytes.len() <= max_bytes {
+    if pulse_report_body_fits(&body, max_bytes) {
+        let body_bytes = serialize_pulse_report_body(&body)?;
         return Ok((body, body_bytes));
     }
 
     // Logs are diagnostic convenience; the managed job identity, state and
     // cache metadata are the durable evidence that Manage needs. Drop logs
-    // first so the newest active and terminal job reports remain intact.
+    // first so active and terminal job reports remain intact.
     for job in &mut body.build_jobs {
         job.logs.clear();
     }
-    body_bytes = serialize_pulse_report_body(&body)?;
-    while body_bytes.len() > max_bytes {
-        let Some(index) = body
-            .build_jobs
-            .iter()
-            .rposition(|job| matches!(job.status.as_str(), "succeeded" | "failed" | "cancelled"))
-        else {
-            break;
-        };
-        // list_build_jobs returns newest first, so rposition removes the
-        // oldest terminal evidence while preserving current work and the
-        // latest completed Blueprint inventory.
-        body.build_jobs.remove(index);
-        body_bytes = serialize_pulse_report_body(&body)?;
+
+    match priority {
+        PulseReportPriority::ActiveBuilds => {
+            trim_ordinary_terminal_reports(&mut body, max_bytes);
+            trim_cache_artifact_reports(&mut body, max_bytes);
+            trim_rejected_build_reports(&mut body, max_bytes);
+            trim_active_build_reports(&mut body, max_bytes);
+        }
+        PulseReportPriority::TerminalBuilds => {
+            trim_cache_artifact_reports(&mut body, max_bytes);
+            trim_active_build_reports(&mut body, max_bytes);
+            trim_rejected_build_reports(&mut body, max_bytes);
+            trim_ordinary_terminal_reports(&mut body, max_bytes);
+        }
+        PulseReportPriority::RejectedBuilds => {
+            trim_ordinary_terminal_reports(&mut body, max_bytes);
+            trim_cache_artifact_reports(&mut body, max_bytes);
+            trim_active_build_reports(&mut body, max_bytes);
+            trim_rejected_build_reports(&mut body, max_bytes);
+        }
+        PulseReportPriority::CacheArtifacts => {
+            trim_ordinary_terminal_reports(&mut body, max_bytes);
+            trim_active_build_reports(&mut body, max_bytes);
+            trim_rejected_build_reports(&mut body, max_bytes);
+            trim_cache_artifact_reports(&mut body, max_bytes);
+        }
     }
 
-    if body_bytes.len() > max_bytes && !body.cache_artifacts.is_empty() {
-        let fitting = max_fitting_prefix_len(body.cache_artifacts.len(), |count| {
-            let mut candidate = body.clone();
-            candidate.cache_artifacts.truncate(count);
-            candidate.cache_artifacts_complete = false;
-            serialize_pulse_report_body(&candidate).is_ok_and(|bytes| bytes.len() <= max_bytes)
-        });
-        body.cache_artifacts.truncate(fitting);
-        body.cache_artifacts_complete = false;
-        body_bytes = serialize_pulse_report_body(&body)?;
-    }
-
-    if body_bytes.len() > max_bytes {
+    if !pulse_report_body_fits(&body, max_bytes) {
         bail!("managed pulse report base body exceeded {max_bytes} bytes");
     }
+    let body_bytes = serialize_pulse_report_body(&body)?;
     warn!(
         jobs_sent = body.build_jobs.len(),
         jobs_total = original_jobs,
@@ -1258,6 +1645,94 @@ fn fit_pulse_report_body(
         "managed pulse report trimmed to fit request budget"
     );
     Ok((body, body_bytes))
+}
+
+fn terminal_build_job_removal_index(jobs: &[PulseBuildJobReport]) -> Option<usize> {
+    jobs.iter()
+        .rposition(|job| pulse_build_job_is_terminal(job) && job.rejection_code.is_none())
+}
+
+fn active_build_job_removal_index(jobs: &[PulseBuildJobReport]) -> Option<usize> {
+    jobs.iter()
+        .rposition(|job| !pulse_build_job_is_terminal(job))
+}
+
+fn rejected_build_job_removal_index(jobs: &[PulseBuildJobReport]) -> Option<usize> {
+    jobs.iter().rposition(|job| job.rejection_code.is_some())
+}
+
+fn trim_ordinary_terminal_reports(body: &mut PulseAgentReportRequest, max_bytes: usize) {
+    while !pulse_report_body_fits(body, max_bytes) {
+        let Some(index) = terminal_build_job_removal_index(&body.build_jobs) else {
+            break;
+        };
+        body.build_jobs.remove(index);
+    }
+}
+
+fn trim_active_build_reports(body: &mut PulseAgentReportRequest, max_bytes: usize) {
+    while !pulse_report_body_fits(body, max_bytes) {
+        let Some(index) = active_build_job_removal_index(&body.build_jobs) else {
+            break;
+        };
+        body.build_jobs.remove(index);
+    }
+}
+
+fn trim_rejected_build_reports(body: &mut PulseAgentReportRequest, max_bytes: usize) {
+    while !pulse_report_body_fits(body, max_bytes) {
+        let Some(index) = rejected_build_job_removal_index(&body.build_jobs) else {
+            break;
+        };
+        body.build_jobs.remove(index);
+    }
+}
+
+fn trim_cache_artifact_reports(body: &mut PulseAgentReportRequest, max_bytes: usize) {
+    if pulse_report_body_fits(body, max_bytes) || body.cache_artifacts.is_empty() {
+        return;
+    }
+    let fitting = max_fitting_prefix_len(body.cache_artifacts.len(), |count| {
+        let tail = body.cache_artifacts.split_off(count);
+        let complete = body.cache_artifacts_complete;
+        body.cache_artifacts_complete = false;
+        let fits = pulse_report_body_fits(body, max_bytes);
+        body.cache_artifacts.extend(tail);
+        body.cache_artifacts_complete = complete;
+        fits
+    });
+    body.cache_artifacts.truncate(fitting);
+    body.cache_artifacts_complete = false;
+}
+
+struct PulseReportSizeWriter {
+    written: usize,
+    max_bytes: usize,
+}
+
+impl Write for PulseReportSizeWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let Some(next) = self.written.checked_add(bytes.len()) else {
+            return Err(io::Error::other("Pulse report size overflow"));
+        };
+        if next > self.max_bytes {
+            return Err(io::Error::other("Pulse report size limit exceeded"));
+        }
+        self.written = next;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn pulse_report_body_fits(body: &PulseAgentReportRequest, max_bytes: usize) -> bool {
+    let mut writer = PulseReportSizeWriter {
+        written: 0,
+        max_bytes,
+    };
+    serde_json::to_writer(&mut writer, body).is_ok()
 }
 
 fn serialize_pulse_report_body(body: &PulseAgentReportRequest) -> Result<Vec<u8>> {
@@ -1709,6 +2184,8 @@ fn pulse_capabilities(_config: &AppConfig) -> Vec<&'static str> {
         CAPABILITY_PULSE_BOOT_GRANT_V1,
     ];
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V1);
+    capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V2);
+    capabilities.push(CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1);
     capabilities
 }
 
@@ -2329,7 +2806,19 @@ fn normalize_managed_settings(
     settings: &ManagedBootSettings,
     config: &AppConfig,
 ) -> Result<NormalizedManagedSettings> {
-    let public_base_url = if settings.public_base_url.trim().is_empty() {
+    normalize_managed_settings_for_mode(settings, config, crate::appliance::is_managed_ubuntu())
+}
+
+fn normalize_managed_settings_for_mode(
+    settings: &ManagedBootSettings,
+    config: &AppConfig,
+    managed_appliance: bool,
+) -> Result<NormalizedManagedSettings> {
+    // The appliance itself owns this address: DHCP renewals and acknowledged
+    // Netplan changes can make a centrally remembered URL stale. Management
+    // still owns the remaining boot policy, while the reconciled local origin
+    // is authoritative on the managed Ubuntu appliance.
+    let public_base_url = if managed_appliance || settings.public_base_url.trim().is_empty() {
         config.public_base_url().to_string()
     } else {
         normalize_http_url(
@@ -2892,6 +3381,24 @@ mod tests {
             app_config.boot.bootloader_filename
         );
         assert_eq!(normalized.menu_timeout_ms, app_config.boot.menu_timeout_ms);
+    }
+
+    #[test]
+    fn managed_appliance_keeps_its_reconciled_local_public_base_url() {
+        let mut app_config = AppConfig::default();
+        app_config.server.public_base_url = "http://192.0.2.20".to_string();
+        let settings = ManagedBootSettings {
+            public_base_url: "http://192.0.2.19".to_string(),
+            listen_addr: String::new(),
+            tftp_root: String::new(),
+            http_root: String::new(),
+            bootloader_filename: "snponly.efi".to_string(),
+            menu_timeout_ms: 10_000,
+        };
+
+        let normalized = normalize_managed_settings_for_mode(&settings, &app_config, true).unwrap();
+
+        assert_eq!(normalized.public_base_url, "http://192.0.2.20");
     }
 
     #[test]
@@ -3605,9 +4112,614 @@ mod tests {
                 "cache_v1",
                 "workstation_netboot_v1",
                 "pulse_boot_grant_v1",
-                "appliance_update_v1"
+                "appliance_update_v1",
+                "appliance_update_v2",
+                "appliance_update_qualification_transport_v1"
             ]
         );
+    }
+
+    #[test]
+    fn pulse_build_reports_serialize_required_rejection_code_for_normal_and_rejected_jobs() {
+        let normal = serde_json::to_value(PulseBuildJobReport::from(sample_build_job(""))).unwrap();
+        let normal = normal.as_object().unwrap();
+        assert_eq!(normal.get("rejection_code"), Some(&Value::Null));
+
+        let rejected = serde_json::to_value(PulseBuildJobReport::from(sample_build_job(
+            "protected_material",
+        )))
+        .unwrap();
+        assert_eq!(rejected["rejection_code"], "protected_material");
+    }
+
+    #[test]
+    fn pulse_report_size_trimming_preserves_required_rejection_code_shape() {
+        let mut normal = PulseBuildJobReport::from(sample_build_job(""));
+        normal.logs = "normal build log".repeat(256);
+        let mut rejected = PulseBuildJobReport::from(sample_build_job("protected_material"));
+        rejected.logs = "rejected build log".repeat(256);
+        let report = sample_pulse_report(vec![normal, rejected]);
+        let original_bytes = serialize_pulse_report_body(&report).unwrap();
+
+        let (trimmed, trimmed_bytes) = fit_pulse_report_body(
+            report,
+            original_bytes.len() - 1,
+            PulseReportPriority::ActiveBuilds,
+        )
+        .unwrap();
+
+        assert_eq!(trimmed.build_jobs.len(), 2);
+        assert!(trimmed.build_jobs.iter().all(|job| job.logs.is_empty()));
+        let value: Value = serde_json::from_slice(&trimmed_bytes).unwrap();
+        let jobs = value["build_jobs"].as_array().unwrap();
+        assert_eq!(
+            jobs[0].as_object().unwrap().get("rejection_code"),
+            Some(&Value::Null)
+        );
+        assert_eq!(jobs[1]["rejection_code"], "protected_material");
+    }
+
+    #[test]
+    fn pathological_cache_inventory_cannot_starve_terminal_build_evidence() {
+        let mut succeeded = PulseBuildJobReport::from(sample_build_job(""));
+        succeeded.status = "succeeded".to_string();
+        succeeded.progress_percent = Some(100);
+        succeeded.completed_at = Some("2026-08-10T18:01:00Z".to_string());
+        let rejected = PulseBuildJobReport::from(sample_build_job("protected_material"));
+        let mut report = sample_pulse_report(vec![succeeded, rejected]);
+        report.cache_artifacts = vec![sample_cache_artifact("x".repeat(64 * 1024))];
+
+        let mut terminal_evidence_only = report.clone();
+        terminal_evidence_only.cache_artifacts.clear();
+        terminal_evidence_only.cache_artifacts_complete = false;
+        let terminal_evidence_bytes = serialize_pulse_report_body(&terminal_evidence_only).unwrap();
+
+        let (trimmed, trimmed_bytes) = fit_pulse_report_body(
+            report,
+            terminal_evidence_bytes.len(),
+            PulseReportPriority::TerminalBuilds,
+        )
+        .unwrap();
+
+        assert_eq!(trimmed.build_jobs.len(), 2);
+        assert!(trimmed.cache_artifacts.is_empty());
+        assert!(!trimmed.cache_artifacts_complete);
+        assert_eq!(trimmed_bytes, terminal_evidence_bytes);
+    }
+
+    #[test]
+    fn oversized_build_reports_drop_ordinary_terminal_evidence_before_rejections() {
+        let mut succeeded = PulseBuildJobReport::from(sample_build_job(""));
+        succeeded.status = "succeeded".to_string();
+        succeeded.progress_percent = Some(100);
+        succeeded.completed_at = Some("2026-08-10T18:01:00Z".to_string());
+        succeeded.cache_metadata = json!({"oversized": "x".repeat(64 * 1024)});
+        let rejected = PulseBuildJobReport::from(sample_build_job("protected_material"));
+        let rejection_only = sample_pulse_report(vec![rejected.clone()]);
+        let rejection_only_bytes = serialize_pulse_report_body(&rejection_only).unwrap();
+        let report = sample_pulse_report(vec![succeeded, rejected]);
+
+        let (trimmed, trimmed_bytes) = fit_pulse_report_body(
+            report,
+            rejection_only_bytes.len(),
+            PulseReportPriority::ActiveBuilds,
+        )
+        .unwrap();
+
+        assert_eq!(trimmed.build_jobs.len(), 1);
+        assert_eq!(
+            trimmed.build_jobs[0].rejection_code.as_deref(),
+            Some("protected_material")
+        );
+        assert_eq!(trimmed_bytes, rejection_only_bytes);
+    }
+
+    #[test]
+    fn accepted_oversized_reports_rotate_terminal_and_cache_evidence_to_convergence() {
+        let mut active = PulseBuildJobReport::from(sample_build_job(""));
+        active.local_id = 800;
+        active.status = "running".to_string();
+        let mut rejected = PulseBuildJobReport::from(sample_build_job("protected_material"));
+        rejected.local_id = 900;
+        let protected = vec![active.clone(), rejected.clone()];
+
+        let terminals = (1..=3)
+            .map(|local_id| {
+                let mut report = PulseBuildJobReport::from(sample_build_job(""));
+                report.local_id = local_id;
+                report.status = "succeeded".to_string();
+                report.progress_percent = Some(100);
+                report.completed_at = Some("2026-08-10T18:01:00Z".to_string());
+                report.cache_metadata = json!({"padding": "t".repeat(64 * 1024)});
+                report
+            })
+            .collect::<Vec<_>>();
+        let artifacts = (11..=13)
+            .map(|local_id| {
+                let mut artifact = sample_cache_artifact("a".repeat(64 * 1024));
+                artifact.local_id = local_id;
+                artifact
+            })
+            .collect::<Vec<_>>();
+
+        let mut one_terminal = sample_pulse_report(
+            protected
+                .iter()
+                .cloned()
+                .chain(terminals.iter().take(1).cloned())
+                .collect(),
+        );
+        one_terminal.cache_artifacts_complete = false;
+        let terminal_budget = serialize_pulse_report_body(&one_terminal).unwrap().len();
+        let mut one_artifact = sample_pulse_report(protected.clone());
+        one_artifact.cache_artifacts = artifacts.iter().take(1).cloned().collect();
+        one_artifact.cache_artifacts_complete = false;
+        let artifact_budget = serialize_pulse_report_body(&one_artifact).unwrap().len();
+        let max_bytes = terminal_budget.max(artifact_budget);
+
+        let mut managed = ManagedState::default();
+        let mut seen_active = false;
+        let mut seen_rejected = false;
+        let mut seen_terminals = HashSet::new();
+        let mut seen_artifacts = HashSet::new();
+        for _ in 0..12 {
+            let build_jobs = select_build_job_reports(
+                protected
+                    .iter()
+                    .cloned()
+                    .chain(terminals.iter().cloned())
+                    .collect(),
+                managed.pulse_active_report_cursor,
+                managed.pulse_rejection_report_cursor,
+                managed.pulse_terminal_report_cursor,
+                MAX_REPORT_BUILD_JOBS,
+                PulseReportPriority::from_round(managed.pulse_report_rotation_round),
+            )
+            .unwrap();
+            let cache_artifacts = rotate_report_items_after_cursor(
+                artifacts.clone(),
+                managed.pulse_cache_artifact_report_cursor,
+                |artifact| artifact.local_id,
+            );
+            let mut report = sample_pulse_report(build_jobs);
+            report.cache_artifacts = cache_artifacts;
+            let (sent, _) = fit_pulse_report_body(
+                report,
+                max_bytes,
+                PulseReportPriority::from_round(managed.pulse_report_rotation_round),
+            )
+            .unwrap();
+
+            seen_active |= sent
+                .build_jobs
+                .iter()
+                .any(|job| job.local_id == active.local_id);
+            seen_rejected |= sent
+                .build_jobs
+                .iter()
+                .any(|job| job.local_id == rejected.local_id);
+            seen_terminals.extend(
+                sent.build_jobs
+                    .iter()
+                    .filter(|job| pulse_build_job_is_terminal(job) && job.rejection_code.is_none())
+                    .map(|job| job.local_id),
+            );
+            seen_artifacts.extend(
+                sent.cache_artifacts
+                    .iter()
+                    .map(|artifact| artifact.local_id),
+            );
+
+            // Cursors advance only after an accepted receipt and survive the
+            // managed-state save/load boundary between syncs.
+            advance_pulse_report_rotation(&mut managed, &sent);
+            managed = serde_json::from_value(serde_json::to_value(managed).unwrap()).unwrap();
+        }
+
+        assert!(seen_active);
+        assert!(seen_rejected);
+        assert_eq!(seen_terminals, HashSet::from([1, 2, 3]));
+        assert_eq!(seen_artifacts, HashSet::from([11, 12, 13]));
+    }
+
+    #[test]
+    fn repeated_over_budget_active_reports_expose_every_managed_job() {
+        let active = (1..=8)
+            .map(|local_id| {
+                let mut report = PulseBuildJobReport::from(sample_build_job(""));
+                report.local_id = local_id;
+                report.status = "running".to_string();
+                report.build_spec = json!({"padding": "b".repeat(64 * 1024)});
+                report.cache_metadata = json!({"padding": "m".repeat(64 * 1024)});
+                report
+            })
+            .collect::<Vec<_>>();
+        let mut rejected = PulseBuildJobReport::from(sample_build_job("protected_material"));
+        rejected.local_id = 900;
+        let mut two_active =
+            sample_pulse_report(vec![active[0].clone(), active[1].clone(), rejected.clone()]);
+        two_active.cache_artifacts_complete = false;
+        let max_bytes = serialize_pulse_report_body(&two_active).unwrap().len();
+        let mut managed = ManagedState::default();
+        let mut seen_active = HashSet::new();
+        let mut seen_rejected = false;
+
+        for _ in 0..8 {
+            let priority = PulseReportPriority::from_round(managed.pulse_report_rotation_round);
+            let selected = select_build_job_reports(
+                active
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(rejected.clone()))
+                    .collect(),
+                managed.pulse_active_report_cursor,
+                managed.pulse_rejection_report_cursor,
+                managed.pulse_terminal_report_cursor,
+                MAX_REPORT_BUILD_JOBS,
+                priority,
+            )
+            .unwrap();
+            let mut report = sample_pulse_report(selected);
+            report.cache_artifacts_complete = false;
+            let (sent, _) = fit_pulse_report_body(report, max_bytes, priority).unwrap();
+
+            seen_rejected |= sent
+                .build_jobs
+                .iter()
+                .any(|job| job.local_id == rejected.local_id);
+            seen_active.extend(
+                sent.build_jobs
+                    .iter()
+                    .filter(|job| !pulse_build_job_is_terminal(job))
+                    .map(|job| job.local_id),
+            );
+            advance_pulse_report_rotation(&mut managed, &sent);
+        }
+
+        assert_eq!(seen_active, HashSet::from([1, 2, 3, 4, 5, 6, 7, 8]));
+        assert!(seen_rejected);
+    }
+
+    #[test]
+    fn repeated_over_budget_rejection_reports_expose_every_refused_job() {
+        let rejected = (1..=8)
+            .map(|local_id| {
+                let mut report = PulseBuildJobReport::from(sample_build_job("protected_material"));
+                report.local_id = local_id;
+                // A job accepted into an older queued row can retain these
+                // large fields when later converted into a rejection.
+                report.build_spec = json!({"padding": "b".repeat(64 * 1024)});
+                report.cache_metadata = json!({"padding": "m".repeat(64 * 1024)});
+                report
+            })
+            .collect::<Vec<_>>();
+        let mut two_rejections =
+            sample_pulse_report(vec![rejected[0].clone(), rejected[1].clone()]);
+        two_rejections.cache_artifacts_complete = false;
+        let max_bytes = serialize_pulse_report_body(&two_rejections).unwrap().len();
+        let mut managed = ManagedState::default();
+        let mut seen = HashSet::new();
+
+        for _ in 0..8 {
+            let priority = PulseReportPriority::from_round(managed.pulse_report_rotation_round);
+            let selected = select_build_job_reports(
+                rejected.clone(),
+                managed.pulse_active_report_cursor,
+                managed.pulse_rejection_report_cursor,
+                managed.pulse_terminal_report_cursor,
+                MAX_REPORT_BUILD_JOBS,
+                priority,
+            )
+            .unwrap();
+            let mut report = sample_pulse_report(selected);
+            report.cache_artifacts_complete = false;
+            let (sent, _) = fit_pulse_report_body(report, max_bytes, priority).unwrap();
+            assert!(!sent.build_jobs.is_empty());
+            assert!(
+                sent.build_jobs
+                    .iter()
+                    .all(|job| job.rejection_code.is_some())
+            );
+            seen.extend(sent.build_jobs.iter().map(|job| job.local_id));
+            advance_pulse_report_rotation(&mut managed, &sent);
+        }
+
+        assert_eq!(seen, HashSet::from([1, 2, 3, 4, 5, 6, 7, 8]));
+    }
+
+    #[test]
+    fn missing_cursor_rows_continue_from_the_monotonic_id_watermark() {
+        let artifacts = [5, 3, 2]
+            .into_iter()
+            .map(|local_id| {
+                let mut artifact = sample_cache_artifact(String::new());
+                artifact.local_id = local_id;
+                artifact
+            })
+            .collect();
+        let rotated = rotate_report_items_after_cursor(artifacts, Some(4), |item| item.local_id);
+        assert_eq!(
+            rotated
+                .iter()
+                .map(|artifact| artifact.local_id)
+                .collect::<Vec<_>>(),
+            vec![3, 2, 5]
+        );
+
+        let mut remaining = (1..=5)
+            .map(|local_id| {
+                let mut artifact = sample_cache_artifact(String::new());
+                artifact.local_id = local_id;
+                artifact
+            })
+            .collect::<Vec<_>>();
+        let mut cursor = None;
+        let mut sent = Vec::new();
+        while !remaining.is_empty() {
+            let page =
+                rotate_report_items_after_cursor(remaining.clone(), cursor, |item| item.local_id);
+            let next = page[0].local_id;
+            sent.push(next);
+            cursor = Some(next);
+            // Simulate retention deleting the exact acknowledged cursor row.
+            remaining.retain(|artifact| artifact.local_id != next);
+        }
+        assert_eq!(sent, vec![5, 4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn one_build_report_slot_rotates_across_active_rejected_and_terminal_classes() {
+        let mut active = PulseBuildJobReport::from(sample_build_job(""));
+        active.local_id = 1;
+        let mut rejected = PulseBuildJobReport::from(sample_build_job("protected_material"));
+        rejected.local_id = 2;
+        let mut terminal = PulseBuildJobReport::from(sample_build_job(""));
+        terminal.local_id = 3;
+        terminal.status = "succeeded".to_string();
+        let source = vec![active, rejected, terminal];
+        let mut managed = ManagedState::default();
+        let mut selected_ids = Vec::new();
+
+        for _ in 0..3 {
+            let priority = PulseReportPriority::from_round(managed.pulse_report_rotation_round);
+            let selected = select_build_job_reports(
+                source.clone(),
+                managed.pulse_active_report_cursor,
+                managed.pulse_rejection_report_cursor,
+                managed.pulse_terminal_report_cursor,
+                1,
+                priority,
+            )
+            .unwrap();
+            selected_ids.push(selected[0].local_id);
+            let body = sample_pulse_report(selected);
+            advance_pulse_report_rotation(&mut managed, &body);
+        }
+
+        assert_eq!(selected_ids, vec![1, 3, 2]);
+    }
+
+    #[test]
+    fn accepted_over_budget_reports_give_every_evidence_lane_a_turn() {
+        let active = (101..=104)
+            .map(|local_id| {
+                let mut report = PulseBuildJobReport::from(sample_build_job(""));
+                report.local_id = local_id;
+                report.status = "running".to_string();
+                report.build_spec = json!({"padding": "a".repeat(192 * 1024)});
+                report.cache_metadata = json!({"padding": "a".repeat(192 * 1024)});
+                report
+            })
+            .collect::<Vec<_>>();
+        let terminal = (201..=204)
+            .map(|local_id| {
+                let mut report = PulseBuildJobReport::from(sample_build_job(""));
+                report.local_id = local_id;
+                report.status = "succeeded".to_string();
+                report.progress_percent = Some(100);
+                report.completed_at = Some("2026-08-10T18:01:00Z".to_string());
+                report.build_spec = json!({"padding": "t".repeat(192 * 1024)});
+                report.cache_metadata = json!({"padding": "t".repeat(192 * 1024)});
+                report
+            })
+            .collect::<Vec<_>>();
+        let rejected = (301..=304)
+            .map(|local_id| {
+                let mut report = PulseBuildJobReport::from(sample_build_job("protected_material"));
+                report.local_id = local_id;
+                report.build_spec = json!({"padding": "r".repeat(192 * 1024)});
+                report.cache_metadata = json!({"padding": "r".repeat(192 * 1024)});
+                report
+            })
+            .collect::<Vec<_>>();
+        let artifacts = (401..=404)
+            .map(|local_id| {
+                let mut artifact = sample_cache_artifact("c".repeat(384 * 1024));
+                artifact.local_id = local_id;
+                artifact
+            })
+            .collect::<Vec<_>>();
+
+        let mut single_lane_reports = vec![
+            sample_pulse_report(vec![active[0].clone()]),
+            sample_pulse_report(vec![terminal[0].clone()]),
+            sample_pulse_report(vec![rejected[0].clone()]),
+        ];
+        let mut one_artifact = sample_pulse_report(Vec::new());
+        one_artifact.cache_artifacts = vec![artifacts[0].clone()];
+        single_lane_reports.push(one_artifact);
+        let max_bytes = single_lane_reports
+            .iter_mut()
+            .map(|report| {
+                report.cache_artifacts_complete = false;
+                serialize_pulse_report_body(report).unwrap().len()
+            })
+            .max()
+            .unwrap();
+
+        let all_jobs = active
+            .iter()
+            .chain(&terminal)
+            .chain(&rejected)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut managed = ManagedState::default();
+        let mut seen_active = HashSet::new();
+        let mut seen_terminal = HashSet::new();
+        let mut seen_rejected = HashSet::new();
+        let mut seen_artifacts = HashSet::new();
+        for _ in 0..20 {
+            let priority = PulseReportPriority::from_round(managed.pulse_report_rotation_round);
+            let build_jobs = select_build_job_reports(
+                all_jobs.clone(),
+                managed.pulse_active_report_cursor,
+                managed.pulse_rejection_report_cursor,
+                managed.pulse_terminal_report_cursor,
+                MAX_REPORT_BUILD_JOBS,
+                priority,
+            )
+            .unwrap();
+            let cache_artifacts = rotate_report_items_after_cursor(
+                artifacts.clone(),
+                managed.pulse_cache_artifact_report_cursor,
+                |artifact| artifact.local_id,
+            );
+            let mut report = sample_pulse_report(build_jobs);
+            report.cache_artifacts = cache_artifacts;
+            report.cache_artifacts_complete = false;
+            let (sent, _) = fit_pulse_report_body(report, max_bytes, priority).unwrap();
+
+            seen_active.extend(
+                sent.build_jobs
+                    .iter()
+                    .filter(|job| !pulse_build_job_is_terminal(job))
+                    .map(|job| job.local_id),
+            );
+            seen_rejected.extend(
+                sent.build_jobs
+                    .iter()
+                    .filter(|job| job.rejection_code.is_some())
+                    .map(|job| job.local_id),
+            );
+            seen_terminal.extend(
+                sent.build_jobs
+                    .iter()
+                    .filter(|job| pulse_build_job_is_terminal(job) && job.rejection_code.is_none())
+                    .map(|job| job.local_id),
+            );
+            seen_artifacts.extend(
+                sent.cache_artifacts
+                    .iter()
+                    .map(|artifact| artifact.local_id),
+            );
+            advance_pulse_report_rotation(&mut managed, &sent);
+        }
+
+        assert_eq!(seen_active, HashSet::from([101, 102, 103, 104]));
+        assert_eq!(seen_terminal, HashSet::from([201, 202, 203, 204]));
+        assert_eq!(seen_rejected, HashSet::from([301, 302, 303, 304]));
+        assert_eq!(seen_artifacts, HashSet::from([401, 402, 403, 404]));
+    }
+
+    #[test]
+    fn cache_inventory_generation_change_resets_an_incomplete_page_cursor() {
+        let mut managed = ManagedState::default();
+        let mut first_page = sample_pulse_report(Vec::new());
+        first_page.cache_inventory_instance_id = "inventory-a".to_string();
+        first_page.cache_inventory_generation = 7;
+        first_page.cache_artifacts_complete = false;
+        first_page.cache_artifacts = [5, 4]
+            .into_iter()
+            .map(|local_id| {
+                let mut artifact = sample_cache_artifact(String::new());
+                artifact.local_id = local_id;
+                artifact
+            })
+            .collect();
+        advance_pulse_report_rotation(&mut managed, &first_page);
+
+        assert_eq!(
+            pulse_cache_report_cursor(&managed, "inventory-a", 7, true),
+            Some(4)
+        );
+        assert_eq!(
+            pulse_cache_report_cursor(&managed, "inventory-a", 8, true),
+            None,
+            "a mutation generation must restart the authoritative traversal"
+        );
+        assert_eq!(
+            pulse_cache_report_cursor(&managed, "inventory-b", 7, true),
+            None,
+            "a replaced inventory instance must restart the traversal"
+        );
+        assert_eq!(
+            pulse_cache_report_cursor(&managed, "inventory-a", 7, false),
+            None,
+            "an invalid inventory read cannot reuse an authoritative cursor"
+        );
+
+        let mut final_page = sample_pulse_report(Vec::new());
+        final_page.cache_inventory_instance_id = "inventory-a".to_string();
+        final_page.cache_inventory_generation = 7;
+        final_page.cache_artifacts_complete = true;
+        final_page.cache_artifacts = vec![{
+            let mut artifact = sample_cache_artifact(String::new());
+            artifact.local_id = 3;
+            artifact
+        }];
+        advance_pulse_report_rotation(&mut managed, &final_page);
+        assert_eq!(
+            pulse_cache_report_cursor(&managed, "inventory-a", 7, true),
+            None,
+            "an accepted completing page starts a fresh traversal next time"
+        );
+
+        let mut renewal_page = sample_pulse_report(Vec::new());
+        renewal_page.cache_inventory_instance_id = "inventory-a".to_string();
+        renewal_page.cache_inventory_generation = 7;
+        renewal_page.cache_artifacts_complete = false;
+        renewal_page.cache_artifacts = [5, 4]
+            .into_iter()
+            .map(|local_id| {
+                let mut artifact = sample_cache_artifact(String::new());
+                artifact.local_id = local_id;
+                artifact
+            })
+            .collect();
+        advance_pulse_report_rotation(&mut managed, &renewal_page);
+        assert_eq!(
+            pulse_cache_report_cursor(&managed, "inventory-a", 7, true),
+            Some(4),
+            "the same generation begins another recovery traversal after completion"
+        );
+    }
+
+    #[test]
+    fn several_large_cache_artifacts_are_bounded_before_final_serialization() {
+        let mut report = sample_pulse_report(vec![]);
+        report.cache_artifacts = (1..=4)
+            .map(|local_id| {
+                let mut artifact = sample_cache_artifact("x".repeat(10 * 1024 * 1024));
+                artifact.local_id = local_id;
+                artifact
+            })
+            .collect();
+        assert!(!pulse_report_body_fits(
+            &report,
+            MAX_PULSE_REPORT_BODY_BYTES
+        ));
+
+        let (sent, bytes) = fit_pulse_report_body(
+            report,
+            MAX_PULSE_REPORT_BODY_BYTES,
+            PulseReportPriority::CacheArtifacts,
+        )
+        .unwrap();
+
+        assert!(!sent.cache_artifacts.is_empty());
+        assert!(sent.cache_artifacts.len() < 4);
+        assert!(!sent.cache_artifacts_complete);
+        assert!(bytes.len() <= MAX_PULSE_REPORT_BODY_BYTES);
     }
 
     #[test]
@@ -3795,6 +4907,145 @@ mod tests {
     }
 
     #[test]
+    fn isolated_runtime_rejection_advances_other_accepted_report_lanes() {
+        let mut active = PulseBuildJobReport::from(sample_build_job(""));
+        active.local_id = 41;
+        let mut rejected = PulseBuildJobReport::from(sample_build_job("protected_material"));
+        rejected.local_id = 42;
+        let mut body = sample_pulse_report(vec![active, rejected]);
+        let mut artifact = sample_cache_artifact(String::new());
+        artifact.local_id = 43;
+        body.cache_artifacts = vec![artifact];
+        body.cache_artifacts_complete = false;
+        let response: PulseReportResponse = serde_json::from_value(json!({
+            "status": "ok",
+            "workstation_netboot": {
+                "state": "rejected",
+                "error_code": "runtime_report_stale"
+            }
+        }))
+        .unwrap();
+        let mut managed = ManagedState::default();
+
+        let error = accept_pulse_report_response(&response, &mut managed, &body).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Manage did not accept workstation runtime evidence (runtime_report_stale)"
+        );
+        assert_eq!(managed.pulse_active_report_cursor, Some(41));
+        assert_eq!(managed.pulse_rejection_report_cursor, Some(42));
+        assert_eq!(managed.pulse_cache_artifact_report_cursor, Some(43));
+        assert_eq!(managed.pulse_report_rotation_round, 1);
+    }
+
+    #[test]
+    fn pulse_report_receipt_bounds_and_classifies_safe_warning_codes() {
+        let mut warning_receipts = vec![
+            json!({
+                "diagnostic_code": "pulse_build_report_invalid",
+                "message": "untrusted top-secret remote prose",
+                "artifact_hash": "untrusted-artifact-identity"
+            }),
+            json!({
+                "diagnostic_code": "future_warning_with_untrusted_text",
+                "message": "more untrusted top-secret remote prose"
+            }),
+        ];
+        warning_receipts.extend(
+            (warning_receipts.len()..MAX_PULSE_REPORT_WARNING_RECEIPTS + 3)
+                .map(|_| json!({"diagnostic_code": "pulse_cache_report_invalid"})),
+        );
+        let response: PulseReportResponse = serde_json::from_value(json!({
+            "status": "ok",
+            "warnings": warning_receipts
+        }))
+        .unwrap();
+
+        assert_eq!(
+            response.warnings.codes.len(),
+            MAX_PULSE_REPORT_WARNING_RECEIPTS
+        );
+        assert!(response.warnings.truncated);
+        assert_eq!(
+            response.warnings.codes[0],
+            PulseReportWarningCode::PulseBuildReportInvalid
+        );
+        assert_eq!(response.warnings.codes[1], PulseReportWarningCode::Unknown);
+        let debug = format!("{response:?}");
+        assert!(!debug.contains("top-secret"));
+        assert!(!debug.contains("untrusted-artifact-identity"));
+    }
+
+    #[test]
+    fn pulse_report_receipt_treats_null_and_malformed_warnings_as_advisory() {
+        for warnings in [
+            Value::Null,
+            json!({"diagnostic_code": "pulse_build_report_invalid"}),
+            json!("not-a-warning-list"),
+            json!(42),
+        ] {
+            let response: PulseReportResponse = serde_json::from_value(json!({
+                "status": "ok",
+                "warnings": warnings
+            }))
+            .unwrap();
+            validate_pulse_report_response(&response).unwrap();
+            assert!(response.warnings.codes.is_empty());
+        }
+
+        let response: PulseReportResponse = serde_json::from_value(json!({
+            "status": "ok",
+            "warnings": [
+                null,
+                true,
+                {"diagnostic_code": 7},
+                {"diagnostic_code": "pulse_cache_report_invalid"}
+            ]
+        }))
+        .unwrap();
+        validate_pulse_report_response(&response).unwrap();
+        assert_eq!(
+            response.warnings.codes,
+            vec![
+                PulseReportWarningCode::Unknown,
+                PulseReportWarningCode::Unknown,
+                PulseReportWarningCode::Unknown,
+                PulseReportWarningCode::PulseCacheReportInvalid,
+            ]
+        );
+    }
+
+    #[test]
+    fn identical_pulse_report_warning_sets_log_only_on_transitions() {
+        let warnings = PulseReportWarnings {
+            codes: vec![
+                PulseReportWarningCode::PulseBuildReportInvalid,
+                PulseReportWarningCode::PulseCacheReportInvalid,
+            ],
+            truncated: false,
+        };
+        let mut managed = ManagedState::default();
+
+        assert!(log_pulse_report_warnings(&warnings, &mut managed));
+        assert!(!log_pulse_report_warnings(&warnings, &mut managed));
+
+        let changed = PulseReportWarnings {
+            codes: vec![PulseReportWarningCode::PulseDiskReportInvalid],
+            truncated: false,
+        };
+        assert!(log_pulse_report_warnings(&changed, &mut managed));
+        assert!(!log_pulse_report_warnings(&changed, &mut managed));
+
+        assert!(!log_pulse_report_warnings(
+            &PulseReportWarnings::default(),
+            &mut managed
+        ));
+        assert!(managed.pulse_report_warning_fingerprint.is_none());
+        assert!(log_pulse_report_warnings(&warnings, &mut managed));
+    }
+
+    #[test]
     fn boot_sync_defers_lane_errors_until_after_config_and_final_report() {
         let source = include_str!("manage.rs");
         let start = source.find("async fn sync_boot_foundation").unwrap();
@@ -3834,7 +5085,7 @@ mod tests {
             "build_listing_valid && cache_scrub_valid && cache_listing_valid && cache_inventory_valid"
         ));
         assert!(body.contains("crate::netboot::report(state).await"));
-        assert!(body.contains("crate::appliance::report().await"));
+        assert!(body.contains("crate::appliance::report(state).await"));
     }
 
     #[test]
@@ -3917,10 +5168,151 @@ mod tests {
         assert!(crate::netboot::decode_desired(runtime).is_err());
     }
 
+    #[test]
+    fn appliance_update_transport_override_is_optional_wire_data() {
+        let update = json!({
+            "attempt_id": "d4a17ec8-e854-4bc4-84c7-e490f51640c3",
+            "requested_at": "2026-08-12T12:00:00Z",
+            "release": {
+                "schema": "cybex.pulse.appliance-release.v1",
+                "release_id": "0.2.1-dev.13",
+                "ubuntu_snapshot_id": "20260813T120000Z",
+                "cybex_repository_snapshot": {
+                    "url": "https://releases.example/cybex-pulse-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "size_bytes": 1024
+                },
+                "required_package_versions": {},
+                "expected_kernel": "7.0.0-1",
+                "minimum_protocol": 4,
+                "minimum_state_schema": 2,
+                "rollback_compatible": true,
+                "release_notes": "https://releases.example/notes",
+                "signature": "signature"
+            }
+        });
+
+        let legacy: AgentPulseConfigResponse =
+            serde_json::from_value(json!({"appliance_update": update.clone()})).unwrap();
+        assert_eq!(
+            legacy
+                .appliance_update
+                .unwrap()
+                .qualification_package_transport_url,
+            None
+        );
+
+        let mut qualified = update;
+        qualified["qualification_package_transport_url"] = json!(
+            "http://127.0.0.1:18080/cybex-pulse-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst"
+        );
+        let current: AgentPulseConfigResponse =
+            serde_json::from_value(json!({"appliance_update": qualified})).unwrap();
+        let current = current.appliance_update.unwrap();
+        assert_eq!(
+            current.qualification_package_transport_url.as_deref(),
+            Some(
+                "http://127.0.0.1:18080/cybex-pulse-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst"
+            )
+        );
+        assert_eq!(
+            current.release.cybex_repository_snapshot.url,
+            "https://releases.example/cybex-pulse-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst"
+        );
+    }
+
     async fn managed_test_pool() -> sqlx::SqlitePool {
         let pool = db::connect_with_url("sqlite::memory:").await.unwrap();
         db::migrate(&pool).await.unwrap();
         pool
+    }
+
+    fn sample_build_job(rejection_code: &str) -> BuildJob {
+        let rejected = !rejection_code.is_empty();
+        BuildJob {
+            id: 1,
+            managed_job_id: Some("5c3baab7-a204-4c21-a024-0f567d8cf41d".to_string()),
+            requested_artifact_type: "nixos_closure".to_string(),
+            build_spec: json!({"schema": "cybex.blueprint-build.v1"}),
+            target: "blueprint".to_string(),
+            system: "x86_64-linux".to_string(),
+            input_revision: "revision-1".to_string(),
+            input_config_hash: "a".repeat(64),
+            status: if rejected { "failed" } else { "running" }.to_string(),
+            progress_percent: Some(if rejected { 100 } else { 25 }),
+            progress_stage: Some(if rejected { "failed" } else { "building" }.to_string()),
+            progress_message: Some("Build report fixture".to_string()),
+            logs: String::new(),
+            error: if rejected {
+                "Pulse rejected this build job".to_string()
+            } else {
+                String::new()
+            },
+            rejection_code: rejection_code.to_string(),
+            output_path: String::new(),
+            output_sha256: String::new(),
+            output_size_bytes: 0,
+            exit_code: rejected.then_some(1),
+            cache_metadata: json!({}),
+            started_at: Some("2026-08-10T18:00:00Z".to_string()),
+            completed_at: rejected.then(|| "2026-08-10T18:01:00Z".to_string()),
+            cancel_requested_at: None,
+            created_at: "2026-08-10T18:00:00Z".to_string(),
+            updated_at: "2026-08-10T18:01:00Z".to_string(),
+        }
+    }
+
+    fn sample_pulse_report(build_jobs: Vec<PulseBuildJobReport>) -> PulseAgentReportRequest {
+        PulseAgentReportRequest {
+            protocol_version: CYBEX_COMPONENT_PROTOCOL_VERSION,
+            capabilities: vec![],
+            cache: crate::cache::CacheStatusReport {
+                enabled: false,
+                status: "disabled".to_string(),
+                public_key: String::new(),
+                public_key_fingerprint: String::new(),
+                base_url: String::new(),
+                total_size_bytes: 0,
+                artifact_count: 0,
+                error: String::new(),
+            },
+            build_jobs,
+            cache_artifacts: vec![],
+            cache_inventory_instance_id: "test-inventory".to_string(),
+            cache_inventory_generation: 1,
+            cache_artifacts_complete: true,
+            disk: None,
+            host: None,
+            workstation_netboot: None,
+            appliance: None,
+            appliance_report_error: None,
+        }
+    }
+
+    fn sample_cache_artifact(large_metadata: String) -> PulseCacheArtifactReport {
+        PulseCacheArtifactReport {
+            local_id: 1,
+            managed_artifact_id: Some("6e73fe6d-47c7-433b-bdb0-ccb8bce41baf".to_string()),
+            artifact_type: "nixos_closure".to_string(),
+            hash: "b".repeat(64),
+            size_bytes: 1024,
+            path: "/var/lib/cybex-pulse/cache/artifact.nar.zst".to_string(),
+            store_path: "/nix/store/test-workstation".to_string(),
+            narinfo_path: "test.narinfo".to_string(),
+            nar_url: "nar/test.nar.zst".to_string(),
+            file_hash: "sha256:".to_string() + &"c".repeat(52),
+            nar_hash: "sha256:".to_string() + &"d".repeat(52),
+            nar_size_bytes: 2048,
+            closure_size_bytes: 4096,
+            closure_file_size_bytes: 1024,
+            compression: "zstd".to_string(),
+            references: json!([]),
+            serving_url: "https://pulse.example/cache/test.narinfo".to_string(),
+            source_build_job_id: Some("5c3baab7-a204-4c21-a024-0f567d8cf41d".to_string()),
+            cache_metadata: json!({"path_info": large_metadata}),
+            created_at: "2026-08-10T18:00:00Z".to_string(),
+            updated_at: "2026-08-10T18:01:00Z".to_string(),
+        }
     }
 
     fn temp_state_dir() -> PathBuf {

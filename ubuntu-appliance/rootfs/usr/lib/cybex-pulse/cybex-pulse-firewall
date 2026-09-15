@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 umask 077
 
-cidr_file=/var/lib/cybex-pulse/state/management-cidrs.txt
+cidr_file=/var/lib/cybex-pulse/control/management-cidrs.txt
 rules=/run/cybex-pulse-firewall.nft
 declare -a ipv4=() ipv6=()
 while IFS= read -r cidr; do

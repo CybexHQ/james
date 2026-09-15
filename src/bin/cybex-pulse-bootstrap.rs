@@ -1,7 +1,9 @@
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use cybex_pulse::provisioning::{
-    FinalizeOptions, PrepareOptions, finalize_target, prepare, report_install_stage,
+    FinalizeOptions, NetworkRuntimeOptions, PrepareOptions, REQUIRED_MANAGE_ORIGIN,
+    finalize_target, prepare, reconcile_network_runtime, report_install_stage,
+    validate_legacy_state_promotion,
 };
 use std::path::PathBuf;
 
@@ -18,6 +20,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Print the immutable Management origin compiled into this bootstrap.
+    RequiredManageOrigin,
     /// Claim this provisioned ISO, wait for approval, and prepare Autoinstall.
     Prepare {
         #[arg(long, default_value = "/cdrom/CYBEX_PROVISIONING.BIN")]
@@ -51,12 +55,38 @@ enum Command {
         #[arg(long, default_value = "/run/cybex-state")]
         state_mount: PathBuf,
     },
+    /// Reconcile the appliance's advertised boot URL with its active wired IPv4 address.
+    ReconcileNetworkRuntime {
+        #[arg(long, default_value = "/etc/cybex-pulse/config.toml")]
+        config: PathBuf,
+        #[arg(
+            long,
+            default_value = "/var/lib/cybex-pulse/control/netplan-approved.json"
+        )]
+        network_plan: PathBuf,
+    },
+    /// Authenticate a dev.3 flat state migration against installed trust anchors.
+    ValidateLegacyStatePromotion {
+        #[arg(long, default_value = "/var/lib/cybex-pulse/state")]
+        state_mount: PathBuf,
+        #[arg(long, default_value = "/etc/cybex-pulse/config.toml")]
+        config: PathBuf,
+        #[arg(
+            long,
+            default_value = "/usr/share/cybex-pulse/provisioning-public-keys"
+        )]
+        provisioning_keys: PathBuf,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::RequiredManageOrigin => {
+            println!("{REQUIRED_MANAGE_ORIGIN}");
+            Ok(())
+        }
         Command::Prepare {
             envelope,
             provisioning_keys,
@@ -91,6 +121,24 @@ async fn main() -> Result<()> {
                 target,
                 state_mount,
             })
+        }
+        Command::ReconcileNetworkRuntime {
+            config,
+            network_plan,
+        } => {
+            require_root()?;
+            let outcome =
+                reconcile_network_runtime(NetworkRuntimeOptions::new(config, network_plan))?;
+            println!("{}", outcome.as_str());
+            Ok(())
+        }
+        Command::ValidateLegacyStatePromotion {
+            state_mount,
+            config,
+            provisioning_keys,
+        } => {
+            require_root()?;
+            validate_legacy_state_promotion(&state_mount, &config, &provisioning_keys)
         }
     }
 }

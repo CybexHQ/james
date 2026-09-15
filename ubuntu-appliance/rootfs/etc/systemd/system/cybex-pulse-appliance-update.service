@@ -2,7 +2,7 @@
 Description=Apply a signed Cybex Pulse Ubuntu root generation
 After=network-online.target cybex-pulse.service
 Wants=network-online.target
-ConditionPathExists=/var/lib/cybex-pulse/state/appliance-update-request.json
+ConditionPathExists=/var/lib/cybex-pulse/state/inbox/appliance-update-request.json
 
 [Service]
 Type=oneshot

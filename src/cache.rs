@@ -29,6 +29,7 @@ use crate::{
 const CACHE_MUTATION_LOCK_FILENAME: &str = ".cybex-cache-mutation.lock";
 const CLOSURE_MANIFEST_SCHEMA: &str = "cybex.pulse.closure-manifest.v1";
 const CLOSURE_MANIFEST_VALIDATION_LEVEL: &str = "compressed_file_hash";
+const CACHE_EXPORT_COPY_MAX_ATTEMPTS: usize = 2;
 const MAX_NARINFO_BYTES: u64 = 1024 * 1024;
 const NIX_BASE32_ALPHABET: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
@@ -343,20 +344,14 @@ pub async fn export_output(
             cache_dir.display(),
             private_key_path.display()
         );
-        let mut command = crate::nix_command::std_command(&nix_binary);
-        command
-            .arg("copy")
-            .arg("--to")
-            .arg(&destination)
-            .arg(&store_path);
-        let output = command_output_with_transient_exec_retry(&mut command)
-            .with_context(|| format!("run {nix_binary} copy to local binary cache"))?;
-        if !output.status.success() {
-            bail!(
-                "nix copy failed: {}",
-                bounded_command_error(&output.stderr, &private_key_path)
-            );
-        }
+        copy_store_path_to_cache(
+            &nix_binary,
+            &destination,
+            &cache_dir,
+            &quarantine_dir,
+            &private_key_path,
+            &store_path,
+        )?;
         let cache_info = read_nix_cache_info(&cache_dir)?;
         let verified = build_or_quarantine_closure_manifest(
             &cache_dir,
@@ -410,6 +405,104 @@ pub async fn export_output(
     })
     .await
     .context("join cache export task")?
+}
+
+fn copy_store_path_to_cache(
+    nix_binary: &str,
+    destination: &str,
+    cache_root: &Path,
+    quarantine_root: &Path,
+    private_key_path: &Path,
+    store_path: &str,
+) -> Result<()> {
+    for attempt in 0..CACHE_EXPORT_COPY_MAX_ATTEMPTS {
+        let mut command = crate::nix_command::std_command(nix_binary);
+        command
+            .arg("copy")
+            .arg("--to")
+            .arg(destination)
+            .arg(store_path);
+        let output = command_output_with_transient_exec_retry(&mut command)
+            .with_context(|| format!("run {nix_binary} copy to local binary cache"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let command_error = bounded_command_error(&output.stderr, private_key_path);
+        let quarantined =
+            quarantine_interrupted_export_narinfo(cache_root, quarantine_root, &output.stderr)?;
+        if let Some(narinfo_filename) = quarantined {
+            tracing::warn!(
+                narinfo_filename,
+                attempt = attempt + 1,
+                retrying = attempt + 1 < CACHE_EXPORT_COPY_MAX_ATTEMPTS,
+                "quarantined incomplete NARInfo left by an interrupted cache export"
+            );
+            if attempt + 1 < CACHE_EXPORT_COPY_MAX_ATTEMPTS {
+                continue;
+            }
+        }
+        bail!("nix copy failed: {command_error}");
+    }
+    unreachable!("cache export copy loop returns on its final attempt")
+}
+
+/// Recover only the exact incomplete metadata shape Nix reports after an
+/// interrupted `file://` cache publication. The command's stderr is merely a
+/// locator: the named cache-root member must also be a bounded, owned regular
+/// file that our strict parser independently rejects before it is unpublished.
+/// Valid signed metadata, unsafe names, and unrelated command failures are
+/// never removed.
+fn quarantine_interrupted_export_narinfo(
+    cache_root: &Path,
+    quarantine_root: &Path,
+    stderr: &[u8],
+) -> Result<Option<String>> {
+    let Some(filename) = interrupted_export_narinfo_filename(stderr) else {
+        return Ok(None);
+    };
+    let path = cache_root.join(&filename);
+    let Ok(raw) = read_safe_narinfo(cache_root, &filename) else {
+        return Ok(None);
+    };
+    if parse_narinfo_strict(&raw).is_ok() {
+        return Ok(None);
+    }
+    let Ok(metadata) = fs::symlink_metadata(&path) else {
+        return Ok(None);
+    };
+    if !metadata.file_type().is_file()
+        || metadata.nlink() != 1
+        || metadata.uid() != unsafe { libc::geteuid() }
+    {
+        return Ok(None);
+    }
+    let quarantined = quarantine_narinfo_records(cache_root, quarantine_root, &[path])?;
+    Ok((quarantined == 1).then_some(filename))
+}
+
+fn interrupted_export_narinfo_filename(stderr: &[u8]) -> Option<String> {
+    const PREFIX: &str = "NAR info file '";
+    const SUFFIX: &str = "' is corrupt: StorePath missing";
+
+    for line in String::from_utf8_lossy(stderr).lines() {
+        let Some(start) = line.find(PREFIX).map(|index| index + PREFIX.len()) else {
+            continue;
+        };
+        let Some(candidate) = line
+            .get(start..)
+            .and_then(|value| value.strip_suffix(SUFFIX))
+        else {
+            continue;
+        };
+        let Some(hash) = candidate.strip_suffix(".narinfo") else {
+            continue;
+        };
+        if hash.len() == 32 && hash.bytes().all(|byte| NIX_BASE32_ALPHABET.contains(&byte)) {
+            return Some(candidate.to_string());
+        }
+    }
+    None
 }
 
 pub async fn record_cached_artifact(
@@ -2834,6 +2927,178 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
         assert!(message.contains("secret-key=[REDACTED]&compression=zstd"));
         assert!(message.contains("[cache-private-key]"));
         assert!(!message.contains("/tmp/cache.key"));
+    }
+
+    #[test]
+    fn interrupted_export_narinfo_parser_accepts_only_exact_safe_nix_error() {
+        let hash = "zvpg4yhjf295z20ws2sn24azajh2qcpa";
+        let filename = format!("{hash}.narinfo");
+        assert_eq!(
+            interrupted_export_narinfo_filename(
+                format!("error: NAR info file '{filename}' is corrupt: StorePath missing\n")
+                    .as_bytes()
+            )
+            .as_deref(),
+            Some(filename.as_str())
+        );
+        assert!(
+            interrupted_export_narinfo_filename(
+                format!("error: NAR info file '../{filename}' is corrupt: StorePath missing\n")
+                    .as_bytes()
+            )
+            .is_none()
+        );
+        assert!(
+            interrupted_export_narinfo_filename(
+                format!("error: NAR info file '{filename}' is corrupt: signature invalid\n")
+                    .as_bytes()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn interrupted_export_quarantines_only_independently_invalid_regular_narinfo() {
+        let root = test_temp_dir("interrupted-export-quarantine");
+        let cache_root = root.join("cache");
+        let quarantine_root = root.join("private-quarantine");
+        fs::create_dir_all(&cache_root).unwrap();
+        let store_path = test_store_path('a', "output");
+        let filename = narinfo_filename_for_store_path(&store_path).unwrap();
+        let narinfo_path = cache_root.join(&filename);
+        fs::write(&narinfo_path, []).unwrap();
+        let stderr = format!("error: NAR info file '{filename}' is corrupt: StorePath missing\n");
+
+        assert_eq!(
+            quarantine_interrupted_export_narinfo(&cache_root, &quarantine_root, stderr.as_bytes())
+                .unwrap(),
+            Some(filename.clone())
+        );
+        assert!(!narinfo_path.exists());
+        let quarantined = fs::read_dir(&quarantine_root)
+            .unwrap()
+            .flat_map(|batch| fs::read_dir(batch.unwrap().path()).unwrap())
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(quarantined, vec![std::ffi::OsString::from(filename)]);
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn interrupted_export_does_not_quarantine_parseable_narinfo() {
+        let root = test_temp_dir("interrupted-export-valid");
+        let cache_root = root.join("cache");
+        let quarantine_root = root.join("private-quarantine");
+        let store_path = test_store_path('b', "output");
+        let (narinfo_path, _) =
+            write_manifest_cache_member(&cache_root, &store_path, b"payload", &[]);
+        let filename = narinfo_path.file_name().unwrap().to_str().unwrap();
+        let stderr = format!("error: NAR info file '{filename}' is corrupt: StorePath missing\n");
+
+        assert_eq!(
+            quarantine_interrupted_export_narinfo(&cache_root, &quarantine_root, stderr.as_bytes())
+                .unwrap(),
+            None
+        );
+        assert!(narinfo_path.exists());
+        assert!(!quarantine_root.exists());
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn interrupted_export_retries_once_then_succeeds() {
+        let root = test_temp_dir("interrupted-export-retry");
+        let cache_root = root.join("cache");
+        let quarantine_root = root.join("private-quarantine");
+        let nix_binary = root.join("fake-nix");
+        let attempts = root.join("attempts");
+        let filename = format!("{}.narinfo", "c".repeat(32));
+        fs::create_dir_all(&cache_root).unwrap();
+        fs::write(cache_root.join(&filename), []).unwrap();
+        fs::write(
+            &nix_binary,
+            format!(
+                "#!/bin/sh\n\
+                 set -eu\n\
+                 attempts='{attempts}'\n\
+                 count=0\n\
+                 if [ -f \"$attempts\" ]; then count=$(cat \"$attempts\"); fi\n\
+                 count=$((count + 1))\n\
+                 printf '%s\\n' \"$count\" > \"$attempts\"\n\
+                 if [ \"$count\" -eq 1 ]; then\n\
+                   printf '%s\\n' \"error: NAR info file '{filename}' is corrupt: StorePath missing\" >&2\n\
+                   exit 1\n\
+                 fi\n",
+                attempts = attempts.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&nix_binary, fs::Permissions::from_mode(0o755)).unwrap();
+
+        copy_store_path_to_cache(
+            nix_binary.to_str().unwrap(),
+            "file:///cache?secret-key=/private/key",
+            &cache_root,
+            &quarantine_root,
+            Path::new("/private/key"),
+            &test_store_path('d', "output"),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(attempts).unwrap().trim(), "2");
+        assert!(!cache_root.join(filename).exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn interrupted_export_retry_is_bounded_to_one() {
+        let root = test_temp_dir("interrupted-export-bounded");
+        let cache_root = root.join("cache");
+        let quarantine_root = root.join("private-quarantine");
+        let nix_binary = root.join("fake-nix");
+        let attempts = root.join("private-attempts");
+        let first = format!("{}.narinfo", "f".repeat(32));
+        let second = format!("{}.narinfo", "g".repeat(32));
+        fs::create_dir_all(&cache_root).unwrap();
+        fs::write(cache_root.join(&first), []).unwrap();
+        fs::write(cache_root.join(&second), []).unwrap();
+        fs::write(
+            &nix_binary,
+            format!(
+                "#!/bin/sh\n\
+                 set -eu\n\
+                 attempts='{attempts}'\n\
+                 count=0\n\
+                 if [ -f \"$attempts\" ]; then count=$(cat \"$attempts\"); fi\n\
+                 count=$((count + 1))\n\
+                 printf '%s\\n' \"$count\" > \"$attempts\"\n\
+                 if [ \"$count\" -eq 1 ]; then file='{first}'; else file='{second}'; fi\n\
+                 printf '%s\\n' \"error: NAR info file '$file' is corrupt: StorePath missing\" >&2\n\
+                 exit 1\n",
+                attempts = attempts.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&nix_binary, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let error = copy_store_path_to_cache(
+            nix_binary.to_str().unwrap(),
+            "file:///cache?secret-key=/private/key",
+            &cache_root,
+            &quarantine_root,
+            Path::new("/private/key"),
+            &test_store_path('g', "output"),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(fs::read_to_string(attempts).unwrap().trim(), "2");
+        assert!(error.contains("nix copy failed"));
+        assert!(!cache_root.join(first).exists());
+        assert!(!cache_root.join(second).exists());
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]

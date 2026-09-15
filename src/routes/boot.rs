@@ -202,14 +202,35 @@ async fn build_boot_script(
 
     let profiles = db::list_enabled_profiles(&state.db).await?;
     let selection_device = if known_device { device.as_ref() } else { None };
-    let selection = boot_logic::choose_profile(selection_device, &profiles);
+    // A first request from a new MAC may enter the sole default enrollment
+    // profile automatically. This only starts the signed installer runtime;
+    // destructive installation still requires explicit approval in Manage.
+    let allow_automatic_enrollment =
+        automatic_enrollment_allowed(checker, known_device, mac.as_deref());
+    let selection =
+        boot_logic::choose_profile(selection_device, &profiles, allow_automatic_enrollment);
 
     let selected_profile = selection.profile.cloned();
     let selected_script = if let Some(profile) = selected_profile.as_ref() {
         let selected_mac = mac
             .as_deref()
             .or_else(|| device.as_ref().map(|device| device.mac.as_str()));
-        Some(render_selected_profile(state, profile, selected_mac, device.as_ref()).await?)
+        match render_selected_profile(state, profile, selected_mac, device.as_ref()).await {
+            Ok(script) => Some(script),
+            Err(error) => {
+                if selection.source == boot_logic::SelectionSource::AutomaticEnrollment {
+                    if let Some(device) = device.as_ref() {
+                        // A transient runtime/session failure must not turn a
+                        // fresh MAC into a permanent manual-menu recovery. The
+                        // conditional delete preserves any row claimed by a
+                        // concurrent managed sync or operator assignment.
+                        let _ =
+                            db::remove_unclaimed_auto_discovered_device(&state.db, device.id).await;
+                    }
+                }
+                return Err(error);
+            }
+        }
     } else {
         None
     };
@@ -221,6 +242,9 @@ async fn build_boot_script(
                     db::consume_one_time_profile(&state.db, device.id, profile.id).await?;
                 }
                 boot_logic::SelectionSource::Assigned => {
+                    db::set_device_last_selected(&state.db, device.id, profile.id).await?;
+                }
+                boot_logic::SelectionSource::AutomaticEnrollment => {
                     db::set_device_last_selected(&state.db, device.id, profile.id).await?;
                 }
                 boot_logic::SelectionSource::Menu => {}
@@ -257,14 +281,30 @@ async fn build_boot_script(
         Ok(selected_script.expect("selected profile has a rendered script"))
     } else {
         let runtime = state.runtime_settings();
+        // Pulse does not need to guess whether installation finished. A real,
+        // known MAC first boots local drive 0x80; UEFI falls back to its next
+        // BootOrder entry if direct chaining fails, while legacy BIOS falls
+        // through to the menu. Health checks and MAC-less requests never hand
+        // off automatically.
+        let try_local_boot_first =
+            automatic_local_handoff_allowed(checker, known_device, mac.as_deref());
         Ok(boot_logic::render_menu(
             &runtime.public_base_url,
             &profiles,
             mac.as_deref(),
             serial.as_deref(),
             runtime.menu_timeout_ms,
+            try_local_boot_first,
         ))
     }
+}
+
+fn automatic_enrollment_allowed(checker: bool, known_device: bool, mac: Option<&str>) -> bool {
+    !checker && !known_device && mac.is_some()
+}
+
+fn automatic_local_handoff_allowed(checker: bool, known_device: bool, mac: Option<&str>) -> bool {
+    !checker && known_device && mac.is_some()
 }
 
 async fn render_selected_profile(
@@ -410,9 +450,50 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue, header};
 
     use super::{
-        BootQuery, boot_profile_id_from_path, clean_optional, ipxe_response,
-        is_local_checker_request, remote_ip, user_agent,
+        BootQuery, automatic_enrollment_allowed, automatic_local_handoff_allowed,
+        boot_profile_id_from_path, clean_optional, ipxe_response, is_local_checker_request,
+        remote_ip, user_agent,
     };
+
+    #[test]
+    fn automatic_enrollment_is_limited_to_a_real_first_mac_request() {
+        assert!(automatic_enrollment_allowed(
+            false,
+            false,
+            Some("aa:bb:cc:dd:ee:ff")
+        ));
+        assert!(!automatic_enrollment_allowed(
+            true,
+            false,
+            Some("aa:bb:cc:dd:ee:ff")
+        ));
+        assert!(!automatic_enrollment_allowed(
+            false,
+            true,
+            Some("aa:bb:cc:dd:ee:ff")
+        ));
+        assert!(!automatic_enrollment_allowed(false, false, None));
+    }
+
+    #[test]
+    fn automatic_local_handoff_is_limited_to_a_real_known_mac_request() {
+        assert!(automatic_local_handoff_allowed(
+            false,
+            true,
+            Some("aa:bb:cc:dd:ee:ff")
+        ));
+        assert!(!automatic_local_handoff_allowed(
+            true,
+            true,
+            Some("aa:bb:cc:dd:ee:ff")
+        ));
+        assert!(!automatic_local_handoff_allowed(
+            false,
+            false,
+            Some("aa:bb:cc:dd:ee:ff")
+        ));
+        assert!(!automatic_local_handoff_allowed(false, true, None));
+    }
 
     #[test]
     fn ipxe_responses_are_not_cached() {

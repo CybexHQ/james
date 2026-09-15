@@ -24,15 +24,19 @@ while (($#)); do
   esac
 done
 test -f "$template" && test -f "$manifest" && test -f "$token_file" && test -n "$output"
-[[ "$manage_origin" =~ ^https://[^/]+$ ]]
 for command_name in curl ip jq python3 qemu-system-x86_64 truncate sha256sum openssl ssh-keygen; do
   command -v "$command_name" >/dev/null || { echo "error: missing $command_name" >&2; exit 1; }
 done
+python3 -B "$repository_root/tools/pulse-release.py" validate-manage-origin \
+  --expected-manage-origin "$manage_origin" >/dev/null
+test "$(jq -er '.installer_iso_template_v2.manage_origin' "$manifest")" = \
+  "$manage_origin"
 bridge="${CYBEX_PULSE_QUALIFICATION_BRIDGE:?set the isolated qualification bridge}"
 management_cidr="${CYBEX_PULSE_QUALIFICATION_MANAGEMENT_CIDR:?set the qualification Management CIDR}"
 token="$(tr -d '\r\n' < "$token_file")"
 test -n "$token"
 release_version="$(jq -er '.version' "$manifest")"
+ubuntu_snapshot_id="$(jq -er '.appliance_release_v1.ubuntu_snapshot_id' "$manifest")"
 
 work_dir="$(mktemp -d)"
 qemu_pid=""
@@ -176,6 +180,7 @@ curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
   --dump-header "$headers" --output "$envelope" "$manage_origin$personalization_path"
 test "$(stat -c '%s' "$envelope")" -eq 8192
 cp --reflink=auto -- "$template" "$personalized"
+chmod 0600 "$personalized"
 personalization_offset="$(jq -er '.installer_iso_template_v2.personalization_offset' "$manifest")"
 dd if="$envelope" of="$personalized" bs=1 seek="$personalization_offset" conv=notrunc status=none
 rm -f -- "$envelope"
@@ -332,6 +337,140 @@ for _attempt in $(seq 1 120); do
 done
 test "$appliance_projection_ready" = true
 
+# Product-level greenfield contract: the exact candidate must converge with
+# the organization's untouched built-ins under the default source-disabled
+# delivery policy. Checking node-scoped jobs prevents an artifact retained on
+# another Pulse from making this freshly installed disk appear qualified.
+delivery_policy="$work_dir/delivery-policy.json"
+api GET '/v1/pulse/delivery-policy' > "$delivery_policy"
+test "$(jq -er '.allow_pulse_source_builds' "$delivery_policy")" = false
+test "$(jq -er '.source_builds_allowed' "$delivery_policy")" = false
+
+blueprints="$work_dir/blueprints.json"
+builtins_discovered=false
+for _attempt in $(seq 1 120); do
+  api GET '/v1/blueprints?platform=nixos&limit=100&offset=0' > "$blueprints"
+  if jq -e '
+      ["standard_taskbar_workstation", "dock_workstation", "hyprland_developer"] as $expected
+      | ([.blueprints[]
+          | select(.slug as $slug | $expected | index($slug))
+          | select(.metadata_json.built_in == true)
+          | select(.metadata_json.blueprint_type == "builtin_profile")
+          | select(.current_revision_id != null and .current_revision == 1)
+          | .slug] | unique | sort) == ($expected | sort)
+    ' "$blueprints" >/dev/null
+  then
+    builtins_discovered=true
+    break
+  fi
+  kill -0 "$qemu_pid"
+  sleep 5
+done
+test "$builtins_discovered" = true
+
+hyprland_config="$work_dir/hyprland-config.json"
+api GET '/v1/blueprints/hyprland_developer/config' > "$hyprland_config"
+jq -e '[.. | objects | .package_ref? // empty] | index("deno") != null' \
+  "$hyprland_config" >/dev/null
+jq -e '[.. | objects | .package_ref? // empty] | index("nodejs") == null' \
+  "$hyprland_config" >/dev/null
+
+runtime_status="$work_dir/workstation-runtime.json"
+runtime_converged=false
+for _attempt in $(seq 1 720); do
+  api GET "/v1/pulse/nodes/$device_id/workstation-netboot" > "$runtime_status"
+  if [[ "$(jq -er '.operational' "$runtime_status")" = true ]] \
+    && [[ "$(jq -er '.converged' "$runtime_status")" = true ]]
+  then
+    runtime_converged=true
+    break
+  fi
+  if [[ "$(jq -er '.state' "$runtime_status")" = failed ]] \
+    && [[ "$(jq -er '.operational' "$runtime_status")" = false ]]
+  then
+    echo 'error: fresh Pulse has no verified usable workstation runtime' >&2
+    jq '{state,operational,converged,failure_code,failure_message}' \
+      "$runtime_status" >&2
+    exit 1
+  fi
+  kill -0 "$qemu_pid"
+  sleep 5
+done
+test "$runtime_converged" = true
+
+build_jobs="$work_dir/build-jobs.json"
+builtins_deliverable=false
+for _attempt in $(seq 1 720); do
+  api GET "/v1/pulse/nodes/$device_id/build/jobs?limit=200&offset=0" > "$build_jobs"
+  source_blocked_builtin_job="$(jq -c --slurpfile blueprints "$blueprints" '
+    [.jobs[]
+      | select(.status == "failed")
+      | select(.cache_metadata.error_kind == "source_build_blocked")
+      | select(.build_spec.blueprint_revision_id as $revision
+          | $blueprints[0].blueprints
+          | any(.current_revision_id == $revision and .metadata_json.built_in == true))]
+    | first // empty
+  ' "$build_jobs")"
+  if [[ -n "$source_blocked_builtin_job" ]]; then
+    echo 'error: an official built-in Blueprint violates the source-free release contract' >&2
+    jq '{blueprint_id:.build_spec.blueprint_id,
+         blueprint_revision_id:.build_spec.blueprint_revision_id,status,error,
+         error_kind:.cache_metadata.error_kind,
+         source_build_candidates:.cache_metadata.source_build_candidates}' \
+      <<<"$source_blocked_builtin_job" >&2
+    exit 1
+  fi
+  if jq -e --slurpfile blueprints "$blueprints" '
+      ["standard_taskbar_workstation", "dock_workstation", "hyprland_developer"] as $expected
+      | ([.jobs[]
+          | select(.status == "succeeded")
+          | .build_spec.blueprint_revision_id as $revision
+          | $blueprints[0].blueprints[]
+          | select(.current_revision_id == $revision)
+          | select(.metadata_json.built_in == true)
+          | .slug] | unique | sort) == ($expected | sort)
+    ' "$build_jobs" >/dev/null
+  then
+    all_cached=true
+    while IFS=$'\t' read -r blueprint_id revision_id; do
+      cache_status="$work_dir/cache-status-$blueprint_id.json"
+      api GET "/v1/blueprints/$blueprint_id/pulse-cache?revision_id=$revision_id" \
+        > "$cache_status"
+      if [[ "$(jq -er '.cached' "$cache_status")" != true ]] \
+        || [[ "$(jq -er '.required_replicas > 0 and .ready_replicas == .required_replicas' "$cache_status")" != true ]]
+      then
+        all_cached=false
+      fi
+    done < <(jq -r '.blueprints[]
+      | select(.metadata_json.built_in == true)
+      | select(.slug == "standard_taskbar_workstation"
+               or .slug == "dock_workstation"
+               or .slug == "hyprland_developer")
+      | [.id,.current_revision_id] | @tsv' "$blueprints")
+    if [[ "$all_cached" = true ]]; then
+      builtins_deliverable=true
+      break
+    fi
+  fi
+  kill -0 "$qemu_pid"
+  sleep 5
+done
+if [[ "$builtins_deliverable" != true ]]; then
+  echo 'error: official built-in Blueprints did not converge on the new Pulse' >&2
+  jq --slurpfile blueprints "$blueprints" '
+    [.jobs[]
+      | select(.build_spec.blueprint_revision_id as $revision
+          | $blueprints[0].blueprints
+          | any(.current_revision_id == $revision and .metadata_json.built_in == true))
+      | {blueprint_id:.build_spec.blueprint_id,
+         blueprint_revision_id:.build_spec.blueprint_revision_id,status,error,
+         error_kind:.cache_metadata.error_kind,
+         source_build_candidates:.cache_metadata.source_build_candidates}]
+    | .[:20]
+  ' "$build_jobs" >&2
+  exit 1
+fi
+
 network_change="$work_dir/network-change.json"
 network_body="$(jq -cn --arg interface "$interface_id" \
   '{network:{mode:"dhcp",interface_id:$interface,address_cidr:null,gateway:null,dns_servers:[]}}')"
@@ -380,10 +519,23 @@ template_sha="$(jq -er '.template_sha256' "$verification")"
 personalized_sha="$(jq -er '.personalized_sha256' "$verification")"
 jq -n \
   --arg schema 'cybex.pulse.ubuntu-appliance-qualification.v1' \
+  --arg release_version "$release_version" \
+  --arg ubuntu_snapshot_id "$ubuntu_snapshot_id" \
+  --arg root_generation "$(jq -er '.root_generation | tostring' "$node")" \
   --arg session_id "$session_id" --arg template_sha256 "$template_sha" \
   --arg personalized_sha256 "$personalized_sha" \
   --arg completed_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-  '{schema:$schema,ok:true,session_id:$session_id,template_sha256:$template_sha256,personalized_sha256:$personalized_sha256,secure_boot:true,no_disk_write_before_approval:true,identity_rotation:true,installed_media_left_attached:true,appliance_projection_healthy:true,two_phase_network_acknowledged:true,exact_principal_ssh_certificate:true,final_state:"ready",completed_at:$completed_at}' \
+  '{schema:$schema,ok:true,release_version:$release_version,
+    ubuntu_snapshot_id:$ubuntu_snapshot_id,root_generation:$root_generation,
+    session_id:$session_id,template_sha256:$template_sha256,
+    personalized_sha256:$personalized_sha256,secure_boot:true,
+    no_disk_write_before_approval:true,identity_rotation:true,
+    installed_media_left_attached:true,appliance_projection_healthy:true,
+    workstation_runtime_operational:true,workstation_runtime_converged:true,
+    builtin_blueprints_source_free:true,builtin_blueprints_deliverable:true,
+    builtin_blueprints_qualified_on_new_pulse:true,
+    two_phase_network_acknowledged:true,exact_principal_ssh_certificate:true,
+    final_state:"ready",completed_at:$completed_at}' \
   > "$output"
 chmod 0644 "$output"
 lifecycle_succeeded=true

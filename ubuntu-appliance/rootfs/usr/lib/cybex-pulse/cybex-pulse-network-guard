@@ -2,24 +2,28 @@
 set -Eeuo pipefail
 umask 077
 
-state_dir=/var/lib/cybex-pulse/state
-approved="$state_dir/netplan-approved.json"
-fallback="$state_dir/netplan-dhcp-fallback.json"
+control_dir=/var/lib/cybex-pulse/control
+approved="$control_dir/netplan-approved.json"
+fallback="$control_dir/netplan-dhcp-fallback.json"
 active=/etc/netplan/90-cybex-pulse.yaml
-plan="$state_dir/install-plan.json"
+plan="$control_dir/install-plan.json"
 test -s "$approved" && test -s "$fallback" && test -s "$plan"
 
 install -m 0600 "$approved" "$active"
-netplan generate
-netplan apply
-origin="$(jq -er '.manage_origin // empty' "$state_dir/provisioning-state.json" 2>/dev/null || true)"
-if [[ -z "$origin" ]]; then
-  origin=https://manage.cybex.net
-fi
+/usr/lib/cybex-pulse/cybex-pulse-netplan-activate
+origin="$(jq -er '.manage_origin' "$control_dir/provisioning-state.json")"
+required_origin="$(/usr/lib/cybex-pulse/cybex-pulse-bootstrap required-manage-origin)"
+test "$origin" = "$required_origin"
 
 if timeout 30 curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
   --output /dev/null "$origin/healthz"; then
-  rm -f "$state_dir/network-fallback-active"
+  # A failed live-change rollback deliberately preserves these root-owned
+  # recovery artifacts. Once boot has reactivated the approved profile and
+  # reached Management, their evidence is no longer needed.
+  rm -f "$control_dir/network-fallback-active" \
+    "$control_dir/netplan-pending.sha256" \
+    "$control_dir/netplan-before-change.yaml"
+  sync -f "$control_dir"
   exit 0
 fi
 
@@ -29,8 +33,23 @@ if [[ "$mode" != static ]]; then
   exit 1
 fi
 install -m 0600 "$fallback" "$active"
-netplan generate
-netplan apply
-touch "$state_dir/network-fallback-active"
+/usr/lib/cybex-pulse/cybex-pulse-netplan-activate
+approved_sha256="$(sha256sum "$approved" | awk '{print $1}')"
+[[ "$approved_sha256" =~ ^[0-9a-f]{64}$ ]]
+marker="$(mktemp "$control_dir/.network-fallback-active.XXXXXX")"
+jq -n --arg approved_sha256 "$approved_sha256" \
+  '{schema:"cybex.pulse.network-fallback.v1",approved_sha256:$approved_sha256}' \
+  > "$marker"
+chmod 0600 "$marker"
+chown root:root "$marker"
+sync -f "$marker"
+mv -f "$marker" "$control_dir/network-fallback-active"
+sync -f "$control_dir"
 timeout 60 curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
   --output /dev/null "$origin/healthz"
+# DHCP is now the verified active recovery profile. Retain its authenticated
+# selector, but clear any failed live-change transaction so a later signed
+# correction with a different digest is not rejected as a conflicting resume.
+rm -f "$control_dir/netplan-pending.sha256" \
+  "$control_dir/netplan-before-change.yaml"
+sync -f "$control_dir"

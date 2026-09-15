@@ -9,7 +9,9 @@ Proxmox/LXC deployments receive no security updates and must be replaced.
 ## Trust boundaries
 
 - The offline ISO template and release descriptors are signed by the Pulse
-  release key.
+  release key. The template signature binds the canonical Management origin;
+  build, signing, qualification, and verification compare it with an explicit
+  governed expectation rather than trusting artifact URLs or bootstrap output.
 - The fixed personalization slot contains a bounded, signed, single-use V2
   provisioning envelope.
 - Provisioning activates the reserved device identity before the installed

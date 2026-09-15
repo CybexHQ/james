@@ -484,7 +484,7 @@ mod tests {
             required_package_versions: BTreeMap::new(),
             expected_kernel: String::new(),
             minimum_protocol: 4,
-            minimum_state_schema: 1,
+            minimum_state_schema: 2,
             rollback_compatible: true,
             release_notes: "https://releases.cybex.net/0.1.2".into(),
             signature: String::new(),

@@ -10,6 +10,7 @@ use crate::{
 pub enum SelectionSource {
     OneTime,
     Assigned,
+    AutomaticEnrollment,
     Menu,
 }
 
@@ -29,36 +30,62 @@ const IPXE_MENU_FOOTER: &str = "cybex-pulse - pxe - x86_64 - uefi";
 pub fn choose_profile<'a>(
     device: Option<&Device>,
     enabled_profiles: &'a [BootProfile],
+    allow_automatic_enrollment: bool,
 ) -> ProfileSelection<'a> {
-    let Some(device) = device else {
-        return ProfileSelection {
-            profile: None,
-            source: SelectionSource::Menu,
-        };
-    };
+    if let Some(device) = device {
+        if let Some(profile_id) = device.one_time_profile_id {
+            if let Some(profile) = find_enabled_profile(enabled_profiles, profile_id) {
+                return ProfileSelection {
+                    profile: Some(profile),
+                    source: SelectionSource::OneTime,
+                };
+            }
+        }
 
-    if let Some(profile_id) = device.one_time_profile_id {
-        if let Some(profile) = find_enabled_profile(enabled_profiles, profile_id) {
+        if let Some(profile_id) = device.default_profile_id {
+            if let Some(profile) = find_enabled_profile(enabled_profiles, profile_id) {
+                return ProfileSelection {
+                    profile: Some(profile),
+                    source: SelectionSource::Assigned,
+                };
+            }
+        }
+
+        return menu_selection();
+    }
+
+    if allow_automatic_enrollment {
+        if let Some(profile) = unambiguous_default_enrollment(enabled_profiles) {
             return ProfileSelection {
                 profile: Some(profile),
-                source: SelectionSource::OneTime,
+                source: SelectionSource::AutomaticEnrollment,
             };
         }
     }
 
-    if let Some(profile_id) = device.default_profile_id {
-        if let Some(profile) = find_enabled_profile(enabled_profiles, profile_id) {
-            return ProfileSelection {
-                profile: Some(profile),
-                source: SelectionSource::Assigned,
-            };
-        }
-    }
+    menu_selection()
+}
 
+fn menu_selection<'a>() -> ProfileSelection<'a> {
     ProfileSelection {
         profile: None,
         source: SelectionSource::Menu,
     }
+}
+
+fn unambiguous_default_enrollment(profiles: &[BootProfile]) -> Option<&BootProfile> {
+    let mut defaults = profiles.iter().filter(|profile| {
+        profile.enabled
+            && profile.is_default
+            && !profile.one_time
+            && profile.profile_type == BootProfileType::PulseInstaller
+            && profile_has_boot_action(profile)
+    });
+    let profile = defaults.next()?;
+    if defaults.next().is_some() {
+        return None;
+    }
+    Some(profile)
 }
 
 pub fn render_menu(
@@ -67,10 +94,19 @@ pub fn render_menu(
     mac: Option<&str>,
     serial: Option<&str>,
     timeout_ms: u32,
+    try_local_boot_first: bool,
 ) -> String {
     let menu_profiles = menu_profiles(profiles);
     let mut script = String::with_capacity(2048 + (menu_profiles.len() * 256));
     script.push_str("#!ipxe\n");
+    if try_local_boot_first {
+        // A previously seen workstation can return through PXE when network
+        // boot is ahead of its disk in firmware order. UEFI must regain
+        // control so it can advance to the installed NixOS boot entry; BIOS
+        // can still probe the conventional local-disk drive directly.
+        append_local_attempt(&mut script, "known_local", "known_menu");
+        script.push_str("\n:known_menu\n");
+    }
     append_ipxe_menu_theme(&mut script, public_base_url);
     let _ = writeln!(script, "set cybex-title {IPXE_MENU_TITLE}");
     let _ = writeln!(script, "set cybex-subtitle {IPXE_MENU_SUBTITLE}");
@@ -218,18 +254,41 @@ pub fn render_profile_script(profile: &BootProfile, _public_base_url: &str) -> A
 
 fn render_local_body() -> String {
     let mut script = String::new();
-    script.push_str("echo Booting from local disk\n");
-    script.push_str("iseq ${platform} efi && goto local_efi || goto local_bios\n");
-    script.push_str(":local_efi\n");
-    script.push_str("sanboot --drive 0 || goto local_exit\n");
-    script.push_str("goto end\n");
-    script.push_str(":local_bios\n");
-    script.push_str("sanboot --no-describe --drive 0x80 || goto local_exit\n");
-    script.push_str("goto end\n");
+    append_local_attempt(&mut script, "local", "local_exit");
     script.push_str(":local_exit\n");
     script.push_str("echo Returning failure to firmware for local boot\n");
     script.push_str("exit 1\n");
     script
+}
+
+fn append_local_attempt(script: &mut String, label_prefix: &str, failure_label: &str) {
+    let _ = writeln!(script, "echo Starting the installed system");
+    let _ = writeln!(
+        script,
+        "iseq ${{platform}} efi && goto {label_prefix}_efi || goto {label_prefix}_bios"
+    );
+    let _ = writeln!(script, ":{label_prefix}_efi");
+    // In UEFI, drive 0 means any matching disk and may resolve to the active
+    // network/SAN path. Drive 0x80 selects the first local disk. Firmware that
+    // cannot chain it cleanly gets the explicit BootOrder handoff fallback.
+    let _ = writeln!(
+        script,
+        "sanboot --no-describe --drive 0x80 || goto {label_prefix}_efi_handoff"
+    );
+    script.push_str("goto end\n");
+    let _ = writeln!(script, ":{label_prefix}_efi_handoff");
+    // The handoff flag tells the immutable autoexec wrapper that this failure
+    // is intentional, so it returns immediately instead of retrying. UEFI then
+    // advances to the next BootOrder entry (normally NixOS-boot).
+    script.push_str("echo Returning control to UEFI for the next boot entry\n");
+    script.push_str("set cybex-local-handoff 1\n");
+    script.push_str("exit 1\n");
+    let _ = writeln!(script, ":{label_prefix}_bios");
+    let _ = writeln!(
+        script,
+        "sanboot --no-describe --drive 0x80 || goto {failure_label}"
+    );
+    script.push_str("goto end\n");
 }
 
 fn find_enabled_profile(profiles: &[BootProfile], id: i64) -> Option<&BootProfile> {
@@ -311,7 +370,85 @@ mod tests {
     #[test]
     fn unknown_device_gets_menu() {
         let profiles = vec![profile(1, BootProfileType::LocalDisk)];
-        let selection = choose_profile(None, &profiles);
+        let selection = choose_profile(None, &profiles, true);
+        assert_eq!(selection.source, SelectionSource::Menu);
+        assert!(selection.profile.is_none());
+    }
+
+    #[test]
+    fn unknown_device_automatically_starts_sole_default_enrollment() {
+        let mut enrollment = profile(2, BootProfileType::PulseInstaller);
+        enrollment.name = "Default Enrollment".to_string();
+        enrollment.is_default = true;
+        let profiles = vec![profile(1, BootProfileType::LocalDisk), enrollment];
+
+        let selection = choose_profile(None, &profiles, true);
+
+        assert_eq!(selection.source, SelectionSource::AutomaticEnrollment);
+        assert_eq!(selection.profile.unwrap().id, 2);
+    }
+
+    #[test]
+    fn automatic_enrollment_requires_explicit_request_context() {
+        let mut enrollment = profile(2, BootProfileType::PulseInstaller);
+        enrollment.is_default = true;
+        let profiles = vec![profile(1, BootProfileType::LocalDisk), enrollment];
+
+        let selection = choose_profile(None, &profiles, false);
+
+        assert_eq!(selection.source, SelectionSource::Menu);
+        assert!(selection.profile.is_none());
+    }
+
+    #[test]
+    fn unknown_device_uses_explicit_default_when_other_profiles_exist() {
+        let mut enrollment = profile(2, BootProfileType::PulseInstaller);
+        enrollment.is_default = true;
+        let other = profile(3, BootProfileType::PulseInstaller);
+        let profiles = vec![profile(1, BootProfileType::LocalDisk), enrollment, other];
+
+        let selection = choose_profile(None, &profiles, true);
+
+        assert_eq!(selection.source, SelectionSource::AutomaticEnrollment);
+        assert_eq!(selection.profile.unwrap().id, 2);
+    }
+
+    #[test]
+    fn unknown_device_gets_menu_when_default_enrollment_is_ambiguous() {
+        let mut first = profile(2, BootProfileType::PulseInstaller);
+        first.is_default = true;
+        let mut second = profile(3, BootProfileType::PulseInstaller);
+        second.is_default = true;
+        let profiles = vec![profile(1, BootProfileType::LocalDisk), first, second];
+
+        let selection = choose_profile(None, &profiles, true);
+
+        assert_eq!(selection.source, SelectionSource::Menu);
+        assert!(selection.profile.is_none());
+    }
+
+    #[test]
+    fn unknown_device_gets_menu_when_only_enrollment_is_not_default() {
+        let profiles = vec![
+            profile(1, BootProfileType::LocalDisk),
+            profile(2, BootProfileType::PulseInstaller),
+        ];
+
+        let selection = choose_profile(None, &profiles, true);
+
+        assert_eq!(selection.source, SelectionSource::Menu);
+        assert!(selection.profile.is_none());
+    }
+
+    #[test]
+    fn unknown_device_never_automatically_starts_custom_ipxe() {
+        let mut custom = profile(2, BootProfileType::CustomIpxe);
+        custom.is_default = true;
+        custom.raw_script = Some("#!ipxe\necho custom\n".to_string());
+        let profiles = vec![profile(1, BootProfileType::LocalDisk), custom];
+
+        let selection = choose_profile(None, &profiles, true);
+
         assert_eq!(selection.source, SelectionSource::Menu);
         assert!(selection.profile.is_none());
     }
@@ -329,12 +466,12 @@ mod tests {
             enrollment,
         ];
 
-        let menu = render_menu("http://pulse.local", &profiles, None, None, 10_000);
+        let menu = render_menu("http://pulse.local", &profiles, None, None, 10_000, false);
         assert!(!menu.contains("Reinstall workstation-01"));
         assert!(menu.contains("Default Enrollment"));
 
         let device = device(None, Some(2));
-        let selection = choose_profile(Some(&device), &profiles);
+        let selection = choose_profile(Some(&device), &profiles, true);
         assert_eq!(selection.source, SelectionSource::OneTime);
         assert_eq!(selection.profile.unwrap().id, 2);
     }
@@ -344,7 +481,7 @@ mod tests {
         let installer = profile(2, BootProfileType::PulseInstaller);
         let profiles = vec![profile(1, BootProfileType::LocalDisk), installer];
         let device = device(Some(1), Some(2));
-        let selection = choose_profile(Some(&device), &profiles);
+        let selection = choose_profile(Some(&device), &profiles, true);
         assert_eq!(selection.source, SelectionSource::OneTime);
         assert_eq!(selection.profile.unwrap().id, 2);
     }
@@ -356,19 +493,36 @@ mod tests {
         let installer = profile(2, BootProfileType::PulseInstaller);
         let profiles = vec![local, installer];
         let device = device(Some(2), None);
-        let selection = choose_profile(Some(&device), &profiles);
+        let selection = choose_profile(Some(&device), &profiles, true);
         assert_eq!(selection.source, SelectionSource::Assigned);
         assert_eq!(selection.profile.unwrap().id, 2);
     }
 
     #[test]
-    fn global_default_profile_gets_menu_instead_of_auto_boot() {
+    fn known_device_assigned_to_local_disk_stays_local() {
+        let local = profile(1, BootProfileType::LocalDisk);
+        let mut enrollment = profile(2, BootProfileType::PulseInstaller);
+        enrollment.is_default = true;
+        let profiles = vec![local, enrollment];
+        let device = device(Some(1), None);
+
+        let selection = choose_profile(Some(&device), &profiles, true);
+
+        assert_eq!(selection.source, SelectionSource::Assigned);
+        assert_eq!(
+            selection.profile.unwrap().profile_type,
+            BootProfileType::LocalDisk
+        );
+    }
+
+    #[test]
+    fn known_unassigned_device_gets_menu_instead_of_automatic_enrollment() {
         let mut installer = profile(2, BootProfileType::PulseInstaller);
         installer.is_default = true;
         let profiles = vec![profile(1, BootProfileType::LocalDisk), installer];
         let device = device(None, None);
 
-        let selection = choose_profile(Some(&device), &profiles);
+        let selection = choose_profile(Some(&device), &profiles, true);
 
         assert_eq!(selection.source, SelectionSource::Menu);
         assert!(selection.profile.is_none());
@@ -388,6 +542,7 @@ mod tests {
             Some("aa:bb:cc:dd:ee:ff"),
             None,
             0,
+            false,
         );
         assert!(script.starts_with("#!ipxe"));
         assert!(script.contains("chain --autofree http://boot.local:8080/boot/select/2"));
@@ -395,7 +550,10 @@ mod tests {
         assert!(!script.contains("choose --timeout"));
         assert!(!script.contains("menu-timeout"));
         assert!(script.contains("iseq ${platform} efi && goto local_efi || goto local_bios"));
-        assert!(script.contains("sanboot --drive 0 || goto local_exit"));
+        assert!(script.contains(
+            ":local_efi\nsanboot --no-describe --drive 0x80 || goto local_efi_handoff\ngoto end\n:local_efi_handoff\necho Returning control to UEFI for the next boot entry\nset cybex-local-handoff 1\nexit 1"
+        ));
+        assert!(!script.contains("sanboot --drive 0"));
         assert!(script.contains("sanboot --no-describe --drive 0x80 || goto local_exit"));
         assert!(script.contains("exit 1"));
         let local_item = script.find("item --key l local Boot local disk").unwrap();
@@ -408,7 +566,7 @@ mod tests {
     #[test]
     fn menu_includes_cybex_theme() {
         let profiles = vec![profile(1, BootProfileType::LocalDisk)];
-        let script = render_menu("http://boot.local:8080", &profiles, None, None, 0);
+        let script = render_menu("http://boot.local:8080", &profiles, None, None, 0, false);
 
         assert!(script.contains("set cybex-title CYBEX"));
         assert!(script.contains("set cybex-subtitle PXE BOOT - PULSE BOOT - X86_64 - UEFI"));
@@ -431,7 +589,7 @@ mod tests {
     #[test]
     fn configured_menu_timeout_emits_countdown() {
         let profiles = vec![profile(1, BootProfileType::LocalDisk)];
-        let script = render_menu("http://boot.local:8080", &profiles, None, None, 8000);
+        let script = render_menu("http://boot.local:8080", &profiles, None, None, 8000, false);
 
         assert!(script.contains("set menu-timeout 8000"));
         assert!(script.contains("item --gap ${cybex-timeout-copy}"));
@@ -453,7 +611,7 @@ mod tests {
             profile(6, BootProfileType::PulseInstaller),
         ];
 
-        let script = render_menu("http://boot.local:8080", &profiles, None, None, 0);
+        let script = render_menu("http://boot.local:8080", &profiles, None, None, 0, false);
 
         assert!(script.contains("profile_3"));
         assert!(!script.contains("profile_5"));
@@ -467,7 +625,7 @@ mod tests {
         let profiles = vec![local, profile(2, BootProfileType::CustomIpxe)];
         let device = device(Some(2), None);
 
-        let selection = choose_profile(Some(&device), &profiles);
+        let selection = choose_profile(Some(&device), &profiles, true);
 
         assert_eq!(selection.source, SelectionSource::Menu);
         assert!(selection.profile.is_none());
@@ -479,9 +637,58 @@ mod tests {
         installer.name = "Installer\n\x1bshell".to_string();
         let profiles = vec![profile(1, BootProfileType::LocalDisk), installer];
 
-        let script = render_menu("http://boot.local:8080", &profiles, None, None, 0);
+        let script = render_menu("http://boot.local:8080", &profiles, None, None, 0, false);
 
         assert!(!script.contains('\x1b'));
         assert!(script.contains("Installer  shell"));
+    }
+
+    #[test]
+    fn known_mac_menu_tries_uefi_local_disk_before_loading_menu_ui() {
+        let mut installer = profile(2, BootProfileType::PulseInstaller);
+        installer.name = "Default Enrollment".to_string();
+        installer.is_default = true;
+        let profiles = vec![profile(1, BootProfileType::LocalDisk), installer];
+
+        let script = render_menu(
+            "http://boot.local:8080",
+            &profiles,
+            Some("aa:bb:cc:dd:ee:ff"),
+            None,
+            0,
+            true,
+        );
+
+        let local_handoff = script
+            .find(
+                ":known_local_efi\nsanboot --no-describe --drive 0x80 || goto known_local_efi_handoff\ngoto end\n:known_local_efi_handoff\necho Returning control to UEFI for the next boot entry\nset cybex-local-handoff 1\nexit 1",
+            )
+            .unwrap();
+        let menu_picture = script.find("console --x 1024").unwrap();
+        let menu = script.find("menu ${cybex-title}").unwrap();
+        assert!(local_handoff < menu_picture);
+        assert!(menu_picture < menu);
+        assert!(!script.contains("sanboot --drive 0"));
+        assert!(script.contains("sanboot --no-describe --drive 0x80 || goto known_menu"));
+        assert!(script.contains(":known_menu\n"));
+        assert!(script.contains("item profile_2 Default Enrollment"));
+    }
+
+    #[test]
+    fn unknown_or_macless_menu_does_not_probe_local_disk_before_the_menu() {
+        let profiles = vec![profile(1, BootProfileType::LocalDisk)];
+
+        let script = render_menu(
+            "http://boot.local:8080",
+            &profiles,
+            None,
+            Some("serial-only"),
+            0,
+            false,
+        );
+
+        assert!(!script.contains("known_local"));
+        assert!(!script.contains("goto known_menu"));
+        assert!(script.find("menu ${cybex-title}").unwrap() < script.find(":local\n").unwrap());
     }
 }

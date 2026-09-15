@@ -18,13 +18,22 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install native checks
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential shellcheck
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential ripgrep shellcheck
 
       - name: Bash syntax
-        run: bash -n ubuntu-appliance/*.sh ubuntu-appliance/qualification/run-lifecycle.sh ubuntu-appliance/rootfs/usr/lib/cybex-pulse/* ubuntu-appliance/rootfs/etc/grub.d/09_cybex_generations
+        shell: bash
+        run: |
+          mapfile -t appliance_helpers < <(rg -l '^#!.*(bash|/sh)$' ubuntu-appliance/rootfs/usr/lib/cybex-pulse | sort)
+          bash -n ubuntu-appliance/*.sh ubuntu-appliance/qualification/*.sh "${appliance_helpers[@]}" ubuntu-appliance/rootfs/etc/grub.d/09_cybex_generations
 
       - name: Shellcheck
-        run: shellcheck ubuntu-appliance/*.sh ubuntu-appliance/qualification/run-lifecycle.sh ubuntu-appliance/rootfs/usr/lib/cybex-pulse/* ubuntu-appliance/rootfs/etc/grub.d/09_cybex_generations
+        shell: bash
+        run: |
+          mapfile -t appliance_helpers < <(rg -l '^#!.*(bash|/sh)$' ubuntu-appliance/rootfs/usr/lib/cybex-pulse | sort)
+          shellcheck ubuntu-appliance/*.sh ubuntu-appliance/qualification/*.sh "${appliance_helpers[@]}" ubuntu-appliance/rootfs/etc/grub.d/09_cybex_generations
+
+      - name: Python helper syntax
+        run: python3 -m py_compile ubuntu-appliance/rootfs/usr/lib/cybex-pulse/cybex-pulse-state-layout
 
       - name: Ubuntu appliance pinned-base contract
         run: |
@@ -82,17 +91,28 @@ jobs:
     environment: production-release
     outputs:
       version: ${{ steps.release-version.outputs.version }}
+      manage_origin: ${{ steps.release-version.outputs.manage_origin }}
       artifact_id: ${{ steps.release-artifact.outputs.artifact_id }}
       artifact_digest: ${{ steps.release-artifact.outputs.artifact_digest }}
       artifact_name: ${{ steps.release-artifact.outputs.artifact_name }}
       workstation_bundle_name: ${{ steps.workstation-source.outputs.bundle_name }}
+      predecessor_identity_b64: ${{ steps.published-predecessor.outputs.identity_b64 }}
+      predecessor_identity_sha256: ${{ steps.published-predecessor.outputs.identity_sha256 }}
+      predecessor_release: ${{ steps.published-predecessor.outputs.release_id }}
+      predecessor_snapshot: ${{ steps.published-predecessor.outputs.snapshot_id }}
+      predecessor_update_contract: ${{ steps.published-predecessor.outputs.update_contract }}
     permissions:
       contents: read
       actions: read
     env:
+      CYBEX_PULSE_BUILD_MANAGE_ORIGIN: ${{ vars.CYBEX_PULSE_BUILD_MANAGE_ORIGIN }}
       CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY }}
       CYBEX_PULSE_PROVISIONING_PUBLIC_KEYS: ${{ vars.CYBEX_PULSE_PROVISIONING_PUBLIC_KEYS }}
       CYBEX_PULSE_UBUNTU_SNAPSHOT_ID: ${{ vars.CYBEX_PULSE_UBUNTU_SNAPSHOT_ID }}
+      CYBEX_PULSE_LEGACY_BRIDGE_POLICY_B64: ${{ vars.CYBEX_PULSE_LEGACY_BRIDGE_POLICY_B64 }}
+      CYBEX_PULSE_LEGACY_BRIDGE_POLICY_SHA256: ${{ vars.CYBEX_PULSE_LEGACY_BRIDGE_POLICY_SHA256 }}
+      CYBEX_PULSE_LEGACY_BRIDGE_EVIDENCE_B64: ${{ vars.CYBEX_PULSE_LEGACY_BRIDGE_EVIDENCE_B64 }}
+      CYBEX_PULSE_LEGACY_BRIDGE_EVIDENCE_SHA256: ${{ vars.CYBEX_PULSE_LEGACY_BRIDGE_EVIDENCE_SHA256 }}
       CYBEX_PULSE_RELEASE_ARTIFACT: cybex-pulse-release-candidate-${{ github.run_id }}
     steps:
       - name: Checkout exact tag
@@ -110,6 +130,8 @@ jobs:
           test -n "$CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY"
           test -n "$CYBEX_PULSE_PROVISIONING_PUBLIC_KEYS"
           [[ "$CYBEX_PULSE_UBUNTU_SNAPSHOT_ID" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]
+          python3 tools/pulse-release.py validate-manage-origin \
+            --expected-manage-origin "$CYBEX_PULSE_BUILD_MANAGE_ORIGIN"
           python3 tools/pulse-release.py validate-public-key \
             --trusted-public-key "$CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY"
           mapfile -t provisioning_keys < <(printf '%s\n' "$CYBEX_PULSE_PROVISIONING_PUBLIC_KEYS" | sed '/^[[:space:]]*$/d')
@@ -122,7 +144,8 @@ jobs:
           for key in "${provisioning_keys[@]}"; do
             python3 tools/pulse-release.py validate-public-key --trusted-public-key "$key"
           done
-          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\nmanage_origin=%s\n' \
+            "$version" "$CYBEX_PULSE_BUILD_MANAGE_ORIGIN" >> "$GITHUB_OUTPUT"
 
       - name: Resolve pinned workstation source
         id: workstation-source
@@ -238,12 +261,19 @@ jobs:
           set -euo pipefail
           test -n "$CYBEX_PULSE_RELEASE_PRIVATE_KEY_B64"
 
-      - name: Install Ubuntu appliance build tools for a new candidate
-        if: steps.release-candidate.outputs.reuse != 'true'
+      - name: Install Ubuntu appliance release tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            apt-utils dpkg-dev gpgv jq rsync ubuntu-keyring xorriso zstd
+            apt-utils dpkg-dev gpgv jq rsync squashfs-tools ubuntu-keyring xorriso zstd
+
+      - name: Download the immutable reused candidate for provenance verification
+        if: steps.release-candidate.outputs.reuse == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ steps.release-candidate.outputs.artifact_id }}
+          path: dist
+          merge-multiple: true
 
       - name: Build exact binaries, appliance media, and workstation runtime
         if: steps.release-candidate.outputs.reuse != 'true'
@@ -251,7 +281,8 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.release-version.outputs.version }}"
-          cargo build --release --locked --bin cybex-pulse --bin cybex-pulse-bootstrap
+          CYBEX_PULSE_BUILD_MANAGE_ORIGIN="$CYBEX_PULSE_BUILD_MANAGE_ORIGIN" \
+            cargo build --release --locked --bin cybex-pulse --bin cybex-pulse-bootstrap
           source_epoch="$(git -C manage-source show -s --format=%ct HEAD)"
           [[ "$source_epoch" =~ ^[1-9][0-9]*$ ]]
           nix-build release/workstation-netboot.nix \
@@ -261,6 +292,8 @@ jobs:
           install -d -m 0755 dist
           install -m 0755 target/release/cybex-pulse dist/cybex-pulse-x86_64-linux
           install -m 0755 target/release/cybex-pulse-bootstrap "$RUNNER_TEMP/cybex-pulse-bootstrap"
+          test "$("$RUNNER_TEMP/cybex-pulse-bootstrap" required-manage-origin)" = \
+            "$CYBEX_PULSE_BUILD_MANAGE_ORIGIN"
           staging="$RUNNER_TEMP/cybex-workstation-netboot-tree"
           install -d -m 0755 "$staging"
           for component in manifest.json bzImage initrd nix-store.squashfs; do
@@ -290,13 +323,18 @@ jobs:
             --bootstrap-binary "$RUNNER_TEMP/cybex-pulse-bootstrap" \
             --version "$version" \
             --ubuntu-snapshot-id "$CYBEX_PULSE_UBUNTU_SNAPSHOT_ID" \
-            --release-public-key "$CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY"
+            --manage-source-dir manage-source \
+            --manage-source-revision "${{ steps.workstation-source.outputs.revision }}" \
+            --expected-manage-origin "$CYBEX_PULSE_BUILD_MANAGE_ORIGIN" \
+            --release-public-key "$CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY" \
+            "${template_args[@]}"
           ubuntu-appliance/build-template.sh \
             --output-dir dist \
             --cache-dir "$RUNNER_TEMP/ubuntu-base-cache" \
             --bootstrap-binary "$RUNNER_TEMP/cybex-pulse-bootstrap" \
             --version "$version" \
             --ubuntu-snapshot-id "$CYBEX_PULSE_UBUNTU_SNAPSHOT_ID" \
+            --expected-manage-origin "$CYBEX_PULSE_BUILD_MANAGE_ORIGIN" \
             --release-public-key "$CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY" \
             "${template_args[@]}"
           mv \
@@ -307,8 +345,8 @@ jobs:
             "$RUNNER_TEMP/cybex-pulse-appliance-packages-metadata.json"
           test "$(dist/cybex-pulse-x86_64-linux --version)" = "cybex-pulse $version"
 
-      - name: Fetch latest previously published compatibility asset
-        if: steps.release-candidate.outputs.reuse != 'true'
+      - name: Resolve and authenticate latest published predecessor
+        id: published-predecessor
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -321,38 +359,165 @@ jobs:
             "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$releases"
           previous="$(jq -c --arg current "$GITHUB_REF_NAME" \
             '[.[][] | select(.draft == false and .tag_name != $current)]
-             | sort_by(.published_at // .created_at) | last // empty' \
+             | sort_by([(.published_at // .created_at), .id]) | last // empty' \
             "$releases")"
           if [ -z "$previous" ]; then
-            exit 0
+            echo '::error::An appliance release requires an authenticated published predecessor for N-to-N+1 qualification'
+            exit 1
           fi
           release_id="$(jq -er '.id' <<<"$previous")"
+          tag_name="$(jq -er '.tag_name' <<<"$previous")"
           [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$tag_name" =~ ^v[0-9][0-9A-Za-z.+-]*$ ]]
+          remote_tag_commit="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/commits/$tag_name" --jq '.sha')"
+          [[ "$remote_tag_commit" =~ ^[0-9a-fA-F]{40}$ ]]
+          test "$(jq -er '.target_commitish' <<<"$previous")" = "$remote_tag_commit"
           assets="$RUNNER_TEMP/cybex-pulse-previous-release-assets.json"
           gh api --paginate --slurp \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
             > "$assets"
-          asset_count="$(jq \
-            '[.[][] | select(.name == "cybex-pulse-release-compatibility.json")] | length' \
-            "$assets")"
-          if [ "$asset_count" -ne 1 ]; then
-            echo "::error::The latest previous release must contain exactly one signed compatibility asset"
-            exit 1
-          fi
-          asset_id="$(jq -er \
+          for required_asset in \
+            cybex-pulse-release-compatibility.json \
+            cybex-pulse-release.json
+          do
+            test "$(jq --arg name "$required_asset" \
+              '[.[][] | select(.name == $name)] | length' "$assets")" -eq 1
+          done
+          compatibility_asset_id="$(jq -er \
             '.[][] | select(.name == "cybex-pulse-release-compatibility.json") | .id' \
             "$assets")"
-          [[ "$asset_id" =~ ^[1-9][0-9]*$ ]]
+          manifest_asset_id="$(jq -er \
+            '.[][] | select(.name == "cybex-pulse-release.json") | .id' \
+            "$assets")"
+          [[ "$compatibility_asset_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$manifest_asset_id" =~ ^[1-9][0-9]*$ ]]
           previous_asset="$RUNNER_TEMP/cybex-pulse-previous-release-compatibility.json"
           gh api \
             -H 'Accept: application/octet-stream' \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" > "$previous_asset"
+            "repos/$GITHUB_REPOSITORY/releases/assets/$compatibility_asset_id" \
+            > "$previous_asset"
           test -f "$previous_asset" && test ! -L "$previous_asset"
           test "$(stat -c %s "$previous_asset")" -gt 0
           test "$(stat -c %s "$previous_asset")" -le 1048576
+          predecessor_manifest="$RUNNER_TEMP/cybex-pulse-previous-release.json"
+          gh api \
+            -H 'Accept: application/octet-stream' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases/assets/$manifest_asset_id" \
+            > "$predecessor_manifest"
+          test -f "$predecessor_manifest" && test ! -L "$predecessor_manifest"
+          test "$(stat -c %s "$predecessor_manifest")" -gt 0
+          test "$(stat -c %s "$predecessor_manifest")" -le 4194304
+          snapshot_name="$(jq -er '.appliance_release_v1.cybex_repository_snapshot.url | split("/") | last' \
+            "$predecessor_manifest")"
+          [[ "$snapshot_name" =~ ^cybex-pulse-appliance-packages-[0-9A-Za-z.+-]+-x86_64-linux\.tar\.zst$ ]]
+          test "$(jq --arg name "$snapshot_name" \
+            '[.[][] | select(.name == $name)] | length' "$assets")" -eq 1
+          snapshot_asset_id="$(jq -er --arg name "$snapshot_name" \
+            '.[][] | select(.name == $name) | .id' "$assets")"
+          snapshot_asset_size="$(jq -er --arg name "$snapshot_name" \
+            '.[][] | select(.name == $name) | .size' "$assets")"
+          signed_snapshot_size="$(jq -er \
+            '.appliance_release_v1.cybex_repository_snapshot.size_bytes' \
+            "$predecessor_manifest")"
+          [[ "$snapshot_asset_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$snapshot_asset_size" =~ ^[1-9][0-9]*$ ]]
+          test "$snapshot_asset_size" -le $((4 * 1024 * 1024 * 1024))
+          test "$snapshot_asset_size" = "$signed_snapshot_size"
+          snapshot_asset_digest="$(jq -r --arg name "$snapshot_name" \
+            '.[][] | select(.name == $name) | .digest // ""' "$assets")"
+          if [[ -n "$snapshot_asset_digest" ]]; then
+            test "$snapshot_asset_digest" = \
+              "sha256:$(jq -er '.appliance_release_v1.cybex_repository_snapshot.sha256' \
+                "$predecessor_manifest")"
+          fi
+          predecessor_snapshot="$RUNNER_TEMP/$snapshot_name"
+          gh api \
+            -H 'Accept: application/octet-stream' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases/assets/$snapshot_asset_id" \
+            > "$predecessor_snapshot"
+          predecessor_identity="$RUNNER_TEMP/cybex-pulse-published-predecessor.json"
+          python3 -B ubuntu-appliance/qualification/legacy-bridge-gate.py \
+            identify-predecessor \
+            --compatibility "$previous_asset" \
+            --manifest "$predecessor_manifest" \
+            --package-snapshot "$predecessor_snapshot" \
+            --trusted-public-key "$CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY" \
+            --release-verifier tools/pulse-release.py \
+            --github-release-id "$release_id" \
+            --tag-name "$tag_name" \
+            --output "$predecessor_identity"
+          identity_sha256="$(sha256sum "$predecessor_identity" | awk '{print $1}')"
+          identity_b64="$(base64 --wrap=0 "$predecessor_identity")"
+          predecessor_release="$(jq -er '.release_id' "$predecessor_identity")"
+          predecessor_snapshot_id="$(jq -er '.ubuntu_snapshot_id' "$predecessor_identity")"
+          update_contract="$(jq -er '.update_contract' "$predecessor_identity")"
+          printf 'identity_b64=%s\nidentity_sha256=%s\nrelease_id=%s\nsnapshot_id=%s\nupdate_contract=%s\n' \
+            "$identity_b64" "$identity_sha256" "$predecessor_release" \
+            "$predecessor_snapshot_id" "$update_contract" >> "$GITHUB_OUTPUT"
+          candidate_predecessor="dist/cybex-pulse-build-predecessor.json"
+          if [ "${{ steps.release-candidate.outputs.reuse }}" = true ]; then
+            test -f "$candidate_predecessor" && test ! -L "$candidate_predecessor"
+            cmp --silent -- "$predecessor_identity" "$candidate_predecessor" || {
+              echo '::error::The latest signed predecessor changed; rebuild and requalify the candidate'
+              exit 1
+            }
+          else
+            install -m 0444 "$predecessor_identity" "$candidate_predecessor"
+          fi
+          rm -f -- "$predecessor_snapshot"
+
+      - name: Require a monotone legacy-update bridge before signing
+        if: steps.release-candidate.outputs.reuse != 'true' && steps.published-predecessor.outputs.update_contract == 'legacy_all_debs'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          version="${{ steps.release-version.outputs.version }}"
+          : "${CYBEX_PULSE_LEGACY_BRIDGE_POLICY_B64:?configure the reviewed clean-predecessor bridge policy}"
+          : "${CYBEX_PULSE_LEGACY_BRIDGE_EVIDENCE_B64:?configure exact legacy solver evidence captured on the qualified predecessor}"
+          [[ "$CYBEX_PULSE_LEGACY_BRIDGE_POLICY_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$CYBEX_PULSE_LEGACY_BRIDGE_EVIDENCE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          policy="$RUNNER_TEMP/cybex-pulse-legacy-bridge-policy.json"
+          evidence="$RUNNER_TEMP/cybex-pulse-legacy-bridge-evidence.json"
+          predecessor_identity="$RUNNER_TEMP/cybex-pulse-published-predecessor.json"
+          package_tree="$RUNNER_TEMP/cybex-pulse-legacy-bridge-packages"
+          cleanup_bridge_inputs() {
+            rm -rf -- "$package_tree"
+            rm -f -- "$policy" "$evidence"
+          }
+          trap cleanup_bridge_inputs EXIT
+          umask 077
+          printf '%s' "$CYBEX_PULSE_LEGACY_BRIDGE_POLICY_B64" | base64 --decode > "$policy"
+          printf '%s' "$CYBEX_PULSE_LEGACY_BRIDGE_EVIDENCE_B64" | base64 --decode > "$evidence"
+          test "$(stat -c %s "$policy")" -le 131072
+          test "$(stat -c %s "$evidence")" -le 524288
+          test "$(sha256sum "$predecessor_identity" | awk '{print $1}')" = \
+            "${{ steps.published-predecessor.outputs.identity_sha256 }}"
+          install -d -m 0700 "$package_tree"
+          tar --use-compress-program=unzstd --extract \
+            --file "dist/cybex-pulse-appliance-packages-$version-x86_64-linux.tar.zst" \
+            --directory "$package_tree"
+          chmod -R a-w "$package_tree"
+          python3 -B ubuntu-appliance/qualification/legacy-bridge-gate.py verify \
+            --packages-dir "$package_tree" \
+            --snapshot-bundle "dist/cybex-pulse-appliance-packages-$version-x86_64-linux.tar.zst" \
+            --snapshot-metadata "$RUNNER_TEMP/cybex-pulse-appliance-packages-metadata.json" \
+            --policy "$policy" \
+            --policy-sha256 "$CYBEX_PULSE_LEGACY_BRIDGE_POLICY_SHA256" \
+            --predecessor-identity "$predecessor_identity" \
+            --evidence "$evidence" \
+            --evidence-sha256 "$CYBEX_PULSE_LEGACY_BRIDGE_EVIDENCE_SHA256" \
+            --candidate-release "$version" \
+            --candidate-snapshot "$CYBEX_PULSE_UBUNTU_SNAPSHOT_ID"
+          cleanup_bridge_inputs
+          trap - EXIT
 
       - name: Sign and self-verify release manifests
         if: steps.release-candidate.outputs.reuse != 'true'
@@ -390,8 +555,10 @@ jobs:
           template_args=(
             --installer-iso-template "dist/cybex-pulse-appliance-template-$version-x86_64-linux.iso"
             --installer-iso-template-url "$artifact_base/cybex-pulse-appliance-template-$version-x86_64-linux.iso"
+            --installer-iso-template-metadata "$RUNNER_TEMP/cybex-pulse-appliance-template-metadata.json"
             --installer-iso-template-personalization-offset "$personalization_offset"
             --installer-iso-template-package-delivery "$package_delivery"
+            --expected-manage-origin "$CYBEX_PULSE_BUILD_MANAGE_ORIGIN"
           )
           for key in "${provisioning_keys[@]}"; do
             template_args+=(--provisioning-public-key "$key")
@@ -437,6 +604,7 @@ jobs:
               "cybex-pulse-appliance-template-$version-x86_64-linux.iso" \
               "cybex-pulse-appliance-packages-$version-x86_64-linux.tar.zst" \
               "${{ steps.workstation-source.outputs.bundle_name }}" \
+              cybex-pulse-build-predecessor.json \
               cybex-pulse-release.json \
               cybex-pulse-release-compatibility.json > SHA256SUMS
           )
@@ -501,10 +669,19 @@ jobs:
       CYBEX_PULSE_RELEASE_VERSION: ${{ needs.release_build.outputs.version }}
       CYBEX_PULSE_RELEASE_ARTIFACT_ID: ${{ needs.release_build.outputs.artifact_id }}
       CYBEX_PULSE_WORKSTATION_BUNDLE_NAME: ${{ needs.release_build.outputs.workstation_bundle_name }}
+      CYBEX_PULSE_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
       CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY }}
       CYBEX_PULSE_QUALIFICATION_BRIDGE: ${{ vars.CYBEX_PULSE_QUALIFICATION_BRIDGE }}
       CYBEX_PULSE_QUALIFICATION_PACKAGE_BIND_ADDRESS: ${{ vars.CYBEX_PULSE_QUALIFICATION_PACKAGE_BIND_ADDRESS }}
       CYBEX_PULSE_QUALIFICATION_MANAGEMENT_CIDR: ${{ vars.CYBEX_PULSE_QUALIFICATION_MANAGEMENT_CIDR }}
+      CYBEX_PULSE_UPDATE_PREDECESSOR_EVIDENCE_B64: ${{ vars.CYBEX_PULSE_UPDATE_PREDECESSOR_EVIDENCE_B64 }}
+      CYBEX_PULSE_UPDATE_PREDECESSOR_EVIDENCE_SHA256: ${{ vars.CYBEX_PULSE_UPDATE_PREDECESSOR_EVIDENCE_SHA256 }}
+      CYBEX_PULSE_UPDATE_PREDECESSOR_DEVICE_ID: ${{ vars.CYBEX_PULSE_UPDATE_PREDECESSOR_DEVICE_ID }}
+      CYBEX_PULSE_PUBLISHED_PREDECESSOR_IDENTITY_B64: ${{ needs.release_build.outputs.predecessor_identity_b64 }}
+      CYBEX_PULSE_PUBLISHED_PREDECESSOR_IDENTITY_SHA256: ${{ needs.release_build.outputs.predecessor_identity_sha256 }}
+      CYBEX_PULSE_PUBLISHED_PREDECESSOR_RELEASE: ${{ needs.release_build.outputs.predecessor_release }}
+      CYBEX_PULSE_PUBLISHED_PREDECESSOR_SNAPSHOT: ${{ needs.release_build.outputs.predecessor_snapshot }}
+      CYBEX_PULSE_PUBLISHED_PREDECESSOR_UPDATE_CONTRACT: ${{ needs.release_build.outputs.predecessor_update_contract }}
     steps:
       - name: Checkout exact qualification source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -533,6 +710,7 @@ jobs:
             --manifest dist/cybex-pulse-release.json \
             --artifact dist/cybex-pulse-x86_64-linux \
             --installer-iso-template "dist/cybex-pulse-appliance-template-$version-x86_64-linux.iso" \
+            --expected-manage-origin "$CYBEX_PULSE_BUILD_MANAGE_ORIGIN" \
             --appliance-package-snapshot "dist/cybex-pulse-appliance-packages-$version-x86_64-linux.tar.zst" \
             --workstation-netboot-bundle "dist/$CYBEX_PULSE_WORKSTATION_BUNDLE_NAME" \
             --workstation-netboot-tree "$tree" \
@@ -553,7 +731,10 @@ jobs:
         run: |
           set -Eeuo pipefail
           test -n "$CYBEX_PULSE_QUALIFICATION_TOKEN"
-          [[ "$CYBEX_PULSE_QUALIFICATION_MANAGE_ORIGIN" =~ ^https://[^/]+$ ]]
+          python3 -B tools/pulse-release.py validate-manage-origin \
+            --expected-manage-origin "$CYBEX_PULSE_QUALIFICATION_MANAGE_ORIGIN"
+          test "$CYBEX_PULSE_QUALIFICATION_MANAGE_ORIGIN" = \
+            "$CYBEX_PULSE_BUILD_MANAGE_ORIGIN"
           token_file="$RUNNER_TEMP/pulse-qualification-token"
           cleanup_token() { shred -u -n 1 -z -- "$token_file" 2>/dev/null || rm -f -- "$token_file"; }
           trap cleanup_token EXIT
@@ -568,12 +749,140 @@ jobs:
           cleanup_token
           trap - EXIT
 
+      - name: Exercise real installed predecessor to exact candidate update
+        shell: bash
+        env:
+          CYBEX_PULSE_QUALIFICATION_TOKEN: ${{ secrets.CYBEX_PULSE_QUALIFICATION_TOKEN }}
+          CYBEX_PULSE_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.CYBEX_PULSE_QUALIFICATION_MANAGE_ORIGIN }}
+        run: |
+          set -Eeuo pipefail
+          : "${CYBEX_PULSE_UPDATE_PREDECESSOR_EVIDENCE_B64:?configure the clean installed predecessor qualification evidence}"
+          [[ "$CYBEX_PULSE_UPDATE_PREDECESSOR_EVIDENCE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$CYBEX_PULSE_UPDATE_PREDECESSOR_DEVICE_ID" =~ ^[0-9A-Za-z][0-9A-Za-z._:-]{0,255}$ ]]
+          predecessor_evidence="$RUNNER_TEMP/cybex-pulse-predecessor-qualification.json"
+          predecessor_identity="$RUNNER_TEMP/cybex-pulse-qualified-predecessor.json"
+          token_file="$RUNNER_TEMP/pulse-update-qualification-token"
+          package_server_pid=""
+          cleanup_update_inputs() {
+            if [[ -n "$package_server_pid" ]]; then
+              kill "$package_server_pid" 2>/dev/null || true
+              wait "$package_server_pid" 2>/dev/null || true
+            fi
+            shred -u -n 1 -z -- "$token_file" 2>/dev/null || rm -f -- "$token_file"
+            rm -f -- "$predecessor_evidence" \
+              "$RUNNER_TEMP/cybex-pulse-legacy-canonical-package.tar.zst"
+          }
+          trap cleanup_update_inputs EXIT
+          umask 077
+          printf '%s' "$CYBEX_PULSE_UPDATE_PREDECESSOR_EVIDENCE_B64" | base64 --decode > "$predecessor_evidence"
+          printf '%s' "$CYBEX_PULSE_PUBLISHED_PREDECESSOR_IDENTITY_B64" | base64 --decode > "$predecessor_identity"
+          cmp --silent -- \
+            dist/cybex-pulse-build-predecessor.json "$predecessor_identity"
+          test "$(stat -c %s "$predecessor_evidence")" -le 1048576
+          test "$(sha256sum "$predecessor_evidence" | awk '{print $1}')" = \
+            "$CYBEX_PULSE_UPDATE_PREDECESSOR_EVIDENCE_SHA256"
+          test "$(sha256sum "$predecessor_identity" | awk '{print $1}')" = \
+            "$CYBEX_PULSE_PUBLISHED_PREDECESSOR_IDENTITY_SHA256"
+          test "$(jq -er '.release_id' "$predecessor_identity")" = \
+            "$CYBEX_PULSE_PUBLISHED_PREDECESSOR_RELEASE"
+          test "$(jq -er '.ubuntu_snapshot_id' "$predecessor_identity")" = \
+            "$CYBEX_PULSE_PUBLISHED_PREDECESSOR_SNAPSHOT"
+          test "$(jq -er '.update_contract' "$predecessor_identity")" = \
+            "$CYBEX_PULSE_PUBLISHED_PREDECESSOR_UPDATE_CONTRACT"
+          test "$(jq -er '.release_version' "$predecessor_evidence")" = \
+            "$CYBEX_PULSE_PUBLISHED_PREDECESSOR_RELEASE"
+          test "$(jq -er '.ubuntu_snapshot_id' "$predecessor_evidence")" = \
+            "$CYBEX_PULSE_PUBLISHED_PREDECESSOR_SNAPSHOT"
+          test "$(jq -er '.release_version' "$predecessor_evidence")" != \
+            "$CYBEX_PULSE_RELEASE_VERSION"
+          package_snapshot="dist/cybex-pulse-appliance-packages-$CYBEX_PULSE_RELEASE_VERSION-x86_64-linux.tar.zst"
+          package_filename="$(basename "$package_snapshot")"
+          signed_package_url="$(jq -er '.appliance_release_v1.cybex_repository_snapshot.url' \
+            dist/cybex-pulse-release.json)"
+          test "$(stat -c %s "$package_snapshot")" = \
+            "$(jq -er '.appliance_release_v1.cybex_repository_snapshot.size_bytes' dist/cybex-pulse-release.json)"
+          test "$(sha256sum "$package_snapshot" | awk '{print $1}')" = \
+            "$(jq -er '.appliance_release_v1.cybex_repository_snapshot.sha256' dist/cybex-pulse-release.json)"
+          qualification_package_transport_url=""
+          case "$CYBEX_PULSE_PUBLISHED_PREDECESSOR_UPDATE_CONTRACT" in
+            legacy_all_debs)
+              # Frozen dev11 rejects any extra managed-update field. Prove that
+              # the exact signed URL is already readable before asking Manage
+              # to deliver the canonical three-field request.
+              canonical_download="$RUNNER_TEMP/cybex-pulse-legacy-canonical-package.tar.zst"
+              curl --fail --silent --show-error --location \
+                --proto '=https' --proto-redir '=https' --tlsv1.2 \
+                --max-filesize "$((4 * 1024 * 1024 * 1024))" \
+                --output "$canonical_download" "$signed_package_url"
+              test "$(stat -c %s "$canonical_download")" = \
+                "$(stat -c %s "$package_snapshot")"
+              test "$(sha256sum "$canonical_download" | awk '{print $1}')" = \
+                "$(sha256sum "$package_snapshot" | awk '{print $1}')"
+              rm -f -- "$canonical_download"
+              qualification_package_transport_url="$signed_package_url"
+              ;;
+            selective_roots_v2)
+              mapfile -t bridge_addresses < <(
+                ip -4 -o address show dev "$CYBEX_PULSE_QUALIFICATION_BRIDGE" scope global \
+                  | awk '{sub(/\/.*/, "", $4); print $4}'
+              )
+              package_bind_address="$CYBEX_PULSE_QUALIFICATION_PACKAGE_BIND_ADDRESS"
+              if [[ -n "$package_bind_address" ]]; then
+                printf '%s\n' "${bridge_addresses[@]}" | grep -Fx "$package_bind_address" >/dev/null
+              else
+                for candidate_address in "${bridge_addresses[@]}"; do
+                  if python3 -B -c \
+                    'import ipaddress,sys; a=ipaddress.ip_address(sys.argv[1]); raise SystemExit(not (a.version == 4 and a.is_private and not a.is_loopback))' \
+                    "$candidate_address"
+                  then
+                    package_bind_address="$candidate_address"
+                    break
+                  fi
+                done
+              fi
+              test -n "$package_bind_address"
+              package_port_file="$RUNNER_TEMP/pulse-update-package-server.port"
+              python3 -B ubuntu-appliance/qualification/serve-package-snapshot.py \
+                --bind "$package_bind_address" --file "$package_snapshot" \
+                --port-file "$package_port_file" &
+              package_server_pid=$!
+              for _attempt in $(seq 1 100); do
+                [[ -s "$package_port_file" ]] && break
+                kill -0 "$package_server_pid"
+                sleep 0.1
+              done
+              package_port="$(tr -d '\r\n' < "$package_port_file")"
+              [[ "$package_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((package_port <= 65535))
+              qualification_package_transport_url="http://$package_bind_address:$package_port/$package_filename"
+              curl --fail --silent --show-error --proto '=http' --head \
+                "$qualification_package_transport_url" >/dev/null
+              ;;
+            *)
+              echo 'error: authenticated predecessor updater contract is unsupported' >&2
+              exit 1
+              ;;
+          esac
+          printf '%s' "$CYBEX_PULSE_QUALIFICATION_TOKEN" > "$token_file"
+          ubuntu-appliance/qualification/run-update-lifecycle.sh \
+            --predecessor-evidence "$predecessor_evidence" \
+            --candidate-manifest dist/cybex-pulse-release.json \
+            --qualification-package-transport-url "$qualification_package_transport_url" \
+            --manage-origin "$CYBEX_PULSE_QUALIFICATION_MANAGE_ORIGIN" \
+            --token-file "$token_file" \
+            --server-device-id "$CYBEX_PULSE_UPDATE_PREDECESSOR_DEVICE_ID" \
+            --output "$RUNNER_TEMP/cybex-pulse-ubuntu-update-qualification.json"
+          cleanup_update_inputs
+          trap - EXIT
+
       - name: Upload bounded qualification evidence
         id: upload-qualification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cybex-pulse-qualified-${{ github.run_id }}
-          path: ${{ runner.temp }}/cybex-pulse-ubuntu-qualification.json
+          path: |
+            ${{ runner.temp }}/cybex-pulse-ubuntu-qualification.json
+            ${{ runner.temp }}/cybex-pulse-ubuntu-update-qualification.json
+            ${{ runner.temp }}/cybex-pulse-qualified-predecessor.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
@@ -604,6 +913,7 @@ jobs:
       CYBEX_PULSE_QUALIFICATION_ARTIFACT_ID: ${{ needs.release_qualify.outputs.artifact_id }}
       CYBEX_PULSE_QUALIFICATION_ARTIFACT_DIGEST: ${{ needs.release_qualify.outputs.artifact_digest }}
       CYBEX_PULSE_WORKSTATION_BUNDLE_NAME: ${{ needs.release_build.outputs.workstation_bundle_name }}
+      CYBEX_PULSE_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
       CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY }}
     steps:
       - name: Checkout exact tag for independent verification
@@ -681,6 +991,7 @@ jobs:
           actual="$RUNNER_TEMP/cybex-pulse-publish-actual"
           printf '%s\n' \
             SHA256SUMS \
+            cybex-pulse-build-predecessor.json \
             cybex-pulse-release-compatibility.json \
             cybex-pulse-release.json \
             cybex-pulse-x86_64-linux \
@@ -714,6 +1025,7 @@ jobs:
             --manifest dist/cybex-pulse-release.json \
             --artifact dist/cybex-pulse-x86_64-linux \
             --installer-iso-template "dist/cybex-pulse-appliance-template-$version-x86_64-linux.iso" \
+            --expected-manage-origin "$CYBEX_PULSE_BUILD_MANAGE_ORIGIN" \
             --appliance-package-snapshot "dist/cybex-pulse-appliance-packages-$version-x86_64-linux.tar.zst" \
             --workstation-netboot-bundle "dist/$CYBEX_PULSE_WORKSTATION_BUNDLE_NAME" \
             --workstation-netboot-tree "$RUNNER_TEMP/cybex-workstation-netboot-verify" \
@@ -726,6 +1038,8 @@ jobs:
             --compatibility protocol/compatibility.json \
             --trusted-public-key "$CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY"
           evidence=qualification/cybex-pulse-ubuntu-qualification.json
+          update_evidence=qualification/cybex-pulse-ubuntu-update-qualification.json
+          predecessor_identity=qualification/cybex-pulse-qualified-predecessor.json
           test -f "$evidence" && test ! -L "$evidence"
           test "$(jq -er '.schema' "$evidence")" = cybex.pulse.ubuntu-appliance-qualification.v1
           test "$(jq -er '.ok' "$evidence")" = true
@@ -735,10 +1049,43 @@ jobs:
           test "$(jq -er '.identity_rotation' "$evidence")" = true
           test "$(jq -er '.installed_media_left_attached' "$evidence")" = true
           test "$(jq -er '.appliance_projection_healthy' "$evidence")" = true
+          test "$(jq -er '.workstation_runtime_operational' "$evidence")" = true
+          test "$(jq -er '.workstation_runtime_converged' "$evidence")" = true
+          test "$(jq -er '.builtin_blueprints_source_free' "$evidence")" = true
+          test "$(jq -er '.builtin_blueprints_deliverable' "$evidence")" = true
+          test "$(jq -er '.builtin_blueprints_qualified_on_new_pulse' "$evidence")" = true
           test "$(jq -er '.two_phase_network_acknowledged' "$evidence")" = true
           test "$(jq -er '.exact_principal_ssh_certificate' "$evidence")" = true
+          test "$(jq -er '.release_version' "$evidence")" = "$version"
+          test "$(jq -er '.ubuntu_snapshot_id' "$evidence")" = \
+            "$(jq -er '.appliance_release_v1.ubuntu_snapshot_id' dist/cybex-pulse-release.json)"
+          test "$(jq -er '.root_generation | tostring' "$evidence")" = 0
           test "$(jq -er '.template_sha256' "$evidence")" = \
             "$(jq -er '.installer_iso_template_v2.template_sha256' dist/cybex-pulse-release.json)"
+          test -f "$update_evidence" && test ! -L "$update_evidence"
+          test -f "$predecessor_identity" && test ! -L "$predecessor_identity"
+          test "$(sha256sum "$predecessor_identity" | awk '{print $1}')" = \
+            "${{ needs.release_build.outputs.predecessor_identity_sha256 }}"
+          test "$(jq -er '.release_id' "$predecessor_identity")" = \
+            "${{ needs.release_build.outputs.predecessor_release }}"
+          test "$(jq -er '.ubuntu_snapshot_id' "$predecessor_identity")" = \
+            "${{ needs.release_build.outputs.predecessor_snapshot }}"
+          test "$(jq -er '.schema' "$update_evidence")" = \
+            cybex.pulse.ubuntu-appliance-update-qualification.v1
+          test "$(jq -er '.ok' "$update_evidence")" = true
+          test "$(jq -er '.candidate_release' "$update_evidence")" = "$version"
+          test "$(jq -er '.predecessor_release' "$update_evidence")" = \
+            "$(jq -er '.release_id' "$predecessor_identity")"
+          test "$(jq -er '.predecessor_ubuntu_snapshot_id' "$update_evidence")" = \
+            "$(jq -er '.ubuntu_snapshot_id' "$predecessor_identity")"
+          test "$(jq -er '.candidate_manifest_sha256' "$update_evidence")" = \
+            "$(sha256sum dist/cybex-pulse-release.json | awk '{print $1}')"
+          test "$(jq -er '.real_update' "$update_evidence")" = true
+          test "$(jq -er '.reboot_observed' "$update_evidence")" = true
+          test "$(jq -er '.release_activated' "$update_evidence")" = true
+          test "$(jq -er '.appliance_projection_healthy' "$update_evidence")" = true
+          test "$(jq -er '.secure_boot' "$update_evidence")" = true
+          test "$(jq -er '.final_state' "$update_evidence")" = ready
           install -m 0700 dist/cybex-pulse-x86_64-linux "$RUNNER_TEMP/cybex-pulse-release-verify"
           test "$("$RUNNER_TEMP/cybex-pulse-release-verify" --version)" = "cybex-pulse $version"
           rm -f -- "$RUNNER_TEMP/cybex-pulse-release-verify"
@@ -767,8 +1114,11 @@ jobs:
             dist/${{ env.CYBEX_PULSE_WORKSTATION_BUNDLE_NAME }}
             dist/cybex-pulse-release.json
             dist/cybex-pulse-release-compatibility.json
+            dist/cybex-pulse-build-predecessor.json
             dist/SHA256SUMS
             qualification/cybex-pulse-ubuntu-qualification.json
+            qualification/cybex-pulse-ubuntu-update-qualification.json
+            qualification/cybex-pulse-qualified-predecessor.json
 
       - name: Remove only a stale draft for this exact tag
         env:
@@ -819,14 +1169,17 @@ jobs:
               --arg compatibility "cybex-pulse-release-compatibility.json" \
               --arg checksums "SHA256SUMS" \
               --arg qualification "cybex-pulse-ubuntu-qualification.json" \
+              --arg update_qualification "cybex-pulse-ubuntu-update-qualification.json" \
+              --arg predecessor_identity "cybex-pulse-build-predecessor.json" \
               'type == "array"
-               and length <= 8
+               and length <= 10
                and ((map(.name) | length) == (map(.name) | unique | length))
                and all(.[].name;
                  . == $binary or . == $manifest
                  or . == $compatibility
                  or . == $template or . == $packages or . == $netboot or . == $checksums
-                 or . == $qualification)' \
+                 or . == $qualification or . == $update_qualification
+                 or . == $predecessor_identity)' \
               "$stale_assets" >/dev/null
             gh api --method DELETE \
               -H 'Accept: application/vnd.github+json' \
@@ -856,8 +1209,10 @@ jobs:
             "dist/$CYBEX_PULSE_WORKSTATION_BUNDLE_NAME" \
             dist/cybex-pulse-release.json \
             dist/cybex-pulse-release-compatibility.json \
+            dist/cybex-pulse-build-predecessor.json \
             dist/SHA256SUMS \
-            qualification/cybex-pulse-ubuntu-qualification.json
+            qualification/cybex-pulse-ubuntu-qualification.json \
+            qualification/cybex-pulse-ubuntu-update-qualification.json
 
       - name: Verify remote draft assets and publish immutably
         env:
@@ -872,7 +1227,7 @@ jobs:
             --jq '.id')"
           remote_assets="$RUNNER_TEMP/cybex-pulse-release-assets.json"
           remote_assets_match() {
-            jq -e 'length == 8' "$remote_assets" >/dev/null || return 1
+            jq -e 'length == 10' "$remote_assets" >/dev/null || return 1
             for path in \
               dist/cybex-pulse-x86_64-linux \
               "dist/cybex-pulse-appliance-template-$CYBEX_PULSE_RELEASE_VERSION-x86_64-linux.iso" \
@@ -880,8 +1235,10 @@ jobs:
               "dist/$CYBEX_PULSE_WORKSTATION_BUNDLE_NAME" \
               dist/cybex-pulse-release.json \
               dist/cybex-pulse-release-compatibility.json \
+              dist/cybex-pulse-build-predecessor.json \
               dist/SHA256SUMS \
-              qualification/cybex-pulse-ubuntu-qualification.json
+              qualification/cybex-pulse-ubuntu-qualification.json \
+              qualification/cybex-pulse-ubuntu-update-qualification.json
               do
               name="$(basename "$path")"
               digest="sha256:$(sha256sum "$path" | cut -d ' ' -f 1)"
@@ -916,38 +1273,79 @@ jobs:
             "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$releases"
           previous="$(jq -c --arg current "$GITHUB_REF_NAME" \
             '[.[][] | select(.draft == false and .tag_name != $current)]
-             | sort_by(.published_at // .created_at) | last // empty' \
+             | sort_by([(.published_at // .created_at), .id]) | last // empty' \
             "$releases")"
-          if [ -n "$previous" ]; then
-            previous_release_id="$(jq -er '.id' <<<"$previous")"
-            [[ "$previous_release_id" =~ ^[1-9][0-9]*$ ]]
-            previous_assets="$RUNNER_TEMP/cybex-pulse-publish-predecessor-assets.json"
-            gh api --paginate --slurp \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2026-03-10' \
-              "repos/$GITHUB_REPOSITORY/releases/$previous_release_id/assets?per_page=100" \
-              > "$previous_assets"
-            test "$(jq \
-              '[.[][] | select(.name == "cybex-pulse-release-compatibility.json")] | length' \
-              "$previous_assets")" -eq 1
-            previous_asset_id="$(jq -er \
-              '.[][] | select(.name == "cybex-pulse-release-compatibility.json") | .id' \
-              "$previous_assets")"
-            [[ "$previous_asset_id" =~ ^[1-9][0-9]*$ ]]
-            previous_compatibility="$RUNNER_TEMP/cybex-pulse-publish-predecessor.json"
-            gh api \
-              -H 'Accept: application/octet-stream' \
-              -H 'X-GitHub-Api-Version: 2026-03-10' \
-              "repos/$GITHUB_REPOSITORY/releases/assets/$previous_asset_id" \
-              > "$previous_compatibility"
-            test -f "$previous_compatibility" && test ! -L "$previous_compatibility"
-            test "$(stat -c %s "$previous_compatibility")" -gt 0
-            test "$(stat -c %s "$previous_compatibility")" -le 1048576
-            python3 -B tools/pulse-release.py verify-successor \
-              --previous-compatibility "$previous_compatibility" \
-              --current-compatibility dist/cybex-pulse-release-compatibility.json \
-              --trusted-public-key "$CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY"
-          fi
+          test -n "$previous"
+          previous_release_id="$(jq -er '.id' <<<"$previous")"
+          previous_tag_name="$(jq -er '.tag_name' <<<"$previous")"
+          [[ "$previous_release_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$previous_tag_name" =~ ^v[0-9][0-9A-Za-z.+-]*$ ]]
+          previous_assets="$RUNNER_TEMP/cybex-pulse-publish-predecessor-assets.json"
+          gh api --paginate --slurp \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases/$previous_release_id/assets?per_page=100" \
+            > "$previous_assets"
+          for required_asset in \
+            cybex-pulse-release-compatibility.json \
+            cybex-pulse-release.json
+          do
+            test "$(jq --arg name "$required_asset" \
+              '[.[][] | select(.name == $name)] | length' "$previous_assets")" -eq 1
+          done
+          previous_compatibility_id="$(jq -er \
+            '.[][] | select(.name == "cybex-pulse-release-compatibility.json") | .id' \
+            "$previous_assets")"
+          previous_manifest_id="$(jq -er \
+            '.[][] | select(.name == "cybex-pulse-release.json") | .id' \
+            "$previous_assets")"
+          [[ "$previous_compatibility_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$previous_manifest_id" =~ ^[1-9][0-9]*$ ]]
+          previous_compatibility="$RUNNER_TEMP/cybex-pulse-publish-predecessor-compatibility.json"
+          previous_manifest="$RUNNER_TEMP/cybex-pulse-publish-predecessor-manifest.json"
+          gh api \
+            -H 'Accept: application/octet-stream' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases/assets/$previous_compatibility_id" \
+            > "$previous_compatibility"
+          gh api \
+            -H 'Accept: application/octet-stream' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases/assets/$previous_manifest_id" \
+            > "$previous_manifest"
+          previous_snapshot_name="$(jq -er \
+            '.appliance_release_v1.cybex_repository_snapshot.url | split("/") | last' \
+            "$previous_manifest")"
+          [[ "$previous_snapshot_name" =~ ^cybex-pulse-appliance-packages-[0-9A-Za-z.+-]+-x86_64-linux\.tar\.zst$ ]]
+          test "$(jq --arg name "$previous_snapshot_name" \
+            '[.[][] | select(.name == $name)] | length' "$previous_assets")" -eq 1
+          previous_snapshot_size="$(jq -er --arg name "$previous_snapshot_name" \
+            '.[][] | select(.name == $name) | .size' "$previous_assets")"
+          previous_snapshot_digest="$(jq -er --arg name "$previous_snapshot_name" \
+            '.[][] | select(.name == $name) | .digest' "$previous_assets")"
+          [[ "$previous_snapshot_size" =~ ^[1-9][0-9]*$ ]]
+          [[ "$previous_snapshot_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$previous_snapshot_size" = "$(jq -er \
+            '.appliance_release_v1.cybex_repository_snapshot.size_bytes' \
+            "$previous_manifest")"
+          test "${previous_snapshot_digest#sha256:}" = "$(jq -er \
+            '.appliance_release_v1.cybex_repository_snapshot.sha256' \
+            "$previous_manifest")"
+          python3 -B ubuntu-appliance/qualification/legacy-bridge-gate.py \
+            recheck-predecessor \
+            --qualified-identity qualification/cybex-pulse-qualified-predecessor.json \
+            --compatibility "$previous_compatibility" \
+            --manifest "$previous_manifest" \
+            --trusted-public-key "$CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY" \
+            --release-verifier tools/pulse-release.py \
+            --github-release-id "$previous_release_id" \
+            --tag-name "$previous_tag_name" \
+            --package-snapshot-sha256 "${previous_snapshot_digest#sha256:}" \
+            --package-snapshot-size "$previous_snapshot_size"
+          python3 -B tools/pulse-release.py verify-successor \
+            --previous-compatibility "$previous_compatibility" \
+            --current-compatibility dist/cybex-pulse-release-compatibility.json \
+            --trusted-public-key "$CYBEX_PULSE_UPDATE_TRUSTED_PUBLIC_KEY"
           gh release edit "$GITHUB_REF_NAME" --draft=false
           immutable=false
           for _attempt in $(seq 1 20); do
@@ -974,8 +1372,10 @@ jobs:
             "dist/$CYBEX_PULSE_WORKSTATION_BUNDLE_NAME" \
             dist/cybex-pulse-release.json \
             dist/cybex-pulse-release-compatibility.json \
+            dist/cybex-pulse-build-predecessor.json \
             dist/SHA256SUMS \
-            qualification/cybex-pulse-ubuntu-qualification.json
+            qualification/cybex-pulse-ubuntu-qualification.json \
+            qualification/cybex-pulse-ubuntu-update-qualification.json
           do
             gh release verify-asset "$GITHUB_REF_NAME" "$path"
           done

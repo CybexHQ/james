@@ -44,6 +44,9 @@ class PulseReleaseToolTests(unittest.TestCase):
         ] = bytes(8192)
         self.template.write_bytes(media)
         self.provisioning_key = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+        self.manage_origin = "https://manage.example.test"
+        self.template_metadata = self.directory / "installer-template-metadata.json"
+        self.write_template_metadata()
         self.compatibility = self.directory / "compatibility.json"
         self.compatibility.write_bytes(
             (REPOSITORY / "protocol" / "compatibility.json").read_bytes()
@@ -64,6 +67,31 @@ class PulseReleaseToolTests(unittest.TestCase):
         result = self.run_tool("public-key", "--private-key", str(self.private_key))
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         return result.stdout.decode().strip()
+
+    def write_template_metadata(
+        self,
+        *,
+        version: str = "0.1.1",
+        package_delivery: str | None = None,
+    ) -> None:
+        metadata: dict[str, object] = {
+            "schema": "cybex.pulse.installer-template-build.v1",
+            "version": version,
+            "architecture": "x86_64-linux",
+            "base_os": "ubuntu",
+            "base_os_version": "26.04",
+            "manage_origin": self.manage_origin,
+            "size_bytes": self.template.stat().st_size,
+            "template_sha256": hashlib.sha256(self.template.read_bytes()).hexdigest(),
+            "personalization_offset": self.personalization_offset,
+            "personalization_size": 8192,
+            "placeholder_sha256": hashlib.sha256(bytes(8192)).hexdigest(),
+            "provisioning_public_keys": [self.provisioning_key],
+        }
+        if package_delivery is not None:
+            metadata["package_delivery"] = package_delivery
+            metadata["ubuntu_snapshot_id"] = "20260804T000000Z"
+        self.template_metadata.write_text(json.dumps(metadata), encoding="utf-8")
 
     def manifest_arguments(self, output: Path) -> list[str]:
         return [
@@ -87,8 +115,12 @@ class PulseReleaseToolTests(unittest.TestCase):
             "--installer-iso-template-url",
             "https://releases.example.test/v0.1.1/"
             "cybex-pulse-appliance-template-0.1.1-x86_64-linux.iso",
+            "--installer-iso-template-metadata",
+            str(self.template_metadata),
             "--installer-iso-template-personalization-offset",
             str(self.personalization_offset),
+            "--expected-manage-origin",
+            self.manage_origin,
             "--provisioning-public-key",
             self.provisioning_key,
             "--published-at",
@@ -104,11 +136,14 @@ class PulseReleaseToolTests(unittest.TestCase):
             str(self.artifact),
             "--installer-iso-template",
             str(self.template),
+            "--expected-manage-origin",
+            self.manage_origin,
             "--trusted-public-key",
             self.public_key(),
         ]
 
     def network_package_arguments(self) -> tuple[list[str], Path]:
+        self.write_template_metadata(package_delivery="network-snapshot-v1")
         snapshot = self.directory / (
             "cybex-pulse-appliance-packages-0.1.1-x86_64-linux.tar.zst"
         )
@@ -120,6 +155,7 @@ class PulseReleaseToolTests(unittest.TestCase):
             "linux-generic": "6.17.0.1.1",
             "linux-firmware": "20260715.git123-0ubuntu1",
             "nix-bin": "2.30.1+dfsg-1",
+            "python3": "3.13.5-1",
         }
         metadata = self.directory / "package-snapshot.json"
         metadata.write_text(
@@ -128,13 +164,17 @@ class PulseReleaseToolTests(unittest.TestCase):
                     "schema": "cybex.pulse.appliance-package-snapshot.v1",
                     "release_id": "0.1.1",
                     "ubuntu_snapshot_id": "20260804T000000Z",
+                    "manage_origin": self.manage_origin,
+                    "manage_source_revision": "a" * 40,
+                    "manage_source_sha256": "c" * 64,
+                    "manage_source_size_bytes": 123,
                     "filename": snapshot.name,
                     "sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
                     "size_bytes": snapshot.stat().st_size,
                     "required_package_versions": versions,
                     "expected_kernel": versions["linux-generic"],
                     "minimum_protocol": 4,
-                    "minimum_state_schema": 1,
+                    "minimum_state_schema": 2,
                     "rollback_compatible": True,
                 }
             ),
@@ -354,6 +394,7 @@ class PulseReleaseToolTests(unittest.TestCase):
         self.assertNotIn("package_delivery", descriptor)
         self.assertEqual(descriptor["base_os"], "ubuntu")
         self.assertEqual(descriptor["base_os_version"], "26.04")
+        self.assertEqual(descriptor["manage_origin"], self.manage_origin)
         self.assertEqual(descriptor["personalization_size"], 8192)
         self.assertEqual(
             descriptor["template_sha256"],
@@ -367,6 +408,71 @@ class PulseReleaseToolTests(unittest.TestCase):
         verified = self.run_tool(*self.verify_arguments(first))
         self.assertEqual(verified.returncode, 0, verified.stderr.decode())
         self.assertIn(descriptor["template_sha256"].encode(), verified.stdout)
+
+    def test_manage_origin_is_explicit_signed_and_never_inferred_from_artifact_urls(
+        self,
+    ) -> None:
+        output = self.directory / "origin-release.json"
+        metadata = json.loads(self.template_metadata.read_text(encoding="utf-8"))
+        metadata["manage_origin"] = "https://manage.cybex.net"
+        self.template_metadata.write_text(json.dumps(metadata), encoding="utf-8")
+
+        rejected = self.run_tool(*self.manifest_arguments(output))
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"does not match the expected manage origin", rejected.stderr)
+        self.assertFalse(output.exists())
+
+        self.write_template_metadata()
+        signed = self.run_tool(*self.manifest_arguments(output))
+        self.assertEqual(signed.returncode, 0, signed.stderr.decode())
+        manifest = json.loads(output.read_text(encoding="utf-8"))
+        descriptor = manifest["installer_iso_template_v2"]
+        self.assertEqual(descriptor["manage_origin"], self.manage_origin)
+        self.assertNotEqual(
+            descriptor["manage_origin"],
+            "https://releases.example.test",
+        )
+
+        release_tool = runpy.run_path(str(TOOL))
+        unsigned = dict(descriptor)
+        unsigned.pop("signature")
+        message = release_tool["_installer_iso_template_message"](unsigned).decode()
+        self.assertTrue(message.endswith(f"{self.manage_origin}\n"))
+        self.assertLess(
+            message.index(f"{self.provisioning_key}\n"),
+            message.index(f"{self.manage_origin}\n"),
+        )
+
+        mismatched_verify = self.verify_arguments(output)
+        mismatched_verify[
+            mismatched_verify.index("--expected-manage-origin") + 1
+        ] = "https://manage.cybex.net"
+        rejected = self.run_tool(*mismatched_verify)
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"does not match the explicit expected origin", rejected.stderr)
+
+    def test_manage_origin_canonicalization_preserves_nondefault_https_ports(
+        self,
+    ) -> None:
+        accepted = self.run_tool(
+            "validate-manage-origin",
+            "--expected-manage-origin",
+            "https://manage.example.test:8443",
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr.decode())
+        for invalid in (
+            "https://manage.example.test:443",
+            "https://Manage.example.test",
+            "https://manage.example.test/",
+            "https://user@manage.example.test",
+            "http://manage.example.test",
+        ):
+            rejected = self.run_tool(
+                "validate-manage-origin",
+                "--expected-manage-origin",
+                invalid,
+            )
+            self.assertEqual(rejected.returncode, 2, invalid)
 
     def test_network_package_delivery_is_signed_and_requires_its_snapshot(self) -> None:
         output = self.directory / "network-release.json"
@@ -384,12 +490,69 @@ class PulseReleaseToolTests(unittest.TestCase):
         )
         self.assertIn("appliance_release_v1", manifest)
 
-        verified = self.run_tool(
+        verified_without_build_metadata = self.run_tool(
             *self.verify_arguments(output),
             "--appliance-package-snapshot",
             str(snapshot),
         )
+        self.assertEqual(
+            verified_without_build_metadata.returncode,
+            0,
+            verified_without_build_metadata.stderr.decode(),
+        )
+
+        verified = self.run_tool(
+            *self.verify_arguments(output),
+            "--appliance-package-snapshot",
+            str(snapshot),
+            "--appliance-package-snapshot-metadata",
+            str(self.directory / "package-snapshot.json"),
+        )
         self.assertEqual(verified.returncode, 0, verified.stderr.decode())
+
+        package_metadata = self.directory / "package-snapshot.json"
+        mismatched_metadata = json.loads(package_metadata.read_text(encoding="utf-8"))
+        mismatched_metadata["manage_origin"] = "https://manage.cybex.net"
+        package_metadata.write_text(json.dumps(mismatched_metadata), encoding="utf-8")
+        rejected = self.run_tool(
+            *self.verify_arguments(output),
+            "--appliance-package-snapshot",
+            str(snapshot),
+            "--appliance-package-snapshot-metadata",
+            str(package_metadata),
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"expected manage origin", rejected.stderr)
+        mismatched_metadata["manage_origin"] = self.manage_origin
+        package_metadata.write_text(json.dumps(mismatched_metadata), encoding="utf-8")
+
+        package_arguments_without_metadata = list(package_arguments)
+        metadata_index = package_arguments_without_metadata.index(
+            "--appliance-package-snapshot-metadata"
+        )
+        del package_arguments_without_metadata[metadata_index : metadata_index + 2]
+        missing_package_metadata = self.run_tool(
+            *self.manifest_arguments(
+                self.directory / "missing-package-metadata.json"
+            ),
+            *package_arguments_without_metadata,
+        )
+        self.assertEqual(missing_package_metadata.returncode, 2)
+        self.assertIn(
+            b"snapshot, metadata, and URL must be supplied together",
+            missing_package_metadata.stderr,
+        )
+
+        metadata_without_snapshot = self.run_tool(
+            *self.verify_arguments(output),
+            "--appliance-package-snapshot-metadata",
+            str(package_metadata),
+        )
+        self.assertEqual(metadata_without_snapshot.returncode, 2)
+        self.assertIn(
+            b"appliance-package-snapshot-metadata requires",
+            metadata_without_snapshot.stderr,
+        )
 
         missing_snapshot = self.run_tool(
             *self.manifest_arguments(self.directory / "missing-snapshot.json"),
@@ -470,6 +633,7 @@ class PulseReleaseToolTests(unittest.TestCase):
                 "url": manifest["installer_iso_template_v2"]["url"],
                 "sha256": manifest["installer_iso_template_v2"]["template_sha256"],
                 "size_bytes": manifest["installer_iso_template_v2"]["size_bytes"],
+                "manage_origin": self.manage_origin,
             },
         )
         self.assertIsNone(asset["artifacts"]["appliance_package_snapshot"])
@@ -523,6 +687,27 @@ class PulseReleaseToolTests(unittest.TestCase):
         manifest_path = self.directory / "complete-release.json"
         package_arguments, _snapshot = self.network_package_arguments()
         workstation_arguments, _bundle, _tree = self.workstation_arguments()
+
+        package_metadata_path = self.directory / "package-snapshot.json"
+        mismatched_metadata = json.loads(
+            package_metadata_path.read_text(encoding="utf-8")
+        )
+        mismatched_metadata["manage_source_revision"] = "d" * 40
+        package_metadata_path.write_text(
+            json.dumps(mismatched_metadata), encoding="utf-8"
+        )
+        mismatched = self.run_tool(
+            *self.manifest_arguments(self.directory / "mismatched-source.json"),
+            *package_arguments,
+            *workstation_arguments,
+        )
+        self.assertEqual(mismatched.returncode, 2)
+        self.assertIn(b"does not match the workstation netboot", mismatched.stderr)
+        mismatched_metadata["manage_source_revision"] = "a" * 40
+        package_metadata_path.write_text(
+            json.dumps(mismatched_metadata), encoding="utf-8"
+        )
+
         signed = self.run_tool(
             *self.manifest_arguments(manifest_path),
             *package_arguments,
@@ -538,9 +723,12 @@ class PulseReleaseToolTests(unittest.TestCase):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         asset = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(asset["artifacts"]["pulse_binary"], manifest["artifact"])
+        expected_appliance = dict(
+            manifest["appliance_release_v1"]["cybex_repository_snapshot"]
+        )
+        expected_appliance["minimum_state_schema"] = 2
         self.assertEqual(
-            asset["artifacts"]["appliance_package_snapshot"],
-            manifest["appliance_release_v1"]["cybex_repository_snapshot"],
+            asset["artifacts"]["appliance_package_snapshot"], expected_appliance
         )
         expected_runtime = dict(manifest["workstation_netboot"])
         expected_runtime.pop("signature")
@@ -771,6 +959,400 @@ class PulseReleaseToolTests(unittest.TestCase):
         self.assertGreater(predecessor_check, 0)
         self.assertLess(predecessor_check, immutable_publish)
 
+    def test_successor_accepts_legacy_predecessor_without_origin_but_requires_current(
+        self,
+    ) -> None:
+        manifest_path = self.directory / "release.json"
+        signed = self.run_tool(*self.manifest_arguments(manifest_path))
+        self.assertEqual(signed.returncode, 0, signed.stderr.decode())
+        generated_path = self.directory / "generated-compatibility.json"
+        generated = self.run_tool(
+            *self.compatibility_arguments(generated_path, manifest_path)
+        )
+        self.assertEqual(generated.returncode, 0, generated.stderr.decode())
+        release_tool = runpy.run_path(str(TOOL))
+        generated_asset = json.loads(generated_path.read_text(encoding="utf-8"))
+
+        def sign_asset(value: dict[str, object], path: Path) -> Path:
+            payload = json.loads(json.dumps(value))
+            payload.pop("signature", None)
+            private_fd = os.open(self.private_key, os.O_RDONLY)
+            try:
+                signature = release_tool["_sign"](
+                    private_fd,
+                    release_tool["_release_compatibility_message"](payload),
+                )
+            finally:
+                os.close(private_fd)
+            self.write_canonical_json(
+                path,
+                {
+                    **payload,
+                    "signature": base64.b64encode(signature).decode("ascii"),
+                },
+            )
+            return path
+
+        legacy_value = json.loads(json.dumps(generated_asset))
+        legacy_value["artifacts"]["appliance_iso_template"].pop("manage_origin")
+        legacy_path = sign_asset(
+            legacy_value, self.directory / "legacy-predecessor.json"
+        )
+        current_value = json.loads(json.dumps(generated_asset))
+        current_value["pulse_release_version"] = "0.1.2"
+        current_path = sign_asset(current_value, self.directory / "current.json")
+
+        accepted = self.run_tool(
+            "verify-successor",
+            "--previous-compatibility",
+            str(legacy_path),
+            "--current-compatibility",
+            str(current_path),
+            "--trusted-public-key",
+            self.public_key(),
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr.decode())
+
+        switched_value = json.loads(json.dumps(generated_asset))
+        switched_value["pulse_release_version"] = "0.1.2"
+        switched_value["artifacts"]["appliance_iso_template"][
+            "manage_origin"
+        ] = "https://manage.cybex.net"
+        switched_path = sign_asset(
+            switched_value, self.directory / "switched-origin.json"
+        )
+        rejected = self.run_tool(
+            "verify-successor",
+            "--previous-compatibility",
+            str(generated_path),
+            "--current-compatibility",
+            str(switched_path),
+            "--trusted-public-key",
+            self.public_key(),
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"must not change within a release lineage", rejected.stderr)
+
+        production_template = self.directory / (
+            "cybex-pulse-appliance-template-0.1.2-x86_64-linux.iso"
+        )
+        production_template.write_bytes(self.template.read_bytes())
+        self.template = production_template
+        self.manage_origin = "https://manage.cybex.net"
+        self.write_template_metadata(version="0.1.2")
+        production_manifest = self.directory / "production-release.json"
+        production_manifest_arguments = self.manifest_arguments(production_manifest)
+        production_manifest_arguments[
+            production_manifest_arguments.index("--version") + 1
+        ] = "0.1.2"
+        for index, value in enumerate(production_manifest_arguments):
+            if "v0.1.1" in value:
+                production_manifest_arguments[index] = value.replace(
+                    "v0.1.1", "v0.1.2"
+                )
+            if "template-0.1.1" in value:
+                production_manifest_arguments[index] = value.replace(
+                    "template-0.1.1", "template-0.1.2"
+                )
+        signed = self.run_tool(*production_manifest_arguments)
+        self.assertEqual(signed.returncode, 0, signed.stderr.decode())
+        production_compatibility_arguments = self.compatibility_arguments(
+            self.directory / "production-compatibility.json", production_manifest
+        )
+        manifest_url_index = (
+            production_compatibility_arguments.index("--manifest-url") + 1
+        )
+        production_compatibility_arguments[manifest_url_index] = (
+            production_compatibility_arguments[manifest_url_index].replace(
+                "v0.1.1", "v0.1.2"
+            )
+        )
+        rejected = self.run_tool(
+            *production_compatibility_arguments,
+            "--previous-compatibility",
+            str(generated_path),
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"must not change within a release lineage", rejected.stderr)
+
+        rejected = self.run_tool(
+            "verify-successor",
+            "--previous-compatibility",
+            str(current_path),
+            "--current-compatibility",
+            str(legacy_path),
+            "--trusted-public-key",
+            self.public_key(),
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"requires manage_origin", rejected.stderr)
+
+    def test_appliance_state_schema_transition_rejects_downgrade_and_removal(
+        self,
+    ) -> None:
+        release_tool = runpy.run_path(str(TOOL))
+        enforce = release_tool["_enforce_appliance_state_schema_transition"]
+
+        def payload(snapshot):
+            return {"artifacts": {"appliance_package_snapshot": snapshot}}
+
+        schema_two = {"minimum_state_schema": 2}
+        schema_one = {"minimum_state_schema": 1}
+        enforce(payload(None), payload(schema_two))
+        enforce(payload(schema_two), payload(schema_two))
+        with self.assertRaisesRegex(
+            release_tool["ReleaseError"], "must not decrease"
+        ):
+            enforce(payload(schema_two), payload(schema_one))
+        with self.assertRaisesRegex(
+            release_tool["ReleaseError"], "must not be removed"
+        ):
+            enforce(payload(schema_two), payload(None))
+
+    @unittest.skipUnless(shutil.which("zstd"), "zstd is required")
+    def test_release_successor_rejects_equal_runtime_version_descriptor_change(
+        self,
+    ) -> None:
+        previous_manifest = self.directory / "previous-release.json"
+        workstation_arguments, _bundle, _tree = self.workstation_arguments()
+        signed = self.run_tool(
+            *self.manifest_arguments(previous_manifest),
+            *workstation_arguments,
+        )
+        self.assertEqual(signed.returncode, 0, signed.stderr.decode())
+        previous_asset = self.directory / "previous-compatibility.json"
+        generated = self.run_tool(
+            *self.compatibility_arguments(previous_asset, previous_manifest)
+        )
+        self.assertEqual(generated.returncode, 0, generated.stderr.decode())
+
+        current_template = self.directory / (
+            "cybex-pulse-appliance-template-0.1.2-x86_64-linux.iso"
+        )
+        current_template.write_bytes(self.template.read_bytes())
+        self.write_template_metadata(version="0.1.2")
+        current_manifest_arguments = self.manifest_arguments(
+            self.directory / "current-release.json"
+        )
+        current_manifest_arguments[
+            current_manifest_arguments.index("--version") + 1
+        ] = "0.1.2"
+        current_manifest_arguments[
+            current_manifest_arguments.index("--installer-iso-template") + 1
+        ] = str(current_template)
+        for index, value in enumerate(current_manifest_arguments):
+            if isinstance(value, str) and "v0.1.1" in value:
+                current_manifest_arguments[index] = value.replace(
+                    "v0.1.1", "v0.1.2"
+                )
+            if isinstance(value, str) and "template-0.1.1" in value:
+                current_manifest_arguments[index] = value.replace(
+                    "template-0.1.1", "template-0.1.2"
+                )
+        current_workstation_arguments = list(workstation_arguments)
+        workstation_url_index = (
+            current_workstation_arguments.index("--workstation-netboot-url") + 1
+        )
+        current_workstation_arguments[workstation_url_index] = (
+            current_workstation_arguments[workstation_url_index].replace(
+                "v0.1.1", "v0.1.2"
+            )
+        )
+        current_manifest = self.directory / "current-release.json"
+        signed = self.run_tool(
+            *current_manifest_arguments,
+            *current_workstation_arguments,
+        )
+        self.assertEqual(signed.returncode, 0, signed.stderr.decode())
+
+        current_asset = self.directory / "current-compatibility.json"
+        current_compatibility_arguments = self.compatibility_arguments(
+            current_asset, current_manifest
+        )
+        manifest_url_index = (
+            current_compatibility_arguments.index("--manifest-url") + 1
+        )
+        current_compatibility_arguments[manifest_url_index] = (
+            current_compatibility_arguments[manifest_url_index].replace(
+                "v0.1.1", "v0.1.2"
+            )
+        )
+        generated = self.run_tool(*current_compatibility_arguments)
+        self.assertEqual(generated.returncode, 0, generated.stderr.decode())
+
+        generation_rejected = self.run_tool(
+            *current_compatibility_arguments,
+            "--previous-compatibility",
+            str(previous_asset),
+        )
+        self.assertEqual(generation_rejected.returncode, 2)
+        self.assertIn(
+            b"descriptor identity changed at equal SemVer precedence",
+            generation_rejected.stderr,
+        )
+
+        successor_rejected = self.run_tool(
+            "verify-successor",
+            "--previous-compatibility",
+            str(previous_asset),
+            "--current-compatibility",
+            str(current_asset),
+            "--trusted-public-key",
+            self.public_key(),
+        )
+        self.assertEqual(successor_rejected.returncode, 2)
+        self.assertIn(
+            b"descriptor identity changed at equal SemVer precedence",
+            successor_rejected.stderr,
+        )
+
+    @unittest.skipUnless(shutil.which("zstd"), "zstd is required")
+    def test_release_successor_enforces_runtime_watermark_invariants(self) -> None:
+        previous_manifest = self.directory / "watermark-previous-release.json"
+        workstation_arguments, _bundle, _tree = self.workstation_arguments()
+        signed = self.run_tool(
+            *self.manifest_arguments(previous_manifest),
+            *workstation_arguments,
+        )
+        self.assertEqual(signed.returncode, 0, signed.stderr.decode())
+        previous_asset_path = self.directory / "watermark-previous.json"
+        generated = self.run_tool(
+            *self.compatibility_arguments(previous_asset_path, previous_manifest)
+        )
+        self.assertEqual(generated.returncode, 0, generated.stderr.decode())
+
+        release_tool = runpy.run_path(str(TOOL))
+        previous_asset = json.loads(
+            previous_asset_path.read_text(encoding="utf-8")
+        )
+        previous_runtime = previous_asset["artifacts"]["workstation_runtime"]
+        self.assertIsInstance(previous_runtime, dict)
+
+        def signed_asset(
+            name: str,
+            *,
+            pulse_version: str,
+            runtime: dict[str, object] | None,
+            epoch: int = 1,
+        ) -> Path:
+            payload = json.loads(json.dumps(previous_asset))
+            payload.pop("signature")
+            payload["pulse_release_version"] = pulse_version
+            payload["artifacts"]["workstation_runtime"] = runtime
+            payload["compatibility"]["workstation_runtime"][
+                "compatibility_epoch"
+            ] = epoch
+            payload["compatibility_sha256"] = hashlib.sha256(
+                release_tool["_canonical_json_body"](payload["compatibility"])
+            ).hexdigest()
+            private_fd = os.open(self.private_key, os.O_RDONLY)
+            try:
+                signature = release_tool["_sign"](
+                    private_fd,
+                    release_tool["_release_compatibility_message"](payload),
+                )
+            finally:
+                os.close(private_fd)
+            output = self.directory / name
+            self.write_canonical_json(
+                output,
+                {
+                    **payload,
+                    "signature": base64.b64encode(signature).decode("ascii"),
+                },
+            )
+            return output
+
+        def verify(previous: Path, current: Path) -> subprocess.CompletedProcess[bytes]:
+            return self.run_tool(
+                "verify-successor",
+                "--previous-compatibility",
+                str(previous),
+                "--current-compatibility",
+                str(current),
+                "--trusted-public-key",
+                self.public_key(),
+            )
+
+        exact_reuse = signed_asset(
+            "watermark-exact-reuse.json",
+            pulse_version="0.1.2",
+            runtime=previous_runtime,
+        )
+        accepted = verify(previous_asset_path, exact_reuse)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr.decode())
+
+        advanced_runtime = json.loads(json.dumps(previous_runtime))
+        advanced_runtime["runtime_version"] = "2.3.5"
+        advanced_runtime["url"] = advanced_runtime["url"].replace(
+            "2.3.4", "2.3.5"
+        )
+        advanced_runtime["sha256"] = "c" * 64
+        advanced = signed_asset(
+            "watermark-advanced.json",
+            pulse_version="0.1.2",
+            runtime=advanced_runtime,
+        )
+        accepted = verify(previous_asset_path, advanced)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr.decode())
+
+        downgraded_runtime = json.loads(json.dumps(previous_runtime))
+        downgraded_runtime["runtime_version"] = "2.3.3"
+        downgraded = signed_asset(
+            "watermark-downgraded.json",
+            pulse_version="0.1.2",
+            runtime=downgraded_runtime,
+        )
+        rejected = verify(previous_asset_path, downgraded)
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"must not be older", rejected.stderr)
+
+        advanced_same_bundle = json.loads(json.dumps(advanced_runtime))
+        advanced_same_bundle["sha256"] = previous_runtime["sha256"]
+        same_bundle = signed_asset(
+            "watermark-advanced-same-bundle.json",
+            pulse_version="0.1.2",
+            runtime=advanced_same_bundle,
+        )
+        rejected = verify(previous_asset_path, same_bundle)
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"must change when its runtime version advances", rejected.stderr)
+
+        removed = signed_asset(
+            "watermark-removed.json",
+            pulse_version="0.1.2",
+            runtime=None,
+        )
+        rejected = verify(previous_asset_path, removed)
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"must not be removed", rejected.stderr)
+
+        epoch_two_previous = signed_asset(
+            "watermark-epoch-two-previous.json",
+            pulse_version="0.1.1",
+            runtime=previous_runtime,
+            epoch=2,
+        )
+        epoch_regression = signed_asset(
+            "watermark-epoch-regression.json",
+            pulse_version="0.1.2",
+            runtime=advanced_runtime,
+            epoch=1,
+        )
+        rejected = verify(epoch_two_previous, epoch_regression)
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"compatibility epoch must not decrease", rejected.stderr)
+
+        epoch_advance_same_bundle = signed_asset(
+            "watermark-epoch-advance-same-bundle.json",
+            pulse_version="0.1.2",
+            runtime=previous_runtime,
+            epoch=2,
+        )
+        rejected = verify(previous_asset_path, epoch_advance_same_bundle)
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"must change when its compatibility epoch changes", rejected.stderr)
+
     @unittest.skipUnless(shutil.which("zstd"), "zstd is required")
     def test_runtime_epoch_change_requires_a_new_signed_bundle_identity(self) -> None:
         previous_manifest = self.directory / "previous-release.json"
@@ -813,6 +1395,8 @@ class PulseReleaseToolTests(unittest.TestCase):
         )
 
         manifest = json.loads((tree / "manifest.json").read_text(encoding="utf-8"))
+        next_runtime_version = "2.3.5"
+        manifest["runtime_version"] = next_runtime_version
         replacement_kernel = b"different epoch-two kernel bytes\n"
         (tree / "bzImage").write_bytes(replacement_kernel)
         manifest["components"]["bzImage"] = {
@@ -833,6 +1417,10 @@ class PulseReleaseToolTests(unittest.TestCase):
                 entry.gid = 0
                 entry.mtime = manifest["source_date_epoch"]
                 archive.addfile(entry, io.BytesIO(body))
+        next_bundle = self.directory / (
+            f"cybex-workstation-netboot-{next_runtime_version}-{'a' * 12}-"
+            "x86_64-linux.tar.zst"
+        )
         subprocess.run(
             [
                 "zstd",
@@ -842,14 +1430,27 @@ class PulseReleaseToolTests(unittest.TestCase):
                 "--no-dictID",
                 str(tar_path),
                 "-o",
-                str(bundle),
+                str(next_bundle),
             ],
             check=True,
         )
+        next_workstation_arguments = list(workstation_arguments)
+        next_workstation_arguments[
+            next_workstation_arguments.index("--workstation-netboot-bundle") + 1
+        ] = str(next_bundle)
+        next_workstation_arguments[
+            next_workstation_arguments.index("--workstation-netboot-url") + 1
+        ] = (
+            "https://releases.example.test/v0.1.1/" + next_bundle.name
+        )
+        next_workstation_arguments[
+            next_workstation_arguments.index("--workstation-netboot-runtime-version")
+            + 1
+        ] = next_runtime_version
         current_manifest = self.directory / "current-release.json"
         signed = self.run_tool(
             *self.manifest_arguments(current_manifest),
-            *workstation_arguments,
+            *next_workstation_arguments,
         )
         self.assertEqual(signed.returncode, 0, signed.stderr.decode())
         accepted = self.run_tool(

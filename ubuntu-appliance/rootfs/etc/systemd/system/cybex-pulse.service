@@ -1,8 +1,8 @@
 [Unit]
 Description=Cybex Pulse managed appliance service
-After=network-online.target nix-daemon.service cybex-pulse-first-boot.service
-Wants=network-online.target
-Requires=cybex-pulse-first-boot.service
+After=network-online.target nix-daemon.service nginx.service tftpd-hpa.service cybex-pulse-first-boot.service cybex-pulse-network-runtime.service
+Wants=network-online.target nginx.service tftpd-hpa.service
+Requires=cybex-pulse-first-boot.service cybex-pulse-network-runtime.service
 RequiresMountsFor=/var/lib/cybex-pulse/state /var/cache/cybex-pulse /nix
 StartLimitIntervalSec=0
 
@@ -14,6 +14,14 @@ User=cybex-pulse
 Group=cybex-pulse
 ExecStart=/usr/bin/cybex-pulse --config /etc/cybex-pulse/config.toml serve
 WorkingDirectory=/var/lib/cybex-pulse
+Environment=HOME=/var/cache/cybex-pulse/agent/home
+Environment=XDG_CACHE_HOME=/var/cache/cybex-pulse/agent/cache
+Environment=XDG_CONFIG_HOME=/var/cache/cybex-pulse/agent/config
+Environment=XDG_STATE_HOME=/var/cache/cybex-pulse/agent/state
+Environment=TMPDIR=/var/cache/cybex-pulse/agent/tmp
+# Do not let writable per-service configuration relax the reviewed Nix client
+# policy. NIX_CONFIG and command-line options remain the only inputs.
+Environment=NIX_USER_CONF_FILES=/dev/null
 Restart=always
 RestartSec=3s
 UMask=0077

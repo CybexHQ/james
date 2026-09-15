@@ -2,7 +2,7 @@
 Description=Restrict Cybex support SSH to Management-approved CIDRs
 Before=ssh.service
 After=network-pre.target
-ConditionPathExists=/var/lib/cybex-pulse/state/management-cidrs.txt
+ConditionPathExists=/var/lib/cybex-pulse/control/management-cidrs.txt
 
 [Service]
 Type=oneshot

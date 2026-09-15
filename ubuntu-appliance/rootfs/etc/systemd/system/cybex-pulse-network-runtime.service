@@ -1,0 +1,11 @@
+[Unit]
+Description=Reconcile the Cybex Pulse advertised boot address
+After=network-online.target cybex-pulse-first-boot.service
+Wants=network-online.target
+Requires=cybex-pulse-first-boot.service
+Before=cybex-pulse.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/cybex-pulse/cybex-pulse-network-runtime
+TimeoutStartSec=30s

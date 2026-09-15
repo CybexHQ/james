@@ -743,6 +743,36 @@ pub async fn touch_device_seen(pool: &SqlitePool, device_id: i64) -> AppResult<D
     get_device(pool, device_id).await
 }
 
+/// Remove a discovery-only row when the first automatic enrollment launch
+/// could not be created. Every mutable ownership/assignment field is checked
+/// again in SQLite so a concurrent managed sync or operator change wins and is
+/// never rolled back by the request that originally discovered the MAC.
+pub async fn remove_unclaimed_auto_discovered_device(
+    pool: &SqlitePool,
+    device_id: i64,
+) -> AppResult<bool> {
+    let removed = sqlx::query(
+        "DELETE FROM devices
+         WHERE id = ?
+           AND managed_client_id IS NULL
+           AND managed_device_id IS NULL
+           AND reinstall_request_id IS NULL
+           AND last_seen_at IS NOT NULL
+           AND hostname IS NULL
+           AND default_profile_id IS NULL
+           AND one_time_profile_id IS NULL
+           AND one_time_consumed_at IS NULL
+           AND last_selected_profile_id IS NULL
+           AND notes = ''
+           AND tags = '[]'",
+    )
+    .bind(device_id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(removed == 1)
+}
+
 pub async fn create_device(pool: &SqlitePool, input: CreateDeviceRequest) -> AppResult<Device> {
     let mac = normalize_mac(&input.mac)?;
     let now = now_rfc3339();
@@ -1106,6 +1136,97 @@ pub async fn list_build_jobs(pool: &SqlitePool) -> AppResult<Vec<BuildJob>> {
     let rows = sqlx::query_as::<_, BuildJobRow>(
         "SELECT * FROM pulse_build_jobs ORDER BY created_at DESC, id DESC",
     )
+    .fetch_all(pool)
+    .await?;
+    build_job_rows_to_models(rows)
+}
+
+/// Read a fair, cursor-rotated page of managed build evidence without first
+/// materializing every potentially MiB-sized build specification and metadata
+/// document. Local-only jobs are excluded because Manage cannot correlate or
+/// consume them.
+pub async fn list_build_jobs_report_page(
+    pool: &SqlitePool,
+    active_cursor: Option<i64>,
+    rejection_cursor: Option<i64>,
+    terminal_cursor: Option<i64>,
+    priority_round: u8,
+    max_items: usize,
+    estimated_byte_budget: usize,
+) -> AppResult<Vec<BuildJob>> {
+    let max_items = max_items.max(1).min(i64::MAX as usize) as i64;
+    let estimated_byte_budget = estimated_byte_budget.max(1).min(i64::MAX as usize) as i64;
+    let rows = sqlx::query_as::<_, BuildJobRow>(
+        r#"WITH classified AS (
+               SELECT id,
+                      CASE
+                          WHEN status NOT IN ('succeeded', 'failed', 'cancelled') THEN 0
+                          WHEN rejection_code <> '' THEN 1
+                          ELSE 2
+                      END AS report_group,
+                      2048 + 4 * (
+                          LENGTH(COALESCE(managed_job_id, '')) +
+                          LENGTH(requested_artifact_type) + LENGTH(build_spec) +
+                          LENGTH(target) + LENGTH(system) + LENGTH(input_revision) +
+                          LENGTH(input_config_hash) + LENGTH(status) +
+                          LENGTH(COALESCE(progress_stage, '')) +
+                          LENGTH(COALESCE(progress_message, '')) + LENGTH(logs) +
+                          LENGTH(error) + LENGTH(rejection_code) + LENGTH(output_path) +
+                          LENGTH(output_sha256) + LENGTH(cache_metadata) +
+                          LENGTH(COALESCE(started_at, '')) +
+                          LENGTH(COALESCE(completed_at, '')) +
+                          LENGTH(COALESCE(cancel_requested_at, '')) +
+                          LENGTH(created_at) + LENGTH(updated_at)
+                      ) AS estimated_bytes
+               FROM pulse_build_jobs
+               WHERE managed_job_id IS NOT NULL
+           ), rotated AS (
+               SELECT *,
+                      CASE report_group
+                          WHEN 0 THEN CASE WHEN ?1 IS NULL OR id < ?1 THEN 0 ELSE 1 END
+                          WHEN 1 THEN CASE WHEN ?2 IS NULL OR id < ?2 THEN 0 ELSE 1 END
+                          ELSE CASE WHEN ?3 IS NULL OR id < ?3 THEN 0 ELSE 1 END
+                      END AS wrap_group
+               FROM classified
+           ), grouped AS (
+               SELECT *,
+                      ROW_NUMBER() OVER (
+                          PARTITION BY report_group
+                          ORDER BY wrap_group, id DESC
+                      ) AS group_position
+               FROM rotated
+           ), prioritized AS (
+               SELECT *,
+                      CASE (?4 % 4)
+                          WHEN 0 THEN report_group
+                          WHEN 1 THEN CASE report_group WHEN 2 THEN 0 WHEN 1 THEN 1 ELSE 2 END
+                          WHEN 2 THEN CASE report_group WHEN 1 THEN 0 WHEN 0 THEN 1 ELSE 2 END
+                          ELSE report_group
+                      END AS group_priority
+               FROM grouped
+           ), ranked AS (
+               SELECT *,
+                      ROW_NUMBER() OVER (
+                          ORDER BY group_position, group_priority
+                      ) AS report_position,
+                      SUM(estimated_bytes) OVER (
+                          ORDER BY group_position, group_priority
+                      ) AS cumulative_bytes
+               FROM prioritized
+           )
+           SELECT job.*
+           FROM ranked
+           JOIN pulse_build_jobs job ON job.id = ranked.id
+           WHERE ranked.report_position = 1
+              OR (ranked.report_position <= ?5 AND ranked.cumulative_bytes <= ?6)
+           ORDER BY ranked.report_position"#,
+    )
+    .bind(active_cursor)
+    .bind(rejection_cursor)
+    .bind(terminal_cursor)
+    .bind(i64::from(priority_round))
+    .bind(max_items)
+    .bind(estimated_byte_budget)
     .fetch_all(pool)
     .await?;
     build_job_rows_to_models(rows)
@@ -1767,6 +1888,67 @@ pub async fn list_cache_artifacts(pool: &SqlitePool) -> AppResult<Vec<CacheArtif
     .fetch_all(pool)
     .await?;
     cache_artifact_rows_to_models(rows)
+}
+
+/// Read a restart-safe cache inventory page for one generation without
+/// materializing the entire metadata inventory first.
+///
+/// `estimated_byte_budget` is deliberately conservative: persisted JSON and
+/// strings are charged four times plus per-row envelope headroom. This covers
+/// the maximum UTF-8 width of SQLite text before JSON serialization. The caller still
+/// performs exact streaming JSON measurement, but this query keeps the
+/// preflight working set bounded when individual metadata documents approach
+/// the 24 MiB persistence limit.
+pub async fn list_cache_artifacts_report_page(
+    pool: &SqlitePool,
+    cursor: Option<i64>,
+    max_items: usize,
+    estimated_byte_budget: usize,
+) -> AppResult<(Vec<CacheArtifact>, bool)> {
+    let max_items = max_items.max(1).min(i64::MAX as usize) as i64;
+    let estimated_byte_budget = estimated_byte_budget.max(1).min(i64::MAX as usize) as i64;
+    let rows = sqlx::query_as::<_, CacheArtifactRow>(
+        r#"WITH ranked AS (
+               SELECT id,
+                      ROW_NUMBER() OVER (
+                          ORDER BY id DESC
+                      ) AS report_position,
+                      SUM(
+                          2048 + 4 * (
+                              LENGTH(COALESCE(managed_artifact_id, '')) +
+                              LENGTH(artifact_type) + LENGTH(hash) + LENGTH(path) +
+                              LENGTH(store_path) + LENGTH(narinfo_path) + LENGTH(nar_url) +
+                              LENGTH(file_hash) + LENGTH(nar_hash) + LENGTH(compression) +
+                              LENGTH(references_json) + LENGTH(serving_url) +
+                              LENGTH(COALESCE(source_build_job_id, '')) +
+                              LENGTH(cache_metadata) + LENGTH(created_at) + LENGTH(updated_at)
+                          )
+                      ) OVER (
+                          ORDER BY id DESC
+                      ) AS cumulative_bytes
+               FROM pulse_cache_artifacts
+               WHERE ?1 IS NULL OR id < ?1
+           )
+           SELECT artifact.*
+           FROM ranked
+           JOIN pulse_cache_artifacts artifact ON artifact.id = ranked.id
+           WHERE ranked.report_position = 1
+              OR (ranked.report_position <= ?2 AND ranked.cumulative_bytes <= ?3)
+           ORDER BY artifact.id DESC"#,
+    )
+    .bind(cursor)
+    .bind(max_items)
+    .bind(estimated_byte_budget)
+    .fetch_all(pool)
+    .await?;
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pulse_cache_artifacts WHERE ? IS NULL OR id < ?")
+            .bind(cursor)
+            .bind(cursor)
+            .fetch_one(pool)
+            .await?;
+    let complete = i64::try_from(rows.len()).is_ok_and(|count| count == remaining);
+    Ok((cache_artifact_rows_to_models(rows)?, complete))
 }
 
 #[derive(Clone, Debug, FromRow)]
@@ -2759,6 +2941,58 @@ mod tests {
         pool
     }
 
+    fn installer_target_public_local_account_spec() -> Value {
+        let revision = uuid::Uuid::parse_str("11111111-2222-4333-8444-555555555555").unwrap();
+        let profile_generation = "b".repeat(64);
+        let secret_ref = crate::protected_material::local_account_secret_ref(
+            revision,
+            &profile_generation,
+            "student",
+        );
+        json!({
+            "schema_version": 1,
+            "target": "installer_target",
+            "blueprint_revision_id": revision,
+            "build_input": {
+                "kind": "installer_target_nixos_module",
+                "generated_nix": crate::protected_material::installer_target_test_generated_nix(&[(
+                    "student",
+                    "Shared Student",
+                    false,
+                    &["audio", "networkmanager", "video"],
+                    &secret_ref,
+                )]),
+                "expected_state": {
+                    "schema": "cybex.blueprint.expected-state.v2",
+                    "compiler_version": 2,
+                    "deployment": {
+                        "blueprint_revision_id": revision,
+                        "local_account_profile_generation_sha256": profile_generation,
+                    },
+                    "checks": [{
+                        "id": "identity.local-account.inventory",
+                        "kind": "local-account-inventory",
+                        "expected": {
+                            "accounts": [{
+                                "username": "student",
+                                "display_name": "Shared Student",
+                                "admin": false,
+                                "groups": ["audio", "networkmanager", "video"],
+                            }],
+                        },
+                    }, {
+                        "id": "identity.local-account.student.password",
+                        "kind": "local-account-password-hash",
+                        "expected": {
+                            "username": "student",
+                            "password_secret_ref": secret_ref,
+                        },
+                    }],
+                },
+            },
+        })
+    }
+
     #[tokio::test]
     async fn migrations_forward_drop_retired_system_release_schema() {
         let pool = test_pool().await;
@@ -3077,6 +3311,64 @@ mod tests {
         let macs = rows.into_iter().map(|(mac,)| mac).collect::<Vec<_>>();
 
         assert_eq!(macs, vec!["02:00:00:00:00:01", "02:00:00:00:00:02"]);
+    }
+
+    #[tokio::test]
+    async fn failed_auto_enrollment_cleanup_preserves_claimed_and_curated_rows() {
+        let pool = test_pool().await;
+        let (fresh, was_known) =
+            upsert_seen_device(&pool, "02:00:00:00:10:01", Some("fresh-serial"))
+                .await
+                .unwrap();
+        assert!(!was_known);
+        assert!(
+            remove_unclaimed_auto_discovered_device(&pool, fresh.id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            get_device_by_mac(&pool, "02:00:00:00:10:01")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let (claimed, was_known) = upsert_seen_device(&pool, "02:00:00:00:10:02", None)
+            .await
+            .unwrap();
+        assert!(!was_known);
+        sqlx::query("UPDATE devices SET managed_client_id = 'managed-client' WHERE id = ?")
+            .bind(claimed.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            !remove_unclaimed_auto_discovered_device(&pool, claimed.id)
+                .await
+                .unwrap()
+        );
+
+        let curated = create_device(
+            &pool,
+            CreateDeviceRequest {
+                mac: "02:00:00:00:10:03".to_string(),
+                hostname: None,
+                serial_number: None,
+                notes: None,
+                tags: None,
+                default_profile_id: None,
+                one_time_profile_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            !remove_unclaimed_auto_discovered_device(&pool, curated.id)
+                .await
+                .unwrap()
+        );
+        assert!(get_device(&pool, claimed.id).await.is_ok());
+        assert!(get_device(&pool, curated.id).await.is_ok());
     }
 
     #[tokio::test]
@@ -4121,6 +4413,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn installer_target_public_secret_refs_survive_persistence_and_upgrade_validation() {
+        let pool = test_pool().await;
+        let spec = installer_target_public_local_account_spec();
+        let persisted = create_build_job(
+            &pool,
+            CreateBuildJobRequest {
+                requested_artifact_type: "nixos_closure".to_string(),
+                build_spec: Some(spec.clone()),
+                target: Some("installer_target".to_string()),
+                system: Some("x86_64-linux".to_string()),
+                input_revision: "installer-target-device-state".to_string(),
+                input_config_hash: "b".repeat(64),
+                cache_metadata: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            persisted.build_spec["build_input"]["expected_state"],
+            spec["build_input"]["expected_state"]
+        );
+
+        let legacy = create_build_job(
+            &pool,
+            CreateBuildJobRequest {
+                requested_artifact_type: "nixos_closure".to_string(),
+                build_spec: None,
+                target: Some("nixos_closure".to_string()),
+                system: Some("x86_64-linux".to_string()),
+                input_revision: "installer-target-upgrade".to_string(),
+                input_config_hash: "c".repeat(64),
+                cache_metadata: None,
+            },
+        )
+        .await
+        .unwrap();
+        let encoded = serde_json::to_string(&spec).unwrap();
+        // Simulate an installer-target row written before the target/kind
+        // boundary was enforced at every persistence entry point.
+        sqlx::query(
+            "UPDATE pulse_build_jobs
+             SET target = 'installer_target', build_spec = ?
+             WHERE id = ?",
+        )
+        .bind(&encoded)
+        .bind(legacy.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(quarantine_protected_build_jobs(&pool).await.unwrap(), 0);
+        let stored: String =
+            sqlx::query_scalar("SELECT build_spec FROM pulse_build_jobs WHERE id = ?")
+                .bind(legacy.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, encoded);
+    }
+
+    #[tokio::test]
     async fn upgrade_quarantine_scrubs_legacy_build_inputs_before_reporting() {
         let sentinel = "$6$rounds=5000$abcdefghijklmnop$uHL2DmwkR2iK6s.wDbxLW3GxvjJT7qW2rEHemZz3oMlKlfj8JwHc99.FNZrTO4drUslZ0MRyYkBDumQxKdL8q/";
         let pool = test_pool().await;
@@ -4624,5 +4977,170 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn cache_report_pages_converge_across_oversized_inventory_and_deletion() {
+        let pool = test_pool().await;
+        for index in 1..=4 {
+            let hash = format!("{index:x}").repeat(64);
+            upsert_cache_artifact(
+                &pool,
+                None,
+                "nixos_closure",
+                &hash,
+                1,
+                &format!("/cache/nar/{index}.nar.zst"),
+                &format!("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa{index}-example"),
+                &format!("/cache/{index}.narinfo"),
+                &format!("nar/{index}.nar.zst"),
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                1,
+                1,
+                1,
+                "zstd",
+                Some(json!([])),
+                &format!("https://pulse.test/cache/nar/{index}.nar.zst"),
+                None,
+                Some(json!({"padding": "x".repeat(4096)})),
+            )
+            .await
+            .unwrap();
+        }
+
+        let initial_inventory = cache_inventory_state(&pool).await.unwrap();
+        let mut cursor = None;
+        let mut first_traversal = Vec::new();
+        let mut first_complete = false;
+        for _ in 0..10 {
+            let (page, complete) = list_cache_artifacts_report_page(&pool, cursor, 10, 20_000)
+                .await
+                .unwrap();
+            assert_eq!(page.len(), 1, "the byte budget must bound each page");
+            first_traversal.push(page[0].id);
+            cursor = Some(page[0].id);
+            if complete {
+                first_complete = true;
+                break;
+            }
+        }
+        assert!(
+            first_complete,
+            "the final page must complete the generation"
+        );
+        assert_eq!(first_traversal.len(), 4);
+
+        let deleted_cursor = first_traversal[0];
+        delete_cache_artifact(&pool, deleted_cursor).await.unwrap();
+        let mutated_inventory = cache_inventory_state(&pool).await.unwrap();
+        assert_eq!(mutated_inventory.instance_id, initial_inventory.instance_id);
+        assert!(mutated_inventory.generation > initial_inventory.generation);
+
+        // The id is a monotonic watermark rather than a foreign-key-like
+        // cursor, so losing the exact row never resets a page to the newest
+        // prefix.
+        let (after_deleted_cursor, _) =
+            list_cache_artifacts_report_page(&pool, Some(deleted_cursor), 10, 20_000)
+                .await
+                .unwrap();
+        assert_eq!(after_deleted_cursor.len(), 1);
+        assert!(after_deleted_cursor[0].id < deleted_cursor);
+
+        // Production resets the cursor when the inventory generation changes.
+        // A fresh traversal of that generation must again reach a completing
+        // page, and the deleted artifact must be absent from every page. That
+        // completing receipt is what lets Manage remove its stale row.
+        cursor = None;
+        let mut second_traversal = Vec::new();
+        let mut second_complete = false;
+        for _ in 0..10 {
+            let (page, complete) = list_cache_artifacts_report_page(&pool, cursor, 10, 20_000)
+                .await
+                .unwrap();
+            assert!(!page.is_empty());
+            second_traversal.extend(page.iter().map(|artifact| artifact.id));
+            cursor = page.last().map(|artifact| artifact.id);
+            if complete {
+                second_complete = true;
+                break;
+            }
+        }
+        assert!(second_complete);
+        assert_eq!(second_traversal.len(), 3);
+        assert!(!second_traversal.contains(&deleted_cursor));
+    }
+
+    #[tokio::test]
+    async fn managed_build_report_page_is_bounded_fair_and_excludes_local_jobs() {
+        let pool = test_pool().await;
+        let mut managed = Vec::new();
+        for suffix in [1, 2, 3] {
+            managed.push(
+                upsert_managed_build_job(
+                    &pool,
+                    &format!("00000000-0000-0000-0000-{suffix:012}"),
+                    "nixos_closure",
+                    Some(json!({"padding": "x".repeat(4096)})),
+                    Some("blueprint"),
+                    Some("x86_64-linux"),
+                    &format!("revision-{suffix}"),
+                    &format!("{suffix:x}").repeat(64),
+                    Some(json!({"padding": "y".repeat(4096)})),
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        sqlx::query(
+            "UPDATE pulse_build_jobs SET status = 'failed', rejection_code = 'protected_material'
+             WHERE id = ?",
+        )
+        .bind(managed[1].id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE pulse_build_jobs SET status = 'succeeded' WHERE id = ?")
+            .bind(managed[2].id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        create_build_job(
+            &pool,
+            CreateBuildJobRequest {
+                requested_artifact_type: "nixos_closure".to_string(),
+                build_spec: Some(json!({"padding": "local-only"})),
+                target: Some("blueprint".to_string()),
+                system: Some("x86_64-linux".to_string()),
+                input_revision: "local-only".to_string(),
+                input_config_hash: "a".repeat(64),
+                cache_metadata: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let active = list_build_jobs_report_page(&pool, None, None, None, 0, 1, 1_000_000)
+            .await
+            .unwrap();
+        let terminal = list_build_jobs_report_page(&pool, None, None, None, 1, 1, 1_000_000)
+            .await
+            .unwrap();
+        let rejected = list_build_jobs_report_page(&pool, None, None, None, 2, 1, 1_000_000)
+            .await
+            .unwrap();
+        let cache_round = list_build_jobs_report_page(&pool, None, None, None, 3, 1, 1_000_000)
+            .await
+            .unwrap();
+
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].status, "queued");
+        assert!(active[0].managed_job_id.is_some());
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].status, "succeeded");
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].rejection_code, "protected_material");
+        assert_eq!(cache_round.len(), 1);
+        assert_eq!(cache_round[0].status, "queued");
     }
 }

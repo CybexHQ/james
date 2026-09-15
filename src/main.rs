@@ -29,6 +29,15 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", packages.display());
         return Ok(());
     }
+    if matches!(command, Command::VerifyApplianceCandidateUpdate) {
+        #[cfg(unix)]
+        if effective_uid() != 0 {
+            anyhow::bail!("candidate appliance verification must run as root");
+        }
+        let packages = cybex_pulse::appliance::verify_and_extract_candidate_update()?;
+        println!("{}", packages.display());
+        return Ok(());
+    }
     if matches!(command, Command::VerifyApplianceNetworkChange) {
         #[cfg(unix)]
         if effective_uid() != 0 {
@@ -36,6 +45,26 @@ async fn main() -> anyhow::Result<()> {
         }
         let candidate = cybex_pulse::appliance::verify_and_materialize_network_change()?;
         println!("{}", candidate.display());
+        return Ok(());
+    }
+    if matches!(command, Command::VerifyApplianceNetworkChangeRecovery) {
+        #[cfg(unix)]
+        if effective_uid() != 0 {
+            anyhow::bail!("appliance network recovery verification must run as root");
+        }
+        let candidate = cybex_pulse::appliance::verify_and_materialize_network_change_recovery()?;
+        println!("{}", candidate.display());
+        return Ok(());
+    }
+    if matches!(command, Command::VerifyApplianceNetworkAcknowledgement) {
+        #[cfg(unix)]
+        if effective_uid() != 0 {
+            anyhow::bail!("appliance network acknowledgement verification must run as root");
+        }
+        println!(
+            "{}",
+            cybex_pulse::appliance::verify_stored_network_acknowledgement()?
+        );
         return Ok(());
     }
 
@@ -91,8 +120,19 @@ async fn main() -> anyhow::Result<()> {
         Command::VerifyApplianceUpdate => {
             unreachable!("appliance update verification exits before config loading")
         }
+        Command::VerifyApplianceCandidateUpdate => {
+            unreachable!("candidate appliance verification exits before config loading")
+        }
         Command::VerifyApplianceNetworkChange => {
             unreachable!("appliance network verification exits before config loading")
+        }
+        Command::VerifyApplianceNetworkChangeRecovery => {
+            unreachable!("appliance network recovery exits before config loading")
+        }
+        Command::VerifyApplianceNetworkAcknowledgement => {
+            unreachable!(
+                "appliance network acknowledgement verification exits before config loading"
+            )
         }
     }
 }
@@ -123,7 +163,10 @@ fn managed_command_requires_service_user(
             Command::PrintConfig
                 | Command::ValidateApplianceConfig
                 | Command::VerifyApplianceUpdate
+                | Command::VerifyApplianceCandidateUpdate
                 | Command::VerifyApplianceNetworkChange
+                | Command::VerifyApplianceNetworkChangeRecovery
+                | Command::VerifyApplianceNetworkAcknowledgement
         )
 }
 
@@ -147,6 +190,12 @@ async fn run_server(
         // rewrites nix-cache-info, so the cache can still heal later.
         warn!(error = %err, "Pulse Cache initialization failed; substituters will reject this cache until resolved");
     }
+    // Reserve the HTTP socket before any background worker can trigger a
+    // readiness report. Requests may wait briefly in the listen backlog, but
+    // they cannot observe a synthetic connection-refused startup failure.
+    let listener = TcpListener::bind(listen_addr)
+        .await
+        .with_context(|| format!("failed to bind {listen_addr}"))?;
     cybex_pulse::build::spawn(state.clone());
     cybex_pulse::netboot::spawn_maintenance(state.clone());
     if state.config.manage.enabled {
@@ -154,9 +203,6 @@ async fn run_server(
     }
     let app = router(state);
 
-    let listener = TcpListener::bind(listen_addr)
-        .await
-        .with_context(|| format!("failed to bind {listen_addr}"))?;
     info!(%listen_addr, "cybex-pulse listening");
     spawn_systemd_watchdog();
 
