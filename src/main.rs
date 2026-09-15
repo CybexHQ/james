@@ -109,6 +109,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::SyncOnce => {
             let state = AppState::new(config, pool);
+            cybex_james::netboot_multicast::initialize(&state).await?;
             let outcome = cybex_james::manage::sync_once(&state).await?;
             println!("{}", serde_json::to_string(&outcome)?);
             Ok(())
@@ -185,6 +186,9 @@ async fn run_server(
         .parse()
         .with_context(|| format!("invalid listen address {}", config.server.listen_addr))?;
     let state = AppState::new(config, pool);
+    cybex_james::netboot_multicast::initialize(&state)
+        .await
+        .context("failed to initialize workstation multicast state")?;
     if let Err(err) = cybex_james::cache::initialize(&state.config).await {
         // Degraded, not fatal: exports re-run key setup and `nix copy`
         // rewrites nix-cache-info, so the cache can still heal later.
@@ -201,16 +205,23 @@ async fn run_server(
     if state.config.manage.enabled {
         cybex_james::manage::spawn(state.clone());
     }
-    let app = router(state);
+    let app = router(state.clone());
 
     info!(%listen_addr, "cybex-james listening");
     spawn_systemd_watchdog();
 
+    let shutdown_state = state.clone();
     axum_serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        shutdown_state
+            .netboot_multicast
+            .shutdown(&shutdown_state.db)
+            .await;
+    })
     .await
     .context("server failed")
 }

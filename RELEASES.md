@@ -163,3 +163,12 @@ final signed URL and later atomically publish the complete release. Changing
 the signed package origin alone is not a valid workaround because Manage's
 production release importer requires one immutable GitHub release identity for
 all assets.
+
+Local qualification captures the supported Standard and Dock built-ins at their
+current released revision IDs and an explicitly prepared Tiling/Deno rehearsal
+fixture. See `ubuntu-appliance/README.md` for read-only catalog admission and
+for reconstructing missing historical predecessor lifecycle evidence. Neither
+mode resets Blueprint settings, permits source builds, or replaces node-scoped
+preparation and required-replica checks. A historical run records its original
+manifest identity separately from the current harness revision and cannot be
+used as candidate qualification.

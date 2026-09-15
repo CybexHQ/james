@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 usage() {
-  echo "usage: $0 --template ISO --manifest JSON --manage-origin URL --token-file FILE --output FILE" >&2
+  echo "usage: $0 --template ISO --manifest JSON --manage-origin URL --token-file FILE --output FILE [--published-predecessor-inputs JSON]" >&2
   exit 2
 }
 
@@ -13,12 +13,14 @@ manifest=""
 manage_origin=""
 token_file=""
 output=""
+published_predecessor_inputs=""
 while (($#)); do
   case "$1" in
     --template) template="${2:-}"; shift 2 ;;
     --manifest) manifest="${2:-}"; shift 2 ;;
     --manage-origin) manage_origin="${2:-}"; shift 2 ;;
     --token-file) token_file="${2:-}"; shift 2 ;;
+    --published-predecessor-inputs) published_predecessor_inputs="${2:-}"; shift 2 ;;
     --output) output="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
@@ -34,6 +36,14 @@ test "$(jq -er '.installer_iso_template_v2.manage_origin' "$manifest")" = \
 # New candidates must bind the same exact James source used by this harness.
 # Legacy descriptors remain supported only when verifying published predecessors.
 source_revision="$(git -C "$repository_root" rev-parse HEAD)"
+qualification_kind=candidate
+if [[ -n "$published_predecessor_inputs" ]]; then
+  # Historical bytes keep their original signatures/source identity. Authenticate
+  # the original published index and prepared closure; never relabel a candidate.
+  python3 -B "$repository_root/ubuntu-appliance/qualification/published-predecessor.py" \
+    --inputs "$published_predecessor_inputs" --manifest "$manifest"
+  qualification_kind=published_predecessor
+else
 jq -e --arg source_revision "$source_revision" '
   .appliance_release_v1
   | .schema == "cybex.james.appliance-release.v2"
@@ -42,6 +52,7 @@ jq -e --arg source_revision "$source_revision" '
   echo 'error: qualification requires an appliance-release.v2 candidate bound to this James checkout' >&2
   exit 1
 }
+fi
 bridge="${CYBEX_JAMES_QUALIFICATION_BRIDGE:?set the isolated qualification bridge}"
 management_cidr="${CYBEX_JAMES_QUALIFICATION_MANAGEMENT_CIDR:?set the qualification Management CIDR}"
 token="$(tr -d '\r\n' < "$token_file")"
@@ -98,6 +109,22 @@ api() {
       --request "$method" --header "Authorization: Bearer $token" "$manage_origin$path"
   fi
 }
+
+check_delivery_policy() {
+  local delivery_policy="$work_dir/delivery-policy.json"
+  api GET '/v1/james/delivery-policy' > "$delivery_policy"
+  test "$(jq -er '.allow_james_source_builds' "$delivery_policy")" = false
+  test "$(jq -er '.source_builds_allowed' "$delivery_policy")" = false
+}
+check_delivery_policy
+
+# Capture exact released revisions before package staging or VM work. The same
+# read-only admission runs in Manage readiness. Never reset built-ins to v1.
+blueprints="$work_dir/blueprints.json"
+python3 -B "$repository_root/ubuntu-appliance/qualification/blueprint-catalog.py" \
+  --manage-origin "$manage_origin" --token-file "$token_file" \
+  --tiling-blueprint "${CYBEX_JAMES_QUALIFICATION_TILING_BLUEPRINT:-qualification_tiling}" \
+  > "$blueprints"
 
 package_delivery="$(jq -er '.installer_iso_template_v2.package_delivery // "embedded"' "$manifest")"
 package_transport_url=""
@@ -338,39 +365,7 @@ test "$appliance_projection_ready" = true
 # the organization's untouched built-ins under the default source-disabled
 # delivery policy. Checking node-scoped jobs prevents an artifact retained on
 # another James from making this freshly installed disk appear qualified.
-delivery_policy="$work_dir/delivery-policy.json"
-api GET '/v1/james/delivery-policy' > "$delivery_policy"
-test "$(jq -er '.allow_james_source_builds' "$delivery_policy")" = false
-test "$(jq -er '.source_builds_allowed' "$delivery_policy")" = false
-
-blueprints="$work_dir/blueprints.json"
-builtins_discovered=false
-for _attempt in $(seq 1 120); do
-  api GET '/v1/blueprints?platform=nixos&limit=100&offset=0' > "$blueprints"
-  if jq -e '
-      ["standard_taskbar_workstation", "dock_workstation", "hyprland_developer"] as $expected
-      | ([.blueprints[]
-          | select(.slug as $slug | $expected | index($slug))
-          | select(.metadata_json.built_in == true)
-          | select(.metadata_json.blueprint_type == "builtin_profile")
-          | select(.current_revision_id != null and .current_revision == 1)
-          | .slug] | unique | sort) == ($expected | sort)
-    ' "$blueprints" >/dev/null
-  then
-    builtins_discovered=true
-    break
-  fi
-  kill -0 "$qemu_pid"
-  sleep 5
-done
-test "$builtins_discovered" = true
-
-hyprland_config="$work_dir/hyprland-config.json"
-api GET '/v1/blueprints/hyprland_developer/config' > "$hyprland_config"
-jq -e '[.. | objects | .package_ref? // empty] | index("deno") != null' \
-  "$hyprland_config" >/dev/null
-jq -e '[.. | objects | .package_ref? // empty] | index("nodejs") == null' \
-  "$hyprland_config" >/dev/null
+check_delivery_policy
 
 runtime_status="$work_dir/workstation-runtime.json"
 runtime_operational=false
@@ -423,7 +418,7 @@ for _attempt in $(seq 1 720); do
       | select(.cache_metadata.error_kind == "source_build_blocked")
       | select(.build_spec.blueprint_revision_id as $revision
           | $blueprints[0].blueprints
-          | any(.current_revision_id == $revision and .metadata_json.built_in == true))]
+          | any(.current_revision_id == $revision))]
     | first // empty
   ' "$build_jobs")"
   if [[ -n "$source_blocked_builtin_job" ]]; then
@@ -436,13 +431,12 @@ for _attempt in $(seq 1 720); do
     exit 1
   fi
   if jq -e --slurpfile blueprints "$blueprints" '
-      ["standard_taskbar_workstation", "dock_workstation", "hyprland_developer"] as $expected
+      ($blueprints[0].blueprints | map(.slug)) as $expected
       | ([.jobs[]
           | select(.status == "succeeded")
           | .build_spec.blueprint_revision_id as $revision
           | $blueprints[0].blueprints[]
           | select(.current_revision_id == $revision)
-          | select(.metadata_json.built_in == true)
           | .slug] | unique | sort) == ($expected | sort)
     ' "$build_jobs" >/dev/null
   then
@@ -457,10 +451,6 @@ for _attempt in $(seq 1 720); do
         all_cached=false
       fi
     done < <(jq -r '.blueprints[]
-      | select(.metadata_json.built_in == true)
-      | select(.slug == "standard_taskbar_workstation"
-               or .slug == "dock_workstation"
-               or .slug == "hyprland_developer")
       | [.id,.current_revision_id] | @tsv' "$blueprints")
     if [[ "$all_cached" = true ]]; then
       builtins_deliverable=true
@@ -476,7 +466,7 @@ if [[ "$builtins_deliverable" != true ]]; then
     [.jobs[]
       | select(.build_spec.blueprint_revision_id as $revision
           | $blueprints[0].blueprints
-          | any(.current_revision_id == $revision and .metadata_json.built_in == true))
+          | any(.current_revision_id == $revision))
       | {blueprint_id:.build_spec.blueprint_id,
          blueprint_revision_id:.build_spec.blueprint_revision_id,status,error,
          error_kind:.cache_metadata.error_kind,
@@ -530,9 +520,20 @@ fi
 rm -f -- "$work_dir/operator-key" "$work_dir/operator-key.pub" \
   "$work_dir/operator-key-cert.pub" "$certificate_response" "$work_dir/certificate-inspection.txt"
 
+# Fail closed if policy, authoring or a released revision moved during this run.
+check_delivery_policy
+python3 -B "$repository_root/ubuntu-appliance/qualification/blueprint-catalog.py" \
+  --manage-origin "$manage_origin" --token-file "$token_file" \
+  --tiling-blueprint "${CYBEX_JAMES_QUALIFICATION_TILING_BLUEPRINT:-qualification_tiling}" \
+  --baseline "$blueprints" >/dev/null
+
 template_sha="$(jq -er '.template_sha256' "$verification")"
 personalized_sha="$(jq -er '.personalized_sha256' "$verification")"
 jq -n \
+  --slurpfile qualified_blueprints "$blueprints" \
+  --arg qualification_kind "$qualification_kind" \
+  --arg qualified_manifest_sha256 "$(sha256sum "$manifest" | awk '{print $1}')" \
+  --arg harness_revision "$source_revision" \
   --arg schema 'cybex.james.ubuntu-appliance-qualification.v1' \
   --arg release_version "$release_version" \
   --arg ubuntu_snapshot_id "$ubuntu_snapshot_id" \
@@ -544,6 +545,8 @@ jq -n \
   --argjson workstation_runtime_prepublication_deferred "$runtime_prepublication_deferred" \
   --arg completed_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
   '{schema:$schema,ok:true,release_version:$release_version,
+    harness_revision:$harness_revision,qualification_kind:$qualification_kind,
+    qualified_manifest_sha256:$qualified_manifest_sha256,qualified_blueprints:$qualified_blueprints[0],
     ubuntu_snapshot_id:$ubuntu_snapshot_id,root_generation:$root_generation,
     session_id:$session_id,template_sha256:$template_sha256,
     personalized_sha256:$personalized_sha256,secure_boot:true,

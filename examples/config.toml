@@ -57,6 +57,12 @@ retain_recent_builds = 50
 # Ed25519 key used to verify signed workstation-netboot release bundles.
 trusted_public_key = ""
 
+[workstation_netboot]
+allow_private_release_urls = false
+# Root-owned immediate rollback. This always overrides Manage's desired lane.
+multicast_emergency_disabled = false
+udp_sender_path = "/usr/bin/udp-sender"
+
 [manage]
 enabled = false
 api_url = "https://manage.example.com"

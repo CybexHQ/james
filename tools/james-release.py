@@ -949,6 +949,7 @@ def _appliance_release_inputs(
         "linux-firmware",
         "nix-bin",
         "python3",
+        "udpcast",
     }
     if (
         not isinstance(versions, dict)

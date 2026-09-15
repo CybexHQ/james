@@ -22,7 +22,7 @@ use sqlx::SqlitePool;
 use tokio::task;
 
 use crate::{
-    config::AppConfig, db, models::BuildJob, protected_material,
+    cache_egress::CacheEgressSnapshot, config::AppConfig, db, models::BuildJob, protected_material,
     redact::redact_sensitive_key_values,
 };
 
@@ -152,6 +152,13 @@ pub struct CacheStatusReport {
     pub total_size_bytes: u64,
     pub artifact_count: usize,
     pub error: String,
+    /// `/cache/*` egress since process start (see `cache_egress`). Wire names
+    /// are fixed by Manage's `JamesAgentCacheReport`.
+    pub served_bytes_total: u64,
+    pub served_requests_total: u64,
+    pub missing_requests_total: u64,
+    /// RFC 3339 start of the counter epoch.
+    pub counters_since: String,
 }
 
 #[derive(Debug)]
@@ -220,7 +227,20 @@ struct NixCacheInfo {
     priority: Option<u64>,
 }
 
-pub async fn status_report(config: &AppConfig, pool: &SqlitePool) -> CacheStatusReport {
+/// Egress totals are taken by value so a report can never leave for Manage
+/// with a half-filled counter block: the caller snapshots
+/// `AppState::cache_egress` in the same pass that reads the cache state.
+pub async fn status_report(
+    config: &AppConfig,
+    pool: &SqlitePool,
+    egress: CacheEgressSnapshot,
+) -> CacheStatusReport {
+    let CacheEgressSnapshot {
+        served_bytes_total,
+        served_requests_total,
+        missing_requests_total,
+        counters_since,
+    } = egress;
     if !config.cache.enabled {
         return CacheStatusReport {
             enabled: false,
@@ -231,6 +251,10 @@ pub async fn status_report(config: &AppConfig, pool: &SqlitePool) -> CacheStatus
             total_size_bytes: 0,
             artifact_count: 0,
             error: String::new(),
+            served_bytes_total,
+            served_requests_total,
+            missing_requests_total,
+            counters_since,
         };
     }
     let artifacts = db::list_cache_artifacts(pool).await.unwrap_or_default();
@@ -247,6 +271,10 @@ pub async fn status_report(config: &AppConfig, pool: &SqlitePool) -> CacheStatus
             total_size_bytes,
             artifact_count: artifacts.len(),
             error: String::new(),
+            served_bytes_total,
+            served_requests_total,
+            missing_requests_total,
+            counters_since,
         },
         Err(err) => CacheStatusReport {
             enabled: true,
@@ -257,6 +285,10 @@ pub async fn status_report(config: &AppConfig, pool: &SqlitePool) -> CacheStatus
             total_size_bytes,
             artifact_count: artifacts.len(),
             error: sanitize_error(&err),
+            served_bytes_total,
+            served_requests_total,
+            missing_requests_total,
+            counters_since,
         },
     }
 }
@@ -3791,10 +3823,24 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
         )
         .unwrap();
 
-        let report = status_report(&config, &pool).await;
+        let report = status_report(
+            &config,
+            &pool,
+            CacheEgressSnapshot {
+                served_bytes_total: 8192,
+                served_requests_total: 3,
+                missing_requests_total: 1,
+                counters_since: "2026-09-03T12:00:00Z".to_string(),
+            },
+        )
+        .await;
 
         assert_eq!(report.status, "ready");
         assert_eq!(report.total_size_bytes, 4136);
+        assert_eq!(report.served_bytes_total, 8192);
+        assert_eq!(report.served_requests_total, 3);
+        assert_eq!(report.missing_requests_total, 1);
+        assert_eq!(report.counters_since, "2026-09-03T12:00:00Z");
         assert!(report.public_key.starts_with("cybex-james-cache:"));
         assert_eq!(report.public_key_fingerprint.len(), 64);
         assert_eq!(

@@ -5,7 +5,9 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 
 
@@ -43,17 +45,46 @@ class CandidateSourceContractTests(unittest.TestCase):
                 binaries = root / "bin"
                 binaries.mkdir()
                 reached = root / "network-preflight"
+                policy_checked = root / "policy-checked"
+                catalog_checked = root / "catalog-checked"
                 forbidden = root / "unexpected-operation"
-                # The first network probe is our boundary. Return no addresses so
-                # the real harness stops before serving packages or creating a VM.
+                # Admit only the new read-only policy/catalog checks. Invalid
+                # source identities must stop before either check is reached.
+                admission_stub = f"#!{sys.executable}\n" + textwrap.dedent('''\
+                    import json
+                    import os
+                    from pathlib import Path
+                    import sys
+
+                    args = sys.argv[1:]
+                    if Path(sys.argv[0]).name == "curl":
+                        if ("--request" in args
+                                and args[args.index("--request") + 1] == "GET"
+                                and args[-1] == "https://manage.example/v1/james/delivery-policy"):
+                            Path(os.environ["TEST_POLICY_CHECKED"]).touch()
+                            print(json.dumps({"allow_james_source_builds": False,
+                                              "source_builds_allowed": False}))
+                        else:
+                            Path(os.environ["TEST_UNEXPECTED_OPERATION"]).touch()
+                            raise SystemExit(99)
+                    elif args[:2] == ["-B", os.environ["TEST_CATALOG_HELPER"]]:
+                        Path(os.environ["TEST_CATALOG_CHECKED"]).touch()
+                        print(json.dumps({"schema": "cybex.james.qualification-blueprints.v1",
+                                          "blueprints": []}))
+                    else:
+                        os.execv(sys.executable, [sys.executable, *args])
+                    ''')
+                for command in ("curl", "python3"):
+                    (binaries / command).write_text(admission_stub, encoding="utf-8")
+                # Return no bridge addresses so the real harness stops before
+                # serving packages, mutating the organization, or creating a VM.
                 (binaries / "ip").write_text(
                     '#!/bin/sh\n: > "$TEST_NETWORK_PREFLIGHT"\n', encoding="utf-8"
                 )
-                for command in ("curl", "qemu-system-x86_64"):
-                    (binaries / command).write_text(
-                        '#!/bin/sh\n: > "$TEST_UNEXPECTED_OPERATION"\nexit 99\n',
-                        encoding="utf-8",
-                    )
+                (binaries / "qemu-system-x86_64").write_text(
+                    '#!/bin/sh\n: > "$TEST_UNEXPECTED_OPERATION"\nexit 99\n',
+                    encoding="utf-8",
+                )
                 for binary in binaries.iterdir():
                     binary.chmod(0o755)
                 package = root / "cybex-james-appliance-packages-0.2.1-test-x86_64-linux.tar.zst"
@@ -92,6 +123,11 @@ class CandidateSourceContractTests(unittest.TestCase):
                     "CYBEX_JAMES_QUALIFICATION_MANAGEMENT_CIDR": "192.0.2.0/24",
                     "CYBEX_JAMES_HAS_PREDECESSOR": "true",
                     "TEST_NETWORK_PREFLIGHT": str(reached),
+                    "TEST_POLICY_CHECKED": str(policy_checked),
+                    "TEST_CATALOG_CHECKED": str(catalog_checked),
+                    "TEST_CATALOG_HELPER": str(
+                        REPOSITORY / "ubuntu-appliance/qualification/blueprint-catalog.py"
+                    ),
                     "TEST_UNEXPECTED_OPERATION": str(forbidden),
                 })
                 result = subprocess.run([
@@ -100,6 +136,8 @@ class CandidateSourceContractTests(unittest.TestCase):
                     "--token-file", str(token), "--output", str(root / "evidence.json"),
                 ], env=environment, capture_output=True, text=True, timeout=15)
                 self.assertFalse(forbidden.exists(), result.stderr)
+                self.assertEqual(policy_checked.exists(), accepted, result.stderr)
+                self.assertEqual(catalog_checked.exists(), accepted, result.stderr)
                 self.assertEqual(reached.exists(), accepted, result.stderr)
                 self.assertNotEqual(result.returncode, 0)
                 if accepted:

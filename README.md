@@ -82,6 +82,50 @@ the `.19` development appliances. Later builds must preserve that migration
 and its checksum even when the multicast capability is unavailable, so those
 appliances can restart or upgrade without discarding their state.
 
+## Wake-on-LAN
+
+James advertises `wake_on_lan_v1` and accepts bounded, signed wake requests
+from Manage. Each request is tied to an existing workstation placement and a
+normalized MAC address. James sends the standard magic packet three times on
+UDP ports 9 and 7, stores a durable `sent` or `failed` receipt in SQLite, and
+replays that receipt until Manage acknowledges it. Repeated configuration
+syncs therefore never create an unbounded wake storm.
+
+Wake-on-LAN is best effort. A failed or expired wake request does not fail or
+cancel the authoritative Blueprint operation: the workstation remains safely
+queued and converges when it next checks in. James reports only bounded error
+codes and never treats a wake receipt as proof that a workstation actually
+started.
+
+## Classroom rootfs multicast
+
+James can advertise `workstation_rootfs_multicast_v1` and coalesce live boot
+sessions for the same immutable `nix-store.squashfs` into one rate-limited,
+TTL-1 UDPcast stream. The optimization is disabled unless Manage supplies an
+`automatic` policy for an explicitly qualified wired L2 multicast domain; a
+missing or invalid policy, an older runtime, an unsuitable interface, or the
+root-owned `workstation_netboot.multicast_emergency_disabled` override leaves
+the existing HTTP path unchanged. A complete gathering window admits up to 30
+compatible sessions before one sender starts. Late, single, failed, or dropped
+receivers use HTTP and independently verify the signed size and SHA-256.
+
+Only the organization-neutral rootfs bytes enter multicast. Boot contexts,
+grants, nonces, device identities, enrollment, commands, secrets, closures,
+and results remain per-device unicast. The sender uses one canonical
+`O_NOFOLLOW`-opened artifact, a selected wired interface, fixed administrative
+groups and ports, TTL 1, an absolute timeout, bounded receiver drop behavior,
+and no added Linux capabilities. Nginx suppresses access logging for
+bearer-like boot-session context paths. Aggregate transfer evidence is
+isolated from other managed report lanes and contains no session, device, URL,
+address, or interface identifiers.
+
+The Ubuntu package snapshot binds `udpcast` `20120424-2build2` as an exact
+dependency, carries an SPDX document plus its authenticated complete
+corresponding source and copyright, and qualifies the dependency through
+normal appliance update and rollback lifecycle gates. The nftables boundary
+remains unchanged: it restricts SSH; the unprivileged sender's own high-UDP
+socket is the runtime gate.
+
 ## Ubuntu appliance
 
 The active implementation is under [`ubuntu-appliance/`](ubuntu-appliance/).

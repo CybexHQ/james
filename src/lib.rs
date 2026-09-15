@@ -3,6 +3,7 @@ pub mod assets;
 pub mod boot;
 pub mod build;
 pub mod cache;
+pub mod cache_egress;
 pub mod config;
 pub mod db;
 pub mod disk;
@@ -13,6 +14,7 @@ pub mod manage;
 pub(crate) mod manage_source;
 pub mod models;
 pub mod netboot;
+pub mod netboot_multicast;
 pub(crate) mod nix_command;
 pub mod nix_log;
 pub(crate) mod protected_material;
@@ -22,10 +24,12 @@ pub mod readiness;
 pub(crate) mod redact;
 pub(crate) mod release_transport;
 pub mod routes;
+pub mod wake_on_lan;
 
 use std::sync::{Arc, RwLock};
 
 use axum::Router;
+use cache_egress::CacheEgressCounters;
 use config::AppConfig;
 use sqlx::SqlitePool;
 
@@ -33,7 +37,11 @@ use sqlx::SqlitePool;
 pub struct AppState {
     pub config: Arc<AppConfig>,
     pub db: SqlitePool,
+    pub netboot_multicast: netboot_multicast::NetbootMulticast,
     runtime: Arc<RwLock<RuntimeSettings>>,
+    /// `/cache/*` egress totals since process start; shared by every clone of
+    /// the state so the report task sees what the file route counted.
+    pub cache_egress: Arc<CacheEgressCounters>,
 }
 
 impl AppState {
@@ -42,7 +50,9 @@ impl AppState {
         Self {
             config: Arc::new(config),
             db,
+            netboot_multicast: netboot_multicast::NetbootMulticast::new(),
             runtime: Arc::new(RwLock::new(runtime)),
+            cache_egress: Arc::new(CacheEgressCounters::new()),
         }
     }
 

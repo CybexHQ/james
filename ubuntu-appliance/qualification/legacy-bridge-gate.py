@@ -58,6 +58,10 @@ SNAPSHOT_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 PACKAGE_RE = re.compile(r"^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?$")
 DEB_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+.:_~%-]*\.deb$")
+UDPCAST_SOURCE_RE = re.compile(
+    r"^udpcast_[A-Za-z0-9][A-Za-z0-9+.:_~%-]*"
+    r"(?:\.dsc|\.orig\.tar\.(?:gz|xz)|\.debian\.tar\.(?:gz|xz)|\.tar\.(?:gz|xz))$"
+)
 VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+.:~_-]{0,255}$")
 TAG_RE = re.compile(
     r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
@@ -767,7 +771,57 @@ def validate_repository_checksums(packages_dir: Path) -> None:
         for entry in entries
         if entry.is_file() and not entry.is_symlink() and DEB_RE.fullmatch(entry.name)
     }
-    governed_names = package_names | {"Packages", "Packages.gz", "Release"}
+    udpcast_source_names = {
+        entry.name
+        for entry in entries
+        if entry.is_file()
+        and not entry.is_symlink()
+        and UDPCAST_SOURCE_RE.fullmatch(entry.name)
+    }
+    has_udpcast_binary = any(name.startswith("udpcast_") for name in package_names)
+    udpcast_support_names: set[str] = set()
+    if has_udpcast_binary:
+        descriptors = [name for name in udpcast_source_names if name.endswith(".dsc")]
+        payloads = [name for name in udpcast_source_names if not name.endswith(".dsc")]
+        if len(descriptors) != 1 or not payloads:
+            fail("candidate udpcast package omits its complete corresponding source")
+        udpcast_support_names = {
+            "CYBEX-SBOM.spdx.json",
+            "UDPCAST-COPYRIGHT",
+        }
+        try:
+            sbom = json.loads(
+                open_regular(
+                    packages_dir / "CYBEX-SBOM.spdx.json",
+                    "candidate UDPcast SPDX SBOM",
+                    1024 * 1024,
+                )
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            fail("candidate UDPcast SPDX SBOM is malformed")
+        packages = sbom.get("packages") if isinstance(sbom, dict) else None
+        if (
+            not isinstance(sbom, dict)
+            or sbom.get("spdxVersion") != "SPDX-2.3"
+            or sbom.get("dataLicense") != "CC0-1.0"
+            or not isinstance(packages, list)
+            or len(packages) != 1
+            or not isinstance(packages[0], dict)
+            or packages[0].get("name") != "udpcast"
+            or packages[0].get("licenseDeclared")
+            != "GPL-2.0-only AND BSD-2-Clause"
+        ):
+            fail("candidate UDPcast SPDX SBOM is invalid")
+    elif udpcast_source_names or any(
+        entry.name in {"CYBEX-SBOM.spdx.json", "UDPCAST-COPYRIGHT"}
+        for entry in entries
+    ):
+        fail("candidate repository has UDPcast source evidence without its binary")
+    governed_names = package_names | {
+        "Packages",
+        "Packages.gz",
+        "Release",
+    } | udpcast_source_names | udpcast_support_names
     actual_names = {entry.name for entry in entries}
     if actual_names != governed_names | {"SHA256SUMS", "UBUNTU-SNAPSHOT-ID"}:
         fail("candidate repository contains an ungoverned file or directory")

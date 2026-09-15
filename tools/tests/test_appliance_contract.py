@@ -478,6 +478,15 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 ["dpkg-deb", "--control", str(appliance), str(control_root)],
                 check=True,
             )
+            proxy_helper = data_root / 'usr/lib/cybex-james/cybex-james-pxe'
+            proxy_unit = data_root / 'etc/systemd/system/cybex-james-pxe.service'
+            proxy_policy = data_root / 'etc/cybex-james/pxe-discovery.json'
+            self.assertEqual(proxy_helper.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(proxy_unit.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(json.loads(proxy_policy.read_text()), {'mode':'automatic'})
+            self.assertIn('dnsmasq-base', (control_root / 'control').read_text())
+            self.assertIn('/etc/cybex-james/pxe-discovery.json', (control_root / 'conffiles').read_text())
+            self.assertIn('cybex-james-pxe', (control_root / 'postinst').read_text())
             packaged_first_boot = (
                 data_root
                 / "usr/lib/cybex-james/cybex-james-first-boot"
@@ -562,6 +571,11 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 "alias /usr/share/cybex-james/assets/pxe-menu.png;",
                 pxe_nginx,
             )
+            self.assertIn(
+                'location ~ "^/boot-session/[A-Za-z0-9_-]{22}/context\\.cpio$" {',
+                pxe_nginx,
+            )
+            self.assertIn("access_log off;", pxe_nginx)
             self.assertIn(
                 'location ~ "^/manage-source/(?<source_file>[0-9a-f]{40}\\.(?:tar|json))$" {',
                 pxe_nginx,
@@ -832,8 +846,29 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
         self.assertIn("build-manage-source-archive.sh", package_builder)
         self.assertIn("usr/share/cybex-james/manage-source", package_builder)
         self.assertIn("iputils-arping", package_builder)
+        self.assertIn("udpcast", package_builder)
         offline_builder = BUILD_OFFLINE_REPOSITORY.read_text(encoding="utf-8")
         self.assertIn("iputils-arping", offline_builder)
+        self.assertIn(
+            'apt-get "${apt_options[@]}" --download-only source '
+            '"udpcast=$udpcast_expected_version"',
+            offline_builder,
+        )
+        self.assertIn("udpcast_expected_version=20120424-2build2", offline_builder)
+        self.assertIn('"udpcast=$udpcast_expected_version"', offline_builder)
+        self.assertIn("udpcast (= ${udpcast_version})", package_builder)
+        self.assertIn("CYBEX-SBOM.spdx.json", offline_builder)
+        self.assertIn("GPL-2.0-only AND BSD-2-Clause", offline_builder)
+        self.assertIn("UDPCAST-COPYRIGHT", offline_builder)
+        self.assertIn("udpcast", snapshot)
+        service = SERVICE.read_text(encoding="utf-8")
+        self.assertIn("CapabilityBoundingSet=\n", service)
+        self.assertIn("AmbientCapabilities=\n", service)
+        firewall = FIRST_BOOT.with_name("cybex-james-firewall").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("policy accept", firewall)
+        self.assertNotIn("udp dport", firewall)
         source_builder = BUILD_MANAGE_SOURCE_ARCHIVE.read_text(encoding="utf-8")
         self.assertIn("git -c tar.umask=0022", source_builder)
         self.assertIn("git get-tar-commit-id", source_builder)
@@ -1264,15 +1299,11 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
     def test_qualification_proves_greenfield_runtime_and_builtin_delivery(self) -> None:
         script = QUALIFICATION_LIFECYCLE.read_text(encoding="utf-8")
         self.assertIn(".source_builds_allowed' \"$delivery_policy\"", script)
-        for slug in (
-            "standard_taskbar_workstation",
-            "dock_workstation",
-            "hyprland_developer",
-        ):
-            self.assertIn(slug, script)
-        self.assertIn(".package_ref? // empty", script)
-        self.assertIn('index("deno") != null', script)
-        self.assertIn('index("nodejs") == null', script)
+        self.assertIn('blueprint-catalog.py', script)
+        self.assertIn('--baseline "$blueprints"', script)
+        self.assertIn('($blueprints[0].blueprints | map(.slug)) as $expected', script)
+        self.assertIn('.ready_replicas == .required_replicas', script)
+        self.assertLess(script.index('blueprint-catalog.py'), script.index('package_delivery='))
         self.assertIn(
             'api GET "/v1/james/nodes/$device_id/workstation-netboot"', script
         )

@@ -154,7 +154,8 @@ for package_name in \
   linux-generic \
   linux-firmware \
   nix-bin \
-  python3
+  python3 \
+  udpcast
 do
   package_version=""
   while IFS= read -r -d '' package_file; do

@@ -8,6 +8,7 @@ usage() {
 }
 
 repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+readonly udpcast_expected_version=20120424-2build2
 output=""
 james_binary=""
 bootstrap_binary=""
@@ -93,6 +94,9 @@ cat > "$apt_root/etc/apt/sources.list" <<EOF
 deb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $snapshot_base/ resolute main restricted universe multiverse
 deb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $snapshot_base/ resolute-updates main restricted universe multiverse
 deb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $snapshot_base/ resolute-security main restricted universe multiverse
+deb-src [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $snapshot_base/ resolute main restricted universe multiverse
+deb-src [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $snapshot_base/ resolute-updates main restricted universe multiverse
+deb-src [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $snapshot_base/ resolute-security main restricted universe multiverse
 EOF
 cat > "$apt_root/etc/apt/apt.conf.d/99cybex-snapshot" <<'EOF'
 Acquire::Check-Valid-Until "false";
@@ -150,6 +154,7 @@ declare -a packages=(
   tftpd-hpa
   dnsmasq-base
   ubuntu-keyring
+  "udpcast=$udpcast_expected_version"
   util-linux
   watchdog
 )
@@ -183,6 +188,33 @@ fi
 
 apt-get "${apt_options[@]}" --yes --download-only --no-install-recommends install "${packages[@]}"
 
+# UDPcast is GPL-2.0 with a BSD-2-Clause FEC source file. Keep the complete,
+# authenticated corresponding Ubuntu source beside the exact binary in the
+# signed offline snapshot; an installed appliance therefore never depends on
+# a future mirror remaining available to satisfy the source offer.
+udpcast_source_work="$work_dir/udpcast-source"
+mkdir -p -- "$udpcast_source_work/download" "$udpcast_source_work/extracted"
+(
+  cd -- "$udpcast_source_work/download"
+  apt-get "${apt_options[@]}" --download-only source "udpcast=$udpcast_expected_version"
+)
+mapfile -d '' -t udpcast_dsc_files < <(
+  find "$udpcast_source_work/download" -maxdepth 1 -type f -name 'udpcast_*.dsc' -print0
+)
+test "${#udpcast_dsc_files[@]}" -eq 1 || {
+  echo "error: Ubuntu snapshot did not yield exactly one udpcast source descriptor" >&2
+  exit 1
+}
+dpkg-source -x "${udpcast_dsc_files[0]}" "$udpcast_source_work/extracted/tree" >/dev/null
+test "$(dpkg-parsechangelog -l "$udpcast_source_work/extracted/tree/debian/changelog" -S Version)" = \
+  "$udpcast_expected_version" || {
+  echo "error: UDPcast corresponding source version is not the qualified version" >&2
+  exit 1
+}
+find "$udpcast_source_work/download" -maxdepth 1 -type f -exec cp -t "$output" -- {} +
+install -m 0644 "$udpcast_source_work/extracted/tree/debian/copyright" \
+  "$output/UDPCAST-COPYRIGHT"
+
 find "$apt_root/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' -exec cp -t "$output" -- {} +
 find "$local_packages" -maxdepth 1 -type f -name '*.deb' -exec cp -t "$output" -- {} +
 
@@ -196,6 +228,58 @@ release_date="$(
   python3 -B "$repository_root/ubuntu-appliance/snapshot-release-date.py" "$snapshot_id"
 )"
 
+mapfile -d '' -t udpcast_binary_packages < <(
+  find "$output" -maxdepth 1 -type f -name 'udpcast_*.deb' -print0
+)
+test "${#udpcast_binary_packages[@]}" -eq 1 || {
+  echo "error: offline repository must contain exactly one udpcast binary package" >&2
+  exit 1
+}
+udpcast_package="${udpcast_binary_packages[0]}"
+udpcast_version="$(dpkg-deb -f "$udpcast_package" Version)"
+test "$udpcast_version" = "$udpcast_expected_version" || {
+  echo "error: offline repository UDPcast version is not the qualified version" >&2
+  exit 1
+}
+udpcast_source_files='[]'
+while IFS= read -r -d '' source_file; do
+  udpcast_source_files="$(
+    jq -c \
+      --arg filename "${source_file##*/}" \
+      --arg sha256 "$(sha256sum "$source_file" | awk '{print $1}')" \
+      --argjson size_bytes "$(stat -c '%s' "$source_file")" \
+      '. + [{filename:$filename,sha256:$sha256,size_bytes:$size_bytes}]' \
+      <<<"$udpcast_source_files"
+  )"
+done < <(find "$output" -maxdepth 1 -type f -name 'udpcast_*' ! -name '*.deb' -print0 | LC_ALL=C sort -z)
+jq -S -n \
+  --arg snapshot_id "$snapshot_id" \
+  --arg version "$udpcast_version" \
+  --arg filename "${udpcast_package##*/}" \
+  --arg sha256 "$(sha256sum "$udpcast_package" | awk '{print $1}')" \
+  --argjson source_files "$udpcast_source_files" \
+  '{
+    spdxVersion:"SPDX-2.3",
+    dataLicense:"CC0-1.0",
+    SPDXID:"SPDXRef-DOCUMENT",
+    name:("cybex-james-udpcast-" + $version),
+    documentNamespace:("https://cybex.net/spdx/james/" + $snapshot_id + "/udpcast/" + $sha256),
+    creationInfo:{created:($snapshot_id[0:4] + "-" + $snapshot_id[4:6] + "-" + $snapshot_id[6:11] + ":" + $snapshot_id[11:13] + ":" + $snapshot_id[13:15] + "Z"),creators:["Tool: Cybex James appliance snapshot builder"]},
+    packages:[{
+      name:"udpcast",SPDXID:"SPDXRef-Package-udpcast",versionInfo:$version,
+      downloadLocation:"NOASSERTION",filesAnalyzed:false,
+      licenseConcluded:"GPL-2.0-only AND BSD-2-Clause",
+      licenseDeclared:"GPL-2.0-only AND BSD-2-Clause",
+      copyrightText:"See UDPCAST-COPYRIGHT",
+      checksums:[{algorithm:"SHA256",checksumValue:$sha256}],
+      packageFileName:$filename,
+      sourceInfo:"Complete corresponding Ubuntu source is bundled beside this document",
+      externalRefs:[{referenceCategory:"PACKAGE-MANAGER",referenceType:"purl",referenceLocator:("pkg:deb/ubuntu/udpcast@" + ($version|@uri) + "?arch=amd64")}]
+    }],
+    relationships:[{spdxElementId:"SPDXRef-DOCUMENT",relationshipType:"DESCRIBES",relatedSpdxElement:"SPDXRef-Package-udpcast"}],
+    annotations:[{annotationType:"OTHER",annotator:"Tool: Cybex James appliance snapshot builder",annotationDate:($snapshot_id[0:4] + "-" + $snapshot_id[4:6] + "-" + $snapshot_id[6:11] + ":" + $snapshot_id[11:13] + ":" + $snapshot_id[13:15] + "Z"),comment:("Corresponding source files: " + ($source_files|tojson))}]
+  }' > "$output/CYBEX-SBOM.spdx.json"
+
 (
   cd -- "$output"
   dpkg-scanpackages --multiversion . /dev/null > Packages
@@ -208,6 +292,10 @@ release_date="$(
     -o APT::FTPArchive::Release::Architectures='amd64' \
     -o APT::FTPArchive::Release::Date="$release_date" \
     release . > Release
-  sha256sum ./*.deb Packages Packages.gz Release | LC_ALL=C sort -k2 > SHA256SUMS
+  find . -type f ! -name SHA256SUMS -print0 \
+    | LC_ALL=C sort -z \
+    | xargs -0 sha256sum \
+    | LC_ALL=C sort -k2 > "$work_dir/SHA256SUMS"
+  install -m 0644 "$work_dir/SHA256SUMS" SHA256SUMS
   printf '%s\n' "$snapshot_id" > UBUNTU-SNAPSHOT-ID
 )
