@@ -5435,7 +5435,13 @@ fn james_nixos_flake(
       cybexAgent = pkgs.rustPlatform.buildRustPackage {{
         pname = "cybex-agent";
         version = "installer-target";
-        src = manage + "/agent/cybex-agent";
+        # Keep the repository layout while Cargo compiles the agent. The
+        # agent deliberately shares its redaction catalogue with Manage via
+        # ../../../protocol; using only the crate subdirectory leaves that
+        # reviewed source outside the Nix input and breaks every fresh
+        # installer-target closure build.
+        src = manage;
+        sourceRoot = "source/agent/cybex-agent";
         cargoLock.lockFile = manage + "/agent/cybex-agent/Cargo.lock";
         doCheck = false;
       }};
@@ -6267,6 +6273,23 @@ esac
         let hash = canonical_json_sha256(&job.build_spec["build_input"]).unwrap();
         job.input_config_hash.clone_from(&hash);
         job.build_spec["input_config_hash"] = json!(hash);
+    }
+
+    #[test]
+    fn installer_target_agent_build_keeps_shared_protocol_source_in_scope() {
+        let config = AppConfig::default();
+        let spec = validate_build_spec(&config, &valid_installer_target_build_job()).unwrap();
+        let input = spec.build_input.as_ref().unwrap();
+        let flake = james_nixos_flake(
+            "github:NixOS/nixpkgs/5555555555555555555555555555555555555555",
+            "x86_64-linux",
+            input,
+            Some("tarball+file:///usr/share/cybex-james/manage-source/test.tar"),
+        );
+
+        assert!(flake.contains("src = manage;"));
+        assert!(flake.contains("sourceRoot = \"source/agent/cybex-agent\";"));
+        assert!(!flake.contains("src = manage + \"/agent/cybex-agent\";"));
     }
 
     #[test]

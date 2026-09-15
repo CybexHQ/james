@@ -473,3 +473,36 @@ automatically, releasing its unused reserved device identity.
 Production qualification must also cover the documented VM controller matrix
 and representative Dell, HP, Lenovo, Intel/AMD, Ethernet, SATA/NVMe/VMD, and
 firmware generations before the release is promoted.
+
+## Automatic PXE discovery
+
+The appliance includes `dnsmasq-base` and `cybex-james-pxe.service`. On the
+approved wired IPv4 VLAN, the supervisor supplies PXE information alongside
+existing DHCP, with DNS and address allocation disabled. It binds the current
+approved interface and subnet automatically and advertises x86-64 UEFI
+architectures 7 and 9. UDP 67/4011, TFTP, and HTTP must reach James. Routed VLANs
+and switch DHCP guard require appropriate network configuration.
+
+Manage supplies a complete organization-scoped peer/client snapshot. The
+supervisor verifies direct-link peer MACs, public identity fingerprints, and
+boot readiness, then selects the lowest eligible device ID with a ten-second
+settling interval. Standby nodes take over automatically. Explicit computer
+assignments route to their owner; ambiguous or unavailable owners are blocked.
+Five-minute-old or incomplete inventories stop proxy advertising. Brief
+duplicate replies during convergence are possible; this is not a lease protocol.
+
+The root-owned conffile `/etc/cybex-james/pxe-discovery.json` defaults to
+`{"mode":"automatic"}`. Select `{"mode":"external"}` when an existing DHCP/PXE
+service owns discovery. The supervisor coordinates only the organization's
+managed peers and does not coordinate unrelated PXE servers.
+
+`/healthz/pxe` exposes only readiness, candidacy, and a hashed device identity.
+Appliance reports include separate `local_health.pxe_discovery` evidence; the
+Console translates it into automatic network boot availability.
+
+Run `sudo python3 -B ubuntu-appliance/qualification/run-pxe-discovery.py
+--bootloader /usr/lib/ipxe/snponly.efi --receipt /tmp/pxe-receipt.json` on a host
+with dnsmasq, QEMU/KVM, and OVMF. It validates real DHCP/proxy exchanges and a
+diskless UEFI/iPXE handoff on isolated disposable networks without DHCP boot
+options. `python3 -B -m unittest discover -s tools/tests -p test_pxe_discovery.py`
+covers policy validation, interface identity, routing, and peer selection.

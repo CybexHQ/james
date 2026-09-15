@@ -10,12 +10,12 @@ use axum::{
     http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde::Deserialize;
 use tower_http::trace::TraceLayer;
 
-use crate::{AppState, netboot};
+use crate::{AppState, netboot, netboot_multicast};
 
 const REQUEST_BODY_LIMIT_BYTES: usize = 1024;
 const CONTENT_SECURITY_POLICY: &str = concat!(
@@ -28,6 +28,7 @@ const CONTENT_SECURITY_POLICY: &str = concat!(
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/healthz/pxe", get(crate::pxe_discovery::candidate))
         .route("/boot", get(boot::boot_root))
         .route("/boot.ipxe", get(boot::boot_root))
         .route("/boot/:mac", get(boot::boot_mac))
@@ -36,6 +37,14 @@ pub fn router(state: AppState) -> Router {
         .route("/boot/select/:profile_id", get(boot::boot_select_profile))
         .route("/files/*path", get(files::boot_file))
         .route("/cache/*path", get(files::cache_file))
+        .route(
+            "/netboot/:bundle_sha256/nix-store.squashfs/multicast",
+            post(netboot_multicast::discover),
+        )
+        .route(
+            "/netboot/:bundle_sha256/nix-store.squashfs/multicast/result",
+            post(netboot_multicast::record_result),
+        )
         .route(
             "/netboot/:bundle_sha256/:component",
             get(netboot::serve_component),
@@ -86,7 +95,14 @@ async fn healthz(
     } else {
         crate::readiness::probe(&state).await
     };
-    if readiness.ready {
+    let discovery_ready = !crate::appliance::is_managed_ubuntu()
+        || matches!(
+            crate::pxe_discovery::status()
+                .get("status")
+                .and_then(serde_json::Value::as_str),
+            Some("active" | "standby" | "external")
+        );
+    if readiness.ready && discovery_ready {
         ([(header::CONTENT_TYPE, "text/plain")], "ok\n").into_response()
     } else {
         (
@@ -474,6 +490,90 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
         }
+    }
+
+    #[tokio::test]
+    async fn cache_route_counts_served_bytes_and_misses_for_the_james_report() {
+        let state = test_state().await;
+        let cache_root = state.config.cache.root_dir.clone();
+        let store_hash = "2".repeat(32);
+        let missing_store_hash = "3".repeat(32);
+        let file_hash = "4".repeat(52);
+        fs::create_dir_all(cache_root.join("nar")).unwrap();
+        fs::write(
+            cache_root.join(format!("{store_hash}.narinfo")),
+            vec![b'n'; 300],
+        )
+        .unwrap();
+        fs::write(
+            cache_root.join(format!("nar/{file_hash}.nar.zst")),
+            vec![b'z'; 1000],
+        )
+        .unwrap();
+        fs::write(cache_root.join("manifest.json"), b"{}").unwrap();
+        let app = router(state.clone());
+        let get = |path: String, range: Option<&'static str>| {
+            let mut builder = Request::builder().uri(path);
+            if let Some(range) = range {
+                builder = builder.header("range", range);
+            }
+            builder.body(Body::empty()).unwrap()
+        };
+
+        let full = app
+            .clone()
+            .oneshot(get(format!("/cache/{store_hash}.narinfo"), None))
+            .await
+            .unwrap();
+        assert_eq!(full.status(), StatusCode::OK);
+        let partial = app
+            .clone()
+            .oneshot(get(
+                format!("/cache/nar/{file_hash}.nar.zst"),
+                Some("bytes=100-349"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(partial.status(), StatusCode::PARTIAL_CONTENT);
+        let unsatisfiable = app
+            .clone()
+            .oneshot(get(
+                format!("/cache/nar/{file_hash}.nar.zst"),
+                Some("bytes=5000-"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(unsatisfiable.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        let missing_member = app
+            .clone()
+            .oneshot(get(format!("/cache/{missing_store_hash}.narinfo"), None))
+            .await
+            .unwrap();
+        assert_eq!(missing_member.status(), StatusCode::NOT_FOUND);
+        for garbage in ["/cache/manifest.json", "/cache/nar/not-a-member.txt"] {
+            let response = app
+                .clone()
+                .oneshot(get(garbage.to_string(), None))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{garbage}");
+        }
+
+        let snapshot = state.cache_egress.snapshot();
+        assert_eq!(
+            snapshot.served_bytes_total, 550,
+            "full narinfo (300) plus the 250-byte range"
+        );
+        assert_eq!(snapshot.served_requests_total, 2);
+        assert_eq!(
+            snapshot.missing_requests_total, 1,
+            "only the well-formed missing member is a miss; garbage paths and 416 are not counted"
+        );
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&snapshot.counters_since).is_ok(),
+            "{}",
+            snapshot.counters_since
+        );
     }
 
     async fn test_state() -> AppState {

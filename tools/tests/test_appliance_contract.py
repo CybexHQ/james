@@ -464,6 +464,15 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 ["dpkg-deb", "--control", str(appliance), str(control_root)],
                 check=True,
             )
+            proxy_helper = data_root / 'usr/lib/cybex-james/cybex-james-pxe'
+            proxy_unit = data_root / 'etc/systemd/system/cybex-james-pxe.service'
+            proxy_policy = data_root / 'etc/cybex-james/pxe-discovery.json'
+            self.assertEqual(proxy_helper.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(proxy_unit.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(json.loads(proxy_policy.read_text()), {'mode':'automatic'})
+            self.assertIn('dnsmasq-base', (control_root / 'control').read_text())
+            self.assertIn('/etc/cybex-james/pxe-discovery.json', (control_root / 'conffiles').read_text())
+            self.assertIn('cybex-james-pxe', (control_root / 'postinst').read_text())
             packaged_first_boot = (
                 data_root
                 / "usr/lib/cybex-james/cybex-james-first-boot"
@@ -1217,7 +1226,7 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
         self.assertNotIn("systemctl enable --now", script)
         self.assertIn(
             "systemctl enable nix-daemon nginx tftpd-hpa "
-            "cybex-james-firewall ssh\n",
+            "cybex-james-pxe cybex-james-firewall ssh\n",
             script,
         )
 
@@ -1778,7 +1787,7 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
         self.assertEqual(autoexec.count("dhcp net0 ||"), 2)
         self.assertEqual(
             autoexec.count(
-                "chain --autofree http://${next-server}/boot/${net0/mac:hexhyp}"
+                "chain --autofree http://${cybex-boot-server}/boot/${net0/mac:hexhyp}"
             ),
             2,
         )
@@ -1790,7 +1799,7 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
             2,
         )
         self.assertIn(":cybex_local_handoff\nexit 1", autoexec)
-        self.assertIn("isset ${next-server}", autoexec)
+        self.assertIn("isset ${proxydhcp/next-server}", autoexec)
         self.assertIn("isset ${net0/mac}", autoexec)
         self.assertNotIn("organization", autoexec)
         self.assertNotIn("token", autoexec)

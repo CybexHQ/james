@@ -794,6 +794,7 @@ fn offline_package_install_commands(package_delivery: PackageDelivery) -> Value 
         "secureboot-db",
         "nginx-core",
         "tftpd-hpa",
+        "dnsmasq-base",
         "ipxe",
         "nix-bin",
         "nix-setup-systemd",

@@ -1839,12 +1839,18 @@ async fn local_health(readiness: crate::readiness::ApplianceReadiness) -> Value 
         "public_boot_url".to_string(),
         Value::Bool(readiness.public_boot_url),
     );
-    let status = if readiness.ready && checks.values().all(|value| value == &Value::Bool(true)) {
-        "healthy"
-    } else {
-        "degraded"
-    };
-    json!({"status":status,"checks":checks})
+    let pxe = crate::pxe_discovery::status();
+    let pxe_ok = matches!(
+        pxe.get("status").and_then(Value::as_str),
+        Some("active" | "standby" | "external")
+    );
+    let status =
+        if readiness.ready && pxe_ok && checks.values().all(|value| value == &Value::Bool(true)) {
+            "healthy"
+        } else {
+            "degraded"
+        };
+    json!({"status":status,"checks":checks,"pxe_discovery":pxe})
 }
 
 fn secure_boot_enabled() -> bool {

@@ -128,9 +128,10 @@ Section: admin
 Priority: optional
 Architecture: amd64
 Maintainer: Cybex <support@cybex.net>
-Depends: cybex-james (= ${version}-1), cybex-james-bootstrap (= ${version}-1), systemd, nginx-core, tftpd-hpa, ipxe, iproute2, openssh-server, nftables, netplan.io, btrfs-progs, watchdog, nix-bin, nix-setup-systemd, curl, dnsutils, jq, python3, mokutil, sbsigntool, shim-signed, grub-efi-amd64-signed, secureboot-db, linux-generic, linux-firmware, intel-microcode, amd64-microcode
+Depends: cybex-james (= ${version}-1), cybex-james-bootstrap (= ${version}-1), systemd, nginx-core, tftpd-hpa, dnsmasq-base, ipxe, iproute2, openssh-server, nftables, netplan.io, btrfs-progs, watchdog, nix-bin, nix-setup-systemd, curl, dnsutils, jq, python3, mokutil, sbsigntool, shim-signed, grub-efi-amd64-signed, secureboot-db, linux-generic, linux-firmware, intel-microcode, amd64-microcode
 Description: Managed Ubuntu host integration for Cybex James
 EOF
+printf '%s\n' /etc/cybex-james/pxe-discovery.json > "$appliance_root/DEBIAN/conffiles"
 build_package "$appliance_root" cybex-james-appliance
 
 sha256sum "$output"/*.deb | LC_ALL=C sort -k2 > "$output/CYBEX-PACKAGES.sha256"

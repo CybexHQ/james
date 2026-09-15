@@ -53,6 +53,7 @@ const CAPABILITY_INSTALLER_TARGET_BUILD_V3: &str = "installer_target_build_v3";
 /// (`closure_source` in a build spec) instead of rebuilding them.
 const CAPABILITY_CACHE_REPLICA_V1: &str = "cache_replica_v1";
 const CAPABILITY_WORKSTATION_NETBOOT_V1: &str = "workstation_netboot_v1";
+const CAPABILITY_WORKSTATION_ROOTFS_MULTICAST_V1: &str = crate::netboot_multicast::CAPABILITY;
 const CAPABILITY_JAMES_BOOT_GRANT_V1: &str = "james_boot_grant_v1";
 const CAPABILITY_APPLIANCE_UPDATE_V1: &str = crate::appliance::APPLIANCE_UPDATE_CAPABILITY;
 const CAPABILITY_APPLIANCE_UPDATE_V2: &str = crate::appliance::APPLIANCE_UPDATE_CAPABILITY_V2;
@@ -123,6 +124,8 @@ struct ComponentCompatibilityContract {
 #[derive(Debug, Deserialize)]
 struct AgentBootConfigResponse {
     #[serde(default)]
+    pxe_discovery: Option<crate::pxe_discovery::Desired>,
+    #[serde(default)]
     compatibility: Option<ComponentCompatibilityContract>,
     settings: ManagedBootSettings,
     profiles: Vec<ManagedBootProfile>,
@@ -159,6 +162,8 @@ struct AgentJamesConfigResponse {
     network_change: Option<crate::appliance::SignedApplianceNetworkChange>,
     #[serde(default)]
     workstation_netboot: Option<Value>,
+    #[serde(default)]
+    workstation_multicast: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,6 +171,8 @@ struct JamesReportResponse {
     status: String,
     #[serde(default)]
     workstation_netboot: Option<WorkstationNetbootReportReceipt>,
+    #[serde(default)]
+    workstation_multicast: Option<Value>,
     #[serde(default)]
     warnings: JamesReportWarnings,
 }
@@ -443,6 +450,8 @@ struct JamesAgentReportRequest {
     disk: Option<crate::disk::DiskStats>,
     host: Option<crate::host::HostStats>,
     workstation_netboot: Option<crate::netboot::WorkstationNetbootReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workstation_multicast: Option<crate::netboot_multicast::WorkstationMulticastReport>,
     appliance: Option<crate::appliance::ApplianceReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     appliance_report_error: Option<&'static str>,
@@ -809,6 +818,13 @@ async fn fetch_boot_config_for_config(
     let config: AgentBootConfigResponse =
         parse_success_json(response, "fetch managed boot config").await?;
     validate_component_compatibility(config.compatibility.as_ref())?;
+    if config
+        .pxe_discovery
+        .as_ref()
+        .is_some_and(|pxe| pxe.server_device_id != device_id)
+    {
+        bail!("PXE discovery inventory belongs to another appliance");
+    }
     Ok(config)
 }
 
@@ -919,6 +935,25 @@ async fn apply_james_desired(
     desired: AgentJamesConfigResponse,
     first_failure: &mut Option<anyhow::Error>,
 ) {
+    let multicast_desired = desired.workstation_multicast.clone();
+    if let Err(error) =
+        crate::netboot_multicast::apply_desired_policy(state, multicast_desired).await
+    {
+        warn!(
+            error_code = "workstation_multicast_policy_invalid",
+            "isolated an unusable workstation multicast desired lane"
+        );
+        if let Err(disable_error) =
+            crate::netboot_multicast::apply_desired_policy(state, None).await
+        {
+            debug!(
+                error_code = "workstation_multicast_policy_disable_failed",
+                "could not persist fail-closed multicast policy state"
+            );
+            let _ = disable_error;
+        }
+        let _ = error;
+    }
     if let Some(workstation_netboot) = desired.workstation_netboot {
         match crate::netboot::decode_desired(workstation_netboot.clone()) {
             Ok(workstation_netboot) => {
@@ -1215,7 +1250,7 @@ async fn report_james_state(
     let local_cache_build_state_valid =
         build_listing_valid && cache_scrub_valid && cache_listing_valid && cache_inventory_valid;
     let cache = cache_status_for_local_state(
-        crate::cache::status_report(&state.config, &state.db).await,
+        crate::cache::status_report(&state.config, &state.db, state.cache_egress.snapshot()).await,
         local_cache_build_state_valid,
     );
     let workstation_netboot = match crate::netboot::report(state).await {
@@ -1228,6 +1263,16 @@ async fn report_james_state(
                 error_code = crate::netboot::ERROR_RUNTIME_REPORT_STORAGE_UNAVAILABLE,
                 safe_detail = %crate::netboot::safe_failure_message(&error),
                 "workstation runtime report generation failed; sending null without blocking the James report"
+            );
+            None
+        }
+    };
+    let workstation_multicast = match crate::netboot_multicast::report_page(state).await {
+        Ok(report) => report,
+        Err(_) => {
+            warn!(
+                error_code = "workstation_multicast_report_storage_unavailable",
+                "multicast evidence is unavailable; continuing independent James report lanes"
             );
             None
         }
@@ -1280,6 +1325,7 @@ async fn report_james_state(
         disk: crate::disk::stats(&state.config.cache.root_dir).ok(),
         host: crate::host::sample().await,
         workstation_netboot,
+        workstation_multicast,
         appliance,
         appliance_report_error,
     };
@@ -1296,7 +1342,70 @@ async fn report_james_state(
     let response =
         parse_success_json::<JamesReportResponse>(response, "report managed james state").await?;
     accept_james_report_response(&response, managed, &body)?;
+    accept_workstation_multicast_receipt(state, &response, &body).await;
     Ok(JamesReportReceipt)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkstationMulticastReportReceipt {
+    report_instance_id: String,
+    acknowledged_through: i64,
+}
+
+fn workstation_multicast_receipt_matches_sent(
+    receipt: &WorkstationMulticastReportReceipt,
+    sent_instance_id: &str,
+    last_sent_event_id: Option<i64>,
+) -> bool {
+    last_sent_event_id.is_some_and(|event_id| {
+        receipt.report_instance_id == sent_instance_id && receipt.acknowledged_through == event_id
+    })
+}
+
+async fn accept_workstation_multicast_receipt(
+    state: &AppState,
+    response: &JamesReportResponse,
+    body: &JamesAgentReportRequest,
+) {
+    let (Some(raw), Some(sent)) = (
+        response.workstation_multicast.as_ref(),
+        body.workstation_multicast.as_ref(),
+    ) else {
+        return;
+    };
+    let Ok(receipt) = serde_json::from_value::<WorkstationMulticastReportReceipt>(raw.clone())
+    else {
+        debug!(
+            error_code = "workstation_multicast_receipt_invalid",
+            "multicast report receipt remained retryable"
+        );
+        return;
+    };
+    if !workstation_multicast_receipt_matches_sent(
+        &receipt,
+        &sent.report_instance_id,
+        sent.events.last().map(|event| event.event_id),
+    ) {
+        debug!(
+            error_code = "workstation_multicast_receipt_mismatch",
+            "multicast report receipt remained retryable"
+        );
+        return;
+    }
+    if crate::netboot_multicast::acknowledge_report(
+        state,
+        &receipt.report_instance_id,
+        receipt.acknowledged_through,
+    )
+    .await
+    .is_err()
+    {
+        debug!(
+            error_code = "workstation_multicast_receipt_storage_unavailable",
+            "multicast report receipt remained retryable"
+        );
+    }
 }
 
 fn accept_james_report_response(
@@ -1621,6 +1730,8 @@ fn fit_james_report_body(
         job.logs.clear();
     }
 
+    trim_workstation_multicast_reports(&mut body, max_bytes);
+
     match priority {
         JamesReportPriority::ActiveBuilds => {
             trim_ordinary_terminal_reports(&mut body, max_bytes);
@@ -1661,6 +1772,17 @@ fn fit_james_report_body(
         "managed james report trimmed to fit request budget"
     );
     Ok((body, body_bytes))
+}
+
+fn trim_workstation_multicast_reports(body: &mut JamesAgentReportRequest, max_bytes: usize) {
+    while !james_report_body_fits(body, max_bytes) {
+        let Some(report) = body.workstation_multicast.as_mut() else {
+            break;
+        };
+        if report.events.pop().is_none() {
+            break;
+        }
+    }
 }
 
 fn terminal_build_job_removal_index(jobs: &[JamesBuildJobReport]) -> Option<usize> {
@@ -1838,6 +1960,11 @@ async fn apply_boot_config(state: &AppState, config: &AgentBootConfigResponse) -
     )
     .await?;
     tx.commit().await?;
+    let mut discovery = config.pxe_discovery.clone();
+    if let Some(desired) = &mut discovery {
+        desired.complete &= config.clients_complete && config.profiles_complete;
+    }
+    crate::pxe_discovery::persist(state, discovery.as_ref())?;
     state.update_runtime_settings(RuntimeSettings {
         public_base_url: settings.public_base_url,
         bootloader_filename: settings.bootloader_filename,
@@ -2311,7 +2438,7 @@ async fn signed_request_for_config(
     })
 }
 
-fn james_capabilities(_config: &AppConfig) -> Vec<&'static str> {
+fn james_capabilities(config: &AppConfig) -> Vec<&'static str> {
     let mut capabilities = vec![
         CAPABILITY_BOOT_V1,
         CAPABILITY_BUILDER_V1,
@@ -2324,9 +2451,13 @@ fn james_capabilities(_config: &AppConfig) -> Vec<&'static str> {
         CAPABILITY_WORKSTATION_NETBOOT_V1,
         CAPABILITY_JAMES_BOOT_GRANT_V1,
     ];
+    capabilities.push(crate::pxe_discovery::CAPABILITY);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V1);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V2);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1);
+    if crate::netboot_multicast::binary_available(config) {
+        capabilities.push(CAPABILITY_WORKSTATION_ROOTFS_MULTICAST_V1);
+    }
     capabilities
 }
 
@@ -4257,6 +4388,7 @@ mod tests {
                 "cache_replica_v1",
                 "workstation_netboot_v1",
                 "james_boot_grant_v1",
+                "pxe_proxy_v1",
                 "appliance_update_v1",
                 "appliance_update_v2",
                 "appliance_update_qualification_transport_v1"
@@ -4933,6 +5065,7 @@ mod tests {
 
     fn sample_boot_config() -> AgentBootConfigResponse {
         AgentBootConfigResponse {
+            pxe_discovery: None,
             compatibility: Some(ComponentCompatibilityContract {
                 protocol_version: CYBEX_COMPONENT_PROTOCOL_VERSION,
                 minimum_james_protocol: 1,
@@ -5273,6 +5406,10 @@ mod tests {
             total_size_bytes: 1234,
             artifact_count: 3,
             error: String::new(),
+            served_bytes_total: 5678,
+            served_requests_total: 9,
+            missing_requests_total: 2,
+            counters_since: "2026-09-03T00:00:00Z".to_string(),
         };
 
         let degraded = cache_status_for_local_state(report.clone(), false);
@@ -5287,6 +5424,13 @@ mod tests {
         assert_eq!(degraded.base_url, report.base_url);
         assert_eq!(degraded.total_size_bytes, report.total_size_bytes);
         assert_eq!(degraded.artifact_count, report.artifact_count);
+        assert_eq!(degraded.served_bytes_total, report.served_bytes_total);
+        assert_eq!(degraded.served_requests_total, report.served_requests_total);
+        assert_eq!(
+            degraded.missing_requests_total,
+            report.missing_requests_total
+        );
+        assert_eq!(degraded.counters_since, report.counters_since);
         assert_eq!(
             cache_inventory_generation_for_peer(41, false, true, false),
             41,
@@ -5311,6 +5455,34 @@ mod tests {
             .workstation_netboot
             .expect("raw runtime desired state");
         assert!(crate::netboot::decode_desired(runtime).is_err());
+    }
+
+    #[test]
+    fn multicast_receipts_advance_only_the_exact_page_that_was_sent() {
+        let receipt = WorkstationMulticastReportReceipt {
+            report_instance_id: "instance-a".to_string(),
+            acknowledged_through: 7,
+        };
+        assert!(workstation_multicast_receipt_matches_sent(
+            &receipt,
+            "instance-a",
+            Some(7)
+        ));
+        assert!(!workstation_multicast_receipt_matches_sent(
+            &receipt,
+            "instance-b",
+            Some(7)
+        ));
+        assert!(!workstation_multicast_receipt_matches_sent(
+            &receipt,
+            "instance-a",
+            Some(6)
+        ));
+        assert!(!workstation_multicast_receipt_matches_sent(
+            &receipt,
+            "instance-a",
+            None
+        ));
     }
 
     #[test]
@@ -5420,6 +5592,10 @@ mod tests {
                 total_size_bytes: 0,
                 artifact_count: 0,
                 error: String::new(),
+                served_bytes_total: 0,
+                served_requests_total: 0,
+                missing_requests_total: 0,
+                counters_since: "2026-08-10T18:00:00Z".to_string(),
             },
             build_jobs,
             cache_artifacts: vec![],
@@ -5429,6 +5605,7 @@ mod tests {
             disk: None,
             host: None,
             workstation_netboot: None,
+            workstation_multicast: None,
             appliance: None,
             appliance_report_error: None,
         }
