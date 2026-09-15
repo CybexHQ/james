@@ -513,9 +513,13 @@ addresses are rejected.
 
 The automated boot entry mirrors Ubuntu to the first serial port so early
 installer failures are visible in the protected job, while keeping the
-physical display as the primary console. Ubuntu's remove-media prompt and
-installer failures therefore remain visible on the attached screen as well as
-in serial diagnostics. Qualification stops after five minutes when an approved
+physical display as the primary console. The `noprompt` kernel option prevents
+Casper from waiting for keyboard input at shutdown, including when the same ISO
+boots a completed installation and redirects it to the installed UEFI entry.
+Installer failures remain visible on the attached screen and in serial diagnostics.
+Qualification requires an automatic transition to ready within five minutes of
+`rebooting`, with the ISO attached; it fails instead of cold-starting the VM or
+removing media. Qualification also stops after five minutes when an approved
 candidate has not acknowledged its plan or begun destructive work, and includes
 only bounded console and session diagnostics.
 The protected VM uses a fixed virtual NIC address and disk serial so retries

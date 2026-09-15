@@ -1235,7 +1235,7 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
             script,
         )
 
-    def test_qualification_cold_starts_a_stalled_installed_disk_once(self) -> None:
+    def test_qualification_keeps_installer_attached_for_automatic_reboot(self) -> None:
         script = QUALIFICATION_LIFECYCLE.read_text(encoding="utf-8")
         self.assertIn("validate-manage-origin", script)
         self.assertIn(".installer_iso_template_v2.manage_origin", script)
@@ -1244,15 +1244,10 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
             'value.get("manage_origin") != descriptor.get("manage_origin")',
             verifier,
         )
-        self.assertIn(
-            'installer) boot_arguments=(-boot "once=d,menu=off")', script
-        )
-        self.assertIn(
-            'installed) boot_arguments=(-boot "order=c,menu=off")', script
-        )
-        self.assertIn("qemu_restart_count=0\n", script)
-        self.assertIn("qemu_restart_count=1\n", script)
-        self.assertIn("cold_restart_deadline=$((SECONDS + 300))\n", script)
+        self.assertIn('-boot "once=d,menu=off"', script)
+        self.assertIn('-device ide-cd,drive=installer', script)
+        self.assertEqual(script.count("\nstart_qemu\n"), 1)
+        self.assertNotIn("start_qemu installed", script)
         self.assertIn("-m 32768", script)
 
     def test_qualification_makes_the_personalized_iso_private_and_writable(self) -> None:

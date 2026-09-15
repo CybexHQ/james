@@ -215,13 +215,6 @@ test -f "$vars_template" && test -f "$code"
 cp -- "$vars_template" "$work_dir/OVMF_VARS.fd"
 
 start_qemu() {
-  local boot_mode="$1"
-  local -a boot_arguments
-  case "$boot_mode" in
-    installer) boot_arguments=(-boot "once=d,menu=off") ;;
-    installed) boot_arguments=(-boot "order=c,menu=off") ;;
-    *) echo "error: unsupported qualification boot mode: $boot_mode" >&2; exit 1 ;;
-  esac
   qemu-system-x86_64 \
     -enable-kvm -machine q35,smm=on -cpu host -smp 4 -m 32768 \
     -global driver=cfi.pflash01,property=secure,value=on \
@@ -232,13 +225,11 @@ start_qemu() {
     -drive "if=none,id=installer,media=cdrom,readonly=on,format=raw,file=$personalized" \
     -device ide-cd,drive=installer \
     -netdev "bridge,id=net0,br=$bridge" -device virtio-net-pci,netdev=net0,mac=52:54:00:c7:be:01 \
-    "${boot_arguments[@]}" -display none -serial "file:$work_dir/serial.log" &
+    -boot "once=d,menu=off" -display none -serial "file:$work_dir/serial.log" &
   qemu_pid=$!
 }
 
-qemu_restart_count=0
-cold_restart_deadline=0
-start_qemu installer
+start_qemu
 
 session="$work_dir/session.json"
 claimed=false
@@ -270,6 +261,7 @@ approve_body="$(jq -cn \
 api POST "/v1/james/provisioning-sessions/$session_id/approve" "$approve_body" >/dev/null
 
 ready=false
+reboot_deadline=0
 pre_destructive_deadline=$((SECONDS + 300))
 for _attempt in $(seq 1 1080); do
   api GET "/v1/james/provisioning-sessions/$session_id" > "$session"
@@ -299,22 +291,13 @@ for _attempt in $(seq 1 1080); do
     fi
     exit 1
   fi
-  if [[ "$state" = rebooting && "$qemu_restart_count" -eq 0 ]] \
-    && [[ -s "$work_dir/serial.log" ]] \
-    && (( $(date +%s) - $(stat -c %Y "$work_dir/serial.log") >= 180 ))
-  then
-    echo 'qualification: reboot console stalled; cold-starting the installed disk once' >&2
-    kill "$qemu_pid" 2>/dev/null || true
-    wait "$qemu_pid" 2>/dev/null || true
-    qemu_pid=""
-    start_qemu installed
-    qemu_restart_count=1
-    cold_restart_deadline=$((SECONDS + 300))
+  if [[ "$state" = rebooting && "$reboot_deadline" -eq 0 ]]; then
+    reboot_deadline=$((SECONDS + 300))
   fi
-  if [[ "$state" = rebooting && "$qemu_restart_count" -eq 1 ]] \
-    && ((SECONDS >= cold_restart_deadline))
+  if ((reboot_deadline > 0 && SECONDS >= reboot_deadline))
   then
-    echo 'error: installed James disk did not activate after its bounded cold restart' >&2
+    echo 'error: installed James did not complete its automatic reboot within five minutes; qualification will not force a restart or remove media' >&2
+    jq '{state,heartbeat_at,progress,failure_code,failure_message}' "$session" >&2
     if [[ -s "$work_dir/serial.log" ]]; then
       echo 'bounded qualification serial console follows:' >&2
       tail -n 500 "$work_dir/serial.log" >&2
