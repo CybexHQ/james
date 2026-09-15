@@ -13,6 +13,7 @@ pub mod manage;
 pub(crate) mod manage_source;
 pub mod models;
 pub mod netboot;
+pub mod netboot_multicast;
 pub(crate) mod nix_command;
 pub mod nix_log;
 pub(crate) mod protected_material;
@@ -21,6 +22,7 @@ pub mod readiness;
 pub(crate) mod redact;
 pub(crate) mod release_transport;
 pub mod routes;
+pub mod wake_on_lan;
 
 use std::sync::{Arc, RwLock};
 
@@ -32,6 +34,7 @@ use sqlx::SqlitePool;
 pub struct AppState {
     pub config: Arc<AppConfig>,
     pub db: SqlitePool,
+    pub netboot_multicast: netboot_multicast::NetbootMulticast,
     runtime: Arc<RwLock<RuntimeSettings>>,
 }
 
@@ -41,6 +44,7 @@ impl AppState {
         Self {
             config: Arc::new(config),
             db,
+            netboot_multicast: netboot_multicast::NetbootMulticast::new(),
             runtime: Arc::new(RwLock::new(runtime)),
         }
     }

@@ -8,6 +8,7 @@ usage() {
 }
 
 repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+readonly udpcast_version=20120424-2build2
 output=""
 james_binary=""
 bootstrap_binary=""
@@ -83,7 +84,7 @@ Section: admin
 Priority: optional
 Architecture: amd64
 Maintainer: Cybex <support@cybex.net>
-Depends: libc6, libgcc-s1, ca-certificates
+Depends: libc6, libgcc-s1, ca-certificates, udpcast (= ${udpcast_version})
 Description: Cybex James build and network-boot service
 EOF
 build_package "$james_root" cybex-james
@@ -128,7 +129,7 @@ Section: admin
 Priority: optional
 Architecture: amd64
 Maintainer: Cybex <support@cybex.net>
-Depends: cybex-james (= ${version}-1), cybex-james-bootstrap (= ${version}-1), systemd, nginx-core, tftpd-hpa, ipxe, iproute2, openssh-server, nftables, netplan.io, btrfs-progs, watchdog, nix-bin, nix-setup-systemd, curl, dnsutils, jq, python3, mokutil, sbsigntool, shim-signed, grub-efi-amd64-signed, secureboot-db, linux-generic, linux-firmware, intel-microcode, amd64-microcode
+Depends: cybex-james (= ${version}-1), cybex-james-bootstrap (= ${version}-1), systemd, nginx-core, tftpd-hpa, ipxe, iproute2, openssh-server, nftables, netplan.io, btrfs-progs, watchdog, nix-bin, nix-setup-systemd, curl, dnsutils, jq, python3, udpcast (= ${udpcast_version}), mokutil, sbsigntool, shim-signed, grub-efi-amd64-signed, secureboot-db, linux-generic, linux-firmware, intel-microcode, amd64-microcode
 Description: Managed Ubuntu host integration for Cybex James
 EOF
 build_package "$appliance_root" cybex-james-appliance

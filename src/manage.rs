@@ -45,9 +45,14 @@ use crate::{
 const CAPABILITY_BOOT_V1: &str = "boot_v1";
 const CAPABILITY_BUILDER_V1: &str = "builder_v1";
 const CAPABILITY_BLUEPRINT_BUILDER_V2: &str = "blueprint_builder_v2";
+const CAPABILITY_BLUEPRINT_WALLPAPER_V1: &str = "blueprint_wallpaper_v1";
 const CAPABILITY_CACHE_V1: &str = "cache_v1";
+const CAPABILITY_INSTALLER_TARGET_BUILD_V2: &str = "installer_target_build_v2";
+const CAPABILITY_INSTALLER_TARGET_BUILD_V3: &str = "installer_target_build_v3";
 const CAPABILITY_WORKSTATION_NETBOOT_V1: &str = "workstation_netboot_v1";
+const CAPABILITY_WORKSTATION_ROOTFS_MULTICAST_V1: &str = crate::netboot_multicast::CAPABILITY;
 const CAPABILITY_JAMES_BOOT_GRANT_V1: &str = "james_boot_grant_v1";
+const CAPABILITY_WAKE_ON_LAN_V1: &str = crate::wake_on_lan::CAPABILITY;
 const CAPABILITY_APPLIANCE_UPDATE_V1: &str = crate::appliance::APPLIANCE_UPDATE_CAPABILITY;
 const CAPABILITY_APPLIANCE_UPDATE_V2: &str = crate::appliance::APPLIANCE_UPDATE_CAPABILITY_V2;
 const CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1: &str =
@@ -153,6 +158,10 @@ struct AgentJamesConfigResponse {
     network_change: Option<crate::appliance::SignedApplianceNetworkChange>,
     #[serde(default)]
     workstation_netboot: Option<Value>,
+    #[serde(default)]
+    workstation_multicast: Option<Value>,
+    #[serde(default)]
+    wake_on_lan: Vec<crate::wake_on_lan::ManagedWakeRequest>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,6 +169,10 @@ struct JamesReportResponse {
     status: String,
     #[serde(default)]
     workstation_netboot: Option<WorkstationNetbootReportReceipt>,
+    #[serde(default)]
+    workstation_multicast: Option<Value>,
+    #[serde(default)]
+    wake_on_lan: Vec<String>,
     #[serde(default)]
     warnings: JamesReportWarnings,
 }
@@ -437,6 +450,9 @@ struct JamesAgentReportRequest {
     disk: Option<crate::disk::DiskStats>,
     host: Option<crate::host::HostStats>,
     workstation_netboot: Option<crate::netboot::WorkstationNetbootReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workstation_multicast: Option<crate::netboot_multicast::WorkstationMulticastReport>,
+    wake_on_lan: Vec<crate::wake_on_lan::WakeReport>,
     appliance: Option<crate::appliance::ApplianceReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     appliance_report_error: Option<&'static str>,
@@ -886,7 +902,7 @@ async fn sync_james_foundation(
                 .compatibility
                 .as_ref()
                 .and_then(|contract| contract.workstation_runtime_epoch);
-            apply_james_desired(state, desired, &mut first_failure).await;
+            apply_james_desired(state, managed, desired, &mut first_failure).await;
         }
         Err(error) => retain_sync_failure(
             &mut first_failure,
@@ -909,9 +925,32 @@ async fn sync_james_foundation(
 
 async fn apply_james_desired(
     state: &AppState,
+    managed: &ManagedState,
     desired: AgentJamesConfigResponse,
     first_failure: &mut Option<anyhow::Error>,
 ) {
+    if let Err(error) = crate::wake_on_lan::apply_requests(&state.db, &desired.wake_on_lan).await {
+        retain_sync_failure(first_failure, "Wake-on-LAN desired state", error.into());
+    }
+    let multicast_desired = desired.workstation_multicast.clone();
+    if let Err(error) =
+        crate::netboot_multicast::apply_desired_policy(state, multicast_desired).await
+    {
+        warn!(
+            error_code = "workstation_multicast_policy_invalid",
+            "isolated an unusable workstation multicast desired lane"
+        );
+        if let Err(disable_error) =
+            crate::netboot_multicast::apply_desired_policy(state, None).await
+        {
+            debug!(
+                error_code = "workstation_multicast_policy_disable_failed",
+                "could not persist fail-closed multicast policy state"
+            );
+            let _ = disable_error;
+        }
+        let _ = error;
+    }
     if let Some(workstation_netboot) = desired.workstation_netboot {
         match crate::netboot::decode_desired(workstation_netboot.clone()) {
             Ok(workstation_netboot) => {
@@ -959,6 +998,15 @@ async fn apply_james_desired(
     if build_count_valid {
         for job in desired.build_jobs {
             retained_job_ids.push(job.id.clone());
+            if let Err(error) = ensure_managed_build_wallpaper(state, managed, &job).await {
+                build_snapshot_applied = false;
+                retain_sync_failure(
+                    first_failure,
+                    "managed Blueprint wallpaper download",
+                    error.context(format!("prepare managed build job {} wallpaper", job.id)),
+                );
+                continue;
+            }
             let sync = db::upsert_managed_build_job(
                 &state.db,
                 &job.id,
@@ -1216,6 +1264,23 @@ async fn report_james_state(
             None
         }
     };
+    let workstation_multicast = match crate::netboot_multicast::report_page(state).await {
+        Ok(report) => report,
+        Err(_) => {
+            warn!(
+                error_code = "workstation_multicast_report_storage_unavailable",
+                "multicast evidence is unavailable; continuing independent James report lanes"
+            );
+            None
+        }
+    };
+    let wake_on_lan = match crate::wake_on_lan::report(&state.db).await {
+        Ok(report) => report,
+        Err(error) => {
+            warn!(error = %error, "Wake-on-LAN report generation failed");
+            Vec::new()
+        }
+    };
     let (appliance, appliance_report_error) = match crate::appliance::report(state).await {
         Ok(report) => (report, None),
         Err(error) => {
@@ -1264,6 +1329,8 @@ async fn report_james_state(
         disk: crate::disk::stats(&state.config.cache.root_dir).ok(),
         host: crate::host::sample().await,
         workstation_netboot,
+        workstation_multicast,
+        wake_on_lan,
         appliance,
         appliance_report_error,
     };
@@ -1280,7 +1347,72 @@ async fn report_james_state(
     let response =
         parse_success_json::<JamesReportResponse>(response, "report managed james state").await?;
     accept_james_report_response(&response, managed, &body)?;
+    accept_workstation_multicast_receipt(state, &response, &body).await;
+    if let Err(error) = crate::wake_on_lan::acknowledge(&state.db, &response.wake_on_lan).await {
+        debug!(error = %error, "Wake-on-LAN receipts remain queued for acknowledgement");
+    }
     Ok(JamesReportReceipt)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkstationMulticastReportReceipt {
+    report_instance_id: String,
+    acknowledged_through: i64,
+}
+
+fn workstation_multicast_receipt_matches_sent(
+    receipt: &WorkstationMulticastReportReceipt,
+    sent_instance_id: &str,
+    last_sent_event_id: Option<i64>,
+) -> bool {
+    last_sent_event_id.is_some_and(|event_id| {
+        receipt.report_instance_id == sent_instance_id && receipt.acknowledged_through == event_id
+    })
+}
+
+async fn accept_workstation_multicast_receipt(
+    state: &AppState,
+    response: &JamesReportResponse,
+    body: &JamesAgentReportRequest,
+) {
+    let (Some(raw), Some(sent)) = (
+        response.workstation_multicast.as_ref(),
+        body.workstation_multicast.as_ref(),
+    ) else {
+        return;
+    };
+    let Ok(receipt) = serde_json::from_value::<WorkstationMulticastReportReceipt>(raw.clone())
+    else {
+        debug!(
+            error_code = "workstation_multicast_receipt_invalid",
+            "multicast report receipt remained retryable"
+        );
+        return;
+    };
+    if !workstation_multicast_receipt_matches_sent(
+        &receipt,
+        &sent.report_instance_id,
+        sent.events.last().map(|event| event.event_id),
+    ) {
+        debug!(
+            error_code = "workstation_multicast_receipt_mismatch",
+            "multicast report receipt remained retryable"
+        );
+        return;
+    }
+    if let Err(_) = crate::netboot_multicast::acknowledge_report(
+        state,
+        &receipt.report_instance_id,
+        receipt.acknowledged_through,
+    )
+    .await
+    {
+        debug!(
+            error_code = "workstation_multicast_receipt_storage_unavailable",
+            "multicast report receipt remained retryable"
+        );
+    }
 }
 
 fn accept_james_report_response(
@@ -1605,6 +1737,8 @@ fn fit_james_report_body(
         job.logs.clear();
     }
 
+    trim_workstation_multicast_reports(&mut body, max_bytes);
+
     match priority {
         JamesReportPriority::ActiveBuilds => {
             trim_ordinary_terminal_reports(&mut body, max_bytes);
@@ -1645,6 +1779,17 @@ fn fit_james_report_body(
         "managed james report trimmed to fit request budget"
     );
     Ok((body, body_bytes))
+}
+
+fn trim_workstation_multicast_reports(body: &mut JamesAgentReportRequest, max_bytes: usize) {
+    while !james_report_body_fits(body, max_bytes) {
+        let Some(report) = body.workstation_multicast.as_mut() else {
+            break;
+        };
+        if report.events.pop().is_none() {
+            break;
+        }
+    }
 }
 
 fn terminal_build_job_removal_index(jobs: &[JamesBuildJobReport]) -> Option<usize> {
@@ -2138,6 +2283,127 @@ async fn signed_request(
     signed_request_for_config(&state.config, managed, method, path, body).await
 }
 
+const MAX_BLUEPRINT_WALLPAPER_BYTES: usize = 4 * 1024 * 1024;
+
+fn verify_blueprint_wallpaper_bytes(
+    asset: &crate::build::BlueprintWallpaperAsset,
+    bytes: &[u8],
+) -> Result<()> {
+    if bytes.len() != usize::try_from(asset.size_bytes).unwrap_or(usize::MAX) {
+        bail!("Blueprint wallpaper size does not match its descriptor");
+    }
+    if !bytes.starts_with(&[0xff, 0xd8, 0xff]) || !bytes.ends_with(&[0xff, 0xd9]) {
+        bail!("Blueprint wallpaper is not a complete JPEG image");
+    }
+    if sha256_hex(bytes) != asset.sha256 {
+        bail!("Blueprint wallpaper failed its SHA-256 integrity check");
+    }
+    Ok(())
+}
+
+fn write_blueprint_wallpaper_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("Blueprint wallpaper cache path has no parent"))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("create Blueprint wallpaper cache {}", parent.display()))?;
+    #[cfg(unix)]
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    let tmp = secure_json_tmp_path(path)?;
+    let result = (|| -> Result<()> {
+        let mut options = fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options
+            .open(&tmp)
+            .with_context(|| format!("create temporary Blueprint wallpaper {}", tmp.display()))?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, path)?;
+        sync_parent_dir(path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(tmp);
+    }
+    result
+}
+
+async fn ensure_managed_build_wallpaper(
+    state: &AppState,
+    managed: &ManagedState,
+    job: &ManagedBuildJob,
+) -> Result<()> {
+    let Some(asset_value) = job
+        .build_spec
+        .as_ref()
+        .and_then(|spec| spec.pointer("/build_input/wallpaper_asset"))
+    else {
+        return Ok(());
+    };
+    let asset: crate::build::BlueprintWallpaperAsset = serde_json::from_value(asset_value.clone())
+        .context("managed build wallpaper descriptor does not match schema")?;
+    let asset = crate::build::validate_blueprint_wallpaper_asset(asset)?;
+    if asset.blueprint_revision_id != job.input_revision
+        || job
+            .build_spec
+            .as_ref()
+            .and_then(|spec| spec.get("blueprint_revision_id"))
+            .and_then(Value::as_str)
+            != Some(asset.blueprint_revision_id.as_str())
+    {
+        bail!("managed build wallpaper revision does not match the build job");
+    }
+    let path = crate::build::wallpaper_asset_cache_path(&state.config, &asset.sha256)?;
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        if metadata.is_file()
+            && !metadata.file_type().is_symlink()
+            && metadata.len() == asset.size_bytes
+        {
+            let bytes = fs::read(&path)?;
+            if verify_blueprint_wallpaper_bytes(&asset, &bytes).is_ok() {
+                return Ok(());
+            }
+        }
+    }
+
+    let device_id = managed_device_id(managed)?;
+    let path_and_query = format!(
+        "/v1/agent/devices/{device_id}/blueprint-wallpapers/{}?blueprint_revision_id={}",
+        asset.id, asset.blueprint_revision_id
+    );
+    let mut response = signed_request(state, managed, Method::GET, &path_and_query, Vec::new())
+        .await?
+        .send()
+        .await
+        .context("download managed Blueprint wallpaper request failed")?;
+    if !response.status().is_success() {
+        bail!(
+            "download managed Blueprint wallpaper failed with HTTP {}",
+            response.status()
+        );
+    }
+    if response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        != Some("image/jpeg")
+    {
+        bail!("managed Blueprint wallpaper response has an invalid content type");
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(asset.size_bytes).unwrap_or(0));
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_BLUEPRINT_WALLPAPER_BYTES {
+            bail!("managed Blueprint wallpaper response exceeded 4 MiB");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    verify_blueprint_wallpaper_bytes(&asset, &bytes)?;
+    write_blueprint_wallpaper_atomic(&path, &bytes)
+}
+
 async fn signed_request_for_config(
     config: &AppConfig,
     managed: &ManagedState,
@@ -2174,18 +2440,25 @@ async fn signed_request_for_config(
     })
 }
 
-fn james_capabilities(_config: &AppConfig) -> Vec<&'static str> {
+fn james_capabilities(config: &AppConfig) -> Vec<&'static str> {
     let mut capabilities = vec![
         CAPABILITY_BOOT_V1,
         CAPABILITY_BUILDER_V1,
         CAPABILITY_BLUEPRINT_BUILDER_V2,
+        CAPABILITY_BLUEPRINT_WALLPAPER_V1,
         CAPABILITY_CACHE_V1,
+        CAPABILITY_INSTALLER_TARGET_BUILD_V2,
+        CAPABILITY_INSTALLER_TARGET_BUILD_V3,
         CAPABILITY_WORKSTATION_NETBOOT_V1,
         CAPABILITY_JAMES_BOOT_GRANT_V1,
+        CAPABILITY_WAKE_ON_LAN_V1,
     ];
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V1);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V2);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1);
+    if crate::netboot_multicast::binary_available(config) {
+        capabilities.push(CAPABILITY_WORKSTATION_ROOTFS_MULTICAST_V1);
+    }
     capabilities
 }
 
@@ -4109,9 +4382,13 @@ mod tests {
                 "boot_v1",
                 "builder_v1",
                 "blueprint_builder_v2",
+                "blueprint_wallpaper_v1",
                 "cache_v1",
+                "installer_target_build_v2",
+                "installer_target_build_v3",
                 "workstation_netboot_v1",
                 "james_boot_grant_v1",
+                "wake_on_lan_v1",
                 "appliance_update_v1",
                 "appliance_update_v2",
                 "appliance_update_qualification_transport_v1"
@@ -5169,6 +5446,34 @@ mod tests {
     }
 
     #[test]
+    fn multicast_receipts_advance_only_the_exact_page_that_was_sent() {
+        let receipt = WorkstationMulticastReportReceipt {
+            report_instance_id: "instance-a".to_string(),
+            acknowledged_through: 7,
+        };
+        assert!(workstation_multicast_receipt_matches_sent(
+            &receipt,
+            "instance-a",
+            Some(7)
+        ));
+        assert!(!workstation_multicast_receipt_matches_sent(
+            &receipt,
+            "instance-b",
+            Some(7)
+        ));
+        assert!(!workstation_multicast_receipt_matches_sent(
+            &receipt,
+            "instance-a",
+            Some(6)
+        ));
+        assert!(!workstation_multicast_receipt_matches_sent(
+            &receipt,
+            "instance-a",
+            None
+        ));
+    }
+
+    #[test]
     fn appliance_update_transport_override_is_optional_wire_data() {
         let update = json!({
             "attempt_id": "d4a17ec8-e854-4bc4-84c7-e490f51640c3",
@@ -5284,6 +5589,8 @@ mod tests {
             disk: None,
             host: None,
             workstation_netboot: None,
+            workstation_multicast: None,
+            wake_on_lan: vec![],
             appliance: None,
             appliance_report_error: None,
         }

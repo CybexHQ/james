@@ -156,6 +156,7 @@ class JamesReleaseToolTests(unittest.TestCase):
             "linux-firmware": "20260715.git123-0ubuntu1",
             "nix-bin": "2.30.1+dfsg-1",
             "python3": "3.13.5-1",
+            "udpcast": "20120424-2build2",
         }
         metadata = self.directory / "package-snapshot.json"
         metadata.write_text(

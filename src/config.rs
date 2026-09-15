@@ -162,12 +162,16 @@ pub struct UpdateConfig {
     pub trusted_public_key: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct WorkstationNetbootConfig {
     /// Development-only escape: allows private transport and unsigned runtime
     /// descriptors. Production appliances must leave this disabled.
     pub allow_private_release_urls: bool,
+    /// Root-owned emergency override. Desired policy can never bypass it.
+    pub multicast_emergency_disabled: bool,
+    /// Reviewed appliance path to the pinned UDPcast sender.
+    pub udp_sender_path: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -390,6 +394,13 @@ impl AppConfig {
             "update.trusted_public_key",
             &self.update.trusted_public_key,
         )?;
+        self.workstation_netboot.udp_sender_path = normalize_program_name(
+            "workstation_netboot.udp_sender_path",
+            &self.workstation_netboot.udp_sender_path,
+        )?;
+        if !self.workstation_netboot.udp_sender_path.starts_with('/') {
+            bail!("workstation_netboot.udp_sender_path must be absolute");
+        }
         self.manage.api_url = if self.manage.api_url.trim().is_empty() {
             String::new()
         } else {
@@ -889,7 +900,7 @@ impl Default for BuildConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            max_concurrent_builds: 1,
+            max_concurrent_builds: 2,
             max_build_cores: 4,
             minimum_memory_bytes: 16 * 1024 * 1024 * 1024,
             minimum_swap_bytes: 8 * 1024 * 1024 * 1024,
@@ -934,6 +945,16 @@ impl Default for ManageConfig {
             state_path: PathBuf::from("/var/lib/cybex-james/state/manage-state.json"),
             sync_interval_seconds: 30,
             http_timeout_seconds: 30,
+        }
+    }
+}
+
+impl Default for WorkstationNetbootConfig {
+    fn default() -> Self {
+        Self {
+            allow_private_release_urls: false,
+            multicast_emergency_disabled: false,
+            udp_sender_path: "/usr/bin/udp-sender".to_string(),
         }
     }
 }

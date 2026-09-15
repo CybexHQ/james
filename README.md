@@ -51,11 +51,68 @@ appliance reporting, or managed heartbeats. James keeps serving its verified
 active runtime while a newer candidate is retried; the candidate import state
 and current service availability are intentionally separate signals in Manage.
 
+James advertises `installer_target_build_v3` when it accepts the device-agnostic
+cohort identity `cybex.installer-target.build.v3` for exact installation jobs.
+That identity names only closure inputs — Blueprint revision and artifact
+hash, generated-Nix, expected-state, hardware-module and target-module digests,
+driver policy, Manage source revision, nixpkgs pin, and source lock — and James
+verifies every digest against the module text it evaluates before building, so
+the echoed identity proves the exact inputs of a closure Manage may reuse for
+every workstation in the same hardware cohort. James also still advertises
+`installer_target_build_v2` and accepts the per-device v1/v2 identity shapes so
+retained jobs from before the upgrade remain retryable; current Manage issues
+only v3 and refuses to prepare installations on a James without it
+(`james_installer_closure_unsupported`). Deploy James before Manage.
+
 Source-free Blueprint preparation classifies the exact evaluated derivation
 graph in an isolated store. Deterministic NixOS composition outputs and their
 qualified tool providers are admitted by strict fingerprints, while an
 unrecognized source-producing derivation remains blocked and is reported in
 bounded `source_build_candidates` diagnostics.
+
+## Wake-on-LAN
+
+James advertises `wake_on_lan_v1` and accepts bounded, signed wake requests
+from Manage. Each request is tied to an existing workstation placement and a
+normalized MAC address. James sends the standard magic packet three times on
+UDP ports 9 and 7, stores a durable `sent` or `failed` receipt in SQLite, and
+replays that receipt until Manage acknowledges it. Repeated configuration
+syncs therefore never create an unbounded wake storm.
+
+Wake-on-LAN is best effort. A failed or expired wake request does not fail or
+cancel the authoritative Blueprint operation: the workstation remains safely
+queued and converges when it next checks in. James reports only bounded error
+codes and never treats a wake receipt as proof that a workstation actually
+started.
+
+## Classroom rootfs multicast
+
+James can advertise `workstation_rootfs_multicast_v1` and coalesce live boot
+sessions for the same immutable `nix-store.squashfs` into one rate-limited,
+TTL-1 UDPcast stream. The optimization is disabled unless Manage supplies an
+`automatic` policy for an explicitly qualified wired L2 multicast domain; a
+missing or invalid policy, an older runtime, an unsuitable interface, or the
+root-owned `workstation_netboot.multicast_emergency_disabled` override leaves
+the existing HTTP path unchanged. A complete gathering window admits up to 30
+compatible sessions before one sender starts. Late, single, failed, or dropped
+receivers use HTTP and independently verify the signed size and SHA-256.
+
+Only the organization-neutral rootfs bytes enter multicast. Boot contexts,
+grants, nonces, device identities, enrollment, commands, secrets, closures,
+and results remain per-device unicast. The sender uses one canonical
+`O_NOFOLLOW`-opened artifact, a selected wired interface, fixed administrative
+groups and ports, TTL 1, an absolute timeout, bounded receiver drop behavior,
+and no added Linux capabilities. Nginx suppresses access logging for
+bearer-like boot-session context paths. Aggregate transfer evidence is
+isolated from other managed report lanes and contains no session, device, URL,
+address, or interface identifiers.
+
+The Ubuntu package snapshot binds `udpcast` `20120424-2build2` as an exact
+dependency, carries an SPDX document plus its authenticated complete
+corresponding source and copyright, and qualifies the dependency through
+normal appliance update and rollback lifecycle gates. The nftables boundary
+remains unchanged: it restricts SSH; the unprivileged sender's own high-UDP
+socket is the runtime gate.
 
 ## Ubuntu appliance
 

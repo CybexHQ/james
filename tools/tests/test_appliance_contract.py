@@ -88,6 +88,7 @@ NETPLAN_APPLY = (
 )
 NETPLAN_ACTIVATE = NETPLAN_APPLY.with_name("cybex-james-netplan-activate")
 BUILD_TEMPLATE = REPOSITORY / "ubuntu-appliance" / "build-template.sh"
+AUTOINSTALL_USER_DATA = REPOSITORY / "ubuntu-appliance" / "nocloud" / "user-data"
 GRUB_THEME = REPOSITORY / "ubuntu-appliance" / "grub-theme" / "theme.txt"
 BUILD_PACKAGE_SNAPSHOT = (
     REPOSITORY / "ubuntu-appliance" / "build-package-snapshot.sh"
@@ -548,6 +549,28 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 pxe_nginx,
             )
             self.assertIn(
+                'location ~ "^/boot-session/[A-Za-z0-9_-]{22}/context\\.cpio$" {',
+                pxe_nginx,
+            )
+            self.assertIn("access_log off;", pxe_nginx)
+            self.assertIn(
+                'location ~ "^/manage-source/(?<source_file>[0-9a-f]{40}\\.(?:tar|json))$" {',
+                pxe_nginx,
+            )
+            self.assertIn(
+                "alias /usr/share/cybex-james/manage-source/$source_file;",
+                pxe_nginx,
+            )
+            self.assertIn("limit_except GET { deny all; }", pxe_nginx)
+            self.assertNotIn(
+                "location /manage-source/",
+                pxe_nginx,
+            )
+            self.assertNotIn(
+                "alias /usr/share/cybex-james/manage-source/;",
+                pxe_nginx,
+            )
+            self.assertIn(
                 "10-netplan-cybex-james.network",
                 packaged_netplan_activate.read_text(encoding="utf-8"),
             )
@@ -782,6 +805,12 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
         self.assertIn('assets/pxe-menu.png', template)
         self.assertTrue(GRUB_THEME.is_file())
 
+        console_arguments = "console=ttyS0,115200n8 console=tty0"
+        self.assertIn(console_arguments, template)
+        self.assertNotIn("console=tty0 console=ttyS0,115200n8", template)
+        user_data = AUTOINSTALL_USER_DATA.read_text(encoding="utf-8")
+        self.assertIn("/dev/tty0 /dev/ttyS0", user_data)
+
         snapshot = BUILD_PACKAGE_SNAPSHOT.read_text(encoding="utf-8")
         self.assertIn("build-offline-repo.sh", snapshot)
         self.assertIn("cybex.james.appliance-package-snapshot.v1", snapshot)
@@ -794,8 +823,29 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
         self.assertIn("build-manage-source-archive.sh", package_builder)
         self.assertIn("usr/share/cybex-james/manage-source", package_builder)
         self.assertIn("iputils-arping", package_builder)
+        self.assertIn("udpcast", package_builder)
         offline_builder = BUILD_OFFLINE_REPOSITORY.read_text(encoding="utf-8")
         self.assertIn("iputils-arping", offline_builder)
+        self.assertIn(
+            'apt-get "${apt_options[@]}" --download-only source '
+            '"udpcast=$udpcast_expected_version"',
+            offline_builder,
+        )
+        self.assertIn("udpcast_expected_version=20120424-2build2", offline_builder)
+        self.assertIn('"udpcast=$udpcast_expected_version"', offline_builder)
+        self.assertIn("udpcast (= ${udpcast_version})", package_builder)
+        self.assertIn("CYBEX-SBOM.spdx.json", offline_builder)
+        self.assertIn("GPL-2.0-only AND BSD-2-Clause", offline_builder)
+        self.assertIn("UDPCAST-COPYRIGHT", offline_builder)
+        self.assertIn("udpcast", snapshot)
+        service = SERVICE.read_text(encoding="utf-8")
+        self.assertIn("CapabilityBoundingSet=\n", service)
+        self.assertIn("AmbientCapabilities=\n", service)
+        firewall = FIRST_BOOT.with_name("cybex-james-firewall").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("policy accept", firewall)
+        self.assertNotIn("udp dport", firewall)
         source_builder = BUILD_MANAGE_SOURCE_ARCHIVE.read_text(encoding="utf-8")
         self.assertIn("git -c tar.umask=0022", source_builder)
         self.assertIn("git get-tar-commit-id", source_builder)
@@ -1758,6 +1808,14 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
             ),
             2,
         )
+        self.assertEqual(autoexec.count("set cybex-local-handoff 0"), 2)
+        self.assertEqual(
+            autoexec.count(
+                "iseq ${cybex-local-handoff} 1 && goto cybex_local_handoff"
+            ),
+            2,
+        )
+        self.assertIn(":cybex_local_handoff\nexit 1", autoexec)
         self.assertIn("isset ${next-server}", autoexec)
         self.assertIn("isset ${net0/mac}", autoexec)
         self.assertNotIn("organization", autoexec)

@@ -10,12 +10,12 @@ use axum::{
     http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde::Deserialize;
 use tower_http::trace::TraceLayer;
 
-use crate::{AppState, netboot};
+use crate::{AppState, netboot, netboot_multicast};
 
 const REQUEST_BODY_LIMIT_BYTES: usize = 1024;
 const CONTENT_SECURITY_POLICY: &str = concat!(
@@ -36,6 +36,14 @@ pub fn router(state: AppState) -> Router {
         .route("/boot/select/:profile_id", get(boot::boot_select_profile))
         .route("/files/*path", get(files::boot_file))
         .route("/cache/*path", get(files::cache_file))
+        .route(
+            "/netboot/:bundle_sha256/nix-store.squashfs/multicast",
+            post(netboot_multicast::discover),
+        )
+        .route(
+            "/netboot/:bundle_sha256/nix-store.squashfs/multicast/result",
+            post(netboot_multicast::record_result),
+        )
         .route(
             "/netboot/:bundle_sha256/:component",
             get(netboot::serve_component),
@@ -404,7 +412,10 @@ mod tests {
                 .to_vec(),
         )
         .unwrap();
-        assert!(body.contains("sanboot --drive 0 || goto known_menu"));
+        assert!(body.contains(
+            ":known_local_efi\nsanboot --no-describe --drive 0x80 || goto known_local_efi_handoff\ngoto end\n:known_local_efi_handoff\necho Returning control to UEFI for the next boot entry\nset cybex-local-handoff 1\nexit 1"
+        ));
+        assert!(!body.contains("sanboot --drive 0"));
         assert!(body.contains("item profile_"));
         assert!(body.contains("Default Enrollment"));
     }
@@ -426,18 +437,21 @@ mod tests {
         fs::write(cache_root.join("cache-priv-key.pem"), b"private-key").unwrap();
         let app = router(state);
 
-        for (path, expected) in [
+        for (path, expected, cache_control) in [
             (
                 "/cache/nix-cache-info".to_string(),
                 b"cache-info".as_slice(),
+                "public, max-age=60",
             ),
             (
                 format!("/cache/{store_hash}.narinfo"),
                 b"narinfo".as_slice(),
+                "public, max-age=60",
             ),
             (
                 format!("/cache/nar/{file_hash}.nar.xz"),
                 b"compressed-nar".as_slice(),
+                "public, max-age=31536000, immutable",
             ),
         ] {
             let response = app
@@ -446,6 +460,10 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers().get("cache-control").unwrap(),
+                cache_control
+            );
             assert_eq!(
                 &to_bytes(response.into_body(), 1024).await.unwrap()[..],
                 expected
