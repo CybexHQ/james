@@ -75,6 +75,43 @@ class PackagedServiceTests(unittest.TestCase):
         self.assertLess(source.index("/usr/lib/cybex-james/cybex-james-packaged-service"),
                         source.index("systemctl daemon-reload"))
 
+    def test_older_pxe_layers_cannot_resurface_after_retiring_newer_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            verification, _, known = self.fixture(root)
+            binary = root / 'opt/cybex-pxe-dev/cybex-james'
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b'old pxe binary fixture')
+            asset = binary.with_name('autoexec.ipxe'); asset.write_bytes(b'#!ipxe\nfixture\n')
+            texts = [
+                '[Service]\nExecStart=\nExecStart=/opt/cybex-pxe-dev/cybex-james --config /etc/cybex-james/config.toml serve\nBindReadOnlyPaths=/opt/cybex-pxe-dev/autoexec.ipxe:/usr/share/cybex-james/autoexec.ipxe\n',
+                '[Service]\nExecStartPost=/usr/bin/install -m 0644 /opt/cybex-pxe-dev/autoexec.ipxe /var/cache/cybex-james/tftp/autoexec.ipxe\n',
+            ]
+            rules = {}
+            overrides = []
+            for (relative, (identity, files)), text in zip(service.PXE.items(), texts):
+                self.assertEqual(hashlib.sha256(text.encode()).hexdigest(), identity)
+                override = root / relative; override.parent.mkdir(parents=True, exist_ok=True)
+                override.write_text(text); overrides.append(override)
+                rules[relative] = (identity, {p: hashlib.sha256((root / p).read_bytes()).hexdigest() for p in files})
+            with patch.object(service, 'KNOWN', known), patch.object(service, 'PXE', rules):
+                self.assertTrue(service.retire(root))
+                self.assertFalse(service.retire(root))
+            for override in [verification, *overrides]:
+                self.assertFalse(override.exists())
+                self.assertTrue(override.with_suffix('.conf.retired').is_file())
+
+    def test_modified_pxe_asset_keeps_its_operator_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            relative = 'etc/systemd/system/cybex-james-first-boot.service.d/90-pxe-dev.conf'
+            text = '[Service]\nExecStartPost=/usr/bin/install -m 0644 /opt/cybex-pxe-dev/autoexec.ipxe /var/cache/cybex-james/tftp/autoexec.ipxe\n'
+            override = root / relative; override.parent.mkdir(parents=True); override.write_text(text)
+            asset = root / 'opt/cybex-pxe-dev/autoexec.ipxe'; asset.parent.mkdir(parents=True)
+            asset.write_text('operator replacement')
+            self.assertFalse(service.retire(root))
+            self.assertTrue(override.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

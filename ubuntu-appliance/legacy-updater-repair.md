@@ -37,3 +37,23 @@ The Blueprint classifier adds three reviewed deterministic service-link and
 `/etc` assembly recipes. Their normalized and executable-pinned fingerprints
 are both required; hooks, injected compilation and changed tool hashes remain
 rejected. Fixtures retain the exact reviewed production tiling recipes.
+
+The immediate-migration rehearsal also found an older PXE override underneath
+the September verifier override on Bench and GreenField. Package activation
+retires both exact known service layers and their matching first-boot asset
+override, checking the referenced binaries/assets before changing any file.
+
+An origin change requires staging `authorization.json` and `manifest.json` in
+the root-owned `control/origin-transitions/<candidate-release>/` directory.
+`cybex-james-origin-transition` runs during candidate package configuration. It
+verifies the retained authority's Ed25519 origin authorization and binds it to
+the original release/origin, exact candidate manifest, compiled target origin
+and root updater's protected package-verification receipt. The Management
+configuration must already name that target. Only the candidate root's
+`provisioning-state.json` origin is changed; a private backup is kept there.
+The signed plan, device keys, shared state partitions and old root are unchanged.
+Missing, altered or mismatched authorization fails candidate configuration.
+
+This is necessary because the first-boot network guard compares the durable
+origin to the package's compiled origin. Changing the daemon API endpoint alone
+does not make a future production-origin package bootable.

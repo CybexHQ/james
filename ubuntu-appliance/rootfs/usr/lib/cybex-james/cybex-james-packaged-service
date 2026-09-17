@@ -23,8 +23,23 @@ KNOWN = {
 }
 
 
-def retire(root=Path("/")):
-    override = root / "etc/systemd/system/cybex-james.service.d/90-verification-fix.conf"
+PXE_BINARY = "ec1d0994404b49690c7daed14e7af2c7364989ebeb3992a5723e8826a4c265b7"
+PXE_ASSET = "db00c530c1080309944613e07a6662d9f5f7d3d5792d11ff46bd536bbd71e9f9"
+PXE = {
+    "etc/systemd/system/cybex-james.service.d/90-pxe-dev.conf": (
+        "d8bfdf4fc8eb68af80b8ce4e735b3fd80dc982b12032137fcf9a98a5e7ce2403",
+        {"opt/cybex-pxe-dev/cybex-james": PXE_BINARY,
+         "opt/cybex-pxe-dev/autoexec.ipxe": PXE_ASSET},
+    ),
+    "etc/systemd/system/cybex-james-first-boot.service.d/90-pxe-dev.conf": (
+        "51fcd831585f61ea23af68c34d5359c0a85e51a542a5a6253e724bdc1e9ff859",
+        {"opt/cybex-pxe-dev/autoexec.ipxe": PXE_ASSET},
+    ),
+}
+
+
+def retire_one(root, relative, known_files):
+    override = root / relative
     if not override.exists() and not override.is_symlink():
         return False
     metadata = override.lstat()
@@ -32,17 +47,18 @@ def retire(root=Path("/")):
             or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022):
         raise ValueError("Unsafe development service override")
     content = override.read_bytes()
-    known = KNOWN.get(hashlib.sha256(content).hexdigest())
+    known = known_files.get(hashlib.sha256(content).hexdigest())
     if known is None:
         return False
-    binary = root / known[0]
     # A modified repair binary may contain operator work not in this release.
     # Preserve its override rather than silently replacing that work.
-    if not binary.is_file() or binary.is_symlink():
-        return False
-    with binary.open("rb") as stream:
-        if hashlib.file_digest(stream, "sha256").hexdigest() not in known[1]:
+    for relative_file, hashes in known.items():
+        binary = root / relative_file
+        if not binary.is_file() or binary.is_symlink():
             return False
+        with binary.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() not in hashes:
+                return False
     archive = override.with_suffix(".conf.retired")
     if archive.exists() or archive.is_symlink():
         if archive.is_symlink() or archive.read_bytes() != content:
@@ -62,6 +78,16 @@ def retire(root=Path("/")):
     finally:
         os.close(fd)
     return True
+
+
+def retire(root=Path("/")):
+    changed = False
+    # Retire older layers first; removing only the later override would expose
+    # the older ExecStart and silently keep the package from running.
+    for relative, (identity, files) in PXE.items():
+        changed = retire_one(root, relative, {identity: {p: {h} for p, h in files.items()}}) or changed
+    known = {identity: {path: hashes} for identity, (path, hashes) in KNOWN.items()}
+    return retire_one(root, "etc/systemd/system/cybex-james.service.d/90-verification-fix.conf", known) or changed
 
 
 if __name__ == "__main__":

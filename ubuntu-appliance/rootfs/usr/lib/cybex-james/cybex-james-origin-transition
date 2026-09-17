@@ -1,0 +1,133 @@
+#!/usr/bin/python3
+"""Apply an exact release-authorized origin transition in the candidate root.
+
+The signed install plan, device identity, shared state and previous root remain
+unchanged. Admission requires the same-key signed transition and this updater's
+protected verification receipt for the exact candidate package.
+"""
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import tempfile
+import tomllib
+
+DOMAIN = b'CYBEX-JAMES-ORIGIN-TRANSITION-V1\n'
+
+def canonical(value):
+    return (json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False) + '\n').encode()
+
+def read(path, limit=1024 * 1024):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        m = os.fstat(stream.fileno())
+        if not stat.S_ISREG(m.st_mode) or m.st_nlink != 1 or m.st_uid != os.geteuid() or m.st_mode & 0o022:
+            raise ValueError('Unsafe origin-transition input')
+        body = stream.read(limit + 1)
+        if not 0 < len(body) <= limit:
+            raise ValueError('Invalid origin-transition input size')
+        return body
+
+def verify_authorization(body, key):
+    authorization = json.loads(body)
+    if body != canonical(authorization) or set(authorization) != {'schema', 'public_key', 'source', 'target', 'reason', 'signature'}:
+        raise ValueError('Noncanonical origin-transition authorization')
+    if authorization['schema'] != 'cybex.james.origin-transition.v1' or authorization['public_key'] != key:
+        raise ValueError('Origin-transition authority mismatch')
+    raw_key = base64.b64decode(key, validate=True)
+    signature = base64.b64decode(authorization['signature'], validate=True)
+    if len(raw_key) != 32 or len(signature) != 64:
+        raise ValueError('Invalid origin-transition signature encoding')
+    payload = {k: v for k, v in authorization.items() if k != 'signature'}
+    with tempfile.TemporaryDirectory(prefix='cybex-origin-verify-') as directory:
+        directory = Path(directory)
+        (directory / 'key.der').write_bytes(bytes.fromhex('302a300506032b6570032100') + raw_key)
+        (directory / 'signature').write_bytes(signature)
+        (directory / 'message').write_bytes(DOMAIN + canonical(payload))
+        result = subprocess.run(['openssl', 'pkeyutl', '-verify', '-pubin', '-inkey', str(directory / 'key.der'),
+                                 '-keyform', 'DER', '-rawin', '-in', str(directory / 'message'),
+                                 '-sigfile', str(directory / 'signature')], capture_output=True)
+        if result.returncode:
+            raise ValueError('Origin-transition signature rejected')
+    return authorization
+
+def transition(root=Path('/'), required_origin=None):
+    control = root / 'var/lib/cybex-james/control'
+    state_path = control / 'provisioning-state.json'
+    if not state_path.exists():
+        return False
+    original = read(state_path, 512 * 1024)
+    state = json.loads(original)
+    if required_origin is None:
+        required_origin = subprocess.check_output([str(root / 'usr/lib/cybex-james/cybex-james-bootstrap'),
+                                                  'required-manage-origin'], text=True).strip()
+    if state['manage_origin'] == required_origin:
+        return False
+    config = tomllib.loads(read(root / 'etc/cybex-james/config.toml').decode())
+    if config['manage']['api_url'] != required_origin:
+        raise ValueError('Management configuration has not been migrated to the authorized origin')
+    share = root / 'usr/share/cybex-james'
+    installed = json.loads(read(share / 'appliance-release.json', 65536))
+    previous = json.loads(read(control / 'appliance-release.json', 65536))
+    release = installed['release_id']
+    if not isinstance(release, str) or not release or any(c not in '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._+-' for c in release):
+        raise ValueError('Invalid candidate release')
+    staging = control / 'origin-transitions' / release
+    authorization = verify_authorization(read(staging / 'authorization.json', 16384),
+                                         read(share / 'release-public-key', 256).decode().strip())
+    source, target = authorization['source'], authorization['target']
+    if (source['manage_origin'] != state['manage_origin'] or target['manage_origin'] != required_origin
+            or source['manage_origin'] == target['manage_origin']
+            or source['release_version'] != previous['appliance_release'] or target['release_version'] != release):
+        raise ValueError('Origin transition does not match installed predecessor and candidate')
+    manifest_body = read(staging / 'manifest.json')
+    if hashlib.sha256(manifest_body).hexdigest() != target['manifest']['sha256']:
+        raise ValueError('Authorized candidate manifest differs')
+    manifest = json.loads(manifest_body)
+    descriptor = manifest['appliance_release_v1']
+    receipt = json.loads(read(control / 'appliance-updates' / release / 'verified-update.json'))
+    if (manifest['version'] != release or descriptor['release_id'] != release
+            or manifest['installer_iso_template_v2']['manage_origin'] != required_origin
+            or receipt['schema'] != 'cybex.james.verified-appliance-update.v1'
+            or receipt['target_release'] != release
+            or receipt['source_revision'] != descriptor['source_revision']
+            or receipt['package_snapshot_sha256'] != descriptor['cybex_repository_snapshot']['sha256']):
+        raise ValueError('Transition is not bound to the verified package update')
+    if (not state['identity_active'] or not state['installation_complete']
+            or state['plan'] != json.loads(read(control / 'install-plan.json'))):
+        raise ValueError('Installed identity or signed plan differs')
+    # Back up only within this candidate root. Never mutate the source generation
+    # or the state/cache partitions that must survive automatic rollback.
+    backup = control / ('provisioning-state.before-' + release + '.json')
+    if backup.exists() or backup.is_symlink():
+        if read(backup, 512 * 1024) != original:
+            raise ValueError('Conflicting origin-transition backup')
+    else:
+        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(original); stream.flush(); os.fsync(stream.fileno())
+    state['manage_origin'] = required_origin
+    fd, name = tempfile.mkstemp(dir=control, prefix='.origin-transition-')
+    try:
+        metadata = state_path.stat()
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(canonical(state)); os.fchown(stream.fileno(), metadata.st_uid, metadata.st_gid)
+            os.fchmod(stream.fileno(), stat.S_IMODE(metadata.st_mode)); stream.flush(); os.fsync(stream.fileno())
+        if read(state_path, 512 * 1024) != original:
+            raise ValueError('Provisioning state changed concurrently')
+        os.replace(name, state_path)
+        fd = os.open(control, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try: os.fsync(fd)
+        finally: os.close(fd)
+    finally:
+        if os.path.exists(name): os.unlink(name)
+    return True
+
+if __name__ == '__main__':
+    if os.geteuid() != 0:
+        raise SystemExit('Origin transition requires root')
+    if transition():
+        print('Applied the signed exact-release origin transition in the candidate root')
