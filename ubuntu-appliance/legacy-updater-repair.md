@@ -68,3 +68,31 @@ separate backup under `maintenance-repairs/candidate-mount-v1/`.
 The resulting frozen updater SHA-256 is
 `98b3c6a5ebb85b91f289276b441a6472743edc4b4dd0c3ccecd79529fcfc688f`.
 This repair also leaves signatures, maintenance policy and rollback intact.
+
+
+## September installed-database rollback repair
+
+An isolated dev.17-to-dev.26 update successfully booted the candidate but its
+automatic rollback exposed SQLx's rejection of the new Wake-on-LAN migration.
+The shared SQLite database must never be restored over newer writes or have its
+migration ledger rewritten. Two predecessor source branches retain their exact
+old application code and add only the candidate's unchanged additive migration:
+
+- dev.19 base `8bd6a04cef8624de2e354d2140e5e875293d1866`, repair
+  `0762443360e56e25cc1bcf1476081d81bb0a5397`.
+- dev.21 base `b1d6a5542b766f45bb9200a0f0b25905d25a5d94`, repair
+  `02084d383a5eedf0cd12384a2cb3a44dca221d12`.
+
+Both branches include database restart/data-preservation and checksum-rejection
+regressions. `repair-predecessor-database.py` installs only their exact tested
+binary digests over the known development repair binaries. It takes the updater
+lock, stops the daemon, retains the binary and database/sidecar recovery copies,
+and restarts the repaired predecessor. It neither changes nor restores database
+contents itself; the ordinary SQLx migrator applies the additive schema.
+This is an operator repair of the predecessor, not a signed appliance release.
+
+The dev.28 package retires the repaired overrides only in its candidate root.
+It rejects the two known incompatible predecessor binaries before retiring any
+overrides. Fresh installs have no predecessor override. Installed qualification
+must exercise the real candidate boot and rollback with the repaired predecessor;
+unit tests alone are not evidence that a fleet upgrade is qualified.

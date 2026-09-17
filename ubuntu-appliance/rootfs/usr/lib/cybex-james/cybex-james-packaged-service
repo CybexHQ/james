@@ -13,15 +13,19 @@ import stat
 KNOWN = {
     "6fe76ff5a1295f7b7352b3cfbb65251cc66c129120fc254fe2673a4953110037": (
         "opt/cybex-james-dev/verification-fix-20260914/cybex-james",
-        {"77a85982f5110d92db96785706343f26f0dba9666bc53241a2cce0dc85a08b6b",
-         "0e3a82f56f87efa899640821d6e9dc5129eb46ace10b807fdb9b1007b46a29c6"},
+        {"1262e01060c81e478e69aa0f06b62dc8d545dd17e63d70e459261b821bbdbad9",
+         "f2eeb14ff20db2cde00c16deda95dac2619e4bea9d8877d5b3d9c2da074d0a37"},
     ),
     "810378844749f04248bc5b241ce73bc4ad36907495ec0e10e1337158f6cb51f1": (
         "opt/cybex-james-dev/verification-fix-20260914-dev21/cybex-james",
-        {"0e3a82f56f87efa899640821d6e9dc5129eb46ace10b807fdb9b1007b46a29c6"},
+        {"f2eeb14ff20db2cde00c16deda95dac2619e4bea9d8877d5b3d9c2da074d0a37"},
     ),
 }
 
+
+# These predecessor daemons reject the candidate migration ledger on rollback.
+# Stop package configuration before first candidate boot unless repaired.
+UNSAFE_PREDECESSORS = {'0e3a82f56f87efa899640821d6e9dc5129eb46ace10b807fdb9b1007b46a29c6', '77a85982f5110d92db96785706343f26f0dba9666bc53241a2cce0dc85a08b6b'}
 
 PXE_BINARY = "ec1d0994404b49690c7daed14e7af2c7364989ebeb3992a5723e8826a4c265b7"
 PXE_ASSET = "db00c530c1080309944613e07a6662d9f5f7d3d5792d11ff46bd536bbd71e9f9"
@@ -81,6 +85,18 @@ def retire_one(root, relative, known_files):
 
 
 def retire(root=Path("/")):
+    # Check before retiring any override: a partially retired stack must never
+    # allow a known incompatible predecessor to pass package configuration.
+    override = root / "etc/systemd/system/cybex-james.service.d/90-verification-fix.conf"
+    if override.is_file() and not override.is_symlink():
+        rule = KNOWN.get(hashlib.sha256(override.read_bytes()).hexdigest())
+        if rule:
+            binary = root / rule[0]
+            if binary.is_file():
+                with binary.open("rb") as stream:
+                    identity = hashlib.file_digest(stream, "sha256").hexdigest()
+                if identity in UNSAFE_PREDECESSORS:
+                    raise ValueError("Install the database-compatible predecessor repair before this upgrade")
     changed = False
     # Retire older layers first; removing only the later override would expose
     # the older ExecStart and silently keep the package from running.

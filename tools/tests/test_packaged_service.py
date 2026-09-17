@@ -39,6 +39,17 @@ class PackagedServiceTests(unittest.TestCase):
             self.assertEqual(override.with_suffix(".conf.retired").read_bytes(), content)
             self.assertTrue(binary.exists())
 
+    def test_incompatible_predecessor_fails_before_removing_any_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            override, binary, known = self.fixture(root)
+            old_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
+            with patch.object(service, "KNOWN", known), patch.object(service, "UNSAFE_PREDECESSORS", {old_hash}):
+                with self.assertRaisesRegex(ValueError, "database-compatible predecessor"):
+                    service.retire(root)
+            self.assertTrue(override.is_file())
+            self.assertFalse(override.with_suffix(".conf.retired").exists())
+
     def test_custom_override_or_binary_is_preserved(self):
         for modify_binary in [False, True]:
             with self.subTest(modify_binary=modify_binary), tempfile.TemporaryDirectory() as directory:
