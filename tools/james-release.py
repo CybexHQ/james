@@ -982,7 +982,14 @@ def _appliance_release_inputs(
             "sha256": actual_sha,
             "size_bytes": actual_size,
         },
-        "required_package_versions": versions,
+        # This is a frozen wire contract consumed by installed James binaries.
+        # Additional Debian dependencies belong to the authenticated archive,
+        # not this exact-key map. UDPcast remains mandatory in signer metadata
+        # above and pinned by cybex-james' exact Debian dependency; the archive
+        # digest binds its package, version, SPDX and corresponding source.
+        "required_package_versions": {
+            name: value for name, value in versions.items() if name != "udpcast"
+        },
         "expected_kernel": metadata["expected_kernel"],
         "minimum_protocol": 4,
         "minimum_state_schema": 2,
