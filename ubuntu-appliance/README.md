@@ -322,7 +322,11 @@ writable Btrfs generation. The repository is shared with fresh installation,
 but an installed update does not install its full installer closure. APT sees
 only the verified local repository and requests the exact signed versions of
 `cybex-james`, `cybex-james-bootstrap`, and `cybex-james-appliance`; only their
-needed dependencies may be added or upgraded. The update is rejected before
+needed dependencies may be added or upgraded. The Cybex appliance package pins the exact `linux-generic`, `linux-firmware`,
+`nix-bin`, and `python3` versions resolved from the authenticated Ubuntu snapshot
+indexes. This makes the three-root update request also select the OS anchors
+promised by the signed descriptor, rather than silently retaining an older
+installed kernel. The update is rejected before
 mutation if APT would remove, downgrade, or change a held package, and the
 complete installed package set is compared again after application. APT first
 copies that safe solution from the read-only snapshot into the candidate's

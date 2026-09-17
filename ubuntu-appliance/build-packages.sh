@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 022
 
 usage() {
-  echo "usage: $0 --output DIR --james-binary FILE --bootstrap-binary FILE --version SEMVER --ubuntu-snapshot-id ID --manage-source-dir DIR --manage-source-revision 40_HEX --release-public-key BASE64 --provisioning-public-key BASE64 [--provisioning-public-key BASE64 ...]" >&2
+  echo "usage: $0 --output DIR --james-binary FILE --bootstrap-binary FILE --version SEMVER --ubuntu-snapshot-id ID --manage-source-dir DIR --manage-source-revision 40_HEX --release-public-key BASE64 --provisioning-public-key BASE64 [--provisioning-public-key BASE64 ...] --dependency-version NAME=VERSION (repeat for linux-generic, linux-firmware, nix-bin, python3)" >&2
   exit 2
 }
 
@@ -18,6 +18,7 @@ manage_source_dir=""
 manage_source_revision=""
 release_public_key=""
 declare -a provisioning_public_keys=()
+declare -A dependency_versions=()
 while (($#)); do
   case "$1" in
     --output) output="${2:-}"; shift 2 ;;
@@ -29,8 +30,24 @@ while (($#)); do
     --manage-source-revision) manage_source_revision="${2:-}"; shift 2 ;;
     --release-public-key) release_public_key="${2:-}"; shift 2 ;;
     --provisioning-public-key) provisioning_public_keys+=("${2:-}"); shift 2 ;;
+    --dependency-version)
+      pair="${2:-}"
+      name="${pair%%=*}"
+      value="${pair#*=}"
+      case "$name" in linux-generic|linux-firmware|nix-bin|python3) ;; *) usage ;; esac
+      [[ "$pair" == *=* && "$value" =~ ^[0-9][0-9A-Za-z.+:~_-]*$ && ${#value} -le 256 ]] || usage
+      [[ ! -v "dependency_versions[$name]" ]] || usage
+      dependency_versions["$name"]="$value"
+      shift 2
+      ;;
     *) usage ;;
   esac
+done
+for name in linux-generic linux-firmware nix-bin python3; do
+  [[ -n "${dependency_versions[$name]-}" ]] || {
+    echo "error: authenticated snapshot dependency version required for $name" >&2
+    exit 2
+  }
 done
 test -n "$output" && test -n "$james_binary" && test -n "$bootstrap_binary"
 test -n "$version" && test -n "$snapshot_id" && test -n "$release_public_key"
@@ -133,7 +150,7 @@ Section: admin
 Priority: optional
 Architecture: amd64
 Maintainer: Cybex <support@cybex.net>
-Depends: cybex-james (= ${version}-1), cybex-james-bootstrap (= ${version}-1), systemd, nginx-core, tftpd-hpa, dnsmasq-base, ipxe, iproute2, openssh-server, nftables, netplan.io, btrfs-progs, watchdog, nix-bin, nix-setup-systemd, curl, dnsutils, jq, python3, udpcast (= ${udpcast_version}), mokutil, sbsigntool, shim-signed, grub-efi-amd64-signed, secureboot-db, linux-generic, linux-firmware, intel-microcode, amd64-microcode
+Depends: cybex-james (= ${version}-1), cybex-james-bootstrap (= ${version}-1), systemd, nginx-core, tftpd-hpa, dnsmasq-base, ipxe, iproute2, openssh-server, nftables, netplan.io, btrfs-progs, watchdog, nix-bin (= ${dependency_versions[nix-bin]}), nix-setup-systemd, curl, dnsutils, jq, python3 (= ${dependency_versions[python3]}), udpcast (= ${udpcast_version}), mokutil, sbsigntool, shim-signed, grub-efi-amd64-signed, secureboot-db, linux-generic (= ${dependency_versions[linux-generic]}), linux-firmware (= ${dependency_versions[linux-firmware]}), intel-microcode, amd64-microcode
 Description: Managed Ubuntu host integration for Cybex James
 EOF
 printf '%s\n' /etc/cybex-james/pxe-discovery.json > "$appliance_root/DEBIAN/conffiles"

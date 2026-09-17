@@ -326,6 +326,13 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 "--provisioning-public-key",
                 "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
             ]
+            for package_name, package_version in (
+                ("linux-generic", "7.0.0-29.29"),
+                ("linux-firmware", "20260319.git217ca6e4.1ubuntu"),
+                ("nix-bin", "2.34.3+dfsg-1"),
+                ("python3", "3.14.3-0ubuntu2"),
+            ):
+                arguments.extend(["--dependency-version", package_name + "=" + package_version])
             for output in (first, second):
                 original_mode = IPXE_AUTOEXEC.stat().st_mode & 0o777
                 try:

@@ -67,19 +67,6 @@ test -z "$(find "$output" -mindepth 1 -maxdepth 1 -print -quit)" || {
 work_dir="$(mktemp -d)"
 cleanup() { rm -rf -- "$work_dir"; }
 trap cleanup EXIT
-local_packages="$work_dir/local"
-mkdir -p -- "$local_packages"
-"$repository_root/ubuntu-appliance/build-packages.sh" \
-  --output "$local_packages" \
-  --james-binary "$james_binary" \
-  --bootstrap-binary "$bootstrap_binary" \
-  --version "$version" \
-  --ubuntu-snapshot-id "$snapshot_id" \
-  --manage-source-dir "$manage_source_dir" \
-  --manage-source-revision "$manage_source_revision" \
-  --release-public-key "$release_public_key" \
-  "${provisioning_key_arguments[@]}"
-
 apt_root="$work_dir/apt-root"
 mkdir -p \
   "$apt_root/etc/apt/apt.conf.d" \
@@ -117,6 +104,35 @@ declare -a apt_options=(
   -o Acquire::ForceHash=sha256
 )
 apt-get "${apt_options[@]}" update
+
+# Resolve the exact signed OS anchors from authenticated snapshot indexes before
+# building the three Cybex roots. Frozen selective updaters request only these
+# roots, so their dependencies must force the kernel/runtime versions promised
+# by the descriptor instead of silently retaining an older installed anchor.
+declare -a dependency_version_arguments=()
+for package_name in linux-generic linux-firmware nix-bin python3; do
+  package_version="$(LC_ALL=C apt-cache "${apt_options[@]}" policy "$package_name" | awk '/^[[:space:]]*Candidate:/ {print $2}')"
+  [[ "$package_version" =~ ^[0-9][0-9A-Za-z.+:~_-]*$ ]] || {
+    echo "error: no authenticated snapshot candidate for $package_name" >&2
+    exit 1
+  }
+  dependency_version_arguments+=(--dependency-version "$package_name=$package_version")
+done
+
+local_packages="$work_dir/local"
+mkdir -p -- "$local_packages"
+"$repository_root/ubuntu-appliance/build-packages.sh" \
+  --output "$local_packages" \
+  --james-binary "$james_binary" \
+  --bootstrap-binary "$bootstrap_binary" \
+  --version "$version" \
+  --ubuntu-snapshot-id "$snapshot_id" \
+  --manage-source-dir "$manage_source_dir" \
+  --manage-source-revision "$manage_source_revision" \
+  --release-public-key "$release_public_key" \
+  "${provisioning_key_arguments[@]}" \
+  "${dependency_version_arguments[@]}"
+
 
 declare -a packages=(
   amd64-microcode
