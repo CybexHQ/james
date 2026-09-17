@@ -139,7 +139,8 @@ by qualified wired classroom rootfs delivery. Its version is an exact
 package dependency and part of the signer-side package metadata. The signed
 archive digest authenticates the complete package closure; the published
 `required_package_versions` map retains the seven core anchors accepted by
-installed clients, rather than adding an undeclared wire-protocol extension; `CYBEX-SBOM.spdx.json`, `UDPCAST-COPYRIGHT`, and
+installed clients, rather than adding an undeclared wire-protocol extension.
+`CYBEX-SBOM.spdx.json`, `UDPCAST-COPYRIGHT`, and
 the authenticated `.dsc` and complete Ubuntu source payload ship beside the
 binary as the GPL source offer. The snapshot also carries `grub-efi-amd64`, Canonical's
 signed GRUB and shim packages, and `secureboot-db`; the target therefore does
