@@ -1,0 +1,2149 @@
+{
+  "/nix/store/cvlvwhxvlf44iqjwq39rmbp43v884hvm-user-units.drv": {
+    "args": [
+      "-e",
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh"
+    ],
+    "builder": "/nix/store/zh1ijdhb6gng1509b1zrilb6xlzx60j6-bash-5.3p9/bin/bash",
+    "env": {
+      "__structuredAttrs": "",
+      "allowSubstitutes": "",
+      "buildCommand": "mkdir -p $out\n\n# Copy the upstream systemd units we're interested in.\nfor i in app.slice background.slice basic.target bluetooth.target capsule@.target default.target exit.target graphical-session-pre.target graphical-session.target paths.target printer.target session.slice shutdown.target smartcard.target sockets.target sound.target systemd-exit.service timers.target xdg-desktop-autostart.target systemd-tmpfiles-clean.service systemd-tmpfiles-clean.timer systemd-tmpfiles-setup.service; do\n  fn=/nix/store/rd05syhv5v5999907a2n1r37sgi19vpd-systemd-260.2/example/systemd/user/$i\n  if ! [ -e $fn ]; then echo \"missing $fn\"; false; fi\n  if [ -L $fn ]; then\n    target=\"$(readlink \"$fn\")\"\n    if [ ${target:0:3} = ../ ]; then\n      ln -s \"$(readlink -f \"$fn\")\" $out/\n    else\n      cp -pd $fn $out/\n    fi\n  else\n    ln -s $fn $out/\n  fi\ndone\n\n# Copy .wants links, but only those that point to units that\n# we're interested in.\nfor i in ; do\n  fn=/nix/store/rd05syhv5v5999907a2n1r37sgi19vpd-systemd-260.2/example/systemd/user/$i\n  if ! [ -e $fn ]; then echo \"missing $fn\"; false; fi\n  x=$out/$(basename $fn)\n  mkdir $x\n  for i in $fn/*; do\n    y=$x/$(basename $i)\n    cp -pd $i $y\n    if ! [ -e $y ]; then rm $y; fi\n  done\ndone\n\n# Symlink all units provided listed in systemd.packages.\npackages=\"/nix/store/lbccn8213006w7gic7da39sxydp3z9mb-drkonqi-6.6.6 /nix/store/r850j8cb8b5m4lnfalc24qzd3w2pllxc-lvm2-2.03.39 /nix/store/9q4v9llg5k753mgc1xk0lglhrv0idk5k-zram-generator-1.2.1 /nix/store/b15733bsif8p914l2ps58mkq36k5xsym-nix-2.34.7 /nix/store/165rncxlyi4f9pjf1zk3hmj3mh2v881w-dbus-1.16.2 /nix/store/49x6wkrr41xqc4imyd2m8vdm9k8pl73p-dbus-broker-37 /nix/store/152ngz5rpz2qps81ax2zlg9fsx6ra8qh-cups-2.4.19 /nix/store/xmgxsgh8cwavmpphhi0n2aa9i28nv2mx-networkmanager-1.56.0 /nix/store/v176ch25xsq407qmyvalpjnf51jx4s1q-modemmanager-1.24.2 /nix/store/qjs15klpvpwz64pjdspy3mln6d54pd8f-util-linux-2.42-bin /nix/store/y065cqq5a1j9xywcvcks47ixiadjj9x8-upower-1.91.1 /nix/store/75w34y9rbdsh75ck1pwny6b1vj7a84mm-udisks-2.11.1 /nix/store/673571v90djyridba8fri63bfqqgblzp-power-profiles-daemon-0.30 /nix/store/qcp78pwipa5616ypc0vmadb4w4p82c79-fwupd-2.1.4 /nix/store/a1dp4rk738mhzr7gl4v786ff3njyjpmc-bluez-5.86 /nix/store/fy5hvx60w5x39i7i1ldjs3vlr2519wl7-system-config-printer-1.5.18 /nix/store/gp2mgd7pc9wajw3q1ljq99366yqdsk44-wireplumber-0.5.14 /nix/store/6y2b9qs1npwsvcsl9m66hjarzj0yagb4-pipewire-1.6.5 /nix/store/d7va8vbd4ngs4g8asm289hdhcga4lflf-gvfs-1.60.1 /nix/store/s2bjqqzdjs4ji71qm1wwnkiy7g3afdz6-at-spi2-core-2.60.4 /nix/store/aal32hyzp9yx8hq30c39d828n2g8pdca-geoclue-2.7.2 /nix/store/i577crvqn7hhb1nm1zszf86gbdnwrns2-blueman-2.4.6 /nix/store/j8b1m4saxfhvx0wlydmkyv6c0f6ygzzf-accountsservice-23.13.9 /nix/store/sx11wiva717srzasxy2hmc0xaagj9n1i-speech-dispatcher-0.12.1 /nix/store/mdl2mn9h69xw7jwk690l00bydynlkdwm-orca-50.2 /nix/store/wwm2cb1bj5852da1nk4das9bqpmxz5a1-rtkit-0.14 /nix/store/km4ds1chfqcdmwfwvwm6k73k6wkwifpm-polkit-127 /nix/store/r36mwd5l0szp5mwmlyfkabdbmd84ad6s-util-linux-2.42-lastlog /nix/store/ajbhgix5hzsr75pr9dhlnpcvhm3kh8pj-dconf-0.49.0 /nix/store/m6r02d1m551rn6rlz67710801zvvyg21-xdg-desktop-portal-1.20.4 /nix/store/xykiki54nvnk97nw6j00cvqbmjx6lw0m-kwallet-6.26.0 /nix/store/zyp0760f1hsj591nh40qgrpljsv0wmqq-xdg-desktop-portal-kde-6.6.6 /nix/store/s4y0q04vzdmzgnb7z49z7h2sknwmplix-xdg-desktop-portal-gtk-1.15.3\"\n\n# Filter duplicate directories\ndeclare -A unique_packages\nfor k in $packages ; do unique_packages[$k]=1 ; done\n\nfor i in ${!unique_packages[@]}; do\n  for fn in $i/etc/systemd/user/* $i/lib/systemd/user/*; do\n    if ! [[ \"$fn\" =~ .wants$ ]]; then\n      if [[ -d \"$fn\" ]]; then\n        targetDir=\"$out/$(basename \"$fn\")\"\n        mkdir -p \"$targetDir\"\n        /nix/store/ccihqmbbygsvx7jap8apl5jwp8ipy61y-lndir-1.0.5/bin/lndir \"$fn\" \"$targetDir\"\n      else\n        ln -s $fn $out/\n      fi\n    fi\n  done\ndone\n\n# Symlink units defined by systemd.units where override strategy\n# shall be automatically detected. If these are also provided by\n# systemd or systemd.packages, then add them as\n# <unit-name>.d/overrides.conf, which makes them extend the\n# upstream unit.\nfor i in /nix/store/20cgibz9cwq9d42rj722kn25mz87fac8-unit-dbus-broker.service /nix/store/2c8ldp6chs276vnd476b7kd6yhzr36q9-unit-dbus.service /nix/store/j66pv6qwka515g3w5l6cjc67wnm7cjg5-unit-dbus.socket /nix/store/y7ckp7x4ccgygi3bry3jzc6610qdpfjs-unit-filter-chain.service /nix/store/j8y1jzfpvfy14anvdbywn0aaskr24ndz-unit-geoclue-agent.service /nix/store/farwvlg979pjilsvkf7ah3v6smh668nl-unit-nixos-activation.service /nix/store/w6i3b2zjby3v7bm16kjzg0gvb1cglhpb-unit-nixos-fake-graphical-session.target /nix/store/vvqna34kq3xwxqzcdkjprln6aw3g71j8-unit-nixos-rebuild-sycoca.service /nix/store/vss9nfapc3nrpjwaw7mjwrl4g7z8h6n3-unit-obex.service /nix/store/dwrvyrvqq9i26g5yqs7fq807g3q3mgbg-unit-pipewire-pulse.service /nix/store/0ajhz5x1d3frh13drb3vvh2p705qfacd-unit-pipewire-pulse.socket /nix/store/hlgc2r29k6vvz9w7igmgm8c5m9zvzbni-unit-pipewire.service /nix/store/h1g1z8wdag8m404z198pckl5lbapsplz-unit-pipewire.socket /nix/store/3l4gc0b90yqa06q1sj8v290mbn91jyn0-unit-speech-dispatcher.socket /nix/store/pc0fnz5hpdphabj6raz1s3xhg925cjhc-unit-systemd-tmpfiles-clean.timer /nix/store/5l11z7fb71qra2jj2flfn3zc93sgd10w-unit-systemd-tmpfiles-setup.service /nix/store/aq5b5k3z9zs4akm3apad9wbbnja0yybn-unit-wireplumber.service; do\n  fn=$(basename $i/*)\n  if [ -e $out/$fn ]; then\n    if [ \"$(readlink -f $i/$fn)\" = /dev/null ]; then\n      ln -sfn /dev/null $out/$fn\n    else\n      mkdir -p $out/$fn.d\nln -s $i/$fn $out/$fn.d/overrides.conf\n\n    fi\n else\n    ln -fs $i/$fn $out/\n  fi\ndone\n\n# Symlink units defined by systemd.units which shall be\n# treated as drop-in file.\nfor i in ; do\n  fn=$(basename $i/*)\n  mkdir -p $out/$fn.d\n  ln -s $i/$fn $out/$fn.d/overrides.conf\ndone\n\n# Create service aliases from aliases option.\nln -sfn 'dbus-broker.service' $out/'dbus.service'\nln -sfn 'obex.service' $out/'dbus-org.bluez.obex.service'\n\n\n# Create .wants, .upholds and .requires symlinks from the wantedBy, upheldBy and\n# requiredBy options.\nmkdir -p $out/'sockets.target.wants'\nln -sfn '../dbus.socket' $out/'sockets.target.wants'/\nmkdir -p $out/'default.target.wants'\nln -sfn '../geoclue-agent.service' $out/'default.target.wants'/\nmkdir -p $out/'default.target.wants'\nln -sfn '../nixos-activation.service' $out/'default.target.wants'/\nmkdir -p $out/'graphical-session-pre.target.wants'\nln -sfn '../nixos-rebuild-sycoca.service' $out/'graphical-session-pre.target.wants'/\nmkdir -p $out/'sockets.target.wants'\nln -sfn '../pipewire-pulse.socket' $out/'sockets.target.wants'/\nmkdir -p $out/'sockets.target.wants'\nln -sfn '../pipewire.socket' $out/'sockets.target.wants'/\nmkdir -p $out/'sockets.target.wants'\nln -sfn '../speech-dispatcher.socket' $out/'sockets.target.wants'/\nmkdir -p $out/'timers.target.wants'\nln -sfn '../systemd-tmpfiles-clean.timer' $out/'timers.target.wants'/\nmkdir -p $out/'basic.target.wants'\nln -sfn '../systemd-tmpfiles-setup.service' $out/'basic.target.wants'/\nmkdir -p $out/'pipewire.service.wants'\nln -sfn '../wireplumber.service' $out/'pipewire.service.wants'/\n\n\n\n\n\n\n\n",
+      "buildInputs": "",
+      "builder": "/nix/store/zh1ijdhb6gng1509b1zrilb6xlzx60j6-bash-5.3p9/bin/bash",
+      "cmakeFlags": "",
+      "configureFlags": "",
+      "depsBuildBuild": "",
+      "depsBuildBuildPropagated": "",
+      "depsBuildTarget": "",
+      "depsBuildTargetPropagated": "",
+      "depsHostHost": "",
+      "depsHostHostPropagated": "",
+      "depsTargetTarget": "",
+      "depsTargetTargetPropagated": "",
+      "doCheck": "",
+      "doInstallCheck": "",
+      "enableParallelBuilding": "1",
+      "enableParallelChecking": "1",
+      "enableParallelInstalling": "1",
+      "mesonFlags": "",
+      "name": "user-units",
+      "nativeBuildInputs": "",
+      "out": "/nix/store/k00dfcd25iffhw1dyk9kkdrpcal6ggc8-user-units",
+      "outputs": "out",
+      "passAsFile": "buildCommand",
+      "patches": "",
+      "preferLocalBuild": "1",
+      "propagatedBuildInputs": "",
+      "propagatedNativeBuildInputs": "",
+      "stdenv": "/nix/store/pr27j8nm0xl52pq4ylncj9kwjw3b84mk-stdenv-linux",
+      "strictDeps": "",
+      "system": "x86_64-linux"
+    },
+    "inputDrvs": {
+      "/nix/store/033lbg2pw9b7xcfvxc22vq54shd2p40f-nix-2.34.7.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/0n9ys0s27kh7iv48jrvyyd6amrd81ry6-accountsservice-23.13.9.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/17ifqj42dy6s089rj78kn3mnqbbxlk22-orca-50.2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/1npcppzjpjawag8nqlmmf8dcf8yn99xi-dbus-broker-37.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/33qh8fiidsm5bg722d1pirdhqwjp8d87-dbus-1.16.2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/3j5xfi3d2x4w3a0lbbd57pw8qdw9jhlw-unit-systemd-tmpfiles-setup.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/3yyqnm99mphhwn14zvk65iggcs6wzx3s-wireplumber-0.5.14.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/4263bp10gqzf5w4c9khmrhlymkh18vdp-gvfs-1.60.1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/4dxvg84cyfibqw5xx3vhcbi24c62yld9-systemd-260.2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/4y9ghf53zsshs0qdzh7h8lhcmabq4ahy-unit-dbus-broker.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/4z3icsd7k60i384rj61p1p7bp8div9jr-at-spi2-core-2.60.4.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/5273fcsj97mw2yh1gqrzx9mxnrvmmx11-upower-1.91.1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/6h4pd5by94rzs2d4x9qql1kqhsa21kg7-modemmanager-1.24.2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/6zd33wf9mjyzri94p9dr03878x5cjd6a-pipewire-1.6.5.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/7z5dn3hrq7c0v7glp831ilp5bj19z8gk-unit-speech-dispatcher.socket.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/826inwjlg8d727a032sg0gihcza6dqx9-power-profiles-daemon-0.30.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/8i4r6b1zqqa2fds4aasbwzy9wmkf84dy-util-linux-2.42.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "bin",
+          "lastlog"
+        ]
+      },
+      "/nix/store/8xz0ykgl2f5cyw3l450kibbvxrb29dzf-xdg-desktop-portal-kde-6.6.6.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/b3kzxvfshrywbrn6dnfkyzgicf06hzx0-unit-dbus.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/b61n89v5mph1wav0sgb4h8v1ly2di5ac-networkmanager-1.56.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/bxlz3hzl8k02rnxpgml6krqkrnpird91-stdenv-linux.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ccgn21q3x4dlcviglwp3dbyap1yvw446-polkit-127.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/chdx8xzcwpf2wdlicnap650g9v45d9i7-lvm2-2.03.39.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/cs79d77d64w2m495gqj0k79mvi5kf5rg-speech-dispatcher-0.12.1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/cxax8jklw7xiqz8r0an5aycyfqyc6wn0-xdg-desktop-portal-1.20.4.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/fnwknb4f8557r4bhpy7w9mkwa3mgwifm-zram-generator-1.2.1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/g7p7rs03xah2w00a142hzas9h4fkwpck-bash-5.3p9.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/gpxwim44mis1367f7cfm8jvdg0rx516c-dconf-0.49.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/izgmfjzn63psbgdmaw4x70dmw4f76070-unit-systemd-tmpfiles-clean.timer.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/jc6y6hlpi7f3dfdrsn19l9cg2yrbnzs2-unit-dbus.socket.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/jj71bdfan6n7f3d2k0n4zaflgb2lp520-geoclue-2.7.2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/jzagcsr6p0vzqrcg0ga1m9asl9w0wlk9-unit-wireplumber.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/k8ivnpmfgz322i33mhw2ya87wzal56bi-cups-2.4.19.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/klh33nr2q5zqlv0v9bl5ln6r666scrqs-unit-nixos-activation.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/krcq6r01667adz4hrzdrdwdidswvx6b0-unit-obex.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/kzmk1gy8s5kah0cy376fkc3qlsiw5r7m-unit-pipewire.socket.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/l5kw6mpnk0sp699s4j9fdwzn3r0nm6dv-bluez-5.86.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/lwypnhqvan96ld00s1p4bccy59qgmdlk-rtkit-0.14.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/m8n91wwy2k7j026v1xfvj41idssivjna-unit-pipewire.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/mkrrslwyi9ax5j8rl7hczbllschqwfsh-fwupd-2.1.4.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/mrmbnfjm7xj6h80z8qcgqvbhrgacig7k-kwallet-6.26.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/n7ayld0dgrjfmzc7cpawgcfcq70y6hx3-lndir-1.0.5.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ncxninj1yixy4i2bscdxfmcj69q5x070-system-config-printer-1.5.18.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/nvyhnjygw8qg6jk5diw47q8zxl5c355j-unit-nixos-rebuild-sycoca.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/pp5jz4nl7n37y96xg7rwk5fxrjyxcbng-unit-geoclue-agent.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/pyc746rk44k0ip23yl370fsn7psnljcc-unit-filter-chain.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ryb7mx93cm5gjgjzrphl9mlbq40q9qpx-blueman-2.4.6.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/vrk8kydyg2vxxwmks2ym69vh57840slk-udisks-2.11.1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/vv9hi3bmjfkjssv1y2pkkr7mpf9qhd91-drkonqi-6.6.6.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/w4fdv61zvfg45bysp8nlks10l4l5v1k4-xdg-desktop-portal-gtk-1.15.3.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/wh4h8gz064ijbfbxnzxycdyyspmb196p-unit-nixos-fake-graphical-session.target.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/x3hccv785h4wwqg0r2aqvvcgbjrhbrkd-unit-pipewire-pulse.socket.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/zppcq95p7m5fkj8z40lgv3yvanh97h5c-unit-pipewire-pulse.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      }
+    },
+    "inputSrcs": [
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh"
+    ],
+    "name": "user-units",
+    "outputs": {
+      "out": {
+        "path": "/nix/store/k00dfcd25iffhw1dyk9kkdrpcal6ggc8-user-units"
+      }
+    },
+    "system": "x86_64-linux"
+  },
+  "/nix/store/saj9rmhlaymfbf4n6pbq3wm81z3qvhkp-system-units.drv": {
+    "args": [
+      "-e",
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh"
+    ],
+    "builder": "/nix/store/zh1ijdhb6gng1509b1zrilb6xlzx60j6-bash-5.3p9/bin/bash",
+    "env": {
+      "__structuredAttrs": "",
+      "allowSubstitutes": "",
+      "buildCommand": "mkdir -p $out\n\n# Copy the upstream systemd units we're interested in.\nfor i in basic.target sysinit.target sockets.target exit.target graphical.target multi-user.target network.target network-pre.target network-online.target nss-lookup.target nss-user-lookup.target time-set.target time-sync.target first-boot-complete.target cryptsetup.target cryptsetup-pre.target remote-cryptsetup.target sigpwr.target timers.target paths.target rpcbind.target rescue.target rescue.service debug-shell.service systemd-udevd-control.socket systemd-udevd-kernel.socket systemd-udevd.service systemd-udev-trigger.service sound.target bluetooth.target printer.target smartcard.target systemd-modules-load.service kmod-static-nodes.service modprobe@.service systemd-fsck@.service systemd-fsck-root.service systemd-growfs@.service systemd-growfs-root.service systemd-remount-fs.service systemd-pstore.service local-fs.target local-fs-pre.target remote-fs.target remote-fs-pre.target swap.target dev-hugepages.mount dev-mqueue.mount sys-fs-fuse-connections.mount sys-kernel-config.mount sys-kernel-debug.mount sys-kernel-tracing.mount systemd-random-seed.service systemd-boot-random-seed.service systemd-bless-boot.service systemd-backlight@.service systemd-rfkill.service systemd-rfkill.socket boot-complete.target hibernate.target suspend.target suspend-then-hibernate.target sleep.target hybrid-sleep.target systemd-hibernate.service systemd-hibernate-clear.service systemd-hybrid-sleep.service systemd-suspend.service systemd-suspend-then-hibernate.service reboot.target systemd-reboot.service poweroff.target systemd-poweroff.service halt.target systemd-halt.service shutdown.target umount.target final.target kexec.target systemd-kexec.service soft-reboot.target systemd-soft-reboot.service systemd-update-utmp.service systemd-ask-password-console.path systemd-ask-password-console.service systemd-ask-password-wall.path systemd-ask-password-wall.service systemd-bootctl@.service systemd-bootctl.socket systemd-creds@.service systemd-creds.socket systemd-pcrlock@.service systemd-pcrlock.socket systemd-tpm2-clear.service slices.target systemd-importd.service machine.slice machines.target systemd-machined.service systemd-nspawn@.service systemd-sysctl.service systemd-machine-id-commit.service dbus-org.freedesktop.timedate1.service systemd-timedated.service dbus-org.freedesktop.locale1.service systemd-localed.service dbus-org.freedesktop.hostname1.service systemd-hostnamed.service systemd-hostnamed.socket dbus-org.freedesktop.portable1.service systemd-portabled.service systemd-exit.service systemd-update-done.service capsule@.service capsule.slice factory-reset.target systemd-factory-reset-request.service systemd-factory-reset-reboot.service systemd-timesyncd.service user.slice tpm2.target systemd-tpm2-setup-early.service systemd-tpm2-setup.service systemd-tmpfiles-clean.service systemd-tmpfiles-clean.timer systemd-tmpfiles-setup-dev-early.service systemd-tmpfiles-setup-dev.service systemd-tmpfiles-setup.service systemd-oomd.service systemd-oomd.socket systemd-logind.service systemd-user-sessions.service dbus-org.freedesktop.import1.service dbus-org.freedesktop.machine1.service dbus-org.freedesktop.login1.service user@.service user-runtime-dir@.service systemd-journald.socket systemd-journald@.socket systemd-journald-varlink@.socket systemd-journald.service systemd-journald@.service systemd-journal-flush.service systemd-journal-catalog-update.service systemd-journald-sync@.service systemd-journald-audit.socket systemd-journald-dev-log.socket systemd-journalctl.socket systemd-journalctl@.service syslog.socket systemd-coredump.socket systemd-coredump@.service emergency.target emergency.service getty.target getty-pre.target getty@.service serial-getty@.service console-getty.service container-getty@.service systemd-vconsole-setup.service; do\n  fn=/nix/store/rd05syhv5v5999907a2n1r37sgi19vpd-systemd-260.2/example/systemd/system/$i\n  if ! [ -e $fn ]; then echo \"missing $fn\"; false; fi\n  if [ -L $fn ]; then\n    target=\"$(readlink \"$fn\")\"\n    if [ ${target:0:3} = ../ ]; then\n      ln -s \"$(readlink -f \"$fn\")\" $out/\n    else\n      cp -pd $fn $out/\n    fi\n  else\n    ln -s $fn $out/\n  fi\ndone\n\n# Copy .wants links, but only those that point to units that\n# we're interested in.\nfor i in sysinit.target.wants sockets.target.wants local-fs.target.wants multi-user.target.wants timers.target.wants factory-reset.target.wants; do\n  fn=/nix/store/rd05syhv5v5999907a2n1r37sgi19vpd-systemd-260.2/example/systemd/system/$i\n  if ! [ -e $fn ]; then echo \"missing $fn\"; false; fi\n  x=$out/$(basename $fn)\n  mkdir $x\n  for i in $fn/*; do\n    y=$x/$(basename $i)\n    cp -pd $i $y\n    if ! [ -e $y ]; then rm $y; fi\n  done\ndone\n\n# Symlink all units provided listed in systemd.packages.\npackages=\"/nix/store/lbccn8213006w7gic7da39sxydp3z9mb-drkonqi-6.6.6 /nix/store/r850j8cb8b5m4lnfalc24qzd3w2pllxc-lvm2-2.03.39 /nix/store/9q4v9llg5k753mgc1xk0lglhrv0idk5k-zram-generator-1.2.1 /nix/store/b15733bsif8p914l2ps58mkq36k5xsym-nix-2.34.7 /nix/store/165rncxlyi4f9pjf1zk3hmj3mh2v881w-dbus-1.16.2 /nix/store/49x6wkrr41xqc4imyd2m8vdm9k8pl73p-dbus-broker-37 /nix/store/152ngz5rpz2qps81ax2zlg9fsx6ra8qh-cups-2.4.19 /nix/store/xmgxsgh8cwavmpphhi0n2aa9i28nv2mx-networkmanager-1.56.0 /nix/store/v176ch25xsq407qmyvalpjnf51jx4s1q-modemmanager-1.24.2 /nix/store/qjs15klpvpwz64pjdspy3mln6d54pd8f-util-linux-2.42-bin /nix/store/y065cqq5a1j9xywcvcks47ixiadjj9x8-upower-1.91.1 /nix/store/75w34y9rbdsh75ck1pwny6b1vj7a84mm-udisks-2.11.1 /nix/store/673571v90djyridba8fri63bfqqgblzp-power-profiles-daemon-0.30 /nix/store/qcp78pwipa5616ypc0vmadb4w4p82c79-fwupd-2.1.4 /nix/store/a1dp4rk738mhzr7gl4v786ff3njyjpmc-bluez-5.86 /nix/store/fy5hvx60w5x39i7i1ldjs3vlr2519wl7-system-config-printer-1.5.18 /nix/store/gp2mgd7pc9wajw3q1ljq99366yqdsk44-wireplumber-0.5.14 /nix/store/6y2b9qs1npwsvcsl9m66hjarzj0yagb4-pipewire-1.6.5 /nix/store/d7va8vbd4ngs4g8asm289hdhcga4lflf-gvfs-1.60.1 /nix/store/s2bjqqzdjs4ji71qm1wwnkiy7g3afdz6-at-spi2-core-2.60.4 /nix/store/aal32hyzp9yx8hq30c39d828n2g8pdca-geoclue-2.7.2 /nix/store/i577crvqn7hhb1nm1zszf86gbdnwrns2-blueman-2.4.6 /nix/store/j8b1m4saxfhvx0wlydmkyv6c0f6ygzzf-accountsservice-23.13.9 /nix/store/sx11wiva717srzasxy2hmc0xaagj9n1i-speech-dispatcher-0.12.1 /nix/store/mdl2mn9h69xw7jwk690l00bydynlkdwm-orca-50.2 /nix/store/wwm2cb1bj5852da1nk4das9bqpmxz5a1-rtkit-0.14 /nix/store/km4ds1chfqcdmwfwvwm6k73k6wkwifpm-polkit-127 /nix/store/r36mwd5l0szp5mwmlyfkabdbmd84ad6s-util-linux-2.42-lastlog /nix/store/ajbhgix5hzsr75pr9dhlnpcvhm3kh8pj-dconf-0.49.0 /nix/store/m6r02d1m551rn6rlz67710801zvvyg21-xdg-desktop-portal-1.20.4 /nix/store/xykiki54nvnk97nw6j00cvqbmjx6lw0m-kwallet-6.26.0 /nix/store/zyp0760f1hsj591nh40qgrpljsv0wmqq-xdg-desktop-portal-kde-6.6.6 /nix/store/s4y0q04vzdmzgnb7z49z7h2sknwmplix-xdg-desktop-portal-gtk-1.15.3\"\n\n# Filter duplicate directories\ndeclare -A unique_packages\nfor k in $packages ; do unique_packages[$k]=1 ; done\n\nfor i in ${!unique_packages[@]}; do\n  for fn in $i/etc/systemd/system/* $i/lib/systemd/system/*; do\n    if ! [[ \"$fn\" =~ .wants$ ]]; then\n      if [[ -d \"$fn\" ]]; then\n        targetDir=\"$out/$(basename \"$fn\")\"\n        mkdir -p \"$targetDir\"\n        /nix/store/ccihqmbbygsvx7jap8apl5jwp8ipy61y-lndir-1.0.5/bin/lndir \"$fn\" \"$targetDir\"\n      else\n        ln -s $fn $out/\n      fi\n    fi\n  done\ndone\n\n# Symlink units defined by systemd.units where override strategy\n# shall be automatically detected. If these are also provided by\n# systemd or systemd.packages, then add them as\n# <unit-name>.d/overrides.conf, which makes them extend the\n# upstream unit.\nfor i in /nix/store/2irdcdzd93abyb8v3508dd9ybrpqbdb3-unit--.slice /nix/store/cing1805la6dvdpmj74nny3zd1hayibl-unit-ModemManager.service /nix/store/bzln6g9dv25skfys05i5h8c6id4k26s6-unit-NetworkManager-dispatcher.service /nix/store/34m19x4xi93jc6zv0hiiffw3p7pbpw5w-unit-NetworkManager-wait-online.service /nix/store/m5321gnrjd74ggqyl0qhmi398c8zc416-unit-NetworkManager.service /nix/store/h6ghfvfczl7w7vzlw3v4vhcz0jbqw8g5-unit-accounts-daemon.service /nix/store/avzv2dbhmax2j0mqwf56vb7paqqndpsv-unit-avahi-daemon.service /nix/store/b6jflw3yibwz6h2wiv97c4b0lm7gqr0v-unit-avahi-daemon.socket /nix/store/aqrra94adydcx205jkkg9w00282siwkl-unit-bluetooth.service /nix/store/r589gqdcimgn6zfwr3jrh7chk2nk7fq2-unit-console-getty.service-disabled /nix/store/kr81y405zbvkn873q0g9vww4q5f3lfp9-unit-container-getty-.service /nix/store/dhalmw5l5ka3xmb00pxs6q2lqqfjk87r-unit-cups-browsed.service /nix/store/sx96zv1zg43w3rx0b4w4fcb4qic6gx5d-unit-cups.service /nix/store/3scfpy09jvqq7hnyznav7yxgk3y9ps69-unit-cups.socket /nix/store/06vddwwi21zacf535s6yli1kkxf29sqi-unit-cybex-ensure-printers.service /nix/store/ybxc5ymnx2w2nl3lhbmjn4mlwc7cgp83-unit-cybex-network-priority.service /nix/store/rm54jx34789wd7lalxvqi5sdj1g49cfa-unit-cybex-networkmanager-dns.service /nix/store/9a2h6h4s1yg4dy9mrilaxnjqzj9f259n-unit-cybex-reconcile-device-restrictions.service /nix/store/z960qzfivprwfm3vnzkb6j6ldw3azb70-unit-dbus-broker.service /nix/store/2c8ldp6chs276vnd476b7kd6yhzr36q9-unit-dbus.service /nix/store/rlz65p8pcpgr3zap7q1mkk8qv72xri8h-unit-display-manager.service /nix/store/g0ycwbj38zxcwa8q0bwccjn12gbhg2qg-unit-drkonqi-coredump-processor-.service /nix/store/5l3adqhbfziavhb2m7x7vbv9gmchbyak-unit-firewall.service /nix/store/6l71c6239mc0hh7hks1bgr5xn6m2d1fg-unit-fs.target /nix/store/q46wwj5l7bzq905d53ypgc3bcll7v51c-unit-fstrim.timer /nix/store/jyrrkn8dpxdbcf2qjlhwd3345s4vasji-unit-fwupd-refresh.service /nix/store/q51p6w2zwng0gsx4ys6qlbxc7ki5kbhi-unit-fwupd-refresh.timer /nix/store/hyz6hf7k194by0i6pvqhyk8sx0b4xxsz-unit-generate-shutdown-ramfs.service /nix/store/5piyv5817mh398103j39w6xxhpv378cd-unit-geoclue.service /nix/store/1zhacnivw1l7r1nvncvycwnrq0zlq7jb-unit-getty.target /nix/store/i4kay4wa8b87rwbvq7027m67dpnirp03-unit-getty-.service /nix/store/wafk57mmrrzj37gnv6zckxq4chx0lh4w-unit-keys.target /nix/store/dsy9i94qljblkbmxmpm2b0ayb32zprmx-unit-kmod-static-nodes.service /nix/store/ca0fvd4jfc3xz3k4d7di1b43pblnkswl-unit-lastlog2-import.service /nix/store/py76p1m5pfrxbi1mn78841gw079nwkgc-unit-linger-users.service /nix/store/669mx4s73gzklmr9w3s13vv24kl1wlg8-unit-local-fs.target /nix/store/dkk1fxqk67a0qs7j96bb21xxm0c87ad0-unit-logrotate-checkconf.service /nix/store/jfbp2ifr9najjj886900xfk23m12yylr-unit-logrotate.service /nix/store/bjgrhsbkwn5yijz4yqpprbqpp4bn1j02-unit-logrotate.timer /nix/store/7rlw1lbh5fgikrqbwpibp3nyiy5ys7bi-unit-modprobe-.service /nix/store/kyi1a5ab8zrvybmfbl1xnyzr84q4kiwa-unit-multi-user.target /nix/store/n9zvxqippm5v3ldfhqj9abj1ksi4miav-unit-network-local-commands.service /nix/store/dffhwy5x0zn279wdyjx4na7dvgvhvanl-unit-network.target /nix/store/ca9znjh12i6z67vy3blhkybdkdncq6az-unit-networking-scripted.target /nix/store/bmw6wb56ykkvlfjn2rgxkqsrvdshwj1z-unit-nix-daemon.service /nix/store/bl8v0h6s2b1kvrbknzgj0ha4046mm7bf-unit-nix-daemon.socket /nix/store/x5fqvgfr989kvl5nb7kkif9h3qvvw3am-unit-nix-gc.service /nix/store/24dmkird304skyyhs74z258z6bzylrrq-unit-nix-optimise.service /nix/store/0cgzgijhvzwx03k64ng0xx9hhizpkzvk-unit-nscd.service /nix/store/rz4p88rlcy3fmfg7x0gfcv87glb6n45y-unit-pipewire-pulse.service-disabled /nix/store/00kfblbiq97f5v0yad52qpxcalivdm5n-unit-pipewire-pulse.socket-disabled /nix/store/k0d4fj3xdcswdj5lqnmigqb3nawl6lv7-unit-pipewire.service-disabled /nix/store/4zizq71dipr3pwjiwr41mfs2jrxkb98d-unit-pipewire.socket-disabled /nix/store/75qadmqvb5jhr3f3r2igbdiy2pdy4iz1-unit-polkit-agent-helper.socket /nix/store/cw3qmv1jpy5bwmr3gmh5dlccahb5viyl-unit-polkit-agent-helper-.service /nix/store/d8pss7ilpi1vxs36q5l0hv0aja3i9inc-unit-polkit.service /nix/store/s4yvg7kqaj7nvi5ah4fw86q1frgq0kp9-unit-post-boot.service /nix/store/7hcrmcmibybg68cy2xhxa00qxcyi3zyv-unit-prepare-kexec.service /nix/store/mkjfgi7yqjnizy0ky462lw5g4x5k9hv8-unit-reload-systemd-vconsole-setup.service /nix/store/k82qcnzy95a4ndwxliv362986fxz5f6v-unit-remote-fs.target /nix/store/d9hakch99qgi1n1a09jmcazsm98ml649-unit-resolvconf.service /nix/store/hy49vj90hc5j3i84z1355zgs5k41h8qi-unit-rtkit-daemon.service /nix/store/z3g3na0b16536a212sy9wl1nw2wgj6zl-unit-run-initramfs.mount /nix/store/aisrpa3qara3yh5k69zmhb5mvdydpd0q-unit-run-wrappers.mount /nix/store/2pwmpm4szfqwk8rmp8y9l00ci7shjgwn-unit-serial-getty-.service /nix/store/ri63hb82f267dcvxsdrlk251cwd88vk1-unit-sleep-actions.service /nix/store/si6icydx1r5ic3glbfvljjfdj670yk1w-unit-suid-sgid-wrappers.service /nix/store/614lnzzpc61gzcwa4ar5m0n8p3jrzb8w-unit-sysinit-reactivation.target /nix/store/1pjkklppppvd8lgc1vc4smzh080g7xmf-unit-system.slice /nix/store/svdmhaxx0kpl6yynx3906ryp69gbwnq8-unit-systemd-backlight-.service /nix/store/sbzby010hxlgd8hyr04bw4jrf2i8yz00-unit-systemd-fsck-.service /nix/store/6z3sx6qnq5156qjcq8qngzdrmmnbxp9j-unit-systemd-hostnamed.service /nix/store/9gpp05fxvc5ryhfhl5fhpw74a211hg83-unit-systemd-importd.service /nix/store/qb3rg2bxlaccfdaxifvxdcrz62y7m7cj-unit-systemd-journal-flush.service /nix/store/2d6j2bp0bj4kwilf2rnc1xgl6madcv34-unit-systemd-journald-audit.socket /nix/store/zawflql00yx1hwaz4r9gzdz1vw4xq2nm-unit-systemd-journald.service /nix/store/4gapfpbi4qma5sx5zvdml7z0ch1z3z20-unit-systemd-journald-.service /nix/store/c75rix7709j0mnbgkf7gn0rspc39rq4c-unit-systemd-localed.service /nix/store/yj5jbslvc86vjvwchs1jb5ckydclsbc7-unit-systemd-logind.service /nix/store/139d950j0qyr50ldv6a8crsw9nrjag4y-unit-systemd-modules-load.service /nix/store/qp5d66xp4lq2nf82lvnk4r2shd610lxs-unit-systemd-nspawn-.service /nix/store/fbm5mf07iynly42fwvyhwq71gbsamgj3-unit-systemd-oomd.service /nix/store/q1qb9bsc129y5w4ifn3jzl1hdwdb8lh6-unit-systemd-pstore.service /nix/store/6ffzsnb2aq45h6hjcvfgzxr0pnm6z7wx-unit-systemd-random-seed.service /nix/store/pgjgv7ss3yq4hf0rvlmh4wm9wvcs571f-unit-systemd-remount-fs.service /nix/store/4bjm2j9vphm5srwll6x2k5lqpkhaqiir-unit-systemd-sysctl.service /nix/store/1z142jy236jpcxwrf8z7nw9skgsbaaqi-unit-systemd-timedated.service /nix/store/4fz0kb8fcy7rb028hd6z4084hz1029cw-unit-systemd-timesyncd.service /nix/store/dsi426zbl5dzs04y2yz83h0sllmijfy1-unit-systemd-tmpfiles-resetup.service /nix/store/ar82436vibw51g5ywxhzr71d8fxih4mg-unit-systemd-udevd.service /nix/store/qgid39ji47q3cirxyg4l3k655fc0k7fr-unit-systemd-update-utmp.service /nix/store/gr5i5pz2qqrihjlm83zpdvb93n6l9vlw-unit-systemd-user-sessions.service /nix/store/zvgdgj1fviflk9bg21agbbw1qbx68qxk-unit-systemd-zram-setup-.service /nix/store/2wvlc477vqj473wf2x8z0p33ki58673h-unit-user-runtime-dir-.service /nix/store/hhgsyka8y2j1ay19pdiqyxa3jrkvzjnr-unit-user.slice /nix/store/6zx97h8hzkh2rg16c32lb3mgcg41arah-unit-user-.service /nix/store/hj6pmcciyi4fzd8ycnfbp7b121yzjg08-unit-wireplumber.service-disabled /nix/store/5bddf0bckssgzv0srysss149hlz4v8ic-unit-wpa_supplicant.service; do\n  fn=$(basename $i/*)\n  if [ -e $out/$fn ]; then\n    if [ \"$(readlink -f $i/$fn)\" = /dev/null ]; then\n      ln -sfn /dev/null $out/$fn\n    else\n      mkdir -p $out/$fn.d\nln -s $i/$fn $out/$fn.d/overrides.conf\n\n    fi\n else\n    ln -fs $i/$fn $out/\n  fi\ndone\n\n# Symlink units defined by systemd.units which shall be\n# treated as drop-in file.\nfor i in /nix/store/bvc825f19hhwlvd61yrcq4jwm78f0n5s-unit-systemd-makefs-.service /nix/store/83366zjf85jhbpnyjvb6zdrvzabi1dhl-unit-systemd-mkswap-.service; do\n  fn=$(basename $i/*)\n  mkdir -p $out/$fn.d\n  ln -s $i/$fn $out/$fn.d/overrides.conf\ndone\n\n# Create service aliases from aliases option.\nln -sfn 'ModemManager.service' $out/'dbus-org.freedesktop.ModemManager1.service'\nln -sfn 'NetworkManager-dispatcher.service' $out/'dbus-org.freedesktop.nm-dispatcher.service'\nln -sfn 'NetworkManager.service' $out/'dbus-org.freedesktop.NetworkManager.service'\nln -sfn 'bluetooth.service' $out/'dbus-org.bluez.service'\nln -sfn 'dbus-broker.service' $out/'dbus.service'\nln -sfn 'getty@.service' $out/'autovt@.service'\nln -sfn 'systemd-timesyncd.service' $out/'dbus-org.freedesktop.timesync1.service'\n\n\n# Create .wants, .upholds and .requires symlinks from the wantedBy, upheldBy and\n# requiredBy options.\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../NetworkManager-dispatcher.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'network-online.target.wants'\nln -sfn '../NetworkManager-wait-online.service' $out/'network-online.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../NetworkManager.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'graphical.target.wants'\nln -sfn '../accounts-daemon.service' $out/'graphical.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../avahi-daemon.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'sockets.target.wants'\nln -sfn '../avahi-daemon.socket' $out/'sockets.target.wants'/\nmkdir -p $out/'bluetooth.target.wants'\nln -sfn '../bluetooth.service' $out/'bluetooth.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../cups-browsed.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'sockets.target.wants'\nln -sfn '../cups.socket' $out/'sockets.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../cybex-ensure-printers.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../cybex-network-priority.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../cybex-networkmanager-dns.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../cybex-reconcile-device-restrictions.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'systemd-coredump@.service.wants'\nln -sfn '../drkonqi-coredump-processor@.service' $out/'systemd-coredump@.service.wants'/\nmkdir -p $out/'sysinit.target.wants'\nln -sfn '../firewall.service' $out/'sysinit.target.wants'/\nmkdir -p $out/'timers.target.wants'\nln -sfn '../fstrim.timer' $out/'timers.target.wants'/\nmkdir -p $out/'timers.target.wants'\nln -sfn '../fwupd-refresh.timer' $out/'timers.target.wants'/\nmkdir -p $out/'shutdown.target.wants'\nln -sfn '../generate-shutdown-ramfs.service' $out/'shutdown.target.wants'/\nmkdir -p $out/'default.target.wants'\nln -sfn '../lastlog2-import.service' $out/'default.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../linger-users.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../logrotate-checkconf.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'timers.target.wants'\nln -sfn '../logrotate.timer' $out/'timers.target.wants'/\nmkdir -p $out/'network.target.wants'\nln -sfn '../network-local-commands.service' $out/'network.target.wants'/\nmkdir -p $out/'network.target.wants'\nln -sfn '../network-local-commands.service' $out/'network.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../network.target' $out/'multi-user.target.wants'/\nmkdir -p $out/'sockets.target.wants'\nln -sfn '../nix-daemon.socket' $out/'sockets.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../nscd.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'sockets.target.wants'\nln -sfn '../pipewire-pulse.socket' $out/'sockets.target.wants'/\nmkdir -p $out/'sockets.target.wants'\nln -sfn '../pipewire.socket' $out/'sockets.target.wants'/\nmkdir -p $out/'sockets.target.wants'\nln -sfn '../polkit-agent-helper.socket' $out/'sockets.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../post-boot.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'kexec.target.wants'\nln -sfn '../prepare-kexec.service' $out/'kexec.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../reload-systemd-vconsole-setup.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../resolvconf.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'sleep.target.wants'\nln -sfn '../sleep-actions.service' $out/'sleep.target.wants'/\nmkdir -p $out/'sysinit.target.wants'\nln -sfn '../suid-sgid-wrappers.service' $out/'sysinit.target.wants'/\nmkdir -p $out/'systemd-journald.service.wants'\nln -sfn '../systemd-journald-audit.socket' $out/'systemd-journald.service.wants'/\nmkdir -p $out/'sockets.target.wants'\nln -sfn '../systemd-journald-audit.socket' $out/'sockets.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../systemd-modules-load.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../systemd-oomd.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'sysinit.target.wants'\nln -sfn '../systemd-pstore.service' $out/'sysinit.target.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../systemd-sysctl.service' $out/'multi-user.target.wants'/\nmkdir -p $out/'sysinit.target.wants'\nln -sfn '../systemd-timesyncd.service' $out/'sysinit.target.wants'/\nmkdir -p $out/'pipewire.service.wants'\nln -sfn '../wireplumber.service' $out/'pipewire.service.wants'/\nmkdir -p $out/'multi-user.target.wants'\nln -sfn '../wpa_supplicant.service' $out/'multi-user.target.wants'/\n\n\n\n\nmkdir -p $out/'nss-lookup.target.requires'\nln -sfn '../nscd.service' $out/'nss-lookup.target.requires'/\nmkdir -p $out/'nss-user-lookup.target.requires'\nln -sfn '../nscd.service' $out/'nss-user-lookup.target.requires'/\nmkdir -p $out/'sysinit-reactivation.target.requires'\nln -sfn '../systemd-tmpfiles-resetup.service' $out/'sysinit-reactivation.target.requires'/\n\n\n# Stupid misc. symlinks.\nln -s graphical.target $out/default.target\nln -s reboot.target $out/ctrl-alt-del.target\n\nln -s ../remote-fs.target $out/multi-user.target.wants/\n\n",
+      "buildInputs": "",
+      "builder": "/nix/store/zh1ijdhb6gng1509b1zrilb6xlzx60j6-bash-5.3p9/bin/bash",
+      "cmakeFlags": "",
+      "configureFlags": "",
+      "depsBuildBuild": "",
+      "depsBuildBuildPropagated": "",
+      "depsBuildTarget": "",
+      "depsBuildTargetPropagated": "",
+      "depsHostHost": "",
+      "depsHostHostPropagated": "",
+      "depsTargetTarget": "",
+      "depsTargetTargetPropagated": "",
+      "doCheck": "",
+      "doInstallCheck": "",
+      "enableParallelBuilding": "1",
+      "enableParallelChecking": "1",
+      "enableParallelInstalling": "1",
+      "mesonFlags": "",
+      "name": "system-units",
+      "nativeBuildInputs": "",
+      "out": "/nix/store/hlg4spicfdqnwxrqflzivvvbg7mxkd0s-system-units",
+      "outputs": "out",
+      "passAsFile": "buildCommand",
+      "patches": "",
+      "preferLocalBuild": "1",
+      "propagatedBuildInputs": "",
+      "propagatedNativeBuildInputs": "",
+      "stdenv": "/nix/store/pr27j8nm0xl52pq4ylncj9kwjw3b84mk-stdenv-linux",
+      "strictDeps": "",
+      "system": "x86_64-linux"
+    },
+    "inputDrvs": {
+      "/nix/store/033lbg2pw9b7xcfvxc22vq54shd2p40f-nix-2.34.7.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/09hh3xacppf0bwwiwmpvjsyv4vy6hw4g-unit-systemd-fsck-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/0bcvv415y5madlh9mclrz8dj6nqbwim1-unit-nix-daemon.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/0n9ys0s27kh7iv48jrvyyd6amrd81ry6-accountsservice-23.13.9.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/12dv08l450dyvzn0a3na5ysr0fszd4gf-unit-NetworkManager.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/17ifqj42dy6s089rj78kn3mnqbbxlk22-orca-50.2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/1lsv1fn86p6xbafmxa1h50l5x1f7mxdx-unit-firewall.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/1npcppzjpjawag8nqlmmf8dcf8yn99xi-dbus-broker-37.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/1scafzp9jb3hfjgn2ikvhcns37rcpb6x-unit-network-local-commands.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/1ygrivwavf4kgh8vpi72nim93s5dqygj-unit-nix-gc.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/2a3wxazpxa198k813v4p0qq8qx6wvvcc-unit-systemd-mkswap-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/2nij4fwdzxl0qpff02b4795r737g79hc-unit-polkit-agent-helper.socket.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/2r3g5rv3vjjywx2x7q64xc39xz3s6bz1-unit-bluetooth.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/2vjzs3b1ih7cycbmwi5pxx8q3wywrhly-unit-fstrim.timer.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/33qh8fiidsm5bg722d1pirdhqwjp8d87-dbus-1.16.2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/36c67lrd9yaikxmsxja6h0cm5fs21hv1-unit-accounts-daemon.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/3yyqnm99mphhwn14zvk65iggcs6wzx3s-wireplumber-0.5.14.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/4263bp10gqzf5w4c9khmrhlymkh18vdp-gvfs-1.60.1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/4dxvg84cyfibqw5xx3vhcbi24c62yld9-systemd-260.2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/4hcfr6lbm52icbzvjxxvi9zyk1y9qz37-unit-systemd-localed.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/4k18pzkv1k58c33r6lr1nziim7k990qh-unit-systemd-remount-fs.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/4mdjg2y879xbn30rsi6crlqmfbs2py2x-unit-wpa_supplicant.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/4z3icsd7k60i384rj61p1p7bp8div9jr-at-spi2-core-2.60.4.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/5273fcsj97mw2yh1gqrzx9mxnrvmmx11-upower-1.91.1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/558p6iw6yj1lvy07is8vhd115kkx3kyd-unit-nix-optimise.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/5a0v7zx4g903w08fgaaslfmf4nssf4c9-unit-nix-daemon.socket.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/5qw4idaix6i7x4wyd0r3hikd1kg7ha94-unit-pipewire.socket-disabled.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/61a6pmcbyhygp1imc3yfr5rxygjqibxp-unit-prepare-kexec.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/63iassamd154cjd904ykbl81qcz20aml-unit-pipewire-pulse.service-disabled.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/6h08di2g94xp8l4yag6shpw8cj2bxv7k-unit-systemd-importd.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/6h4pd5by94rzs2d4x9qql1kqhsa21kg7-modemmanager-1.24.2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/6jfxvnz35j309vkm3pgmh6szckqar8wy-unit-local-fs.target.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/6wz7hmrm427kl6jv15sld6aj9df6pkwf-unit-system.slice.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/6xfni20nwpdj71kbxrahxs8jrf6ly9ji-unit-linger-users.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/6zd33wf9mjyzri94p9dr03878x5cjd6a-pipewire-1.6.5.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/710pj1pz07qxh47s3icxdh0jm26gdp3b-unit-pipewire.service-disabled.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/7vn54b4d7mlw5x577ar1wfq33i2mvf1q-unit-avahi-daemon.socket.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/7xsmi809rx73x0i8azxsd217l6m5qyj8-unit-dbus-broker.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/826inwjlg8d727a032sg0gihcza6dqx9-power-profiles-daemon-0.30.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/8i4r6b1zqqa2fds4aasbwzy9wmkf84dy-util-linux-2.42.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "bin",
+          "lastlog"
+        ]
+      },
+      "/nix/store/8k7s1xxzbb1bfd47h1c99axplw4hfc44-unit-kmod-static-nodes.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/8xz0ykgl2f5cyw3l450kibbvxrb29dzf-xdg-desktop-portal-kde-6.6.6.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/9b824jxr1zcn64657zwykgdq7xz8disk-unit-systemd-update-utmp.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/9g9q0jwhawxsbyj1nbl1hnsb5i500c8s-unit-cups.socket.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/9qgafvm039wgk7adb2pw9dn0znbh52r0-unit-reload-systemd-vconsole-setup.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/9sgrr2qmzhav8nm8gc7i2mjfr3kkhk3c-unit-getty-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/9xnia1ygy9l4g63labimwa9valdcjp4i-unit-multi-user.target.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/a1yrhnrairqiirssd3myr1wfpw3zc5nj-unit-rtkit-daemon.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/a54f2ki1198xs2d72zrjv190xcidm08i-unit-cups.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/b26g0f9wylk6mhfv6k07vdr1825barf7-unit-systemd-journald-audit.socket.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/b3kzxvfshrywbrn6dnfkyzgicf06hzx0-unit-dbus.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/b61n89v5mph1wav0sgb4h8v1ly2di5ac-networkmanager-1.56.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/b6m74bab1w18dqav1fcibf0qfw8ihl51-unit-container-getty-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/b95xd8bdms25bs1mv14nph8za7zzsd32-unit-logrotate-checkconf.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/bh409j5bfb0i1f4mniw133j26n01ish6-unit-geoclue.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/biakrd8hm0j3jczgzqvdxz3mc0wi6rc1-unit-systemd-sysctl.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/bxlz3hzl8k02rnxpgml6krqkrnpird91-stdenv-linux.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/cc99r1lrvcqpmdp94llrcmdj5cybi1h9-unit-systemd-hostnamed.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ccgn21q3x4dlcviglwp3dbyap1yvw446-polkit-127.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/cgpm5q3ql15scmyywxdmfgvj0prpwvsr-unit-systemd-random-seed.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/chdx8xzcwpf2wdlicnap650g9v45d9i7-lvm2-2.03.39.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/cs79d77d64w2m495gqj0k79mvi5kf5rg-speech-dispatcher-0.12.1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/cwnbwzl7syrihwx9xi8gjrhq58kb3bh8-unit-pipewire-pulse.socket-disabled.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/cxax8jklw7xiqz8r0an5aycyfqyc6wn0-xdg-desktop-portal-1.20.4.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/d3bplr9yigszhpp59my5fs063w894na3-unit-fs.target.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/da4dnql4kw2szk2iqs24zm1kb0gdlddn-unit-modprobe-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/dhadpwgz47r9dg92wjh5mcxpb93vj72m-unit-getty.target.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/f3xwz8w846y59giyxpdy23x3g474jvbd-unit-systemd-udevd.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/f6nwn043i6hz77hrils96zkrff1skhwh-unit-post-boot.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/f7cqwhv2sxx3ps3q8kmy0l2xbjcanpfc-unit-cybex-reconcile-device-restrictions.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/f92hlx91f40dyyppkrcba7wdnbnj8g4p-unit-lastlog2-import.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/fnwknb4f8557r4bhpy7w9mkwa3mgwifm-zram-generator-1.2.1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/fx4kr61bd2vza7ppfbxaq40vp7i7r7nx-unit-logrotate.timer.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/g7p7rs03xah2w00a142hzas9h4fkwpck-bash-5.3p9.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/g8fbna087nlza9k0isrl227i8232j6fx-unit-serial-getty-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/gpxwim44mis1367f7cfm8jvdg0rx516c-dconf-0.49.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/hbfy663spv238kdmr2h3lr64l62ql81p-unit-user.slice.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/hpk78pxch0ldrkxs6dgsn0mf168vj0ra-unit-avahi-daemon.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/hr92gsqcpp7kvj9hy6v70l10aa7dm9c6-unit-sysinit-reactivation.target.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/hy7rpklppc9nc615r4ipn9dxjpyvm04j-unit-network.target.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/hybl4mdj034c03zbw42g99gp3qfjqrid-unit-systemd-nspawn-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ih5rj6301063qkkxd985vh81lsfmv1g5-unit-systemd-oomd.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/isa3017j30la5rsra2zfk30igiyvr1fa-unit-systemd-backlight-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/jfxbri10a8jfy72270fnpdg6p4armkkx-unit-polkit-agent-helper-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/jj71bdfan6n7f3d2k0n4zaflgb2lp520-geoclue-2.7.2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/jkz8ypx2d93wrgygdvna6mwfwsyhb4cf-unit-logrotate.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/k1gmknkyvcn6gmqcp807ww2bn5wx90xh-unit-systemd-pstore.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/k8ivnpmfgz322i33mhw2ya87wzal56bi-cups-2.4.19.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/kakd1rkvs3cwh9kqh2piajkr49iqr9p6-unit-systemd-logind.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/km5wlfvvxqrf6519gqyv7dydadlr50za-unit-networking-scripted.target.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/l5kw6mpnk0sp699s4j9fdwzn3r0nm6dv-bluez-5.86.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/l727vxfg68c3q0kvzvncw9ln673jg18c-unit-NetworkManager-wait-online.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/lwypnhqvan96ld00s1p4bccy59qgmdlk-rtkit-0.14.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/m35yca925jbd01phjksckxa1k7xf34gw-unit-run-wrappers.mount.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/m9nwpb1n832gqm9g6ia80r5xfyp6rd4a-unit-systemd-timedated.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/mcar6ns06i9i4cy4021kgv904fhkig7s-unit-systemd-timesyncd.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/mkrrslwyi9ax5j8rl7hczbllschqwfsh-fwupd-2.1.4.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/mp8x34090njxni7fzsfjs0bx1bgnhycd-unit-console-getty.service-disabled.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/mrmbnfjm7xj6h80z8qcgqvbhrgacig7k-kwallet-6.26.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/n7ayld0dgrjfmzc7cpawgcfcq70y6hx3-lndir-1.0.5.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ncxninj1yixy4i2bscdxfmcj69q5x070-system-config-printer-1.5.18.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ndliai1qh2wdlr21ixkc87zgj642j7iz-unit-cups-browsed.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ndw88xxs721avqz4y90gspjf1gywyrfw-unit-sleep-actions.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/nia41sic9qsbd1a4a00062nzdhccnigb-unit-cybex-ensure-printers.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/p22pizbplabh7bilzzh85ifii1kx96xa-unit-remote-fs.target.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/p90xbpfrh89f7719f360ck71zp4rjzll-unit-fwupd-refresh.timer.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/pcy10dj9zkvl0dk4qd9gy5hr5aarhv55-unit-run-initramfs.mount.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/pi0j3afcl0i6lss6aaiazjn20nhcam9l-unit-polkit.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/pl0kqgy3r803q43v5xwlxc2x13r0cz39-unit-generate-shutdown-ramfs.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/pq3wz31wb7dsx76i47y11gfgdwajz4nd-unit-user-runtime-dir-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/pvfm0ss9frf0f2078dxiimicb64xc2hn-unit-resolvconf.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/q8b0v3rky4siadsfrls342b29gl7b4rl-unit-systemd-user-sessions.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/qxcz6f3pvark116g55z30nrj53sk1k1m-unit-cybex-network-priority.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/rk0sxb8pvhqxw1yc02i3ypy9xz4c502b-unit-keys.target.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/rn4d06wijqxdxlr8c885l8p2my5qw8nl-unit-cybex-networkmanager-dns.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ryb7mx93cm5gjgjzrphl9mlbq40q9qpx-blueman-2.4.6.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/rzr5nzb2ihrf4jk6p7b9kpr2rj344lji-unit-systemd-tmpfiles-resetup.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/s5a0jpdpm21h9g8cfmafshql3w9iqv89-unit-systemd-journald.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/s9mfx0gqndyngnpnrhyldpjn12cg9c01-unit-fwupd-refresh.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/sws6blajz1xk6w2n5lslr7p2j02mpich-unit--.slice.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/sy3acj61hrawfh11jyhy4syh93dbw52b-unit-systemd-journal-flush.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/vdvl9qlb6xq3dinprbxpjfnab2rpyvzk-unit-systemd-makefs-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/vppsd3rajd1rac6bg07szi1k539cdlvi-unit-systemd-modules-load.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/vrk8kydyg2vxxwmks2ym69vh57840slk-udisks-2.11.1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/vv9hi3bmjfkjssv1y2pkkr7mpf9qhd91-drkonqi-6.6.6.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/w4fdv61zvfg45bysp8nlks10l4l5v1k4-xdg-desktop-portal-gtk-1.15.3.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/w6ph9v6lnrbdvp5zjjrm970zfxvfl4j8-unit-suid-sgid-wrappers.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/w70lk9l5c6pi7jgdb6zaadiq9ybwms5j-unit-systemd-journald-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/w95xh7drh2n1bx7j1h91vjk5md09dcyl-unit-systemd-zram-setup-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/wmhn5rwcy40g6qykfijm0wy1s3z8zpip-unit-ModemManager.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/wzh10fhfwi0kw9c4lfk8h3s050405197-unit-user-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/xb29w0kdl4znz094rb878vf1d3x19bcd-unit-nscd.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/xj7hr30kigy6cias0jn2n2piadkk0wkd-unit-wireplumber.service-disabled.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/y0xff7m2mka5qq7gy8z2lkr2g7x461gf-unit-NetworkManager-dispatcher.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ybf8dz975d995wx1pr3fkfmqb6fg7n7l-unit-display-manager.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/zprz337mc3g2n3zx4nxkkjh4ir03n3pd-unit-drkonqi-coredump-processor-.service.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      }
+    },
+    "inputSrcs": [
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh"
+    ],
+    "name": "system-units",
+    "outputs": {
+      "out": {
+        "path": "/nix/store/hlg4spicfdqnwxrqflzivvvbg7mxkd0s-system-units"
+      }
+    },
+    "system": "x86_64-linux"
+  },
+  "/nix/store/wfpnzvs3yb9xcahp277rmgm25cwpz8jr-etc.drv": {
+    "args": [
+      "-e",
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh"
+    ],
+    "builder": "/nix/store/zh1ijdhb6gng1509b1zrilb6xlzx60j6-bash-5.3p9/bin/bash",
+    "env": {
+      "__structuredAttrs": "",
+      "allowSubstitutes": "",
+      "buildCommand": "set -euo pipefail\n\nmakeEtcEntry() {\n  src=\"$1\"\n  target=\"$2\"\n  mode=\"$3\"\n  user=\"$4\"\n  group=\"$5\"\n\n  if [[ \"$src\" = *'*'* ]]; then\n    # If the source name contains '*', perform globbing.\n    mkdir -p \"$out/etc/$target\"\n    for fn in $src; do\n        ln -s \"$fn\" \"$out/etc/$target/\"\n    done\n  else\n\n    mkdir -p \"$out/etc/$(dirname \"$target\")\"\n    if ! [ -e \"$out/etc/$target\" ]; then\n      ln -s \"$src\" \"$out/etc/$target\"\n    else\n      echo \"duplicate entry $target -> $src\"\n      if [ \"$(readlink \"$out/etc/$target\")\" != \"$src\" ]; then\n        echo \"mismatched duplicate entry $(readlink \"$out/etc/$target\") <-> $src\"\n        ret=1\n      fi\n    fi\n\n    if [ \"$mode\" != symlink ]; then\n      echo \"$mode\" > \"$out/etc/$target.mode\"\n      echo \"$user\" > \"$out/etc/$target.uid\"\n      echo \"$group\" > \"$out/etc/$target.gid\"\n    fi\n  fi\n}\n\nmkdir -p \"$out/etc\"\nmakeEtcEntry /nix/store/xcppb2hyrfxhrxczpsn9l2iwa5jmcgi7-NetworkManager.conf NetworkManager/NetworkManager.conf symlink +0 +0\nmakeEtcEntry /nix/store/rchip9vz2hcr9nslvjbjqhz2nhp9xp7n-cybex-networkmanager-dns-dispatcher NetworkManager/dispatcher.d/03userscript0001 0544 +0 +0\nmakeEtcEntry /nix/store/ppvk2aq6bj773cfjg9gca4gxcihnzh4z-etc-UPower-UPower.conf UPower/UPower.conf symlink +0 +0\nmakeEtcEntry /nix/store/czwchfqv2v6v2gm545mhdj03smk50rw0-xkeyboard-config-2.47/etc/X11/xkb X11/xkb symlink +0 +0\nmakeEtcEntry /nix/store/758lgdzc96xhswhz00c4gippwidasr5y-etc-X11-xorg.conf.d-00-keyboard.conf X11/xorg.conf.d/00-keyboard.conf symlink +0 +0\nmakeEtcEntry /nix/store/rcsskjbgp97pb0nzfl5i0mh9mccg3ik5-xf86-input-evdev-2.11.0/share/X11/xorg.conf.d/10-evdev.conf X11/xorg.conf.d/10-evdev.conf symlink +0 +0\nmakeEtcEntry /nix/store/f76bhz79x3r4qsc76ghhf255q3qmvadz-xf86-input-libinput-1.5.0/share/X11/xorg.conf.d/40-libinput.conf X11/xorg.conf.d/40-libinput.conf symlink +0 +0\nmakeEtcEntry /nix/store/91bbfkkzmcnnad3a04k9ayh6ikd3y5jv-etc-alsa-conf.d-49-pipewire-modules.conf alsa/conf.d/49-pipewire-modules.conf symlink +0 +0\nmakeEtcEntry /nix/store/6y2b9qs1npwsvcsl9m66hjarzj0yagb4-pipewire-1.6.5/share/alsa/alsa.conf.d/50-pipewire.conf alsa/conf.d/50-pipewire.conf symlink +0 +0\nmakeEtcEntry /nix/store/6y2b9qs1npwsvcsl9m66hjarzj0yagb4-pipewire-1.6.5/share/alsa/alsa.conf.d/99-pipewire-default.conf alsa/conf.d/99-pipewire-default.conf symlink +0 +0\nmakeEtcEntry /nix/store/q3gid6c0w1xzxvbv7s5nj4pg68n9vfw3-etc-bash_logout bash_logout symlink +0 +0\nmakeEtcEntry /nix/store/g1szp7606y96nlc0458pr1v6nwcp2y4j-etc-bashrc bashrc symlink +0 +0\nmakeEtcEntry /nix/store/g28l15mbdbig59n102zd0ardsfisiw32-binfmt_nixos.conf binfmt.d/nixos.conf symlink +0 +0\nmakeEtcEntry /nix/store/6q83sxlq6ss96xfd8pnkp1v8f9w06ln0-input.conf bluetooth/input.conf symlink +0 +0\nmakeEtcEntry /nix/store/1d2a9agsnxjr02prfilja575jjwl9r85-main.conf bluetooth/main.conf symlink +0 +0\nmakeEtcEntry /nix/store/8rym39arqjcm7fwws296yv9yl9ywp4hy-network.conf bluetooth/network.conf symlink +0 +0\nmakeEtcEntry /var/lib/cups cups symlink +0 +0\nmakeEtcEntry /nix/store/xg689y5aal42bcdwzvrhnfgfqyz8if5m-etc-cybex-cups-health.test cybex/cups-health.test 0444 +0 +0\nmakeEtcEntry /nix/store/6z4qi7rhpfkzsgw13bwbl80424g4mkl7-etc-cybex-desktop-appearance-enforcement cybex/desktop/appearance-enforcement symlink +0 +0\nmakeEtcEntry /nix/store/pg3hxdfrp5ivxjy0djj188sq9gjp3fhw-etc-cybex-desktop-profile cybex/desktop/profile symlink +0 +0\nmakeEtcEntry /nix/store/p31ybigiajyczk4b8f2cshjkzmh8mhrw-etc-cybex-desktop-wallpaper-identity cybex/desktop/wallpaper-identity symlink +0 +0\nmakeEtcEntry /nix/store/43xvfahc7lmjy8dbs51z9x61x0dn29wi-etc-cybex-desktop-wallpaper-path cybex/desktop/wallpaper-path symlink +0 +0\nmakeEtcEntry /nix/store/jh73zdq4nvgj5z90w0kxy4g2x8pkigmz-etc-cybex-monitoring-policy.json cybex/monitoring-policy.json symlink +0 +0\nmakeEtcEntry /nix/store/yqx1n3lim0ph29s1xlhnhqd7jcb9kzpj-etc-cybex-network-policy.json cybex/network/policy.json symlink +0 +0\nmakeEtcEntry /nix/store/c5r7qx2jmq38wlkg70j66v41s96vd59l-etc-cybex-policy.json cybex/policy.json symlink +0 +0\nmakeEtcEntry /nix/store/pl7l96bz74w8bk31n52jmqvdy1sdga2g-moonscape-2022-04-19/share/backgrounds/nixos/nix-wallpaper-moonscape.png cybex/wallpapers/default symlink +0 +0\nmakeEtcEntry /nix/store/fw6kbimnc0g0rq42bi8v8iyr14d0l37g-dbus-1 dbus-1 symlink +0 +0\nmakeEtcEntry /nix/store/0bnyx77837hyyixjg7jxjwv6klkcyc52-useradd default/useradd symlink +0 +0\nmakeEtcEntry /nix/store/5cr33li5pixn9whn2plfx11pcqsgdp7c-etc-environment.d-50-systemd-path.conf environment.d/50-systemd-path.conf symlink +0 +0\nmakeEtcEntry /nix/store/yy5xar7lai2n0mja3gbf1afbx63bdi7r-firefox-policies.json firefox/policies/policies.json symlink +0 +0\nmakeEtcEntry /nix/store/lqa90bgj7mk3airjjbr526vww3xhazwy-fontconfig-etc/etc/fonts/ fonts symlink +0 +0\nmakeEtcEntry /nix/store/mi7647yd6x4sfqq9502rdsf0njlj2hpq-etc-fstab fstab symlink +0 +0\nmakeEtcEntry /nix/store/7gs2xa03yr48l2ip3bq2mqhxysp41kyr-etc-fuse.conf fuse.conf symlink +0 +0\nmakeEtcEntry /nix/store/kxx9jjg41hrpp9nw0gwsfzabvbg5j2kd-fwupd.conf fwupd/fwupd.conf 0640 +0 +0\nmakeEtcEntry /nix/store/qcp78pwipa5616ypc0vmadb4w4p82c79-fwupd-2.1.4/etc/fwupd/remotes.d/lvfs-embargo.conf fwupd/remotes.d/lvfs-embargo.conf symlink +0 +0\nmakeEtcEntry /nix/store/qcp78pwipa5616ypc0vmadb4w4p82c79-fwupd-2.1.4/etc/fwupd/remotes.d/lvfs-testing.conf fwupd/remotes.d/lvfs-testing.conf symlink +0 +0\nmakeEtcEntry /nix/store/qcp78pwipa5616ypc0vmadb4w4p82c79-fwupd-2.1.4/etc/fwupd/remotes.d/lvfs.conf fwupd/remotes.d/lvfs.conf symlink +0 +0\nmakeEtcEntry /nix/store/qcp78pwipa5616ypc0vmadb4w4p82c79-fwupd-2.1.4/etc/fwupd/remotes.d/vendor-directory.conf fwupd/remotes.d/vendor-directory.conf symlink +0 +0\nmakeEtcEntry /nix/store/qcp78pwipa5616ypc0vmadb4w4p82c79-fwupd-2.1.4/etc/fwupd/remotes.d/vendor.conf fwupd/remotes.d/vendor.conf symlink +0 +0\nmakeEtcEntry /nix/store/710v65wf8wa9rhg7ca3xc85ij378q9d3-etc-gai.conf gai.conf symlink +0 +0\nmakeEtcEntry /nix/store/gqg5rsmks7fczww7m6zn8pls2r5bhvhj-etc-geoclue-geoclue.conf geoclue/geoclue.conf symlink +0 +0\nmakeEtcEntry /nix/store/qcp78pwipa5616ypc0vmadb4w4p82c79-fwupd-2.1.4/etc/grub.d/35_fwupd grub.d/35_fwupd symlink +0 +0\nmakeEtcEntry /nix/store/bs0r6dcs9hja953ay3h8vy075rjjg79c-etc-host.conf host.conf symlink +0 +0\nmakeEtcEntry /nix/store/j3v94hhzh7rvjk7h4qs86wab1gvdy6vf-etc-hostname hostname symlink +0 +0\nmakeEtcEntry /nix/store/jmb2ss7ldsm4bwz1jzgw98yvl5sx9rfp-hosts hosts symlink +0 +0\nmakeEtcEntry /nix/store/dwv0wf3szv3ipgyyyrf1zxh4iqlckiip-inputrc inputrc symlink +0 +0\nmakeEtcEntry /nix/store/k62mjq0b1xlrkr4rf3k1gqsnvqm940ci-etc-ipsec.secrets ipsec.secrets symlink +0 +0\nmakeEtcEntry /nix/store/pmq72f6hyq5ha5dgh7iwq95l6rsqwd1r-issue issue symlink +0 +0\nmakeEtcEntry /nix/store/3fd9dhs5bn4nl92a0ppqabyzwfc94xf1-console-env/share kbd symlink +0 +0\nmakeEtcEntry /nix/store/i9b0x58vbfi6jfbx1yi3h11i6rq46gp4-libblockdev-3.4.0/etc/libblockdev/3/conf.d/00-default.cfg libblockdev/3/conf.d/00-default.cfg symlink +0 +0\nmakeEtcEntry /nix/store/i9b0x58vbfi6jfbx1yi3h11i6rq46gp4-libblockdev-3.4.0/etc/libblockdev/3/conf.d/10-lvm-dbus.cfg libblockdev/3/conf.d/10-lvm-dbus.cfg symlink +0 +0\nmakeEtcEntry /nix/store/spwm2iq6bvl0dg2j82gk08irrqyk2rh9-locale.conf locale.conf symlink +0 +0\nmakeEtcEntry /etc/zoneinfo/Europe/Amsterdam localtime direct-symlink +0 +0\nmakeEtcEntry /nix/store/s1gylv2h5x3sjmc2rnys7r9jmlbcci7q-login.defs login.defs symlink +0 +0\nmakeEtcEntry /nix/store/x8gbbh5xp6yf15q0c98lvaxp163pcxwz-etc-lsb-release lsb-release symlink +0 +0\nmakeEtcEntry /nix/store/ky4axiq7plkwqy360p7fi3z63yyn933v-etc-lvm-lvm.conf lvm/lvm.conf symlink +0 +0\nmakeEtcEntry /nix/store/yw06snyy7i967xw309afxxm54qwf233l-etc-man_db.conf man_db.conf symlink +0 +0\nmakeEtcEntry /nix/store/fdbs1v4c1n5xq5dnzrbz9aypc9q2q5jk-kmod-debian-aliases.conf-30+20230601-2 modprobe.d/debian.conf symlink +0 +0\nmakeEtcEntry /nix/store/9vs4sd43j8d9f1vq8lkfpzzg4wg41hpw-etc-modprobe.d-firmware.conf modprobe.d/firmware.conf symlink +0 +0\nmakeEtcEntry /nix/store/5ipixmrf7p2rb7wkbv0a03r4v11zsr8n-etc-modprobe.d-nixos.conf modprobe.d/nixos.conf symlink +0 +0\nmakeEtcEntry /nix/store/rd05syhv5v5999907a2n1r37sgi19vpd-systemd-260.2/lib/modprobe.d/systemd.conf modprobe.d/systemd.conf symlink +0 +0\nmakeEtcEntry /nix/store/mnp08y1j94rrfkng33lhpxpdnlai7wb8-kmod-blacklist-31+20240202-2ubuntu8/modprobe.conf modprobe.d/ubuntu.conf symlink +0 +0\nmakeEtcEntry /nix/store/daxp3k25az5k4xc9v8q0hlaq27askayz-nixos.conf modules-load.d/nixos.conf symlink +0 +0\nmakeEtcEntry /proc/mounts mtab direct-symlink +0 +0\nmakeEtcEntry /nix/store/dsz4bgsmk2msd92jcwhbyzsymygfkqs0-etc-nanorc nanorc symlink +0 +0\nmakeEtcEntry /nix/store/qfbgl8ski3m02rxq3hl97y73v9j3axlf-etc-netgroup netgroup symlink +0 +0\nmakeEtcEntry /nix/store/0z8mx2i0fdgg51xa4350l2bp91ji30xr-nix.conf nix/nix.conf symlink +0 +0\nmakeEtcEntry /nix/store/qdk1mnbgaq8nf6lxhn08lc01df3vdkqv-etc-nix-registry.json nix/registry.json symlink +0 +0\nmakeEtcEntry /nix/store/zmw8vn90ql6xs2h1zv1i796xppkc4slx-etc-nscd.conf nscd.conf symlink +0 +0\nmakeEtcEntry /nix/store/8b3jypix3kjv8m6vpgcw5jiiyxq02cyw-etc-nsswitch.conf nsswitch.conf symlink +0 +0\nmakeEtcEntry /nix/store/4mgh6sbyr6fqfnpqjmxzzy4ykxlx31wq-etc-os-release os-release symlink +0 +0\nmakeEtcEntry /nix/store/5167khbjw18y4zd9yimzi09p4rc2q35c-chfn.pam pam.d/chfn symlink +0 +0\nmakeEtcEntry /nix/store/3jphdj3ig2yjw98lz3lvyj83734w73bk-chpasswd.pam pam.d/chpasswd symlink +0 +0\nmakeEtcEntry /nix/store/9wc5mg26s4pci1mhf4q0qr7iafi6mz8d-chsh.pam pam.d/chsh symlink +0 +0\nmakeEtcEntry /nix/store/vv0ziz8rzh17yc64j3bfz3q8g9vlbsbl-cups.pam pam.d/cups symlink +0 +0\nmakeEtcEntry /nix/store/xl2lcim6c565d08xfhsi60z4v6d9ffys-groupadd.pam pam.d/groupadd symlink +0 +0\nmakeEtcEntry /nix/store/mf1ri9v1gg92ahyq23nnp5vwbwyh8a0j-groupdel.pam pam.d/groupdel symlink +0 +0\nmakeEtcEntry /nix/store/gdpi4hd17lsfsy5j5ln4hrilcdkgm0ds-groupmems.pam pam.d/groupmems symlink +0 +0\nmakeEtcEntry /nix/store/4b7kwb4zpqr8xzxz9gz0c528w3wrngcl-groupmod.pam pam.d/groupmod symlink +0 +0\nmakeEtcEntry /nix/store/v637mi748fid6r2f2d8cckmihjfvb46n-kde.pam pam.d/kde symlink +0 +0\nmakeEtcEntry /nix/store/hnb8ywmbha34mw4pkx6phphxi538kin3-login.pam pam.d/login symlink +0 +0\nmakeEtcEntry /nix/store/c9hiv1bl92xdlf9y7a5z1j69zvib7980-other.pam pam.d/other symlink +0 +0\nmakeEtcEntry /nix/store/cz2rqjiy34j4brxfcr8prgrwlnn0widc-passwd.pam pam.d/passwd symlink +0 +0\nmakeEtcEntry /nix/store/0mkjjw0smbn2xgfbmzmn0rmcnn6qm507-polkit-1.pam pam.d/polkit-1 symlink +0 +0\nmakeEtcEntry /nix/store/f1v4bynv7z0jbxh2prx4x3wamxwdjkz5-runuser.pam pam.d/runuser symlink +0 +0\nmakeEtcEntry /nix/store/n0y4pk7k7jriqfsx88wgvvxiydfzg4x6-runuser-l.pam pam.d/runuser-l symlink +0 +0\nmakeEtcEntry /nix/store/bl1m6wc3v048586k53x5byab7pwn5v66-sddm.pam pam.d/sddm symlink +0 +0\nmakeEtcEntry /nix/store/nnj1l878p0gvrh55wwvrbds7jb32sy7l-sddm-autologin.pam pam.d/sddm-autologin symlink +0 +0\nmakeEtcEntry /nix/store/j5r25k4h5lh98fzk2fjjwlnzqp13qfqp-sddm-greeter.pam pam.d/sddm-greeter symlink +0 +0\nmakeEtcEntry /nix/store/8mcpb3y1w9iwm5p6xk1yl8ii49ivghdv-su.pam pam.d/su symlink +0 +0\nmakeEtcEntry /nix/store/z2hdsj074mwyvgv15hfhrjvsmwdkkkcs-sudo.pam pam.d/sudo symlink +0 +0\nmakeEtcEntry /nix/store/mvp9k0wsr4ih9gr6vm4l4q6ssh4ic0sk-systemd-run0.pam pam.d/systemd-run0 symlink +0 +0\nmakeEtcEntry /nix/store/zxdplpws8v10qyjb5h9k876j693mrfxw-systemd-user.pam pam.d/systemd-user symlink +0 +0\nmakeEtcEntry /nix/store/2ygyp18d29152w72a5fjqrj1wdqnp2cx-useradd.pam pam.d/useradd symlink +0 +0\nmakeEtcEntry /nix/store/2hlhjzjgb5mxkzjfiwmirhqw55l5i1a0-userdel.pam pam.d/userdel symlink +0 +0\nmakeEtcEntry /nix/store/whavph1r8vhfhvh4g2fbvk7w1k01rs47-usermod.pam pam.d/usermod symlink +0 +0\nmakeEtcEntry /nix/store/by25qkimxplvqf3nz1hy4dfnd1sa44c5-vlock.pam pam.d/vlock symlink +0 +0\nmakeEtcEntry /nix/store/4zbs7p4m0mn3iw11ml6xav7591bwksj7-xlock.pam pam.d/xlock symlink +0 +0\nmakeEtcEntry /nix/store/hkfvcqsxlrbva4pigdqj3hlx9mrfvqsn-etc-pam-environment pam/environment symlink +0 +0\nmakeEtcEntry /nix/store/wwgqzd565vs3hks1y2w2m2hxkfwk8x1d-pipewire-configs/share/pipewire pipewire symlink +0 +0\nmakeEtcEntry /nix/store/qcp78pwipa5616ypc0vmadb4w4p82c79-fwupd-2.1.4/etc/pki/fwupd-metadata/LVFS-CA-2025PQ.pem pki/fwupd-metadata/LVFS-CA-2025PQ.pem symlink +0 +0\nmakeEtcEntry /nix/store/qcp78pwipa5616ypc0vmadb4w4p82c79-fwupd-2.1.4/etc/pki/fwupd-metadata/LVFS-CA.pem pki/fwupd-metadata/LVFS-CA.pem symlink +0 +0\nmakeEtcEntry /nix/store/qcp78pwipa5616ypc0vmadb4w4p82c79-fwupd-2.1.4/etc/pki/fwupd/LVFS-CA-2025PQ.pem pki/fwupd/LVFS-CA-2025PQ.pem symlink +0 +0\nmakeEtcEntry /nix/store/qcp78pwipa5616ypc0vmadb4w4p82c79-fwupd-2.1.4/etc/pki/fwupd/LVFS-CA.pem pki/fwupd/LVFS-CA.pem symlink +0 +0\nmakeEtcEntry /nix/store/zdl7dn1gmi1cxdw5a8hw6xsf4cz0rjmg-nss-cacert-3.123/etc/ssl/certs/ca-bundle.crt pki/tls/certs/ca-bundle.crt symlink +0 +0\nmakeEtcEntry /nix/store/bmnpwi79fwwg0csw4dp10mpmy3cyil9x-etc-polkit-1-rules.d-10-nixos.rules polkit-1/rules.d/10-nixos.rules symlink +0 +0\nmakeEtcEntry /nix/store/6g1id60n6dz69rczik7j4ph6jzd74zn5-etc-profile profile symlink +0 +0\nmakeEtcEntry /nix/store/d8jrr4rj6827s0d5b9baqxrsyafqk6zd-iana-etc-20251215/etc/protocols protocols symlink +0 +0\nmakeEtcEntry /nix/store/fwmwrjwm7kbf2y99p90ny8lq9nqv41z9-etc-resolvconf.conf resolvconf.conf symlink +0 +0\nmakeEtcEntry /nix/store/8kvxvr3pmsypxiypq4g8zy13glnfr7nx-glibc-2.42-67/etc/rpc rpc symlink +0 +0\nmakeEtcEntry /nix/store/i0k3asd9wj3pjb688n662w8jbliwgxwn-sddm.conf sddm.conf.d/00-nixos.conf symlink +0 +0\nmakeEtcEntry /nix/store/2y0cv64h8cp3829a7nm0ajb9jw9bp4v1-etc-security-pwquality.conf.d-90-cybex.conf security/pwquality.conf.d/90-cybex.conf symlink +0 +0\nmakeEtcEntry /nix/store/d8jrr4rj6827s0d5b9baqxrsyafqk6zd-iana-etc-20251215/etc/services services symlink +0 +0\nmakeEtcEntry /nix/store/m3s7c40i3zfp45v0wgcidnvpdmbn0la2-set-environment set-environment symlink +0 +0\nmakeEtcEntry /nix/store/i5qabjqr6hb51qmbg37n009fykfl67f8-etc-shells shells symlink +0 +0\nmakeEtcEntry /nix/store/sx11wiva717srzasxy2hmc0xaagj9n1i-speech-dispatcher-0.12.1/etc/speech-dispatcher speech-dispatcher symlink +0 +0\nmakeEtcEntry /nix/store/kh8wz9cd5rg0f8l8c1nsy3dd6a2baq3f-etc-ssh-ssh_config ssh/ssh_config symlink +0 +0\nmakeEtcEntry /nix/store/dn52h90bl4j11whwiqw4sbinspkr4pbr-etc-ssh-ssh_known_hosts ssh/ssh_known_hosts symlink +0 +0\nmakeEtcEntry /nix/store/zdl7dn1gmi1cxdw5a8hw6xsf4cz0rjmg-nss-cacert-3.123/etc/ssl/certs/ca-bundle.crt ssl/certs/ca-bundle.crt symlink +0 +0\nmakeEtcEntry /nix/store/zdl7dn1gmi1cxdw5a8hw6xsf4cz0rjmg-nss-cacert-3.123/etc/ssl/certs/ca-bundle.crt ssl/certs/ca-certificates.crt symlink +0 +0\nmakeEtcEntry /nix/store/c3p2kzczdl0m4ahglf58f58np7ic7cby-nss-cacert-3.123-p11kit/etc/ssl/trust-source ssl/trust-source symlink +0 +0\nmakeEtcEntry /nix/store/zrka06j2lmsnvhrg144k2w08zd1mpkm6-sudoers sudoers 0440 +0 +0\nmakeEtcEntry /nix/store/1rq23rv9dwv06qxaqkyh094w329lz9fc-50-coredump.conf sysctl.d/50-coredump.conf symlink +0 +0\nmakeEtcEntry /nix/store/rd05syhv5v5999907a2n1r37sgi19vpd-systemd-260.2/example/sysctl.d/50-default.conf sysctl.d/50-default.conf symlink +0 +0\nmakeEtcEntry /nix/store/sk0cn77byv7i69yq4a5yqs8xdcgv7vqj-55-nixos-aslr-entropy.conf sysctl.d/55-nixos-aslr-entropy.conf symlink +0 +0\nmakeEtcEntry /nix/store/f06nps4jdk5ykbp01snhaxghbxzqsm5z-etc-sysctl.d-60-nixos.conf sysctl.d/60-nixos.conf symlink +0 +0\nmakeEtcEntry /nix/store/cx240166lbv5aqxqjw3r86pgwa74ql97-etc-systemd-coredump.conf systemd/coredump.conf symlink +0 +0\nmakeEtcEntry /nix/store/n54my9zil32nmfr9qijlkfn2nwfvzi5q-systemd-generator-environment.json systemd/generator-environment.json symlink +0 +0\nmakeEtcEntry /nix/store/akzma1nk523fm32wmqafxh8ql95al4lh-etc-systemd-journald.conf systemd/journald.conf symlink +0 +0\nmakeEtcEntry /nix/store/lmxjpi02xvzrbhmdfp7dg6vzgqnb8sfg-etc-systemd-logind.conf systemd/logind.conf symlink +0 +0\nmakeEtcEntry /nix/store/6s3sd2qvhd5n647xh3h7yxcdiydvpzfn-etc-systemd-oomd.conf systemd/oomd.conf symlink +0 +0\nmakeEtcEntry /nix/store/j4m1cwyl0y71pj4j9rj9d6zc03z0j8rm-etc-systemd-sleep.conf systemd/sleep.conf symlink +0 +0\nmakeEtcEntry /nix/store/hlg4spicfdqnwxrqflzivvvbg7mxkd0s-system-units systemd/system symlink +0 +0\nmakeEtcEntry /nix/store/wy0mh9ah0alglg3ab5djg3jv6f0garyc-nixos-init-0.1.0/bin/env-generator systemd/system-environment-generators/env-generator symlink +0 +0\nmakeEtcEntry /nix/store/ymh1v6k8s3hksm8qkiz1ilwdw7jg1332-system-generators systemd/system-generators symlink +0 +0\nmakeEtcEntry /nix/store/ixvfd87jizqvgsd0q4brxwb93gf2z2cm-etc-systemd-system-preset-00-nixos.preset systemd/system-preset/00-nixos.preset symlink +0 +0\nmakeEtcEntry /nix/store/86n6apybpq4w7rvs4wxx8agwkvhbzwk5-system-shutdown systemd/system-shutdown symlink +0 +0\nmakeEtcEntry /nix/store/v9q3c3c1x1az48bq75yih2mr5askrahp-etc-systemd-system.conf systemd/system.conf symlink +0 +0\nmakeEtcEntry /nix/store/dkqwxr73dx3di944gjby9jw9sw55g2zh-etc-systemd-timesyncd.conf systemd/timesyncd.conf symlink +0 +0\nmakeEtcEntry /nix/store/k00dfcd25iffhw1dyk9kkdrpcal6ggc8-user-units systemd/user symlink +0 +0\nmakeEtcEntry /nix/store/348r5vraigvdl5mp10ggmpwn49pw5dzv-user-generators systemd/user-generators symlink +0 +0\nmakeEtcEntry /nix/store/x8qv8wjj3k5dlw47fg6ismdazcj5494i-etc-systemd-user-preset-00-nixos.preset systemd/user-preset/00-nixos.preset symlink +0 +0\nmakeEtcEntry /nix/store/w3x49bjmy3q27bh523bhivg4ng919l3l-etc-systemd-user.conf systemd/user.conf symlink +0 +0\nmakeEtcEntry /nix/store/z8y0wk8zdhy2545zl5ll31l3wydsipd3-zram-generator.conf systemd/zram-generator.conf symlink +0 +0\nmakeEtcEntry /nix/store/6h13n900rdpj3w9lk1xfykf4xjqnvjfj-system-path/share/terminfo terminfo symlink +0 +0\nmakeEtcEntry '/nix/store/b2gm3k4aw6z2as1kim9c3ngabynya84p-tmpfiles.d/*' tmpfiles.d symlink +0 +0\nmakeEtcEntry /nix/store/kq3a28j035hsa9fnhr10vsrbf0h95g23-hwdb.bin udev/hwdb.bin symlink +0 +0\nmakeEtcEntry /nix/store/pwd1m7nwdvbxcbbkfzxcf1y02qrp5pgn-udev-rules udev/rules.d symlink +0 +0\nmakeEtcEntry /nix/store/lrx7rk2nkb8kmvdv7h6976c4i0cdx6kn-udisks2.conf udisks2/udisks2.conf symlink +0 +0\nmakeEtcEntry /nix/store/sa2dgrpxj4w7wvkdij7mslrays3ij3w9-vconsole.conf vconsole.conf symlink +0 +0\nmakeEtcEntry /nix/store/dvzg87bj8ry4hs7hcwfqip96z9c6hyzv-etc-wpa_supplicant-nixos.conf wpa_supplicant/nixos.conf symlink +0 +0\nmakeEtcEntry /nix/store/qmw98yddib323s2abc5y1i9l29i7swfs-etc-xdg-autostart-cybex-wallpaper.desktop xdg/autostart/cybex-wallpaper.desktop symlink +0 +0\nmakeEtcEntry /nix/store/lb57fac63glx2v4dd3mhmcqy1z00m4f4-etc-xdg-kdeglobals xdg/kdeglobals symlink +0 +0\nmakeEtcEntry /nix/store/xp37yj477fb20sv6v76viw4pai7pv1qn-etc-xdg-kscreenlockerrc xdg/kscreenlockerrc symlink +0 +0\nmakeEtcEntry /nix/store/6yryk8ykmr7v0h0bl1zk66hwvkww4arj-mimeapps.list xdg/mimeapps.list symlink +0 +0\nmakeEtcEntry /nix/store/q65qhwnixbjrs7kg4x7pjbpcg0kz201h-etc-xdg-plasma-org.kde.plasma.desktop-appletsrc xdg/plasma-org.kde.plasma.desktop-appletsrc symlink +0 +0\nmakeEtcEntry /nix/store/0qlvkiw4hida0xwf5x5jkmh92cx9cp95-etc-xdg-plasmarc xdg/plasmarc symlink +0 +0\nmakeEtcEntry /nix/store/h5ljwvkhiy95qrx77sjmj467yj2jzcdq-etc-xdg-xdg-desktop-portal-portals.conf xdg/xdg-desktop-portal/portals.conf symlink +0 +0\nmakeEtcEntry /nix/store/ga3b95jkyvknam1nxl25r95nyk87ix25-tzdata-2026b/share/zoneinfo zoneinfo symlink +0 +0\n",
+      "buildInputs": "",
+      "builder": "/nix/store/zh1ijdhb6gng1509b1zrilb6xlzx60j6-bash-5.3p9/bin/bash",
+      "cmakeFlags": "",
+      "configureFlags": "",
+      "depsBuildBuild": "",
+      "depsBuildBuildPropagated": "",
+      "depsBuildTarget": "",
+      "depsBuildTargetPropagated": "",
+      "depsHostHost": "",
+      "depsHostHostPropagated": "",
+      "depsTargetTarget": "",
+      "depsTargetTargetPropagated": "",
+      "doCheck": "",
+      "doInstallCheck": "",
+      "enableParallelBuilding": "1",
+      "enableParallelChecking": "1",
+      "enableParallelInstalling": "1",
+      "mesonFlags": "",
+      "name": "etc",
+      "nativeBuildInputs": "",
+      "out": "/nix/store/bibs3q90j7mbpgr13wc98s0mh9cll8r6-etc",
+      "outputs": "out",
+      "passAsFile": "buildCommand",
+      "patches": "",
+      "preferLocalBuild": "1",
+      "propagatedBuildInputs": "",
+      "propagatedNativeBuildInputs": "",
+      "stdenv": "/nix/store/pr27j8nm0xl52pq4ylncj9kwjw3b84mk-stdenv-linux",
+      "strictDeps": "",
+      "system": "x86_64-linux"
+    },
+    "inputDrvs": {
+      "/nix/store/0sh6vs2ylqlxpk537sz4gv9i8hlh4d0i-etc-ssh-ssh_config.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/0sydvsq3nhgkjfgy36dw9q1i4rcvw1w4-etc-systemd-system-preset-00-nixos.preset.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/0wz7c2p0byyawzy3p3fg5a0l7wxrmry3-50-coredump.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/10pxvpx81ddbfz12xcwjhb8rsv9vd25z-useradd.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/11cxx6611g6adfl82ihphzicgf5ly14r-system-shutdown.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/17iqwfi76bnpp1aqcrmczqm3i8fqlwf6-NetworkManager.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/1gsd4v78cbd94a5rnnf6lwmp57kabkmy-etc-systemd-user.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/20pfkync9hji0rliwwk67xs85x53rbpb-xlock.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/24a8x6jnh9n0q36g5pfgkqmi2b55i3ib-zram-generator.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/276z9fsz2my0nz8isyqz6p7kxrhl8v6j-etc-pam-environment.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/2awnhkbz9f3gy7v0bfymsh91wmmdjw9k-main.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/2ccplkns605nzan5j81ps6ziz0hidfl0-etc-sysctl.d-60-nixos.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/2i12k1zpcp5xqkylwxld9kpjb9rhjijh-etc-hostname.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/2r230dqp2pg1jpcxp3va7wvbx812zaaq-nixos-init-0.1.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/2y9r41ksqg9azgdg7avhly3yizv902pp-fontconfig-etc.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/3fq4h6n6wyay4pnd7f7iyr2msdawk5bh-moonscape-2022-04-19.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/3pcqcdwf2fx69mxylx5knbahzw46lkd1-etc-systemd-sleep.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/405rjh8cwmdbw90f5fi5zasbwp02zvba-etc-systemd-logind.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/48f9aq1903vkpr5da3i4y5wcn4fbc957-cybex-networkmanager-dns-dispatcher.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/4bc7b5nak0cnwkp8vdd4jqzad0h5i5dm-etc-X11-xorg.conf.d-00-keyboard.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/4bcsz8ijd2xqnhx0adc8yybahxvd9vk2-etc-xdg-kdeglobals.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/4dxvg84cyfibqw5xx3vhcbi24c62yld9-systemd-260.2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/571rz6khvha6yszmxkqphjnlj7y6cghq-etc-bash_logout.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/5hm3kiimcjzgrnaa25br3j81j44inswg-libblockdev-3.4.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/5jn1vb8rzvpdvij4mabzchngyyahr5k8-iana-etc-20251215.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/5l9x0dhqbqgghkqav09g5in5y47ldpkd-sudo.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/5p6bfhds8f8hybfsc6n3my780d7iblla-groupdel.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/5qnqr5cvsypzpzdd61y15cfv49jh2ybj-etc-systemd-timesyncd.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/6063167adgijd0lgxpdf1q2xd3dgd5j6-udisks2.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/6iq5322d4dbvw82b8yxiasfbxa7jz1wg-etc-systemd-user-preset-00-nixos.preset.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/6k8w1wb91jndyz93lirg1cpcgqmdxf15-etc-environment.d-50-systemd-path.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/6sizpifk0pbxlnxsqkrf570sd86ql118-login.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/6zd33wf9mjyzri94p9dr03878x5cjd6a-pipewire-1.6.5.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/6zycvmn1p21kass5ip47xvf4dy3nb9s1-groupadd.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/7z9hq8nma910pq0qsnda1bgh97p1px5h-etc-host.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/83kgvb72l3ybcb1c8dw2xq4gk0jyj1j2-chsh.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/89ha517jpp6qv7i4krx0awndmvixzbhm-etc-bashrc.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/8ky82wqb2hrwww20kbq2v3vlwvn0bddi-glibc-2.42-67.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/8lsiy9lf142py7kj74i7v0xrgq3r291p-pipewire-configs.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/8naym3avrwy5nv6gizhi804n9njmb4s9-etc-fuse.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/8rmpszmw18zihcg6s43g10rg8mg77bf5-tmpfiles.d.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/99zb9r624djc1pyykjz2hvhccabmffs4-chfn.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/9gqslgszysfgfz7gzf569i059klxzggf-etc-modprobe.d-firmware.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/9jsc9bkw8njlc8glz6amas4ma7qaw1jc-kmod-debian-aliases.conf-30+20230601-2.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/9nzjvjm7jpqlh2r64iv8h8jqbdlvcnks-passwd.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/9r1hhdjvvb6qsxzqh4casax4q2rdks5l-etc-geoclue-geoclue.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/9smggllbrh0dzw7plh3x5zdyqwa4npag-kde.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/alh9q3m4dzgzblrkyn0cpwcxargdpkpi-etc-cybex-desktop-appearance-enforcement.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/b23n0751wkk2llcz55ar262fa6sbqrf5-system-path.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/bigjq3f80f1m68xb79r3yclllzii06br-etc-wpa_supplicant-nixos.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/bljqs7qcip4j2x6nyip3v487q5l5vad6-hosts.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/bnqc67sdj36i6nlrxx5vncp6722pg323-sddm-autologin.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/bpd02i1w28sj09nshkahvmya2rnaf7xd-etc-systemd-journald.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/bpvx3vxlg7kam70y8snjhcp941f9as7w-groupmems.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/bxlz3hzl8k02rnxpgml6krqkrnpird91-stdenv-linux.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/c6n7c2yb6nq70874qvxp043z8gv5dsl6-etc-lsb-release.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/cs79d77d64w2m495gqj0k79mvi5kf5rg-speech-dispatcher-0.12.1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/cvlvwhxvlf44iqjwq39rmbp43v884hvm-user-units.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/cwpjm40as3vryv2pnrv6ray9q7syphml-chpasswd.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/dgrfnxgjjrg51mddv66wx5higgifkypw-locale.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/dhsszb6f5c7c8aamrj8xvvg8f9krkp5r-etc-cybex-network-policy.json.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/dm43v03kikpvfzp98k6vn5li9599qv7x-etc-nanorc.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/dqmjn9752jmk5gm4savzpv830gvwx3l9-input.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/dvlqw87ks0rr7qk1527rbwvjkwrsvy45-userdel.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/f5kkjk9mwhsplg9wczpbb53vbdjmv8qa-hwdb.bin.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/g2ka3slyfzkmv21kha0n56fmqw563x5b-polkit-1.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/g7p7rs03xah2w00a142hzas9h4fkwpck-bash-5.3p9.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/grafix571rfycmsy8ykqdwnv5w4qgjl4-runuser.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/h5rggykfn18xim7x5k72hg7dpd2sxj67-etc-cybex-policy.json.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/hfr6hlkzd28hnwrw3g061gaja5c4r3a3-vlock.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/i824gygf57yzjj3gakk4pgln900sv2h5-etc-systemd-oomd.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/i9b31q4adx5cczax53a8i223v3b4dlxs-su.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ifpgs35qqkk9ks89092id2gxxj2lnf8l-user-generators.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ih1iv4pjzwadlrr90wrhr4qafhpzh3qi-sddm-greeter.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ipnb6k860v7rbgml3vmzdc1q7jj7wmlz-groupmod.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/iqrwhpa94w2lm571narjphc7qizjz9yf-set-environment.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/j3f3izz784jsrlaqyg6mwgx4w9jsy17y-etc-lvm-lvm.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/k8zhly1ddsk76rnljqrj17awwnzialf1-login.defs.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/kgy9rfr5mqxdpr3xx5f90r6rcqyhsrpw-udev-rules.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/kha6pclmxckkpacagcradkcvilgyas3r-kmod-blacklist-31+20240202-2ubuntu8.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ldysq6gxpskn3f73x8y8rn17waf64y35-console-env.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/m4pcj0z32m8mpazcar8xwi0j2qn8ch64-etc-security-pwquality.conf.d-90-cybex.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/maxgdyq8cbm7gwzxhpdgm10g37dkg8ri-etc-polkit-1-rules.d-10-nixos.rules.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/mbbg55lvamad71pigls3z9dljdvy0db6-sddm.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/md64dabncwgqqsnvcbxmp6f00mg47zgd-etc-systemd-system.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ming2fiymypcpp4gbz2ghgznfbxr8xx5-system-generators.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/mkrrslwyi9ax5j8rl7hczbllschqwfsh-fwupd-2.1.4.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/n83yw1wyyihbg65vkmaf4hzm9c6dkf07-etc-modprobe.d-nixos.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/nbiyz2sryd5wia4v8lqhd1nshgaqpmd8-etc-shells.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/nnr93pkbh92g4ww3c0djigch3r8bviz9-etc-UPower-UPower.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/nwkz6rnhq1ijfrcjdwsibqznpx87wra1-useradd.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/p58nw5j2hn12jwnnaar0x1szqm3hpgzd-systemd-generator-environment.json.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/pc909aayf9z3dfx1a38gsjsby8fwyz1k-firefox-policies.json.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/pql9n68whrzg5i1p31wasrbgddgsjg4g-xkeyboard-config-2.47.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/pv3haqz4dw0pxixa5a4c1gc86mz84vxq-xf86-input-libinput-1.5.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/pw6wrpb7dvx82zia2ni1558sf4bms9m1-etc-cybex-desktop-wallpaper-path.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/q0b2z1jsvsvr68rhf9yrw0k16cafbmlw-etc-cybex-desktop-wallpaper-identity.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/q815sz8y7s72sn78vqgs3xgkk2icd2w9-etc-systemd-coredump.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/q9817vskn79qcvm82f83yh3m67vz1w50-vconsole.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/qq7g6ryplfr6h6sjqi0a8b2vy5bncrnq-etc-xdg-plasma-org.kde.plasma.desktop-appletsrc.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/qsfl9hjkyk9509r7nnm1a3ci6ccq3w8p-sudoers.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/rd19408z8zqyfp6gnlv8qig6pnlxgnsv-etc-xdg-autostart-cybex-wallpaper.desktop.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/rfnm2r0ff22d9649rw21rbb72lxzjqcf-systemd-user.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/rgpgx1pwgd1jiqzkpjx9hpkdxvjvm1xx-etc-nscd.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/rhf6xg2hn4mw2d432dhfrq37jipa0q8d-etc-nix-registry.json.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/rp4kqfb95qjvgbn7kz3abz5b47l0vri8-runuser-l.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/rs42ppq8c90ljcwnjkg5bkszvl0l4d38-etc-profile.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/rzz1fpnkgsx01ja36ljrz301lzrp395c-other.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/s42vmlq2acrz4k0k59fh7pfwm6q7936z-55-nixos-aslr-entropy.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/saj9rmhlaymfbf4n6pbq3wm81z3qvhkp-system-units.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/scc5izyi159pm1grxq1pgw0jjap7bgi4-tzdata-2026b.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/shg5ajfbin466lk8vyiskb7n6ypw8l8a-xf86-input-evdev-2.11.0.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/shkgdsiln00gwnh785iy9fn47jqviscs-etc-gai.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/v895dlwvf5q5qpgym21zky2vsana5b2d-etc-xdg-kscreenlockerrc.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/va281qwp74ahggksl3l10gjp771c03x0-dbus-1.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/vafdi3m9ppwvsj5z4w5gy0wi8xw117pn-cups.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/vbzqzq50mkl7jnj9hjz1kk8gpxxw5mjr-etc-resolvconf.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/vk9p2p687040kf2j3md5yynkadbgzdp6-etc-ssh-ssh_known_hosts.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/vplk0wcsjrb4csw23nw61q5g49if26ja-etc-man_db.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/vslwfn2w50bsr84wkpxhx560vxjrps70-nss-cacert-3.123.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out",
+          "p11kit"
+        ]
+      },
+      "/nix/store/vv2bzk7jz2280ibaswasnvrjk003j8fp-etc-netgroup.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/vwd7jsahfd1w0ydf1rrcqk5qbq7cmhgx-sddm.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/w2xawyjcpr7ymw8j7nyc9d47m3i6gdic-etc-ipsec.secrets.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/w6s0zcj09rrxax98vhr7wpz1kqpkxw4b-etc-cybex-desktop-profile.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/wcyl7j9c4xaaqjrwj19ikgqa6v22dikv-fwupd.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/wkklbcs9pc5rlprdg4z5fykg6j5916nl-etc-xdg-plasmarc.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/wlzadav9wg3y5km42kwy2fh9mrid8dac-nixos.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/ww3amv5ndc28b0d3a6434b3f106w4s20-mimeapps.list.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/x2cngd1vg4l0lldklyw1n708j1j3wss8-nix.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/xpas3slz4j1y2qrd87fw0wzp2sniw7vr-etc-cybex-monitoring-policy.json.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/y37fx6wls482j0fc20nmfqi4axyvpg4r-etc-os-release.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/yf854c9p0jyicqp1r1ymnhlhh0dvgdz9-usermod.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/yw4c96wbvg4nycdyavgsv16kyqyc6n8k-etc-alsa-conf.d-49-pipewire-modules.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/z3ps482hb9gr9x5yj77n6skscdl8qpvs-systemd-run0.pam.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/zd27gmmxmxsp6hghc634n9ygimni75n7-etc-cybex-cups-health.test.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/zhvpdab8jgv0adgx5dqq1wxsarxw2maa-etc-fstab.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/zkjrd56v6gpgmc62wh4x39l0f45sjnx6-network.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/zl2rydzwg30428i53j4lsqwnkad9gi26-etc-xdg-xdg-desktop-portal-portals.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/zlb0jc19mpf3ma827jky8mbqrsaz0zbx-issue.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/zsyk3bpd73d2dwsv3bqkbhshc538lx7g-etc-nsswitch.conf.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      }
+    },
+    "inputSrcs": [
+      "/nix/store/dwv0wf3szv3ipgyyyrf1zxh4iqlckiip-inputrc",
+      "/nix/store/g28l15mbdbig59n102zd0ardsfisiw32-binfmt_nixos.conf",
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh"
+    ],
+    "name": "etc",
+    "outputs": {
+      "out": {
+        "path": "/nix/store/bibs3q90j7mbpgr13wc98s0mh9cll8r6-etc"
+      }
+    },
+    "system": "x86_64-linux"
+  }
+}

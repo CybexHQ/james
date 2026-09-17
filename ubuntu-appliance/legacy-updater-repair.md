@@ -96,3 +96,16 @@ It rejects the two known incompatible predecessor binaries before retiring any
 overrides. Fresh installs have no predecessor override. Installed qualification
 must exercise the real candidate boot and rollback with the repaired predecessor;
 unit tests alone are not evidence that a fleet upgrade is qualified.
+
+
+## Cold-cache qualification follow-up
+
+The dev.28 fresh-install rehearsal exposed a regional locale archive unavailable
+from the public binary cache and unreviewed current Dock/Standard assembly recipes.
+The Manage generator now selects the prebuilt full locale archive while preserving
+the selected default language. Dev.29 adds only the exact reviewed paired recipe
+fingerprints for the current production Dock/Standard service links and `/etc`
+assembly at nixpkgs 74cc63f. Fixtures reject changed executable providers,
+compiler injection and build hooks. It does not admit generic source compilation.
+The signed runtime remains 1.0.61; generated Blueprint input owns locale selection.
+Fresh-install and installed-update results must still bind the actual new manifest.

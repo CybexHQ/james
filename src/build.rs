@@ -3877,6 +3877,29 @@ const PINNED_HYPRLAND_ETC_EXECUTABLE_FINGERPRINT: &str =
 // the second one preserves executable store paths, so changing a tool provider
 // cannot ride on the store-normalized hash.
 const PINNED_DESKTOP_NIXOS_GENERATOR_FINGERPRINTS: &[(&str, &str)] = &[
+    // Current production Standard service links and regional /etc assembly.
+    (
+        "3f991350e271b53be1a4a0058680bb701ac51546055254bbcb0e110548fd43e8",
+        "ef1646770b12dab1024ec7fb761e4d1d5f71fab8894339d8e1075b0877b455bb",
+    ),
+    (
+        "f8dad9c696d45974e30b770cf50a128e2fe0f74c26cd90a8cef368897831e6a5",
+        "1eebb9e5684b11434d217090b39698f40dcaf55dcd8a65017f7e932056d62f09",
+    ),
+    // Current production Dock service-link and /etc assembly at 74cc63f.
+    // Reviewed GNOME unit/package lists preserve executable provider hashes.
+    (
+        "77fca7fa425661f645c32b971e204a6ed976bd1e1d0fdc4ba495d8210eb26650",
+        "23f20ee98cb8601f42a8712d30948ce2dc9178fa036d6d86e8921c29cd6b69df",
+    ),
+    (
+        "adef8f2b7298836253217ece1d46fbcf8142430184a9367b4d8d5dc834381e91",
+        "bea1c4825160d666fd144084eb9d93ab68155c1bf7b867cf251a2ab277fadb28",
+    ),
+    (
+        "c639ff5ef1eaa673c517907930033325457a3187c362614d3592864414fa413e",
+        "ded03d1f03837ecb84bf710c881226dde2667ad01411e3a4a5ed967fc497440d",
+    ),
     // Production tiling composition at the retained 74cc63f source pin.
     // These exact recipes only assemble service links and /etc entries;
     // executable env-generator/lndir paths retain their pinned hashes.
@@ -7570,6 +7593,120 @@ sleep 5
     fn source_policy_accepts_reviewed_production_tiling_assembly_only() {
         let derivations: BTreeMap<String, Value> = serde_json::from_str(include_str!(
             "../tests/fixtures/source-policy/production-tiling-generators.json"
+        ))
+        .unwrap();
+        assert_eq!(derivations.len(), 3);
+        for (path, drv) in derivations {
+            assert!(
+                derivation_is_exempt_from_source_policy_with_verifier(
+                    &path,
+                    Some(&drv),
+                    &synthetic_pinned_source,
+                ),
+                "reviewed assembly rejected: {path}"
+            );
+            let mut injected = drv.clone();
+            injected["env"]["buildCommand"] = json!(format!(
+                "{}\ngcc source.c -o $out/payload\n",
+                drv["env"]["buildCommand"].as_str().unwrap()
+            ));
+            assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                &path,
+                Some(&injected),
+                &synthetic_pinned_source,
+            ));
+            let mut hooked = drv.clone();
+            hooked["env"]["preBuild"] = json!("gcc source.c -o $out/payload");
+            assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                &path,
+                Some(&hooked),
+                &synthetic_pinned_source,
+            ));
+            let mut executable = drv.clone();
+            let original = drv["env"]["buildCommand"].as_str().unwrap();
+            let modified = original
+                .replace(
+                    "wy0mh9ah0alglg3ab5djg3jv6f0garyc-nixos-init",
+                    "ffffffffffffffffffffffffffffffff-nixos-init",
+                )
+                .replace(
+                    "ccihqmbbygsvx7jap8apl5jwp8ipy61y-lndir",
+                    "ffffffffffffffffffffffffffffffff-lndir",
+                );
+            assert!(
+                modified != original,
+                "fixture must exercise an executable path"
+            );
+            executable["env"]["buildCommand"] = json!(modified);
+            assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                &path,
+                Some(&executable),
+                &synthetic_pinned_source,
+            ));
+        }
+    }
+
+    #[test]
+    fn source_policy_accepts_reviewed_production_standard_assembly_only() {
+        let derivations: BTreeMap<String, Value> = serde_json::from_str(include_str!(
+            "../tests/fixtures/source-policy/production-standard-generators.json"
+        ))
+        .unwrap();
+        assert_eq!(derivations.len(), 3);
+        for (path, drv) in derivations {
+            assert!(
+                derivation_is_exempt_from_source_policy_with_verifier(
+                    &path,
+                    Some(&drv),
+                    &synthetic_pinned_source,
+                ),
+                "reviewed assembly rejected: {path}"
+            );
+            let mut injected = drv.clone();
+            injected["env"]["buildCommand"] = json!(format!(
+                "{}\ngcc source.c -o $out/payload\n",
+                drv["env"]["buildCommand"].as_str().unwrap()
+            ));
+            assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                &path,
+                Some(&injected),
+                &synthetic_pinned_source,
+            ));
+            let mut hooked = drv.clone();
+            hooked["env"]["preBuild"] = json!("gcc source.c -o $out/payload");
+            assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                &path,
+                Some(&hooked),
+                &synthetic_pinned_source,
+            ));
+            let mut executable = drv.clone();
+            let original = drv["env"]["buildCommand"].as_str().unwrap();
+            let modified = original
+                .replace(
+                    "wy0mh9ah0alglg3ab5djg3jv6f0garyc-nixos-init",
+                    "ffffffffffffffffffffffffffffffff-nixos-init",
+                )
+                .replace(
+                    "ccihqmbbygsvx7jap8apl5jwp8ipy61y-lndir",
+                    "ffffffffffffffffffffffffffffffff-lndir",
+                );
+            assert!(
+                modified != original,
+                "fixture must exercise an executable path"
+            );
+            executable["env"]["buildCommand"] = json!(modified);
+            assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                &path,
+                Some(&executable),
+                &synthetic_pinned_source,
+            ));
+        }
+    }
+
+    #[test]
+    fn source_policy_accepts_reviewed_production_dock_assembly_only() {
+        let derivations: BTreeMap<String, Value> = serde_json::from_str(include_str!(
+            "../tests/fixtures/source-policy/production-dock-generators.json"
         ))
         .unwrap();
         assert_eq!(derivations.len(), 3);
