@@ -280,6 +280,13 @@ jq -S -n \
     annotations:[{annotationType:"OTHER",annotator:"Tool: Cybex James appliance snapshot builder",annotationDate:($snapshot_id[0:4] + "-" + $snapshot_id[4:6] + "-" + $snapshot_id[6:11] + ":" + $snapshot_id[11:13] + ":" + $snapshot_id[13:15] + "Z"),comment:("Corresponding source files: " + ($source_files|tojson))}]
   }' > "$output/CYBEX-SBOM.spdx.json"
 
+# Installed snapshot parsers accept only APT metadata and .deb files. Preserve
+# the complete corresponding source and SPDX in a normal authenticated package,
+# not new top-level filenames that a frozen appliance correctly rejects.
+python3 -B "$repository_root/ubuntu-appliance/package-source-offer.py" \
+  --snapshot "$output" --version "$version" \
+  --epoch "$(python3 -B "$repository_root/ubuntu-appliance/snapshot-release-date.py" --epoch "$snapshot_id")"
+
 (
   cd -- "$output"
   dpkg-scanpackages --multiversion . /dev/null > Packages

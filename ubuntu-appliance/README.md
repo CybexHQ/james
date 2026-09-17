@@ -140,9 +140,13 @@ package dependency and part of the signer-side package metadata. The signed
 archive digest authenticates the complete package closure; the published
 `required_package_versions` map retains the seven core anchors accepted by
 installed clients, rather than adding an undeclared wire-protocol extension.
-`CYBEX-SBOM.spdx.json`, `UDPCAST-COPYRIGHT`, and
-the authenticated `.dsc` and complete Ubuntu source payload ship beside the
-binary as the GPL source offer. The snapshot also carries `grub-efi-amd64`, Canonical's
+`CYBEX-SBOM.spdx.json`, `UDPCAST-COPYRIGHT`, and the authenticated `.dsc`
+and complete Ubuntu source payload ship in the snapshot’s
+`cybex-james-source-offer` Debian package under
+`/usr/share/doc/cybex-james/source-offer/`. This preserves the complete GPL
+source offer without adding top-level archive names rejected by installed
+appliances. The package is indexed and covered by the same signed archive
+digest as every binary package. The snapshot also carries `grub-efi-amd64`, Canonical's
 signed GRUB and shim packages, and `secureboot-db`; the target therefore does
 not depend on Ubuntu's removed media pool to create its signed UEFI boot chain.
 The pinned Subiquity/Curtin runtime bind-mounts `/run` into the chrootable
