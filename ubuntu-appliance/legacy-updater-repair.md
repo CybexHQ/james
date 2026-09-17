@@ -57,3 +57,14 @@ Missing, altered or mismatched authorization fails candidate configuration.
 This is necessary because the first-boot network guard compares the durable
 origin to the package's compiled origin. Changing the daemon API endpoint alone
 does not make a future production-origin package bootable.
+
+The installed upgrade rehearsal also found that kernel post-install hooks fail
+inside a candidate subvolume that has no explicit root mount (`grub-probe` cannot
+resolve `/`). `repair-legacy-updater-mounts.py` repairs only the exact APT-repaired
+predecessor: it mounts the candidate root and `/dev/pts`, then unmounts children
+before the candidate root during cleanup. It imports the adjacent original repair
+helper for locking, atomic replacement and permission checks, and retains a
+separate backup under `maintenance-repairs/candidate-mount-v1/`.
+The resulting frozen updater SHA-256 is
+`98b3c6a5ebb85b91f289276b441a6472743edc4b4dd0c3ccecd79529fcfc688f`.
+This repair also leaves signatures, maintenance policy and rollback intact.

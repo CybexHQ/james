@@ -93,7 +93,9 @@ cleanup_mounts() {
       "$candidate_path/run/cybex-update-packages" \
       "$candidate_path/sys" \
       "$candidate_path/proc" \
-      "$candidate_path/dev"
+      "$candidate_path/dev/pts" \
+      "$candidate_path/dev" \
+      "$candidate_path"
     do
       if mountpoint -q "$target" 2>/dev/null; then
         umount "$target" 2>/dev/null || umount -l "$target" || true
@@ -319,10 +321,15 @@ package_targets=(
 failure_stage=snapshot
 btrfs subvolume snapshot / "$candidate_path"
 candidate_created=true
+# A real candidate-root mount lets grub-probe resolve / inside the chroot when
+# signed kernel dependencies run their post-install hooks. Merely traversing
+# the subvolume directory through the top-level mount leaves / unresolvable.
+mount -t btrfs -o "subvol=/.cybex-root-generations/$candidate" "UUID=$root_uuid" "$candidate_path"
 write_status applying snapshot_created 25 "$candidate"
 
 failure_stage=packages
 mount --bind /dev "$candidate_path/dev"
+mount --bind /dev/pts "$candidate_path/dev/pts"
 mount -t proc proc "$candidate_path/proc"
 mount -t sysfs sys "$candidate_path/sys"
 mkdir -p "$candidate_path/run/cybex-update-packages"
