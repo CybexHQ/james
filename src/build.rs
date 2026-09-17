@@ -3877,6 +3877,22 @@ const PINNED_HYPRLAND_ETC_EXECUTABLE_FINGERPRINT: &str =
 // the second one preserves executable store paths, so changing a tool provider
 // cannot ride on the store-normalized hash.
 const PINNED_DESKTOP_NIXOS_GENERATOR_FINGERPRINTS: &[(&str, &str)] = &[
+    // Production tiling composition at the retained 74cc63f source pin.
+    // These exact recipes only assemble service links and /etc entries;
+    // executable env-generator/lndir paths retain their pinned hashes.
+    // Fixtures retain the reviewed recipes and reject hook/compiler injection.
+    (
+        "6643cbaf8775634552586142935abb6e6f12444521a0229fcc8d5b2dd8539969",
+        "9a1c2594d74fc2a670f0b73dbf2c5821a9201779ce540092ad66def616121178",
+    ),
+    (
+        "47430a9f2980f5c9026395123fcacd1ca34faa34c8624424d85a5f900c631d03",
+        "273456c6d5885ccfd9d57f4dfd465a5678d7dbfbaf6ad5cfd9e9e68c5e039db6",
+    ),
+    (
+        "e595fb08b0f5eb11a751b58affa3aa7130bfee11a00ac578d353b9afe79b62ac",
+        "be46d2413cb36b694034104b1ea7ac31a047f22a66285b2b65570fe27a988793",
+    ),
     (
         "2b2fc4793476549635b1bc215ceb531bd6136a9e73532a3aeea9804374731d9f",
         "2b2fc4793476549635b1bc215ceb531bd6136a9e73532a3aeea9804374731d9f",
@@ -7548,6 +7564,63 @@ sleep 5
             .is_empty(),
             "unreviewed source work must taint every dependent glue derivation"
         );
+    }
+
+    #[test]
+    fn source_policy_accepts_reviewed_production_tiling_assembly_only() {
+        let derivations: BTreeMap<String, Value> = serde_json::from_str(include_str!(
+            "../tests/fixtures/source-policy/production-tiling-generators.json"
+        ))
+        .unwrap();
+        assert_eq!(derivations.len(), 3);
+        for (path, drv) in derivations {
+            assert!(
+                derivation_is_exempt_from_source_policy_with_verifier(
+                    &path,
+                    Some(&drv),
+                    &synthetic_pinned_source,
+                ),
+                "reviewed assembly rejected: {path}"
+            );
+            let mut injected = drv.clone();
+            injected["env"]["buildCommand"] = json!(format!(
+                "{}\ngcc source.c -o $out/payload\n",
+                drv["env"]["buildCommand"].as_str().unwrap()
+            ));
+            assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                &path,
+                Some(&injected),
+                &synthetic_pinned_source,
+            ));
+            let mut hooked = drv.clone();
+            hooked["env"]["preBuild"] = json!("gcc source.c -o $out/payload");
+            assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                &path,
+                Some(&hooked),
+                &synthetic_pinned_source,
+            ));
+            let mut executable = drv.clone();
+            let original = drv["env"]["buildCommand"].as_str().unwrap();
+            let modified = original
+                .replace(
+                    "wy0mh9ah0alglg3ab5djg3jv6f0garyc-nixos-init",
+                    "ffffffffffffffffffffffffffffffff-nixos-init",
+                )
+                .replace(
+                    "ccihqmbbygsvx7jap8apl5jwp8ipy61y-lndir",
+                    "ffffffffffffffffffffffffffffffff-lndir",
+                );
+            assert!(
+                modified != original,
+                "fixture must exercise an executable path"
+            );
+            executable["env"]["buildCommand"] = json!(modified);
+            assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                &path,
+                Some(&executable),
+                &synthetic_pinned_source,
+            ));
+        }
     }
 
     #[test]

@@ -1,0 +1,71 @@
+#!/usr/bin/python3
+"""Retire only the known September development daemon overrides on upgrade.
+
+This runs inside the new root generation during package configuration. The
+previous root and shared James identity/database are untouched. Other operator
+overrides remain authoritative.
+"""
+import hashlib
+import os
+from pathlib import Path
+import stat
+
+KNOWN = {
+    "6fe76ff5a1295f7b7352b3cfbb65251cc66c129120fc254fe2673a4953110037": (
+        "opt/cybex-james-dev/verification-fix-20260914/cybex-james",
+        {"77a85982f5110d92db96785706343f26f0dba9666bc53241a2cce0dc85a08b6b",
+         "0e3a82f56f87efa899640821d6e9dc5129eb46ace10b807fdb9b1007b46a29c6"},
+    ),
+    "810378844749f04248bc5b241ce73bc4ad36907495ec0e10e1337158f6cb51f1": (
+        "opt/cybex-james-dev/verification-fix-20260914-dev21/cybex-james",
+        {"0e3a82f56f87efa899640821d6e9dc5129eb46ace10b807fdb9b1007b46a29c6"},
+    ),
+}
+
+
+def retire(root=Path("/")):
+    override = root / "etc/systemd/system/cybex-james.service.d/90-verification-fix.conf"
+    if not override.exists() and not override.is_symlink():
+        return False
+    metadata = override.lstat()
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
+            or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022):
+        raise ValueError("Unsafe development service override")
+    content = override.read_bytes()
+    known = KNOWN.get(hashlib.sha256(content).hexdigest())
+    if known is None:
+        return False
+    binary = root / known[0]
+    # A modified repair binary may contain operator work not in this release.
+    # Preserve its override rather than silently replacing that work.
+    if not binary.is_file() or binary.is_symlink():
+        return False
+    with binary.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() not in known[1]:
+            return False
+    archive = override.with_suffix(".conf.retired")
+    if archive.exists() or archive.is_symlink():
+        if archive.is_symlink() or archive.read_bytes() != content:
+            raise ValueError("Conflicting retired service override")
+    else:
+        fd = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+    if override.read_bytes() != content or override.stat().st_ino != metadata.st_ino:
+        raise ValueError("Development service override changed concurrently")
+    override.unlink()
+    fd = os.open(override.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return True
+
+
+if __name__ == "__main__":
+    if os.geteuid() != 0:
+        raise SystemExit("Packaged service activation requires root")
+    if retire():
+        print("Retired the known development daemon override in this root generation")

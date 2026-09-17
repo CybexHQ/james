@@ -1,4 +1,5 @@
 /target
+/var/
 /.env
 /.env.*
 !/.env.example

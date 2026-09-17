@@ -80,6 +80,8 @@ fi
 install -d -m 0755 -o root -g root /var/cache/cybex-james/tftp
 install -d -m 0755 /etc/cybex-james /etc/ssh/sshd_config.d
 
+/usr/lib/cybex-james/cybex-james-packaged-service
+
 systemctl mask apt-daily.service apt-daily-upgrade.service \
   apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service >/dev/null 2>&1 || true
 systemctl daemon-reload >/dev/null 2>&1 || true
