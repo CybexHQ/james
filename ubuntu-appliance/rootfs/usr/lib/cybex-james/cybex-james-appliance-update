@@ -339,7 +339,8 @@ solver_root="$candidate_path/run/cybex-update-apt"
 test ! -e "$solver_root" && test ! -L "$solver_root"
 test -x "$candidate_path/usr/lib/apt/methods/copy"
 install -d -m 0755 -o root -g root \
-  "$solver_root" "$solver_root/lists" "$solver_root/archives"
+  "$solver_root" "$solver_root/lists" "$solver_root/archives" \
+  "$solver_root/sources.list.d"
 install -d -m 0700 -o root -g root \
   "$solver_root/lists/partial" "$solver_root/archives/partial"
 cat > "$solver_root/cybex-update.sources" <<'EOF'
@@ -356,7 +357,9 @@ chroot "$candidate_path" chown _apt:root \
 
 apt_options=(
   -o Dir::Etc::sourcelist=/run/cybex-update-apt/cybex-update.sources
-  -o Dir::Etc::sourceparts=-
+  # APT can resolve '-' back to its default source directory. An explicit
+  # empty directory keeps the inherited host repositories out of this solver.
+  -o Dir::Etc::sourceparts=/run/cybex-update-apt/sources.list.d
   -o Dir::State::lists=/run/cybex-update-apt/lists
   -o Dir::Cache::archives=/run/cybex-update-apt/archives
   -o Acquire::Languages=none

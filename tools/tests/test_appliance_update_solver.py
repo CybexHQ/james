@@ -208,11 +208,13 @@ class ApplianceUpdateSolverContractTests(unittest.TestCase):
         )
         for option in (
             "Dir::Etc::sourcelist=/run/cybex-update-apt/cybex-update.sources",
-            "Dir::Etc::sourceparts=-",
+            "Dir::Etc::sourceparts=/run/cybex-update-apt/sources.list.d",
             "Dir::State::lists=/run/cybex-update-apt/lists",
             "Dir::Cache::archives=/run/cybex-update-apt/archives",
         ):
             self.assertIn(option, self.updater)
+        self.assertIn('"$solver_root/sources.list.d"', self.updater)
+        self.assertNotIn("Dir::Etc::sourceparts=-", self.updater)
         self.assertNotIn(
             "install /run/cybex-update-packages/*.deb", self.updater
         )

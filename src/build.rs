@@ -2013,6 +2013,22 @@ fn append_source_policy_nix_options(args: &mut Vec<String>, allow_source_builds:
     );
     if !allow_source_builds {
         args.extend(DISABLE_IFD_NIX_OPTION.iter().map(|value| value.to_string()));
+        // Some nixpkgs wrappers prefer local materialization even when their
+        // exact output is in the signed binary cache. Ask Nix to consider those
+        // substitutes before classifying the remaining local derivations.
+        // This neither permits source compilation nor trusts unsigned outputs.
+        args.extend(
+            [
+                "--option",
+                "always-allow-substitutes",
+                "true",
+                "--option",
+                "require-sigs",
+                "true",
+            ]
+            .iter()
+            .map(|value| value.to_string()),
+        );
     }
 }
 
@@ -2509,6 +2525,64 @@ async fn preflight_source_build_check_in_store(
             if let Some(drv) = lookup_derivation(&value, path) {
                 derivations.insert(path.clone(), drv.clone());
             }
+        }
+    }
+
+    // A substituted buildEnv helper is not downloaded by --dry-run. Its bytes
+    // are still required for the independent pinned-source check below. Fetch
+    // only that exact reviewed store output, with local and remote compilation
+    // disabled and normal cache signature verification required.
+    if !would_build_set.contains(TRUSTED_LINK_FARM_BUILDER.drv_path)
+        && derivations.values().any(|drv| {
+            input_drv_output_reference(drv, TRUSTED_LINK_FARM_BUILDER.path).is_some_and(|input| {
+                input.drv_path == TRUSTED_LINK_FARM_BUILDER.drv_path
+                    && input.output == TRUSTED_LINK_FARM_BUILDER.output
+            })
+        })
+        && !isolated_store_source_matches_sha256(
+            store_root,
+            TRUSTED_LINK_FARM_BUILDER.path,
+            TRUSTED_LINK_FARM_BUILDER_SHA256,
+        )
+    {
+        let mut fetch = crate::nix_command::tokio_command(&command.program);
+        fetch.args([
+            "--store",
+            &store_url,
+            "build",
+            "--no-link",
+            "--max-jobs",
+            "0",
+            "--option",
+            "builders",
+            "",
+            "--option",
+            "require-sigs",
+            "true",
+            "--option",
+            "allow-import-from-derivation",
+            "false",
+            "--option",
+            "accept-flake-config",
+            "false",
+            TRUSTED_LINK_FARM_BUILDER.path,
+        ]);
+        let output = run_bounded_command(
+            fetch,
+            limits.dry_run_timeout,
+            limits.dry_run_stdout_max_bytes,
+            limits.dry_run_stderr_max_bytes,
+            "fetch pinned buildEnv helper",
+        )
+        .await?;
+        if !output.status.success()
+            || !isolated_store_source_matches_sha256(
+                store_root,
+                TRUSTED_LINK_FARM_BUILDER.path,
+                TRUSTED_LINK_FARM_BUILDER_SHA256,
+            )
+        {
+            bail!("signed substitute for the pinned buildEnv helper could not be verified");
         }
     }
 
@@ -6613,6 +6687,16 @@ esac
             })
     }
 
+    fn authenticated_substitutes_are_preferred(args: &[String]) -> bool {
+        ["always-allow-substitutes", "require-sigs"]
+            .iter()
+            .all(|option| {
+                args.windows(3).any(|window| {
+                    window[0] == "--option" && window[1] == *option && window[2] == "true"
+                })
+            })
+    }
+
     fn software_inventory_test_spec(
         allow_source_builds: bool,
         software_package_refs: Vec<String>,
@@ -7063,6 +7147,7 @@ sleep 5
         assert!(import_from_derivation_is_disabled(&command.args));
         assert!(flake_config_is_rejected(&command.args));
         assert!(build_sandbox_is_required(&command.args));
+        assert!(authenticated_substitutes_are_preferred(&command.args));
 
         spec.allow_source_builds = true;
         let source_enabled = nix_build_command(&config, &target, &spec, 43).unwrap();
@@ -8704,6 +8789,80 @@ fi
 
     #[cfg(unix)]
     #[tokio::test]
+    #[ignore = "requires Nix, network access, and CYBEX_SOURCE_POLICY_INSTALLABLE"]
+    async fn source_policy_qualifies_cache_only_installable() {
+        let installable = std::env::var("CYBEX_SOURCE_POLICY_INSTALLABLE")
+            .expect("set an exact pinned qualification installable");
+        let root = std::env::temp_dir().join(format!(
+            "cybex-source-policy-qualification-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let mut config = AppConfig::default();
+        config.build.work_dir = root.clone();
+        let command = NixBuildCommand {
+            program: "nix".into(),
+            args: Vec::new(),
+            env: Vec::new(),
+            out_link: root.join("unused-result"),
+            installable,
+        };
+        let result = preflight_source_build_check(&config, &command).await;
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(result.unwrap(), Vec::<String>::new());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn source_policy_rejects_an_unverified_substituted_helper() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("cybex-substitute-test-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let fake = root.join("nix");
+        let log = root.join("fetch-args");
+        let script = r#"#!/bin/sh
+set -eu
+case " $* " in
+  *" derivation show "*)
+    printf '%s\n' '{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-path.drv":{"inputDrvs":{"@BUILDER_DRV@":["out"]},"inputSrcs":[]}}'
+    ;;
+  *" --dry-run "*)
+    printf '%s\n' 'this derivation will be built:' '  /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-path.drv'
+    ;;
+  *) printf '%s\n' "$@" > '@LOG@' ;;
+esac
+"#
+            .replace("@BUILDER_DRV@", TRUSTED_LINK_FARM_BUILDER.drv_path)
+            .replace("@LOG@", log.to_str().unwrap());
+        std::fs::write(&fake, script).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = AppConfig::default();
+        config.build.work_dir = root.join("work");
+        let command = NixBuildCommand {
+            program: fake.display().to_string(),
+            args: Vec::new(),
+            env: Vec::new(),
+            out_link: root.join("result"),
+            installable: ".#test".into(),
+        };
+        let error = preflight_source_build_check(&config, &command)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("pinned buildEnv helper could not be verified")
+        );
+        let args = std::fs::read_to_string(log).unwrap();
+        assert!(args.contains("--max-jobs\n0\n--option\nbuilders\n\n"));
+        assert!(args.contains("--option\nrequire-sigs\ntrue\n"));
+        assert!(args.ends_with(&format!("{}\n", TRUSTED_LINK_FARM_BUILDER.path)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn source_policy_uses_a_fresh_store_even_when_daemon_output_is_already_present() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -8727,6 +8886,14 @@ case "$*" in
     case " $* " in
       *" --option allow-import-from-derivation false "*) ;;
       *) exit 91 ;;
+    esac
+    case " $* " in
+      *" --option always-allow-substitutes true "*) ;;
+      *) exit 92 ;;
+    esac
+    case " $* " in
+      *" --option require-sigs true "*) ;;
+      *) exit 93 ;;
     esac
     # Some Nix wrappers emit the dry-run listing on stdout. It must be
     # verified just as strictly as the usual stderr listing.
