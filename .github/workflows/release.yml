@@ -1017,13 +1017,13 @@ jobs:
               --arg rollback_qualification "cybex-james-ubuntu-rollback-qualification.json" \
               --arg predecessor_identity "cybex-james-build-predecessor.json" \
               'type == "array"
-               and length <= 10
+               and length <= 11
                and ((map(.name) | length) == (map(.name) | unique | length))
                and all(.[].name;
                  . == $binary or . == $manifest
                  or . == $compatibility
                  or . == $template or . == $packages or . == $netboot or . == $checksums
-                 or . == $qualification or . == $update_qualification
+                 or . == $qualification or . == $update_qualification or . == $rollback_qualification
                  or . == $predecessor_identity)' \
               "$stale_assets" >/dev/null
             gh api --method DELETE \
