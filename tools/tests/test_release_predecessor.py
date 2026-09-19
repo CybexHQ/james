@@ -19,12 +19,13 @@ class RecoveryTests(unittest.TestCase):
         self.authorization = ROOT / "release/recovery-adoption.json"
         self.anchor = json.loads(self.authorization.read_bytes())
         self.key = self.anchor["public_key"]
+        self.version = self.anchor["successor_version"]
 
     def test_signed_adoption_is_exactly_scoped(self):
-        self.assertEqual(P.authorization(self.authorization, self.key, "0.2.2", "CybexHQ/james"), self.anchor)
-        for version, repository, key in [("0.2.3", "CybexHQ/james", self.key),
-                                          ("0.2.2", "other/james", self.key),
-                                          ("0.2.2", "CybexHQ/james", self.anchor["published"]["public_key"])]:
+        self.assertEqual(P.authorization(self.authorization, self.key, self.version, "CybexHQ/james"), self.anchor)
+        for version, repository, key in [("99.0.0", "CybexHQ/james", self.key),
+                                          (self.version, "other/james", self.key),
+                                          (self.version, "CybexHQ/james", self.anchor["published"]["public_key"])]:
             with self.assertRaises(ValueError):
                 P.authorization(self.authorization, key, version, repository)
 
@@ -38,7 +39,7 @@ class RecoveryTests(unittest.TestCase):
                 value[section][field] = replacement
                 path.write_bytes(P.canonical(value))
                 with self.assertRaises(P.release.ReleaseError):
-                    P.authorization(path, self.key, "0.2.2", "CybexHQ/james")
+                    P.authorization(path, self.key, self.version, "CybexHQ/james")
 
     def test_both_original_descriptor_pairs_authenticate_under_their_own_keys(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -56,7 +57,7 @@ class RecoveryTests(unittest.TestCase):
     def test_missing_publication_cannot_be_treated_as_first_release(self):
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(P, "github", return_value=[]):
             with self.assertRaisesRegex(ValueError, "first release"):
-                P.resolve("CybexHQ/james", "0.2.2", self.key, Path(temporary), self.authorization)
+                P.resolve("CybexHQ/james", self.version, self.key, Path(temporary), self.authorization)
 
     def test_latest_selection_ignores_drafts_and_rejects_ambiguous_assets(self):
         def item(i, tag, draft=False):

@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -48,6 +49,8 @@ APPLIANCE_PACKAGE_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024 * 1024
 MANAGE_SOURCE_METADATA_SCHEMA = "cybex.james.manage-source.v1"
 MANAGE_SOURCE_METADATA_MAX_BYTES = 16 * 1024
 MANAGE_SOURCE_ARCHIVE_MAX_BYTES = 256 * 1024 * 1024
+MANAGE_SOURCE_CATALOG_MAX_BYTES = 512 * 1024 * 1024
+MANAGE_SOURCE_CATALOG_MAX_REVISIONS = 32
 MANAGE_SOURCE_INSTALLER_REQUIRED_PATHS = frozenset(
     {
         "agent/cybex-agent/Cargo.toml",
@@ -1148,13 +1151,25 @@ def _verify_manage_source_git_archive(path: Path, revision: str) -> None:
             trailing = archive_file.read()
     except OSError:
         _fail("could not inspect packaged Manage source archive framing")
-    if not 1024 <= len(trailing) <= 20 * 512 or any(trailing):
+    # Git pads two EOF blocks to a complete 20-block record. When only one
+    # block remains in the last record it must emit another record, making the
+    # canonical trailer 21 blocks long. Require that exact framing, not merely
+    # a loose upper bound that rejects a valid Git archive at this boundary.
+    record_bytes = 20 * 512
+    expected_size = ((logical_end + 1024 + record_bytes - 1) // record_bytes) * record_bytes
+    if size_bytes != expected_size or any(trailing):
         _fail("packaged Manage source archive has noncanonical trailing bytes")
 
 
 def _inspect_packaged_manage_source(
-    snapshot: Path, version: str
+    snapshot: Path,
+    version: str,
+    expected_revision: str | None = None,
+    *,
+    retain_to: Path | None = None,
 ) -> dict[str, object]:
+    if expected_revision is not None:
+        _validate_revision(expected_revision, "selected packaged Manage source")
     expected_package_name = f"cybex-james_{version}-1_amd64.deb"
     with tempfile.TemporaryDirectory(prefix="cybex-james-manage-source-") as directory:
         directory_path = Path(directory)
@@ -1216,6 +1231,15 @@ def _inspect_packaged_manage_source(
         if package_count != 1:
             _fail("appliance package snapshot omits its exact cybex-james package")
 
+        control = subprocess.run(
+            ["dpkg-deb", "--show", "--showformat=${Package}\n${Version}\n${Architecture}\n",
+             str(package_path)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            check=False,
+        )
+        if control.returncode != 0 or control.stdout != f"cybex-james\n{version}-1\namd64\n".encode():
+            _fail("packaged Manage source Debian control identity differs from its release")
+
         try:
             data_tar = subprocess.Popen(
                 ["dpkg-deb", "--fsys-tarfile", str(package_path)],
@@ -1229,11 +1253,10 @@ def _inspect_packaged_manage_source(
         source_directory = "usr/share/cybex-james/manage-source"
         source_prefix = source_directory + "/"
         source_directory_seen = False
-        archive_path = directory_path / "manage-source.tar"
-        archive_sha256: str | None = None
-        archive_size: int | None = None
-        metadata_body: bytes | None = None
-        entry_revisions: dict[str, str] = {}
+        archives: dict[str, tuple[Path, str, int]] = {}
+        metadata_bodies: dict[str, bytes] = {}
+        entries: set[tuple[str, str]] = set()
+        catalog_bytes = 0
         data_error: str | None = None
         try:
             with tarfile.open(fileobj=data_tar.stdout, mode="r|") as package_archive:
@@ -1259,9 +1282,11 @@ def _inspect_packaged_manage_source(
                     if match is None or "/" in relative_name:
                         _fail("cybex-james package contains an unexpected Manage source entry")
                     revision, kind = match.groups()
-                    if kind in entry_revisions:
+                    if (revision, kind) in entries:
                         _fail("cybex-james package contains duplicate Manage source entries")
-                    entry_revisions[kind] = revision
+                    entries.add((revision, kind))
+                    if len({entry[0] for entry in entries}) > MANAGE_SOURCE_CATALOG_MAX_REVISIONS:
+                        _fail("packaged Manage source catalog exceeds its revision bound")
                     if (
                         not member.isreg()
                         or member.islnk()
@@ -1276,6 +1301,10 @@ def _inspect_packaged_manage_source(
                             "or has unsafe metadata"
                         )
                     if kind == "tar":
+                        catalog_bytes += member.size
+                        if catalog_bytes > MANAGE_SOURCE_CATALOG_MAX_BYTES:
+                            _fail("packaged Manage source catalog exceeds its total byte bound")
+                        archive_path = directory_path / f"{revision}.tar"
                         archive_sha256, archive_size = _copy_tar_member(
                             package_archive,
                             member,
@@ -1283,6 +1312,7 @@ def _inspect_packaged_manage_source(
                             "packaged Manage source archive",
                             MANAGE_SOURCE_ARCHIVE_MAX_BYTES,
                         )
+                        archives[revision] = (archive_path, archive_sha256, archive_size)
                     else:
                         if member.size <= 0 or member.size > MANAGE_SOURCE_METADATA_MAX_BYTES:
                             _fail("packaged Manage source metadata size is outside its bound")
@@ -1292,6 +1322,7 @@ def _inspect_packaged_manage_source(
                         metadata_body = extracted.read(MANAGE_SOURCE_METADATA_MAX_BYTES + 1)
                         if len(metadata_body) != member.size:
                             _fail("packaged Manage source metadata is truncated")
+                        metadata_bodies[revision] = metadata_body
         except ReleaseError:
             raise
         except (tarfile.TarError, OSError, EOFError):
@@ -1309,55 +1340,81 @@ def _inspect_packaged_manage_source(
             _fail("dpkg-deb could not inspect the packaged Manage source")
         if (
             not source_directory_seen
-            or set(entry_revisions) != {"json", "tar"}
-            or entry_revisions["json"] != entry_revisions["tar"]
-            or metadata_body is None
-            or archive_sha256 is None
-            or archive_size is None
+            or not archives
+            or set(metadata_bodies) != set(archives)
         ):
             _fail("cybex-james package omits its exact Manage source archive contract")
-        revision = entry_revisions["tar"]
-        try:
-            metadata = json.loads(metadata_body)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            _fail("packaged Manage source metadata is invalid JSON")
-        metadata = _require_exact_object_keys(
-            metadata,
-            {"filename", "revision", "schema", "sha256", "size_bytes"},
-            "packaged Manage source metadata",
-        )
-        canonical_metadata = (
-            json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-            + "\n"
-        ).encode("ascii")
-        if metadata_body != canonical_metadata:
-            _fail("packaged Manage source metadata is not canonical compact sorted JSON")
-        if (
-            metadata["schema"] != MANAGE_SOURCE_METADATA_SCHEMA
-            or metadata["revision"] != revision
-            or metadata["filename"] != f"{revision}.tar"
-            or _require_sha256(
-                metadata["sha256"], "packaged Manage source metadata SHA-256"
+        if expected_revision is None:
+            if len(archives) != 1:
+                _fail("multiple packaged Manage sources require an exact selected revision")
+            expected_revision = next(iter(archives))
+        if expected_revision not in archives:
+            _fail("cybex-james package omits the selected Manage source revision")
+        for revision, (archive_path, archive_sha256, archive_size) in archives.items():
+            _verify_manage_source_pair(
+                archive_path, metadata_bodies[revision], revision,
+                archive_sha256, archive_size,
             )
-            != archive_sha256
-            or _require_positive_int(
-                metadata["size_bytes"],
-                "packaged Manage source metadata size",
-                maximum=MANAGE_SOURCE_ARCHIVE_MAX_BYTES,
-            )
-            != archive_size
-        ):
-            _fail("packaged Manage source metadata does not match its archive")
-        _verify_manage_source_git_archive(archive_path, revision)
+        if retain_to is not None:
+            if retain_to.exists() or retain_to.is_symlink():
+                _fail("retained Manage source output must not already exist")
+            retain_to.mkdir(mode=0o755, parents=True)
+            retain_to.chmod(0o755)
+            for revision, (archive_path, _, _) in archives.items():
+                target = retain_to / f"{revision}.tar"
+                shutil.copyfile(archive_path, target)
+                target.chmod(0o444)
+                metadata_path = retain_to / f"{revision}.json"
+                metadata_path.write_bytes(metadata_bodies[revision])
+                metadata_path.chmod(0o444)
+        _, archive_sha256, archive_size = archives[expected_revision]
         return {
-            "revision": revision,
+            "revision": expected_revision,
             "sha256": archive_sha256,
             "size_bytes": archive_size,
         }
 
 
+def _verify_manage_source_pair(
+    archive_path: Path, metadata_body: bytes, revision: str,
+    archive_sha256: str, archive_size: int,
+) -> None:
+    try:
+        metadata = json.loads(metadata_body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        _fail("packaged Manage source metadata is invalid JSON")
+    metadata = _require_exact_object_keys(
+        metadata,
+        {"filename", "revision", "schema", "sha256", "size_bytes"},
+        "packaged Manage source metadata",
+    )
+    canonical_metadata = (
+        json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        + "\n"
+    ).encode("ascii")
+    if metadata_body != canonical_metadata:
+        _fail("packaged Manage source metadata is not canonical compact sorted JSON")
+    if (
+        metadata["schema"] != MANAGE_SOURCE_METADATA_SCHEMA
+        or metadata["revision"] != revision
+        or metadata["filename"] != f"{revision}.tar"
+        or _require_sha256(
+            metadata["sha256"], "packaged Manage source metadata SHA-256"
+        )
+        != archive_sha256
+        or _require_positive_int(
+            metadata["size_bytes"],
+            "packaged Manage source metadata size",
+            maximum=MANAGE_SOURCE_ARCHIVE_MAX_BYTES,
+        )
+        != archive_size
+    ):
+        _fail("packaged Manage source metadata does not match its archive")
+    _verify_manage_source_git_archive(archive_path, revision)
+
+
 def _validate_revision(value: str, label: str) -> str:
-    if not re.fullmatch(r"[0-9a-f]{40}", value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
         _fail(f"{label} must be an exact lowercase 40-hex revision")
     return value
 
@@ -3257,10 +3314,6 @@ def _verify_command(arguments: argparse.Namespace) -> None:
             signature,
             _appliance_release_message(descriptor),
         )
-        if verify_workstation_netboot:
-            packaged_manage_source = _inspect_packaged_manage_source(
-                snapshot_path, version
-            )
         appliance_snapshot_sha = actual_snapshot_sha
     workstation_sha = None
     if verify_workstation_netboot:
@@ -3323,9 +3376,18 @@ def _verify_command(arguments: argparse.Namespace) -> None:
             workstation_signature,
             _workstation_netboot_message(descriptor),
         )
+        if verify_appliance_release:
+            packaged_manage_source = _inspect_packaged_manage_source(
+                Path(arguments.appliance_package_snapshot), version,
+                descriptor["manage_source_revision"],
+            )
         if verify_appliance_release and (
             packaged_manage_source is None
             or packaged_manage_source["revision"] != descriptor["manage_source_revision"]
+            or ("manage_source_sha256" in descriptor and (
+                packaged_manage_source["sha256"] != descriptor["manage_source_sha256"]
+                or packaged_manage_source["size_bytes"] != descriptor["manage_source_size_bytes"]
+            ))
         ):
             _fail(
                 "packaged Manage source revision does not match the signed "

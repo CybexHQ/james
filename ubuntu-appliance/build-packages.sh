@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 022
 
 usage() {
-  echo "usage: $0 --output DIR --james-binary FILE --bootstrap-binary FILE --version SEMVER --ubuntu-snapshot-id ID --manage-source-dir DIR --manage-source-revision 40_HEX --release-public-key BASE64 --provisioning-public-key BASE64 [--provisioning-public-key BASE64 ...] --dependency-version NAME=VERSION (repeat for linux-generic, linux-firmware, nix-bin, python3)" >&2
+  echo "usage: $0 --output DIR --james-binary FILE --bootstrap-binary FILE --version SEMVER --ubuntu-snapshot-id ID --manage-source-dir DIR --manage-source-revision 40_HEX [--retained-manage-source-dir DIR] --release-public-key BASE64 --provisioning-public-key BASE64 [--provisioning-public-key BASE64 ...] --dependency-version NAME=VERSION (repeat for linux-generic, linux-firmware, nix-bin, python3)" >&2
   exit 2
 }
 
@@ -16,6 +16,7 @@ version=""
 snapshot_id=""
 manage_source_dir=""
 manage_source_revision=""
+declare -a retained_source_arguments=()
 release_public_key=""
 declare -a provisioning_public_keys=()
 declare -A dependency_versions=()
@@ -28,6 +29,11 @@ while (($#)); do
     --ubuntu-snapshot-id) snapshot_id="${2:-}"; shift 2 ;;
     --manage-source-dir) manage_source_dir="${2:-}"; shift 2 ;;
     --manage-source-revision) manage_source_revision="${2:-}"; shift 2 ;;
+    --retained-manage-source-dir)
+      [[ "${#retained_source_arguments[@]}" -eq 0 && -n "${2:-}" ]] || usage
+      retained_source_arguments=(--retained-manage-source-dir "$2")
+      shift 2
+      ;;
     --release-public-key) release_public_key="${2:-}"; shift 2 ;;
     --provisioning-public-key) provisioning_public_keys+=("${2:-}"); shift 2 ;;
     --dependency-version)
@@ -94,6 +100,13 @@ install -m 0755 "$james_binary" "$james_root/usr/bin/cybex-james"
   --revision "$manage_source_revision" \
   --output-dir "$james_root/usr/share/cybex-james/manage-source" \
   >/dev/null
+declare -a catalog_arguments=()
+if [[ "${#retained_source_arguments[@]}" -gt 0 ]]; then
+  catalog_arguments=(--retained-source-dir "${retained_source_arguments[1]}")
+fi
+python3 -B "$repository_root/ubuntu-appliance/manage-source-catalog.py" \
+  --output-dir "$james_root/usr/share/cybex-james/manage-source" \
+  "${catalog_arguments[@]}"
 cat > "$james_root/DEBIAN/control" <<EOF
 Package: cybex-james
 Version: ${version}-1

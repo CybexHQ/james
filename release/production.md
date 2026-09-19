@@ -9,13 +9,15 @@ Manage application deployment is a separate operation.
 
 The one-time `recovery-adoption.json` authorization binds the historical GitHub
 dev.4 publication and recovered production dev.29 manifests, compatibility
-assets, source identity and keys to successor **0.2.2 only**. The current fleet
+assets, source identity and keys to successor **0.2.3 only**. The current fleet
 authority signs this admission. The resolver authenticates the old publication
 under its original authority and dev.29 under the current authority, then
 inspects the signed package and actual updater contract. It rechecks this exact
 identity under the publication lock. Later releases follow the ordinary signed
 predecessor path. Removing either artifact, moving a tag, changing a digest or
-using this authorization for another successor fails closed.
+using this authorization for another successor fails closed. The failed 0.2.2
+candidate and its original authorization remain unchanged at their tag; 0.2.3
+supersedes that unpublished candidate with retained-source compatibility.
 
 The release workflow builds and signs one candidate, verifies its artifact ID
 and digest, then qualifies those same bytes on `thebeast-james-production`.
@@ -47,6 +49,16 @@ unpublished candidate therefore has no runtime, even when a predecessor exists.
 The prepublication receipt explicitly records absent runtime and deferred
 Blueprint delivery; it cannot pass the cold-delivery gate. Upgrade qualification
 still proves retention of the predecessor's real installed runtime.
+
+Before building, the resolver authenticates the predecessor's signed manifest,
+package snapshot and exact Debian package, and exports every verified Manage
+source archive pair. The new package includes these archives alongside its
+current source, so dpkg cannot remove the source required by a retained runtime.
+Identical revisions are deduplicated; conflicting bytes, malformed pairs and
+unsafe metadata fail the build. All archives remain root-owned mode 0444 inside
+the signed package snapshot. The catalog is bounded to 32 revisions and 512 MiB
+(256 MiB per archive). Hitting a bound requires an explicit support/retirement
+decision; the builder never silently drops offline or rollback sources.
 
 GitHub first locks the assets as a prerelease with `latest=false`. The pending
 cold-qualification marker excludes this staged release from future predecessor

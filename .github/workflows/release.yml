@@ -293,6 +293,37 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Resolve and authenticate production predecessor
+        id: published-predecessor
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          directory="$RUNNER_TEMP/cybex-james-predecessor"
+          identity="$RUNNER_TEMP/cybex-james-published-predecessor.json"
+          install -d -m 0755 dist
+          arguments=()
+          if [ "${{ steps.release-candidate.outputs.reuse }}" = true ]; then
+            arguments+=(--expected-identity dist/cybex-james-build-predecessor.json)
+          else
+            arguments+=(--retain-manage-source-to "$RUNNER_TEMP/cybex-james-retained-manage-source")
+          fi
+          python3 -B ubuntu-appliance/qualification/release_predecessor.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --candidate-version "${{ steps.release-version.outputs.version }}" \
+            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
+            --directory "$directory" --output "$identity" \
+            --github-output "$GITHUB_OUTPUT" "${arguments[@]}"
+          if [ -f "$identity" ]; then
+            [[ "$CYBEX_JAMES_UBUNTU_SNAPSHOT_ID" > "$(jq -er '.ubuntu_snapshot_id' "$identity")" ]]
+            install -m 0444 "$directory/cybex-james-release-compatibility.json" \
+              "$RUNNER_TEMP/cybex-james-previous-release-compatibility.json"
+            if [ "${{ steps.release-candidate.outputs.reuse }}" != true ]; then
+              install -m 0444 "$identity" dist/cybex-james-build-predecessor.json
+            fi
+          fi
+
       - name: Build exact binaries, appliance media, and workstation runtime
         if: steps.release-candidate.outputs.reuse != 'true'
         shell: bash
@@ -335,6 +366,10 @@ jobs:
           for key in "${provisioning_keys[@]}"; do
             template_args+=(--provisioning-public-key "$key")
           done
+          retained_source_args=()
+          if [ "${{ steps.published-predecessor.outputs.exists }}" = true ]; then
+            retained_source_args+=(--retained-manage-source-dir "$RUNNER_TEMP/cybex-james-retained-manage-source")
+          fi
           ubuntu-appliance/build-package-snapshot.sh \
             --output-dir dist \
             --james-binary dist/cybex-james-x86_64-linux \
@@ -343,6 +378,7 @@ jobs:
             --ubuntu-snapshot-id "$CYBEX_JAMES_UBUNTU_SNAPSHOT_ID" \
             --manage-source-dir manage-source \
             --manage-source-revision "${{ steps.workstation-source.outputs.revision }}" \
+            "${retained_source_args[@]}" \
             --expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" \
             --release-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
             "${template_args[@]}"
@@ -362,34 +398,6 @@ jobs:
             "dist/cybex-james-appliance-packages-$version-x86_64-linux.json" \
             "$RUNNER_TEMP/cybex-james-appliance-packages-metadata.json"
           test "$(dist/cybex-james-x86_64-linux --version)" = "cybex-james $version"
-
-      - name: Resolve and authenticate production predecessor
-        id: published-predecessor
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -Eeuo pipefail
-          directory="$RUNNER_TEMP/cybex-james-predecessor"
-          identity="$RUNNER_TEMP/cybex-james-published-predecessor.json"
-          arguments=()
-          if [ "${{ steps.release-candidate.outputs.reuse }}" = true ]; then
-            arguments+=(--expected-identity dist/cybex-james-build-predecessor.json)
-          fi
-          python3 -B ubuntu-appliance/qualification/release_predecessor.py \
-            --repository "$GITHUB_REPOSITORY" \
-            --candidate-version "${{ steps.release-version.outputs.version }}" \
-            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
-            --directory "$directory" --output "$identity" \
-            --github-output "$GITHUB_OUTPUT" "${arguments[@]}"
-          if [ -f "$identity" ]; then
-            [[ "$CYBEX_JAMES_UBUNTU_SNAPSHOT_ID" > "$(jq -er '.ubuntu_snapshot_id' "$identity")" ]]
-            install -m 0444 "$directory/cybex-james-release-compatibility.json" \
-              "$RUNNER_TEMP/cybex-james-previous-release-compatibility.json"
-            if [ "${{ steps.release-candidate.outputs.reuse }}" != true ]; then
-              install -m 0444 "$identity" dist/cybex-james-build-predecessor.json
-            fi
-          fi
 
       - name: Require a monotone legacy-update bridge before signing
         if: steps.release-candidate.outputs.reuse != 'true' && steps.published-predecessor.outputs.update_contract == 'legacy_all_debs'

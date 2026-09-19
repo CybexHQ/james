@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 022
 
 usage() {
-  echo "usage: $0 --output-dir DIR --james-binary FILE --bootstrap-binary FILE --version SEMVER --ubuntu-snapshot-id ID --manage-source-dir DIR --manage-source-revision 40_HEX --expected-manage-origin HTTPS_ORIGIN --release-public-key BASE64 --provisioning-public-key BASE64 [--provisioning-public-key BASE64 ...] [--previous-package-snapshot FILE]" >&2
+  echo "usage: $0 --output-dir DIR --james-binary FILE --bootstrap-binary FILE --version SEMVER --ubuntu-snapshot-id ID --manage-source-dir DIR --manage-source-revision 40_HEX [--retained-manage-source-dir DIR] --expected-manage-origin HTTPS_ORIGIN --release-public-key BASE64 --provisioning-public-key BASE64 [--provisioning-public-key BASE64 ...] [--previous-package-snapshot FILE]" >&2
   exit 2
 }
 
@@ -15,6 +15,7 @@ version=""
 snapshot_id=""
 manage_source_dir=""
 manage_source_revision=""
+declare -a retained_source_arguments=()
 expected_manage_origin=""
 release_public_key=""
 declare -a provisioning_public_keys=()
@@ -29,6 +30,11 @@ while (($#)); do
     --ubuntu-snapshot-id) snapshot_id="${2:-}"; shift 2 ;;
     --manage-source-dir) manage_source_dir="${2:-}"; shift 2 ;;
     --manage-source-revision) manage_source_revision="${2:-}"; shift 2 ;;
+    --retained-manage-source-dir)
+      [[ "${#retained_source_arguments[@]}" -eq 0 && -n "${2:-}" ]] || usage
+      retained_source_arguments=(--retained-manage-source-dir "$2")
+      shift 2
+      ;;
     --expected-manage-origin) expected_manage_origin="${2:-}"; shift 2 ;;
     --release-public-key) release_public_key="${2:-}"; shift 2 ;;
     --provisioning-public-key) provisioning_public_keys+=("${2:-}"); shift 2 ;;
@@ -137,6 +143,7 @@ fi
   --ubuntu-snapshot-id "$snapshot_id" \
   --manage-source-dir "$manage_source_dir" \
   --manage-source-revision "$manage_source_revision" \
+  "${retained_source_arguments[@]}" \
   --release-public-key "$release_public_key" \
   "${provisioning_key_arguments[@]}" \
   "${previous_snapshot_arguments[@]}"
@@ -184,6 +191,12 @@ fi
 packaged_james_root="$work_dir/packaged-james"
 dpkg-deb --extract "${james_packages[0]}" "$packaged_james_root"
 packaged_manage_source="$packaged_james_root/usr/share/cybex-james/manage-source"
+declare -a catalog_arguments=()
+if [[ "${#retained_source_arguments[@]}" -gt 0 ]]; then
+  catalog_arguments=(--retained-source-dir "${retained_source_arguments[1]}")
+fi
+python3 -B "$repository_root/ubuntu-appliance/manage-source-catalog.py" \
+  --verify-only --output-dir "$packaged_manage_source" "${catalog_arguments[@]}"
 test "$(stat -c '%a' "$packaged_manage_source")" = 755
 for suffix in tar json; do
   test "$(stat -c '%a' "$packaged_manage_source/$manage_source_revision.$suffix")" = 444

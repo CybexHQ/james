@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 from urllib.parse import urlsplit
@@ -158,7 +159,7 @@ def verify_pair(directory, trusted_key, manifest_url):
     return json.loads((directory / MANIFEST).read_bytes())
 
 
-def inspect_package(directory, manifest):
+def inspect_package(directory, manifest, retain_to=None):
     descriptor = manifest["appliance_release_v1"]
     package = descriptor["cybex_repository_snapshot"]
     name = urlsplit(package["url"]).path.rsplit("/", 1)[-1]
@@ -173,13 +174,24 @@ def inspect_package(directory, manifest):
             raise ValueError("Predecessor snapshot marker changed")
         contract, updater, packaged_release = gate.packaged_updater_identity(
             tree, expected_release=manifest["version"], expected_snapshot=descriptor["ubuntu_snapshot_id"])
+        if retain_to is not None:
+            workstation = manifest["workstation_netboot"]
+            retained = tree / "retained-manage-source"
+            source = release._inspect_packaged_manage_source(
+                path, manifest["version"], workstation["manage_source_revision"], retain_to=retained)
+            if "manage_source_sha256" in workstation and (
+                    source["sha256"] != workstation["manage_source_sha256"]
+                    or source["size_bytes"] != workstation["manage_source_size_bytes"]):
+                raise ValueError("Retained Manage source differs from the signed workstation descriptor")
+            # copytree refuses an existing destination, including a symlink.
+            shutil.copytree(retained, retain_to)
     return {"release_id": manifest["version"], "ubuntu_snapshot_id": descriptor["ubuntu_snapshot_id"],
             "release_manifest_sha256": sha(directory / MANIFEST), "release_compatibility_sha256": sha(directory / COMPATIBILITY),
             "package_snapshot_sha256": package["sha256"], "package_snapshot_size_bytes": package["size_bytes"],
             "update_contract": contract, "appliance_updater_sha256": updater, "packaged_release_sha256": packaged_release}
 
 
-def resolve(repository, candidate, trusted_key, directory, recovery_path):
+def resolve(repository, candidate, trusted_key, directory, recovery_path, retain_to=None):
     directory.mkdir(parents=True, exist_ok=True)
     previous = latest(github(repository, "releases?per_page=100"), "v" + candidate)
     if previous is None:
@@ -225,7 +237,7 @@ def resolve(repository, candidate, trusted_key, directory, recovery_path):
         if manifest["version"] != recovered["release_id"] or manifest["installer_iso_template_v2"]["manage_origin"] != "https://manage.cybex.net":
             raise ValueError("Recovered fleet release/origin changed")
         identity = {"schema": IDENTITY_SCHEMA, "authorization_sha256": sha(recovery_path),
-                    "published": old, **inspect_package(directory, manifest)}
+                    "published": old, **inspect_package(directory, manifest, retain_to)}
     else:
         gate.verify_published_predecessor_descriptors(compatibility_path=publication / COMPATIBILITY,
             manifest_path=publication / MANIFEST, trusted_public_key=trusted_key,
@@ -234,7 +246,7 @@ def resolve(repository, candidate, trusted_key, directory, recovery_path):
             (directory / name).write_bytes((publication / name).read_bytes())
         manifest = verify_pair(directory, trusted_key, base + MANIFEST)
         identity = {"schema": gate.PREDECESSOR_SCHEMA, "github_release_id": previous["id"],
-                    "tag_name": tag, **inspect_package(directory, manifest)}
+                    "tag_name": tag, **inspect_package(directory, manifest, retain_to)}
         gate.validate_predecessor_identity(identity)
     if release._compare_semver(candidate, identity["release_id"]) <= 0:
         raise ValueError("Candidate does not advance the authenticated predecessor")
@@ -252,9 +264,12 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--download-media", action="store_true")
+    parser.add_argument("--retain-manage-source-to", type=Path,
+                        help="export all verified predecessor source archives for the next package")
     args = parser.parse_args()
     release._validate_version(args.candidate_version)
-    identity = resolve(args.repository, args.candidate_version, args.trusted_public_key, args.directory, args.authorization)
+    identity = resolve(args.repository, args.candidate_version, args.trusted_public_key,
+                       args.directory, args.authorization, args.retain_manage_source_to)
     if args.expected_identity:
         expected, body = checked_json(args.expected_identity)
         if identity != expected or body != canonical(expected):
