@@ -508,6 +508,8 @@ jobs:
             --workstation-netboot-runtime-version "${{ steps.workstation-source.outputs.runtime_version }}" \
             --workstation-netboot-manage-revision "${{ steps.workstation-source.outputs.revision }}" \
             --workstation-netboot-nixpkgs-revision "${{ steps.workstation-source.outputs.nixpkgs_revision }}" \
+            --workstation-netboot-manage-source-sha256 "$(jq -er '.manage_source_sha256' "$RUNNER_TEMP/cybex-james-appliance-packages-metadata.json")" \
+            --workstation-netboot-manage-source-size-bytes "$(jq -er '.manage_source_size_bytes' "$RUNNER_TEMP/cybex-james-appliance-packages-metadata.json")" \
             --published-at "$published_at"
           python3 tools/james-release.py compatibility \
             --manifest dist/cybex-james-release.json \

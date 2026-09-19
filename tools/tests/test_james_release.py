@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import re
 import shutil
 import subprocess
 import sys
@@ -771,6 +772,47 @@ class JamesReleaseToolTests(unittest.TestCase):
             )
         )
         self.assertEqual(verified.returncode, 0, verified.stderr.decode())
+
+    @unittest.skipUnless(shutil.which("jq"), "jq is required")
+    def test_governed_signing_command_forwards_packaged_source_identity(self):
+        workflow = (REPOSITORY / ".github/workflows/release.yml").read_text()
+        command = re.search(r'          python3 tools/james-release.py manifest .*?--published-at "\$published_at"',
+                            workflow, re.DOTALL).group()
+        command = re.sub(r'\$\{\{.*?\}\}', 'fixture', command)
+        metadata = self.directory / "cybex-james-appliance-packages-metadata.json"
+        metadata.write_text(json.dumps({"manage_source_sha256": "c" * 64, "manage_source_size_bytes": 123}))
+        # Execute the real workflow invocation, capturing argv before signing.
+        script = 'python3() { printf "%s\\0" "$@"; }; template_args=(); ' + command
+        result = subprocess.run(['bash', '-ec', script], env={**os.environ, 'RUNNER_TEMP': str(self.directory)},
+                                capture_output=True, check=True)
+        argv = result.stdout.decode().split('\0')
+        self.assertEqual(argv[argv.index('--workstation-netboot-manage-source-sha256') + 1], 'c' * 64)
+        self.assertEqual(argv[argv.index('--workstation-netboot-manage-source-size-bytes') + 1], '123')
+
+    @unittest.skipUnless(shutil.which("zstd"), "zstd is required")
+    def test_signing_rejects_missing_or_mismatched_packaged_source_identity(self):
+        package_arguments, _ = self.network_package_arguments()
+        workstation_arguments, _, _ = self.workstation_arguments()
+        output = self.directory / "source-bound-release.json"
+        # Reproduce 0.2.4: the governed workflow omitted both optional CLI flags.
+        missing = workstation_arguments[:-4]
+        for label, arguments in (
+            ("missing", missing),
+            ("wrong digest", missing + ["--workstation-netboot-manage-source-sha256", "d" * 64,
+                                       "--workstation-netboot-manage-source-size-bytes", "123"]),
+            ("wrong size", missing + ["--workstation-netboot-manage-source-sha256", "c" * 64,
+                                     "--workstation-netboot-manage-source-size-bytes", "124"]),
+        ):
+            with self.subTest(case=label):
+                result = self.run_tool(*self.manifest_arguments(output), *package_arguments, *arguments)
+                self.assertEqual(result.returncode, 2, result.stdout.decode())
+                self.assertIn(b"Manage source", result.stderr)
+                self.assertFalse(output.exists())
+        signed = self.run_tool(*self.manifest_arguments(output), *package_arguments, *workstation_arguments)
+        self.assertEqual(signed.returncode, 0, signed.stderr.decode())
+        descriptor = json.loads(output.read_bytes())["workstation_netboot"]
+        self.assertEqual(descriptor["manage_source_sha256"], "c" * 64)
+        self.assertEqual(descriptor["manage_source_size_bytes"], 123)
 
     def test_release_compatibility_verification_fails_closed_on_tampering(self) -> None:
         manifest_path = self.directory / "release.json"

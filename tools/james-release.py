@@ -936,6 +936,13 @@ def _appliance_release_inputs(
                 "appliance package Manage source revision does not match the "
                 "workstation netboot Manage revision"
             )
+        for field in ("manage_source_sha256", "manage_source_size_bytes"):
+            supplied = getattr(arguments, "workstation_netboot_" + field, None)
+            if supplied is None or supplied != metadata[field]:
+                _fail(
+                    "workstation netboot Manage source digest and size are required "
+                    "and must match the appliance package metadata"
+                )
     actual_sha, actual_size = _inspect_artifact(
         bundle,
         "appliance package snapshot",
