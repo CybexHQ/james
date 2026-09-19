@@ -64,6 +64,10 @@ class RecoveryTests(unittest.TestCase):
                     "assets": [{"name": P.MANIFEST}, {"name": P.COMPATIBILITY}]}
         previous = item(1, "v0.2.1-dev.4")
         self.assertEqual(P.latest([previous, item(2, "v0.2.2"), item(3, "v0.3.0", True)], "v0.2.2"), previous)
+        staged = item(4, "v0.3.1") | {'prerelease': True, 'body': 'Cybex-Cold-Qualification: required'}
+        self.assertEqual(P.latest([previous, staged], 'v0.3.2'), previous)
+        stable = staged | {'prerelease': False, 'body': 'Cybex-Cold-Qualification: passed'}
+        self.assertEqual(P.latest([previous, stable], 'v0.3.2'), stable)
         previous["assets"].append({"name": P.MANIFEST})
         with self.assertRaises(ValueError):
             P.latest([previous], "v0.2.2")

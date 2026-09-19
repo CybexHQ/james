@@ -112,6 +112,8 @@ def main():
                 arguments += ['--published-predecessor-inputs', inputs, '--retain-fixture', state / 'fixture']
             if phase == 'cold':
                 arguments += ['--require-candidate-runtime', '--retain-fixture', state / 'fixture']
+            if phase == 'fresh':
+                arguments += ['--prepublication-candidate']
             scoped(name + '-install', HELPERS / 'run-isolated-lifecycle.py', *arguments)
             if phase == 'cold':
                 scoped(name + '-workstation', HELPERS / 'run-isolated-workstation.py',

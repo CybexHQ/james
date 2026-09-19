@@ -88,6 +88,11 @@ def authorization(path, trusted_key, candidate_version, repository):
 def latest(releases, candidate_tag):
     candidates = []
     for value in releases:
+        # An immutable prerelease is staged for cold acceptance, not a usable
+        # predecessor. Historical prereleases without this marker keep their
+        # original resolution behavior and exact recovery authorization.
+        if value.get('prerelease') and 'Cybex-Cold-Qualification: required' in (value.get('body') or ''):
+            continue
         names = [a["name"] for a in value["assets"]]
         if not value["draft"] and value["tag_name"] != candidate_tag and MANIFEST in names and COMPATIBILITY in names:
             if any(names.count(name) != 1 for name in (MANIFEST, COMPATIBILITY)):

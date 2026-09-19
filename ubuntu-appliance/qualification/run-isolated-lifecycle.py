@@ -27,6 +27,7 @@ def main():
     parser.add_argument("--published-predecessor-inputs", type=Path)
     parser.add_argument("--retain-fixture", type=Path)
     parser.add_argument("--require-candidate-runtime", action="store_true")
+    parser.add_argument("--prepublication-candidate", action="store_true")
     parser.add_argument("--namespace", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     state = args.state_dir.resolve(strict=True)
@@ -71,6 +72,8 @@ def main():
         command += ["--retain-fixture", str(args.retain_fixture)]
     if args.require_candidate_runtime:
         command += ["--require-candidate-runtime"]
+    if args.prepublication_candidate:
+        command += ["--prepublication-candidate"]
     environment = {**os.environ, "CYBEX_JAMES_QUALIFICATION_BRIDGE": isolation["bridge"],
                    "CYBEX_JAMES_QUALIFICATION_MANAGEMENT_CIDR": "10.62.57.1/32", "CYBEX_JAMES_HAS_PREDECESSOR": "true"}
     temporary = state / "temporary"

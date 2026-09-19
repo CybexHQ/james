@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 usage() {
-  echo "usage: $0 --template ISO --manifest JSON --manage-origin URL --token-file FILE --output FILE [--published-predecessor-inputs JSON] [--retain-fixture DIRECTORY] [--require-candidate-runtime]" >&2
+  echo "usage: $0 --template ISO --manifest JSON --manage-origin URL --token-file FILE --output FILE [--published-predecessor-inputs JSON] [--retain-fixture DIRECTORY] [--require-candidate-runtime | --prepublication-candidate]" >&2
   exit 2
 }
 
@@ -16,6 +16,7 @@ output=""
 published_predecessor_inputs=""
 fixture_dir=""
 require_candidate_runtime=false
+prepublication_candidate=false
 while (($#)); do
   case "$1" in
     --template) template="${2:-}"; shift 2 ;;
@@ -25,10 +26,16 @@ while (($#)); do
     --published-predecessor-inputs) published_predecessor_inputs="${2:-}"; shift 2 ;;
     --retain-fixture) fixture_dir="${2:-}"; shift 2 ;;
     --require-candidate-runtime) require_candidate_runtime=true; shift ;;
+    --prepublication-candidate) prepublication_candidate=true; shift ;;
     --output) output="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
 done
+if [[ "$prepublication_candidate" = true ]] \
+  && { [[ "$require_candidate_runtime" = true ]] || [[ -n "$published_predecessor_inputs" ]]; }; then
+  echo 'error: prepublication deferral applies only to an unpublished candidate' >&2
+  exit 1
+fi
 test -f "$template" && test -f "$manifest" && test -f "$token_file" && test -n "$output"
 if [[ -n "$fixture_dir" ]]; then
   [[ "$fixture_dir" = /* ]] && test ! -e "$fixture_dir" && test ! -L "$fixture_dir"
@@ -399,17 +406,17 @@ runtime_status="$work_dir/workstation-runtime.json"
 runtime_operational=false
 runtime_converged=false
 runtime_prepublication_deferred=false
-if [[ "$has_predecessor" = false ]]; then
+if [[ "$prepublication_candidate" = true ]]; then
   api GET "/v1/james/nodes/$device_id/workstation-netboot" > "$runtime_status"
   test "$(jq -er '.state' "$runtime_status")" = absent
   test "$(jq -er '.operational' "$runtime_status")" = false
   test "$(jq -er '.converged' "$runtime_status")" = false
   test "$(jq -r '.desired // ""' "$runtime_status")" = ""
   test "$(jq -r '.active // ""' "$runtime_status")" = ""
-  # The first immutable release cannot be downloaded from its final governed
-  # URL before publication. Its candidate bundle was already authenticated and
-  # byte-verified above this lifecycle; record the bounded deferral explicitly
-  # instead of claiming live delivery or waiting on an impossible dependency.
+  # Manage binds runtimes to the exact appliance release. Even with a published
+  # predecessor, a new candidate disk cannot acquire its matching runtime until
+  # immutable staging. Delivery remains mandatory in the cold phase before the
+  # prerelease can become stable. No predecessor state is fabricated here.
   runtime_prepublication_deferred=true
 else
   for _attempt in $(seq 1 720); do
@@ -449,6 +456,7 @@ fi
 
 build_jobs="$work_dir/build-jobs.json"
 builtins_deliverable=false
+if [[ "$runtime_prepublication_deferred" = false ]]; then
 for _attempt in $(seq 1 720); do
   api GET "/v1/james/nodes/$device_id/build/jobs?limit=200&offset=0" > "$build_jobs"
   source_blocked_builtin_job="$(jq -c --slurpfile blueprints "$blueprints" '
@@ -513,6 +521,7 @@ if [[ "$builtins_deliverable" != true ]]; then
     | .[:20]
   ' "$build_jobs" >&2
   exit 1
+fi
 fi
 
 network_change="$work_dir/network-change.json"
@@ -584,6 +593,7 @@ jq -n \
   --argjson workstation_runtime_operational "$runtime_operational" \
   --argjson workstation_runtime_converged "$runtime_converged" \
   --argjson workstation_runtime_prepublication_deferred "$runtime_prepublication_deferred" \
+  --argjson builtins_deliverable "$builtins_deliverable" \
   --arg completed_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
   '{schema:$schema,ok:true,release_version:$release_version,
     harness_revision:$harness_revision,qualification_kind:$qualification_kind,
@@ -597,8 +607,10 @@ jq -n \
     workstation_runtime_operational:$workstation_runtime_operational,
     workstation_runtime_converged:$workstation_runtime_converged,
     workstation_runtime_prepublication_deferred:$workstation_runtime_prepublication_deferred,
-    builtin_blueprints_source_free:true,builtin_blueprints_deliverable:true,
-    builtin_blueprints_qualified_on_new_james:true,
+    builtin_blueprints_source_free:$builtins_deliverable,
+    builtin_blueprints_deliverable:$builtins_deliverable,
+    builtin_blueprints_qualified_on_new_james:$builtins_deliverable,
+    builtin_blueprints_prepublication_deferred:$workstation_runtime_prepublication_deferred,
     two_phase_network_acknowledged:true,exact_principal_ssh_certificate:true,
     final_state:"ready",completed_at:$completed_at}' \
   > "$output"

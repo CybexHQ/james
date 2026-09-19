@@ -707,13 +707,11 @@ class LegacyBridgeGateTests(unittest.TestCase):
         self.assertIn(".automatic_rollback", workflow)
         self.assertIn("cybex-james-ubuntu-update-qualification.json", workflow)
         self.assertIn("cybex.james.ubuntu-appliance-update-qualification.v1", workflow)
-        self.assertIn(".workstation_runtime_operational' \"$evidence\"", workflow)
-        self.assertIn(".workstation_runtime_converged' \"$evidence\"", workflow)
-        self.assertIn(
-            ".workstation_runtime_prepublication_deferred' \"$evidence\"",
-            workflow,
-        )
-        self.assertIn(".builtin_blueprints_deliverable' \"$evidence\"", workflow)
+        self.assertIn('--phase prepublication --manifest dist/cybex-james-release.json', workflow)
+        self.assertIn('--phase cold --manifest dist/cybex-james-release.json', workflow)
+        self.assertIn('promote-production-release.py', workflow)
+        self.assertIn('needs: [release_build, release_cold_qualify]', workflow)
+        self.assertIn('--draft=false --prerelease --latest=false', workflow)
 
         lifecycle = (
             REPOSITORY / "ubuntu-appliance/qualification/run-lifecycle.sh"

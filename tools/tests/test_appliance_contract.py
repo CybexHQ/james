@@ -1322,7 +1322,7 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
             script,
         )
         self.assertIn("source_build_candidates:.cache_metadata.source_build_candidates", script)
-        self.assertIn("builtin_blueprints_qualified_on_new_james:true", script)
+        self.assertIn("builtin_blueprints_qualified_on_new_james:$builtins_deliverable", script)
 
     def test_root_network_helper_shares_handshake_files_with_james(self) -> None:
         change_script = NETWORK_CHANGE.read_text(encoding="utf-8")

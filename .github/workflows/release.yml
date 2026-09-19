@@ -686,7 +686,7 @@ jobs:
           retention-days: 90
 
   release_publish:
-    name: Attest and publish exact qualified candidate
+    name: Attest and stage immutable candidate
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [release_build, release_qualify]
     runs-on: ubuntu-latest
@@ -853,19 +853,9 @@ jobs:
           test "$(jq -er '.identity_rotation' "$evidence")" = true
           test "$(jq -er '.installed_media_left_attached' "$evidence")" = true
           test "$(jq -er '.appliance_projection_healthy' "$evidence")" = true
-          case "$CYBEX_JAMES_HAS_PREDECESSOR" in
-            true)
-              test "$(jq -er '.workstation_runtime_operational' "$evidence")" = true
-              test "$(jq -er '.workstation_runtime_converged' "$evidence")" = true
-              test "$(jq -er '.workstation_runtime_prepublication_deferred' "$evidence")" = false
-              ;;
-            false)
-              test "$(jq -er '.workstation_runtime_operational | not' "$evidence")" = true
-              test "$(jq -er '.workstation_runtime_converged | not' "$evidence")" = true
-              test "$(jq -er '.workstation_runtime_prepublication_deferred' "$evidence")" = true
-              ;;
-            *) echo 'error: invalid James predecessor state' >&2; exit 1 ;;
-          esac
+          python3 -B ubuntu-appliance/qualification/release_acceptance.py \
+            --phase prepublication --manifest dist/cybex-james-release.json \
+            --evidence "$evidence" --source "$GITHUB_SHA"
           rollback=qualification/cybex-james-ubuntu-rollback-qualification.json
           test -f "$rollback" && test ! -L "$rollback"
           test "$(jq -er '.schema' "$rollback")" = cybex.james.ubuntu-appliance-rollback-qualification.v1
@@ -874,9 +864,6 @@ jobs:
           test "$(jq -er '.candidate_release' "$rollback")" = "$version"
           test "$(jq -er '.predecessor_release' "$rollback")" = "${{ needs.release_build.outputs.predecessor_release }}"
           test "$(jq -er '.root_generation' "$rollback")" = 0
-          test "$(jq -er '.builtin_blueprints_source_free' "$evidence")" = true
-          test "$(jq -er '.builtin_blueprints_deliverable' "$evidence")" = true
-          test "$(jq -er '.builtin_blueprints_qualified_on_new_james' "$evidence")" = true
           test "$(jq -er '.two_phase_network_acknowledged' "$evidence")" = true
           test "$(jq -er '.exact_principal_ssh_certificate' "$evidence")" = true
           test "$(jq -er '.release_version' "$evidence")" = "$version"
@@ -1039,12 +1026,13 @@ jobs:
         run: |
           set -euo pipefail
           owner_run="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          release_markers="$(printf '%s\n%s\n%s' \
+          release_markers="$(printf '%s\n%s\n%s\n%s' \
             "Cybex-Release-Workflow: $owner_run" \
             "Cybex-Candidate-Artifact-ID: $CYBEX_JAMES_RELEASE_ARTIFACT_ID" \
-            "Cybex-Candidate-Artifact-SHA256: $CYBEX_JAMES_RELEASE_ARTIFACT_DIGEST")"
+            "Cybex-Candidate-Artifact-SHA256: $CYBEX_JAMES_RELEASE_ARTIFACT_DIGEST" \
+            "Cybex-Cold-Qualification: required")"
           gh release create "$GITHUB_REF_NAME" \
-            --draft --verify-tag --target "$GITHUB_SHA" \
+            --draft --prerelease --latest=false --verify-tag --target "$GITHUB_SHA" \
             --notes "$release_markers" \
             --title "Cybex James $GITHUB_REF_NAME"
           release_assets=(
@@ -1157,7 +1145,7 @@ jobs:
             test ! -e qualification/cybex-james-ubuntu-update-qualification.json
             test ! -e dist/cybex-james-build-predecessor.json
           fi
-          gh release edit "$GITHUB_REF_NAME" --draft=false
+          gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false
           immutable=false
           for _attempt in $(seq 1 20); do
             published="$(gh api \
@@ -1173,6 +1161,7 @@ jobs:
             sleep 3
           done
           test "$(jq -r '.draft' <<<"$published")" = "false"
+          test "$(jq -r '.prerelease' <<<"$published")" = "true"
           test "$immutable" = "true"
           test "$(jq -r '.tag_name' <<<"$published")" = "$GITHUB_REF_NAME"
           gh release verify "$GITHUB_REF_NAME"
@@ -1192,6 +1181,9 @@ jobs:
     permissions:
       contents: read
       actions: read
+    outputs:
+      artifact_id: ${{ steps.cold-evidence.outputs.artifact-id }}
+      artifact_digest: ${{ steps.cold-evidence.outputs.artifact-digest }}
     steps:
       - name: Checkout exact published source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -1226,8 +1218,13 @@ jobs:
             --candidate-dir "$GITHUB_WORKSPACE/dist" \
             --evidence-dir "$RUNNER_TEMP/cybex-james-cold-evidence" \
             --trusted-public-key "$TRUSTED_KEY" --published-cold
+          python3 -B ubuntu-appliance/qualification/release_acceptance.py \
+            --phase cold --manifest dist/cybex-james-release.json --source "$GITHUB_SHA" \
+            --evidence "$RUNNER_TEMP/cybex-james-cold-evidence/cybex-james-published-cold-qualification.json" \
+            --workstation "$RUNNER_TEMP/cybex-james-cold-evidence/cybex-james-published-workstation-qualification.json"
 
       - name: Retain published cold-install qualification evidence
+        id: cold-evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cybex-james-published-cold-${{ github.run_id }}
@@ -1236,3 +1233,38 @@ jobs:
             ${{ runner.temp }}/cybex-james-cold-evidence/cybex-james-published-workstation-qualification.json
           if-no-files-found: error
           retention-days: 90
+
+  release_promote:
+    name: Promote cold-qualified immutable release
+    needs: [release_build, release_cold_qualify]
+    runs-on: ubuntu-latest
+    environment: production-release
+    concurrency:
+      group: james-release-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout exact promotion source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Authenticate cold acceptance and promote unchanged assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
+          COLD_ID: ${{ needs.release_cold_qualify.outputs.artifact_id }}
+          COLD_DIGEST: ${{ needs.release_cold_qualify.outputs.artifact_digest }}
+          CANDIDATE_ID: ${{ needs.release_build.outputs.artifact_id }}
+          CANDIDATE_DIGEST: ${{ needs.release_build.outputs.artifact_digest }}
+        run: |
+          set -Eeuo pipefail
+          python3 -B ubuntu-appliance/qualification/promote-production-release.py \
+            --repository "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" \
+            --source "$GITHUB_SHA" --run "$GITHUB_RUN_ID" \
+            --artifact-id "$COLD_ID" --artifact-digest "$COLD_DIGEST" \
+            --candidate-id "$CANDIDATE_ID" --candidate-digest "$CANDIDATE_DIGEST" \
+            --trusted-public-key "$TRUSTED_KEY"

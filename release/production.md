@@ -34,19 +34,33 @@ permissions. New workflows pass `-B` directly, and the orchestrator gives its
 receipt directory to the invoking runner so checkout and scratch cleanup can
 remain unprivileged.
 
-Publication requires an official Secure Boot fresh installation, an actual
-predecessor-to-candidate upgrade with preserved identity/runtime, and a separate
-automatic rollback after the candidate loses its managed network. Each test
-uses newly provisioned predecessor media and disposes of its database and disks.
+Immutable staging requires an official Secure Boot fresh appliance installation,
+an actual predecessor-to-candidate upgrade with preserved identity/runtime, and
+a separate automatic rollback after the candidate loses its managed network.
+Upgrade and rollback each use newly provisioned predecessor media. Every phase
+disposes of its database and disks.
 Legacy `legacy_all_debs` updaters cannot use the private package transport;
 they still require canonical HTTPS admission and a qualified bridge.
 
-After GitHub locks the release, cold qualification must download the published
-runtime and prove that its active and desired hashes equal the signed candidate.
+Manage binds a workstation runtime to the exact appliance release. A fresh
+unpublished candidate therefore has no runtime, even when a predecessor exists.
+The prepublication receipt explicitly records absent runtime and deferred
+Blueprint delivery; it cannot pass the cold-delivery gate. Upgrade qualification
+still proves retention of the predecessor's real installed runtime.
+
+GitHub first locks the assets as a prerelease with `latest=false`. The pending
+cold-qualification marker excludes this staged release from future predecessor
+resolution. Cold qualification must download the public runtime and prove that
+its active and desired hashes equal the signed candidate.
 The same private phase then boots an empty workstation through James PXE,
 installs Standard, applies Dock and Tiling, and requires a managed reboot and
 fresh exact compliant evidence for each. It checks the signed runtime descriptor,
 booted Nix generation and preserved workstation identity before canary selection.
+The separate stable-promotion job verifies the cold artifact ZIP digest and
+workflow/source provenance, rechecks every appliance and workstation receipt,
+and authenticates the predecessor again under the publication lock. Only then
+does it remove the prerelease flag and set GitHub's latest release. Failure
+leaves the immutable prerelease unpromoted and production selection unchanged.
 Keep protocol 4 and workstation compatibility epoch 1 unless a separately
 reviewed compatibility change explicitly requires otherwise.
 
