@@ -158,3 +158,9 @@ legacy main manifest's strict top-level schema.
 
 See [`RELEASES.md`](RELEASES.md) for the release procedure and
 [`SECURITY.md`](SECURITY.md) for trust boundaries.
+
+New signed workstation releases bind the SHA-256 and byte size of the exact
+Manage source archive in the appliance package. Signing rejects missing or
+mismatched source identities before qualification. Disposable workstation
+qualification explicitly requests read-only verification after each observed
+managed reboot, while still requiring fresh exact compliance for every profile.

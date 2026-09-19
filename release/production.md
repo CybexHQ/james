@@ -9,7 +9,7 @@ Manage application deployment is a separate operation.
 
 The one-time `recovery-adoption.json` authorization binds the historical GitHub
 dev.4 publication and recovered production dev.29 manifests, compatibility
-assets, source identity and keys to successor **0.2.4 only**. The current fleet
+assets, source identity and keys to successor **0.2.5 only**. The current fleet
 authority signs this admission. The resolver authenticates the old publication
 under its original authority and dev.29 under the current authority, then
 inspects the signed package and actual updater contract. It rechecks this exact
@@ -20,7 +20,12 @@ candidate and its original authorization remain unchanged at their tag. The
 0.2.3 build proved retained-source packaging but was cancelled before any
 qualification phase passed, after review found a cold-artifact digest encoding
 mismatch.
-0.2.4 supersedes both unpublished candidates without changing their bytes.
+0.2.4 passed appliance qualification but its immutable prerelease omitted the
+workstation Manage source digest and size, blocking Dock acceptance. 0.2.5 binds
+both values from the exact package metadata and rejects missing or mismatched
+values before signing. Earlier tags, assets and receipts remain unchanged.
+The workstation harness requests a read-only verification after each observed
+managed reboot; it still requires fresh compliance and exact booted identity.
 
 The release workflow builds and signs one candidate, verifies its artifact ID
 and digest, then qualifies those same bytes on `thebeast-james-production`.
