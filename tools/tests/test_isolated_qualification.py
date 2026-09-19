@@ -1,4 +1,5 @@
 import copy
+import datetime
 import importlib.util
 from pathlib import Path
 import socket
@@ -21,6 +22,7 @@ def load(name):
 
 fixture = load('isolated_fixture')
 rollback = load('rollback_lifecycle')
+workstation = load('workstation_lifecycle')
 
 
 class QualificationTests(unittest.TestCase):
@@ -70,6 +72,43 @@ class QualificationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rollback.runtime_identity({'state': 'ready', 'active': descriptor,
                                        'desired': descriptor | {'bundle_sha256': 'c' * 64}})
+
+    def test_workstation_acceptance_requires_booted_exact_runtime_and_fresh_compliance(self):
+        descriptor = {'runtime_version': '1.0.67', 'manage_source_revision': 'b' * 40,
+            'components': {name: {'sha256': 'a' * 64, 'size_bytes': 1}
+                           for name in ('bzImage', 'initrd', 'nix-store.squashfs')}}
+        blueprint = {'current_revision_id': 'revision'}
+        verified = datetime.datetime(2026, 9, 19, 14, tzinfo=datetime.timezone.utc)
+        before = {'device_id': 'device', 'public_key_fingerprint': 'key'}
+        device = before | {'device_kind': 'workstation', 'health_status': 'online',
+            'configuration_status': 'compliant', 'desired_blueprint_revision_id': 'revision',
+            'applied_blueprint_revision_id': 'revision', 'desired_config_hash': 'a' * 64,
+            'reported_config_hash': 'a' * 64, 'applied_config_hash': 'a' * 64,
+            'configuration_verified_at': '2026-09-19T14:01:00Z', 'facts_json': {
+                'boot_id': '668c1504-558f-4b4c-b4bb-8132600df97b',
+                'workstation_runtime': {'runtime_version': '1.0.67', 'manage_source_revision': 'b' * 40,
+                    'descriptor_sha256': workstation.descriptor_digest(descriptor)},
+                'blueprint_generation': {k: '/nix/store/exact-system'
+                    for k in ('current_system', 'system_profile', 'booted_system')}}}
+        workstation.require_workstation(device, descriptor, blueprint, before, verified)
+        for key, value in [('applied_blueprint_revision_id', 'old'), ('reported_config_hash', None),
+                           ('configuration_status', 'pending_reboot'), ('public_key_fingerprint', 'other'),
+                           ('configuration_verified_at', '2026-09-19T13:59:00Z')]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                workstation.require_workstation(device | {key: value}, descriptor, blueprint, before, verified)
+        for section, key, value in [('workstation_runtime', 'descriptor_sha256', 'c' * 64),
+                                    ('blueprint_generation', 'booted_system', '/nix/store/old-system')]:
+            bad = copy.deepcopy(device)
+            bad['facts_json'][section][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                workstation.require_workstation(bad, descriptor, blueprint, before, verified)
+
+    def test_descriptor_digest_is_independent_of_incoming_json_key_order(self):
+        descriptor = {'runtime_version': '1.0.67', 'components': {
+            name: {'sha256': 'a' * 64, 'size_bytes': 1}
+            for name in ('bzImage', 'initrd', 'nix-store.squashfs')}}
+        reordered = json.loads(json.dumps(descriptor, sort_keys=True))
+        self.assertEqual(workstation.descriptor_digest(descriptor), workstation.descriptor_digest(reordered))
 
 
 if __name__ == '__main__':

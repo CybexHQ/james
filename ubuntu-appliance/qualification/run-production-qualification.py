@@ -31,11 +31,11 @@ def interrupted(_number, _frame):
     raise KeyboardInterrupt('Qualification interrupted; cleaning up its private state')
 
 
-def scoped(name, *arguments):
+def scoped(name, *arguments, memory='35G'):
     unit = 'cybex-james-' + name + '.scope'
     try:
         execute('systemd-run', '--scope', '--quiet', '--unit', unit,
-                '-p', 'MemoryMax=35G', '-p', 'MemorySwapMax=0', sys.executable, '-B', *arguments)
+                '-p', 'MemoryMax=' + memory, '-p', 'MemorySwapMax=0', sys.executable, '-B', *arguments)
     finally:
         # Stop this exact cgroup even if the runner receives cancellation while
         # a nested shell, QEMU, or package server owns another process group.
@@ -105,8 +105,13 @@ def main():
             if phase in {'upgrade', 'rollback'}:
                 arguments += ['--published-predecessor-inputs', inputs, '--retain-fixture', state / 'fixture']
             if phase == 'cold':
-                arguments += ['--require-candidate-runtime']
+                arguments += ['--require-candidate-runtime', '--retain-fixture', state / 'fixture']
             scoped(name + '-install', HELPERS / 'run-isolated-lifecycle.py', *arguments)
+            if phase == 'cold':
+                scoped(name + '-workstation', HELPERS / 'run-isolated-workstation.py',
+                    '--state-dir', state, '--fixture', state / 'fixture', '--james-evidence', fresh_output,
+                    '--manifest', manifest_path, '--output',
+                    args.evidence_dir / 'cybex-james-published-workstation-qualification.json', memory='45G')
             if phase in {'upgrade', 'rollback'}:
                 update_output = args.evidence_dir / ('cybex-james-ubuntu-update-qualification.json' if phase == 'upgrade'
                     else 'cybex-james-ubuntu-rollback-qualification.json')

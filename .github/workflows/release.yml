@@ -68,6 +68,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Audit the dependencies before signing a production release
+        run: |
+          cargo install cargo-audit --version 0.22.1 --locked
+          cargo tree -i sqlx-mysql 2>&1 | tee /tmp/sqlx-mysql-tree.txt
+          grep -q "nothing to print" /tmp/sqlx-mysql-tree.txt
+          cargo audit --ignore RUSTSEC-2023-0071
+
   nix:
     name: Pinned workstation netboot
     runs-on: ubuntu-latest
@@ -264,6 +271,13 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$CYBEX_JAMES_RELEASE_PRIVATE_KEY_B64"
+
+      - name: Audit the pinned workstation agent before building its runtime
+        if: steps.release-candidate.outputs.reuse != 'true'
+        shell: bash
+        run: |
+          cargo install cargo-audit --version 0.22.1 --locked
+          cargo audit --file manage-source/agent/cybex-agent/Cargo.lock
 
       - name: Install Ubuntu appliance release tools
         run: |
@@ -1194,7 +1208,7 @@ jobs:
 
       - name: Require exact published bytes and cold runtime convergence
         shell: bash
-        timeout-minutes: 90
+        timeout-minutes: 240
         env:
           GH_TOKEN: ${{ github.token }}
           TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
@@ -1217,6 +1231,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cybex-james-published-cold-${{ github.run_id }}
-          path: ${{ runner.temp }}/cybex-james-cold-evidence/cybex-james-published-cold-qualification.json
+          path: |
+            ${{ runner.temp }}/cybex-james-cold-evidence/cybex-james-published-cold-qualification.json
+            ${{ runner.temp }}/cybex-james-cold-evidence/cybex-james-published-workstation-qualification.json
           if-no-files-found: error
           retention-days: 90

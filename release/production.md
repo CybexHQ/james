@@ -33,7 +33,10 @@ they still require canonical HTTPS admission and a qualified bridge.
 
 After GitHub locks the release, cold qualification must download the published
 runtime and prove that its active and desired hashes equal the signed candidate.
-Then qualify PXE and source-free Blueprint apply/reboot before canary selection.
+The same private phase then boots an empty workstation through James PXE,
+installs Standard, applies Dock and Tiling, and requires a managed reboot and
+fresh exact compliant evidence for each. It checks the signed runtime descriptor,
+booted Nix generation and preserved workstation identity before canary selection.
 Keep protocol 4 and workstation compatibility epoch 1 unless a separately
 reviewed compatibility change explicitly requires otherwise.
 
