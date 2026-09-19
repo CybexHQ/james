@@ -206,14 +206,16 @@ def run(api, state, james, manifest, catalog, output):
             return wait_for('Managed workstation reboot', device, returned, 900)
 
         def converge(blueprint, previous=None, verified_after=None):
-            rebooted = set()
+            reboot_requested = False
             def accepted(value):
+                nonlocal reboot_requested
                 operation = value.get('active_operation') or {}
                 if operation.get('state') == 'failed':
                     raise ValueError('Private workstation operation failed: ' + str(operation.get('reason_code')))
-                boot = value.get('facts_json', {}).get('boot_id')
-                if value.get('configuration_status') == 'pending_reboot' and boot not in rebooted:
-                    rebooted.add(boot)
+                if value.get('configuration_status') == 'pending_reboot' and not reboot_requested:
+                    # A new boot can arrive before its read-only attestation.
+                    # Wait for that report instead of repeatedly rebooting it.
+                    reboot_requested = True
                     reboot(value)
                     return False
                 try:
