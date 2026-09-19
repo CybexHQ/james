@@ -664,7 +664,7 @@ jobs:
         timeout-minutes: 240
         run: |
           set -Eeuo pipefail
-          sudo -n python3 ubuntu-appliance/qualification/run-production-qualification.py \
+          sudo -n python3 -B ubuntu-appliance/qualification/run-production-qualification.py \
             --run "release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --candidate-dir "$GITHUB_WORKSPACE/dist" \
             --predecessor-dir "$RUNNER_TEMP/cybex-james-predecessor" \
@@ -1221,7 +1221,7 @@ jobs:
             --output "$published"
           cmp dist/cybex-james-release.json "$published"
           test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq '.immutable')" = true
-          sudo -n python3 ubuntu-appliance/qualification/run-production-qualification.py \
+          sudo -n python3 -B ubuntu-appliance/qualification/run-production-qualification.py \
             --run "published-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --candidate-dir "$GITHUB_WORKSPACE/dist" \
             --evidence-dir "$RUNNER_TEMP/cybex-james-cold-evidence" \

@@ -24,6 +24,16 @@ private DNS/TLS, sessions, devices and runtime watermarks. No manually retained
 device ID, evidence variable or long-lived qualification token is required.
 The host setup is documented in Manage's `deploy/qualification/README.md`.
 
+The runner's user service also installs `runner-python.conf` as a drop-in.
+Install `runner-python.sudoers` under `/etc/sudoers.d/` (root, mode 0440), after
+checking it with `visudo -cf`. This supports already immutable workflows that
+omit Python's `-B`: the exact qualification command preserves
+`PYTHONDONTWRITEBYTECODE` and writes bounded public receipts with a readable
+umask. Private fixture directories and credentials still have explicit 0700/0600
+permissions. New workflows pass `-B` directly, and the orchestrator gives its
+receipt directory to the invoking runner so checkout and scratch cleanup can
+remain unprivileged.
+
 Publication requires an official Secure Boot fresh installation, an actual
 predecessor-to-candidate upgrade with preserved identity/runtime, and a separate
 automatic rollback after the candidate loses its managed network. Each test

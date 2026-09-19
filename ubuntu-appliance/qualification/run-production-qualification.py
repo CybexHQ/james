@@ -56,6 +56,11 @@ def main():
     args.candidate_dir = args.candidate_dir.resolve(strict=True)
     args.evidence_dir.mkdir(parents=True, exist_ok=True)
     args.evidence_dir = args.evidence_dir.resolve(strict=True)
+    # These are bounded publication receipts, outside the private fixture tree.
+    # The unprivileged runner must upload them and clean its own scratch folder.
+    args.evidence_dir.chmod(0o755)
+    if 'SUDO_UID' in os.environ and 'SUDO_GID' in os.environ:
+        os.chown(args.evidence_dir, int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID']))
     manifest_path = args.candidate_dir / predecessor.MANIFEST
     manifest = json.loads(manifest_path.read_bytes())
     candidate_url = f"https://github.com/CybexHQ/james/releases/download/v{manifest['version']}/{predecessor.MANIFEST}"
@@ -82,6 +87,7 @@ def main():
         execute(sys.executable, HELPERS / 'published-predecessor.py', '--inputs', inputs,
                 '--manifest', args.predecessor_dir / predecessor.MANIFEST)
         shutil.copyfile(identity_path, args.evidence_dir / 'cybex-james-qualified-predecessor.json')
+        (args.evidence_dir / 'cybex-james-qualified-predecessor.json').chmod(0o644)
         phases = ['upgrade', 'rollback', 'fresh']
     else:
         selected_url = candidate_url
