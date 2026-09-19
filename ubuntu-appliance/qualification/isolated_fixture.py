@@ -96,13 +96,18 @@ class QMP:
         self.socket.sendall(json.dumps({'execute': command, 'arguments': arguments or {}, 'id': identity}).encode() + b'\n')
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
+            reply = None
             for value in self.read(1):
                 if value.get('id') == identity:
-                    if 'error' in value:
-                        raise ValueError('QEMU command failed: ' + str(value['error']))
-                    return value.get('return')
+                    reply = value
                 if 'event' in value:
                     self.pending.append(value)
+            # RESET can arrive after the command reply in the same read.
+            # Preserve the whole batch before returning to the lifecycle.
+            if reply is not None:
+                if 'error' in reply:
+                    raise ValueError('QEMU command failed: ' + str(reply['error']))
+                return reply.get('return')
         raise ValueError('QEMU monitor command timed out')
 
     def events(self):
