@@ -9,15 +9,18 @@ Manage application deployment is a separate operation.
 
 The one-time `recovery-adoption.json` authorization binds the historical GitHub
 dev.4 publication and recovered production dev.29 manifests, compatibility
-assets, source identity and keys to successor **0.2.3 only**. The current fleet
+assets, source identity and keys to successor **0.2.4 only**. The current fleet
 authority signs this admission. The resolver authenticates the old publication
 under its original authority and dev.29 under the current authority, then
 inspects the signed package and actual updater contract. It rechecks this exact
 identity under the publication lock. Later releases follow the ordinary signed
 predecessor path. Removing either artifact, moving a tag, changing a digest or
 using this authorization for another successor fails closed. The failed 0.2.2
-candidate and its original authorization remain unchanged at their tag; 0.2.3
-supersedes that unpublished candidate with retained-source compatibility.
+candidate and its original authorization remain unchanged at their tag. The
+0.2.3 build proved retained-source packaging but was cancelled before any
+qualification phase passed, after review found a cold-artifact digest encoding
+mismatch.
+0.2.4 supersedes both unpublished candidates without changing their bytes.
 
 The release workflow builds and signs one candidate, verifies its artifact ID
 and digest, then qualifies those same bytes on `thebeast-james-production`.
@@ -70,7 +73,9 @@ fresh exact compliant evidence for each. It checks the signed runtime descriptor
 booted Nix generation and preserved workstation identity before canary selection.
 The separate stable-promotion job verifies the cold artifact ZIP digest and
 workflow/source provenance, rechecks every appliance and workstation receipt,
-and authenticates the predecessor again under the publication lock. Only then
+and authenticates the predecessor again under the publication lock. The upload
+action returns bare SHA-256 hex while the REST API prefixes `sha256:`; promotion
+normalizes these two exact encodings before comparing the ZIP digest and metadata. Only then
 does it remove the prerelease flag and set GitHub's latest release. Failure
 leaves the immutable prerelease unpromoted and production selection unchanged.
 Keep protocol 4 and workstation compatibility epoch 1 unless a separately

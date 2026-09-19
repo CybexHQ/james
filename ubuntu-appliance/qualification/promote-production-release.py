@@ -17,7 +17,16 @@ FILES = {'cybex-james-published-cold-qualification.json',
          'cybex-james-published-workstation-qualification.json'}
 
 
+def canonical_artifact_digest(value):
+    # upload-artifact outputs bare hex; GitHub's REST artifact metadata uses
+    # sha256:hex. Normalize only these two exact encodings of the same digest.
+    if not isinstance(value, str) or not re.fullmatch(r'(?:sha256:)?[0-9a-f]{64}', value):
+        raise ValueError('Invalid cold artifact SHA-256 digest')
+    return 'sha256:' + value.removeprefix('sha256:')
+
+
 def artifact_evidence(body, metadata, expected_digest, run, source):
+    expected_digest = canonical_artifact_digest(expected_digest)
     if (metadata.get('expired') is not False
             or metadata.get('workflow_run', {}).get('id') != run
             or metadata.get('workflow_run', {}).get('head_sha') != source
@@ -46,6 +55,7 @@ def main():
     parser.add_argument('--candidate-digest', required=True)
     parser.add_argument('--trusted-public-key', required=True)
     args = parser.parse_args()
+    args.artifact_digest = canonical_artifact_digest(args.artifact_digest)
     if (not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', args.repository)
             or not re.fullmatch(r'v[0-9A-Za-z.+-]+', args.tag)
             or not re.fullmatch(r'[0-9a-f]{40}', args.source)):

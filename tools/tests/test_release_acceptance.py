@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest import mock
 import zipfile
 
 HELPERS = Path(__file__).resolve().parents[2] / 'ubuntu-appliance/qualification'
@@ -126,6 +127,85 @@ class AcceptanceTests(unittest.TestCase):
                 '--prepublication-candidate', *extra], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('prepublication deferral applies only', result.stderr)
+
+    def test_upload_action_digest_matches_prefixed_api_digest(self):
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, 'w') as package:
+            for name in promotion.FILES:
+                package.writestr(name, json.dumps({'ok': True}))
+        body = output.getvalue()
+        # upload-artifact@v4 returns bare hex; the REST API prefixes sha256:.
+        action_digest = hashlib.sha256(body).hexdigest()
+        metadata = dict(expired=False, workflow_run={'id': 123, 'head_sha': self.source},
+                        name='cybex-james-published-cold-123', digest='sha256:' + action_digest)
+        self.assertEqual(set(promotion.artifact_evidence(
+            body, metadata, action_digest, 123, self.source)), promotion.FILES)
+        for value in ('sha1:' + action_digest, 'sha256:sha256:' + action_digest,
+                      action_digest[:-1], '0' * 64):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                promotion.artifact_evidence(body, metadata, value, 123, self.source)
+
+    def test_promotion_cli_accepts_action_outputs_and_preserves_asset_inventory(self):
+        manifest_body = json.dumps(self.manifest).encode()
+        cold = self.cold | {'qualified_manifest_sha256': hashlib.sha256(manifest_body).hexdigest()}
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, 'w') as package:
+            package.writestr('cybex-james-published-cold-qualification.json', json.dumps(cold))
+            package.writestr('cybex-james-published-workstation-qualification.json', json.dumps(self.workstation))
+        archive = output.getvalue()
+        action_digest = hashlib.sha256(archive).hexdigest()
+        candidate_digest = 'f' * 64
+        tag = 'v' + self.manifest['version']
+        base = f'https://github.com/CybexHQ/james/releases/download/{tag}/'
+        identity = {'release_id': '0.2.1-dev.29'}
+        bodies = {'cybex-james-release.json': manifest_body,
+                  'cybex-james-release-compatibility.json': b'{}\n',
+                  'cybex-james-build-predecessor.json': json.dumps(identity).encode()}
+        staged = dict(id=900, immutable=True, draft=False, prerelease=True, target_commitish=self.source,
+            body='\n'.join(['Cybex-Release-Workflow: https://github.com/CybexHQ/james/actions/runs/42',
+                'Cybex-Candidate-Artifact-ID: 66', 'Cybex-Candidate-Artifact-SHA256: ' + candidate_digest,
+                'Cybex-Cold-Qualification: required']),
+            assets=[dict(id=i, name=name, browser_download_url=base + name, size=len(body),
+                         digest='sha256:' + hashlib.sha256(body).hexdigest())
+                    for i, (name, body) in enumerate(bodies.items(), 1)])
+        promoted = {}
+
+        def api(_repository, path):
+            return {'actions/runs/42': {'head_sha': self.source, 'head_branch': tag,
+                        'event': 'push', 'path': '.github/workflows/release.yml'},
+                'commits/' + tag: {'sha': self.source},
+                'actions/runs/42/jobs?per_page=100': {'jobs': [{'name':
+                    'Verify published release from a cold production fixture', 'conclusion': 'success'}]},
+                'actions/artifacts/77': dict(expired=False, size_in_bytes=len(archive),
+                    workflow_run={'id': 42, 'head_sha': self.source},
+                    name='cybex-james-published-cold-42', digest='sha256:' + action_digest),
+                'releases/tags/' + tag: promoted or staged, 'releases/latest': promoted}[path]
+
+        def edit(arguments, **_kwargs):
+            self.assertEqual(arguments[:4], ['gh', 'release', 'edit', tag])
+            self.assertIn('--prerelease=false', arguments)
+            self.assertIn('--latest', arguments)
+            notes = Path(arguments[arguments.index('--notes-file') + 1]).read_text()
+            self.assertIn('Cybex-Cold-Artifact-SHA256: sha256:' + action_digest, notes)
+            self.assertNotIn('Cybex-Cold-Qualification: required', notes)
+            promoted.update(staged | {'prerelease': False, 'body': notes})
+
+        arguments = ['promote', '--repository', 'CybexHQ/james', '--tag', tag, '--source', self.source,
+            '--run', '42', '--artifact-id', '77', '--artifact-digest', action_digest,
+            '--candidate-id', '66', '--candidate-digest', candidate_digest, '--trusted-public-key', 'fixture']
+        # Exercise real CLI, ZIP/provenance, acceptance, notes and inventory checks.
+        # Only remote transport and independently tested signature/lineage admission
+        # are replaced; the immutable candidate/evidence identities remain coupled.
+        with mock.patch.object(sys, 'argv', arguments), \
+                mock.patch.object(promotion.predecessor, 'github', side_effect=api), \
+                mock.patch.object(promotion.subprocess, 'check_output', return_value=archive), \
+                mock.patch.object(promotion.subprocess, 'run', side_effect=edit), \
+                mock.patch.object(promotion.predecessor, 'fetch', side_effect=lambda url, path, *_a, **_k:
+                    path.write_bytes(bodies[url.rsplit('/', 1)[-1]])), \
+                mock.patch.object(promotion.predecessor, 'verify_pair', return_value=self.manifest), \
+                mock.patch.object(promotion.predecessor, 'resolve', return_value=identity):
+            promotion.main()
+        self.assertEqual(promoted['assets'], staged['assets'])
 
 
 if __name__ == '__main__':
