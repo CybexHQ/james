@@ -1,0 +1,86 @@
+{
+  "schema": "cybex.james.release.v1",
+  "version": "0.2.1-dev.29",
+  "release_url": "https://manage.cybex.net/james-dev-artifacts/0.2.1-dev.29",
+  "notes_url": "https://manage.cybex.net/james-dev-artifacts/0.2.1-dev.29",
+  "published_at": "2026-09-17T20:13:03Z",
+  "artifact": {
+    "url": "https://manage.cybex.net/james-dev-artifacts/0.2.1-dev.29/cybex-james-x86_64-linux",
+    "sha256": "49242c954911e2291d703d2bcff6901f2d0a85db7e53138d76e017d2d2e7ae32"
+  },
+  "signature": "/Bfgxzv+AQk+i1vECbUfULfyX+fkh1N3aWzF3wwK7VRrAade/HoMkAow7XXrd3Mxy/webJp72etNfrU0Z9owBA==",
+  "installer_iso_template_v2": {
+    "version": "0.2.1-dev.29",
+    "architecture": "x86_64-linux",
+    "base_os": "ubuntu",
+    "base_os_version": "26.04",
+    "url": "https://manage.cybex.net/james-dev-artifacts/0.2.1-dev.29/cybex-james-appliance-template-0.2.1-dev.29-x86_64-linux.iso",
+    "size_bytes": 1663496192,
+    "template_sha256": "2324c4656332d7d792784c7fc96d35ee642a116e92c79427c753c940843fad70",
+    "personalization_offset": 1658179584,
+    "personalization_size": 8192,
+    "placeholder_sha256": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+    "provisioning_public_keys": [
+      "+jP1KchZdnIb5F2shD2jPc4+sRte0iR0m1+Jhg07N8Q="
+    ],
+    "manage_origin": "https://manage.cybex.net",
+    "package_delivery": "network-snapshot-v1",
+    "signature": "4qMZ8nHwlWX/L7ircMk8qy2FXUDkRVKW8/kU6B79RAO5q8S1Wxd7VKPs42uHcjvUA+PkJiJSgR0mX/SXhjkUAg=="
+  },
+  "appliance_release_v1": {
+    "schema": "cybex.james.appliance-release.v2",
+    "release_id": "0.2.1-dev.29",
+    "ubuntu_snapshot_id": "20260901T000000Z",
+    "cybex_repository_snapshot": {
+      "url": "https://manage.cybex.net/james-dev-artifacts/0.2.1-dev.29/cybex-james-appliance-packages-0.2.1-dev.29-x86_64-linux.tar.zst",
+      "sha256": "373e253a14edd363e963bff3b9d29389883b0988badc97d30589e4c165581a29",
+      "size_bytes": 993272325
+    },
+    "required_package_versions": {
+      "cybex-james": "0.2.1-dev.29-1",
+      "cybex-james-bootstrap": "0.2.1-dev.29-1",
+      "cybex-james-appliance": "0.2.1-dev.29-1",
+      "linux-generic": "7.0.0-30.30",
+      "linux-firmware": "20260319.git217ca6e4.1ubuntu",
+      "nix-bin": "2.34.3+dfsg-1",
+      "python3": "3.14.3-0ubuntu2"
+    },
+    "expected_kernel": "7.0.0-30.30",
+    "minimum_protocol": 4,
+    "minimum_state_schema": 2,
+    "rollback_compatible": true,
+    "release_notes": "https://manage.cybex.net/james-dev-artifacts/0.2.1-dev.29",
+    "source_revision": "b4211e8c544c11e48277c25508c12ad1c0d8fe9b",
+    "signature": "qYIUd4VoCAGRiLCTI90HuAL+J7skMpIw4aSHqu+Pce+QkF0q8QgNXIT2jUw+tZcLaK0OQBeYLsclI+Vq0GbNCQ=="
+  },
+  "workstation_netboot": {
+    "schema": "cybex.james.workstation-netboot.v1",
+    "runtime_version": "1.0.61",
+    "manage_source_revision": "8244528073a49d7fddd7f7991967041c37e49538",
+    "nixpkgs_revision": "74cc63f702f7d60a557e152a57b40fb1fd0f72ac",
+    "architecture": "x86_64-linux",
+    "format": "split-squashfs-v1",
+    "required_james_protocol": 4,
+    "url": "https://dev.cybex.net/james-dev-artifacts/0.2.1-dev.17/cybex-workstation-netboot-1.0.61-8244528073a4-x86_64-linux.tar.zst",
+    "sha256": "cacab29f9653e60ca71bc5a1cf916d631eddb80b792021912acdb8feea2a7fe5",
+    "size_bytes": 1258288291,
+    "manifest_sha256": "04f603a4a266992c086c2c0fd27956a4d90bfdbc434d453f343414d41280d368",
+    "components": {
+      "bzImage": {
+        "sha256": "90e092e32626d6bb10c96b9f546aa25e47b83d849b16242810b4289cda2370f9",
+        "size_bytes": 13517312
+      },
+      "initrd": {
+        "sha256": "f1475ea11fc752fb6880fd62c0d115b400cf782efe29e51d9c98b1c21fb80887",
+        "size_bytes": 45014981
+      },
+      "nix-store.squashfs": {
+        "sha256": "3b050758541552c2f05dbbdd685e31bc6d2a23f5d3446af3f1d74928de56fba5",
+        "size_bytes": 1212567552
+      }
+    },
+    "manage_source_sha256": "8d98301413251dcd3833ab349d7d3735baffed6da797681d9a625e69be486689",
+    "manage_source_size_bytes": 26736640,
+    "signature": "1DEMU2kX+5UgfV+HIIs++/52rwvgChHgoC2BivL7Z03hlcU3Iu4ZZKRZmOug7SeArUclVn15/uAiUjmx0JQsAQ=="
+  }
+}

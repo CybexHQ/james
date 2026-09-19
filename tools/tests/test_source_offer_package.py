@@ -1,4 +1,5 @@
 import hashlib
+import json
 from pathlib import Path
 import runpy
 import subprocess
@@ -7,6 +8,7 @@ import unittest
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 PACKAGE = runpy.run_path(str(REPOSITORY / 'ubuntu-appliance/package-source-offer.py'))['package_source_offer']
+GATE = runpy.run_path(str(REPOSITORY / 'ubuntu-appliance/qualification/legacy-bridge-gate.py'))
 
 
 class SourceOfferPackageTests(unittest.TestCase):
@@ -74,6 +76,25 @@ class SourceOfferPackageTests(unittest.TestCase):
                 PACKAGE(root, '0.2.1-dev.23', 1788220800)
             self.assertEqual(existing.read_bytes(), b'protected')
             self.assertTrue((root / 'CYBEX-SBOM.spdx.json').exists())
+
+    def test_release_gate_accepts_packaged_offer_and_rejects_missing_offer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.fixture(root)
+            (root / 'CYBEX-SBOM.spdx.json').write_text(json.dumps({
+                'spdxVersion': 'SPDX-2.3', 'dataLicense': 'CC0-1.0',
+                'packages': [{'name': 'udpcast', 'licenseDeclared': 'GPL-2.0-only AND BSD-2-Clause'}]}))
+            package = PACKAGE(root, '0.2.1-dev.29', 1788220800)
+            for name in ['udpcast_20120424-2build2_amd64.deb', 'Packages', 'Packages.gz', 'Release']:
+                (root / name).write_bytes(b'authenticated fixture')
+            (root / 'SHA256SUMS').write_text(''.join(
+                hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name + '\n'
+                for p in sorted(root.iterdir())))
+            (root / 'UBUNTU-SNAPSHOT-ID').write_text('20260901T000000Z\n')
+            GATE['validate_repository_checksums'](root)
+            package.unlink()
+            with self.assertRaises(GATE['GateError']):
+                GATE['validate_repository_checksums'](root)
 
 
 if __name__ == '__main__':

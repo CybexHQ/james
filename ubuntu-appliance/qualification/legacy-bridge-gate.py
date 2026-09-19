@@ -764,6 +764,45 @@ def candidate_packages(directory: Path) -> tuple[list[Path], str]:
     return packages, digest.hexdigest()
 
 
+def validate_packaged_source_offer(package: Path) -> None:
+    """Read the source-offer DEB emitted by build-offline-repo.sh.
+
+    Installed predecessors accept only DEBs in the repository grammar. The
+    producer therefore packages licensing/source material instead of leaving
+    loose source files next to Packages. Both forms remain authenticated.
+    """
+    metadata = run_bounded([str(DPKG_DEB_PATH), "--field", str(package), "Package"],
+                           "source-offer package identity", maximum=4096)
+    if metadata.stdout.strip() != b"cybex-james-source-offer":
+        fail("source-offer package identity is invalid")
+    with tempfile.TemporaryDirectory(prefix="cybex-source-offer-check-") as temporary:
+        root = Path(temporary)
+        run_bounded([str(DPKG_DEB_PATH), "--extract", str(package), str(root)],
+                    "source-offer package extraction", maximum=64 * 1024)
+        documents = root / "usr/share/doc/cybex-james/source-offer"
+        if documents.is_symlink() or not documents.is_dir():
+            fail("source-offer package has no regular source document directory")
+        names = {entry.name for entry in documents.iterdir()}
+        sources = {name for name in names if UDPCAST_SOURCE_RE.fullmatch(name)}
+        if (len([name for name in sources if name.endswith(".dsc")]) != 1
+                or len(sources) < 3
+                or names != sources | {"CYBEX-SBOM.spdx.json", "UDPCAST-COPYRIGHT"}):
+            fail("source-offer package omits complete corresponding source")
+        for name in names:
+            open_regular(documents / name, "source-offer document", 64 * 1024 * 1024)
+        try:
+            sbom = json.loads((documents / "CYBEX-SBOM.spdx.json").read_bytes())
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            fail("source-offer SPDX SBOM is malformed")
+        packages = sbom.get("packages") if isinstance(sbom, dict) else None
+        if (not isinstance(sbom, dict) or sbom.get("spdxVersion") != "SPDX-2.3"
+                or sbom.get("dataLicense") != "CC0-1.0"
+                or not isinstance(packages, list) or len(packages) != 1
+                or not isinstance(packages[0], dict) or packages[0].get("name") != "udpcast"
+                or packages[0].get("licenseDeclared") != "GPL-2.0-only AND BSD-2-Clause"):
+            fail("source-offer SPDX SBOM is invalid")
+
+
 def validate_repository_checksums(packages_dir: Path) -> None:
     entries = read_package_entries(packages_dir)
     package_names = {
@@ -779,8 +818,13 @@ def validate_repository_checksums(packages_dir: Path) -> None:
         and UDPCAST_SOURCE_RE.fullmatch(entry.name)
     }
     has_udpcast_binary = any(name.startswith("udpcast_") for name in package_names)
+    source_offer_names = {name for name in package_names if name.startswith("cybex-james-source-offer_")}
     udpcast_support_names: set[str] = set()
-    if has_udpcast_binary:
+    if has_udpcast_binary and source_offer_names:
+        if len(source_offer_names) != 1 or udpcast_source_names:
+            fail("candidate repository has ambiguous corresponding source")
+        validate_packaged_source_offer(packages_dir / next(iter(source_offer_names)))
+    elif has_udpcast_binary:
         descriptors = [name for name in udpcast_source_names if name.endswith(".dsc")]
         payloads = [name for name in udpcast_source_names if not name.endswith(".dsc")]
         if len(descriptors) != 1 or not payloads:
@@ -812,7 +856,7 @@ def validate_repository_checksums(packages_dir: Path) -> None:
             != "GPL-2.0-only AND BSD-2-Clause"
         ):
             fail("candidate UDPcast SPDX SBOM is invalid")
-    elif udpcast_source_names or any(
+    elif source_offer_names or udpcast_source_names or any(
         entry.name in {"CYBEX-SBOM.spdx.json", "UDPCAST-COPYRIGHT"}
         for entry in entries
     ):

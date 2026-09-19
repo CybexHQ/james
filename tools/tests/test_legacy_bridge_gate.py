@@ -667,9 +667,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
             encoding="utf-8"
         )
         gate = workflow.index("Require a monotone legacy-update bridge before signing")
-        predecessor = workflow.index(
-            "Resolve and authenticate latest published predecessor"
-        )
+        predecessor = workflow.index("Resolve and authenticate production predecessor")
         signing = workflow.index("Sign and self-verify release manifests")
         self.assertLess(predecessor, gate)
         self.assertLess(gate, signing)
@@ -679,47 +677,34 @@ class LegacyBridgeGateTests(unittest.TestCase):
         self.assertIn("--snapshot-metadata", workflow[gate:signing])
         self.assertIn("--predecessor-identity", workflow[gate:signing])
         self.assertNotIn("CYBEX_JAMES_PREDECESSOR_UPDATE_CONTRACT", workflow)
-        self.assertIn("identify-predecessor", workflow[predecessor:gate])
+        self.assertIn("release_predecessor.py", workflow[predecessor:gate])
         self.assertIn(
             "steps.published-predecessor.outputs.update_contract == 'legacy_all_debs'",
             workflow,
         )
         self.assertIn("has_predecessor: ${{ steps.published-predecessor.outputs.exists }}", workflow)
-        self.assertIn("printf 'exists=false\\n' >> \"$GITHUB_OUTPUT\"", workflow)
         self.assertIn(
             "if: needs.release_build.outputs.has_predecessor == 'true'",
             workflow,
         )
-        self.assertIn("test -z \"$previous\"", workflow)
         self.assertIn("test ! -e dist/cybex-james-build-predecessor.json", workflow)
         publish = workflow.index("release_publish:")
-        recheck = workflow.index("recheck-predecessor", publish)
+        recheck = workflow.index("release_predecessor.py", publish)
         publish_release = workflow.index(
             'gh release edit "$GITHUB_REF_NAME" --draft=false', publish
         )
         self.assertLess(recheck, publish_release)
-        self.assertIn("--package-snapshot-sha256", workflow[recheck:publish_release])
-        self.assertIn("--package-snapshot-size", workflow[recheck:publish_release])
+        self.assertIn("--expected-identity qualification/cybex-james-qualified-predecessor.json", workflow[publish:publish_release])
         self.assertIn("group: james-release-publish", workflow[publish:recheck])
         self.assertIn("cybex-james-qualified-predecessor.json", workflow)
-        qualification = workflow.index(
-            "Exercise real installed predecessor to exact candidate update"
-        )
+        qualification = workflow.index("Qualify fresh installation, real upgrade and automatic rollback")
         upload = workflow.index("Upload bounded qualification evidence", qualification)
         qualification_body = workflow[qualification:upload]
-        self.assertIn("case \"$CYBEX_JAMES_PUBLISHED_PREDECESSOR_UPDATE_CONTRACT\"", qualification_body)
-        legacy = qualification_body.index("legacy_all_debs)")
-        selective = qualification_body.index("selective_roots_v2)")
-        self.assertLess(legacy, selective)
-        self.assertIn("$signed_package_url", qualification_body[legacy:selective])
-        self.assertIn(
-            'qualification_package_transport_url="$signed_package_url"',
-            qualification_body[legacy:selective],
-        )
-        self.assertIn(
-            "--qualification-package-transport-url",
-            qualification_body[selective:],
-        )
+        self.assertIn("run-production-qualification.py", qualification_body)
+        self.assertIn("--predecessor-dir", qualification_body)
+        self.assertNotIn("CYBEX_JAMES_UPDATE_PREDECESSOR_DEVICE_ID", workflow)
+        self.assertNotIn("secrets.CYBEX_FORGE_QUALIFICATION_TOKEN", workflow)
+        self.assertIn(".automatic_rollback", workflow)
         self.assertIn("cybex-james-ubuntu-update-qualification.json", workflow)
         self.assertIn("cybex.james.ubuntu-appliance-update-qualification.v1", workflow)
         self.assertIn(".workstation_runtime_operational' \"$evidence\"", workflow)
@@ -1418,14 +1403,15 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
                 connection_factory=create,
             )
 
-    def test_production_workflow_is_byte_identical(self) -> None:
-        workflow = (REPOSITORY / ".github/workflows/release.yml").read_bytes()
-        # Includes dnsmasq-base for executable PXE checks and the reviewed
-        # --appliance-source-revision binding for new v2 candidates.
-        self.assertEqual(
-            digest(workflow),
-            "a882c50a705fcbd62a3e9c69714b98ce7210d61c71bc2e9638ea53950d9c215f",
-        )
+    def test_production_publication_keeps_build_once_and_verifies_predecessor_under_lock(self) -> None:
+        workflow = (REPOSITORY / ".github/workflows/release.yml").read_text()
+        self.assertIn("refusing to rebuild or re-sign", workflow)
+        publish = workflow[workflow.index("  release_publish:"):]
+        self.assertIn("group: james-release-publish", publish)
+        self.assertLess(publish.index("release_predecessor.py"), publish.index('gh release edit "$GITHUB_REF_NAME" --draft=false'))
+        self.assertIn("--expected-identity qualification/cybex-james-qualified-predecessor.json", publish)
+        self.assertIn("verify-successor", publish)
+
 
 
 if __name__ == "__main__":

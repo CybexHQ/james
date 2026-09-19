@@ -302,15 +302,12 @@ class CanonicalPackageStageTests(unittest.TestCase):
         self.assertIn("does not map exactly", result.stderr)
 
     def test_production_legacy_branch_remains_fail_closed_on_canonical_https(self) -> None:
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        legacy_branch = workflow[
-            workflow.index("legacy_all_debs)") : workflow.index("selective_roots_v2)")
-        ]
-        self.assertIn("signed_package_url", legacy_branch)
-        self.assertIn("--proto '=https'", legacy_branch)
-        self.assertIn("qualification_package_transport_url=\"$signed_package_url\"", legacy_branch)
-        self.assertNotIn("serve-package-snapshot.py", legacy_branch)
-        self.assertNotIn("gh release create", legacy_branch)
+        runner = (WORKFLOW.parents[2] / 'ubuntu-appliance/qualification/run-production-qualification.py').read_text()
+        # The protected transport override is never used for historical updaters
+        # that only admit canonical HTTPS. Recovery adopts authenticated dev.29.
+        gate = runner.index("identity['update_contract'] != 'selective_roots_v2'")
+        self.assertIn('raise ValueError', runner[gate:gate + 300])
+        self.assertIn('canonical HTTPS package preflight', runner[gate:gate + 300])
 
     def test_documentation_calls_out_the_github_immutable_release_blocker(self) -> None:
         documentation = APPLIANCE_README.read_text(encoding="utf-8")

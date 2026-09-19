@@ -349,146 +349,33 @@ jobs:
             "$RUNNER_TEMP/cybex-james-appliance-packages-metadata.json"
           test "$(dist/cybex-james-x86_64-linux --version)" = "cybex-james $version"
 
-      - name: Resolve and authenticate latest published predecessor
+      - name: Resolve and authenticate production predecessor
         id: published-predecessor
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
-          releases="$RUNNER_TEMP/cybex-james-published-releases.json"
-          gh api --paginate --slurp \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$releases"
-          previous="$(jq -c --arg current "$GITHUB_REF_NAME" \
-            '[.[][] | select(
-               .draft == false and .tag_name != $current
-               and ([.assets[]?.name] | index("cybex-james-release.json") != null)
-               and ([.assets[]?.name] | index("cybex-james-release-compatibility.json") != null)
-             )]
-             | sort_by([(.published_at // .created_at), .id]) | last // empty' \
-            "$releases")"
-          candidate_predecessor="dist/cybex-james-build-predecessor.json"
-          if [ -z "$previous" ]; then
-            # The renamed repository can contain historical Forge releases, but
-            # only a signed James asset pair establishes a James predecessor.
-            printf 'exists=false\n' >> "$GITHUB_OUTPUT"
-            if [ "${{ steps.release-candidate.outputs.reuse }}" = true ]; then
-              test ! -e "$candidate_predecessor"
-            else
-              rm -f -- "$candidate_predecessor"
-            fi
-            exit 0
-          fi
-          printf 'exists=true\n' >> "$GITHUB_OUTPUT"
-          release_id="$(jq -er '.id' <<<"$previous")"
-          tag_name="$(jq -er '.tag_name' <<<"$previous")"
-          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
-          [[ "$tag_name" =~ ^v[0-9][0-9A-Za-z.+-]*$ ]]
-          remote_tag_commit="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/commits/$tag_name" --jq '.sha')"
-          [[ "$remote_tag_commit" =~ ^[0-9a-fA-F]{40}$ ]]
-          test "$(jq -er '.target_commitish' <<<"$previous")" = "$remote_tag_commit"
-          assets="$RUNNER_TEMP/cybex-james-previous-release-assets.json"
-          gh api --paginate --slurp \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
-            > "$assets"
-          for required_asset in \
-            cybex-james-release-compatibility.json \
-            cybex-james-release.json
-          do
-            test "$(jq --arg name "$required_asset" \
-              '[.[][] | select(.name == $name)] | length' "$assets")" -eq 1
-          done
-          compatibility_asset_id="$(jq -er \
-            '.[][] | select(.name == "cybex-james-release-compatibility.json") | .id' \
-            "$assets")"
-          manifest_asset_id="$(jq -er \
-            '.[][] | select(.name == "cybex-james-release.json") | .id' \
-            "$assets")"
-          [[ "$compatibility_asset_id" =~ ^[1-9][0-9]*$ ]]
-          [[ "$manifest_asset_id" =~ ^[1-9][0-9]*$ ]]
-          previous_asset="$RUNNER_TEMP/cybex-james-previous-release-compatibility.json"
-          gh api \
-            -H 'Accept: application/octet-stream' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases/assets/$compatibility_asset_id" \
-            > "$previous_asset"
-          test -f "$previous_asset" && test ! -L "$previous_asset"
-          test "$(stat -c %s "$previous_asset")" -gt 0
-          test "$(stat -c %s "$previous_asset")" -le 1048576
-          predecessor_manifest="$RUNNER_TEMP/cybex-james-previous-release.json"
-          gh api \
-            -H 'Accept: application/octet-stream' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases/assets/$manifest_asset_id" \
-            > "$predecessor_manifest"
-          test -f "$predecessor_manifest" && test ! -L "$predecessor_manifest"
-          test "$(stat -c %s "$predecessor_manifest")" -gt 0
-          test "$(stat -c %s "$predecessor_manifest")" -le 4194304
-          snapshot_name="$(jq -er '.appliance_release_v1.cybex_repository_snapshot.url | split("/") | last' \
-            "$predecessor_manifest")"
-          [[ "$snapshot_name" =~ ^cybex-james-appliance-packages-[0-9A-Za-z.+-]+-x86_64-linux\.tar\.zst$ ]]
-          test "$(jq --arg name "$snapshot_name" \
-            '[.[][] | select(.name == $name)] | length' "$assets")" -eq 1
-          snapshot_asset_id="$(jq -er --arg name "$snapshot_name" \
-            '.[][] | select(.name == $name) | .id' "$assets")"
-          snapshot_asset_size="$(jq -er --arg name "$snapshot_name" \
-            '.[][] | select(.name == $name) | .size' "$assets")"
-          signed_snapshot_size="$(jq -er \
-            '.appliance_release_v1.cybex_repository_snapshot.size_bytes' \
-            "$predecessor_manifest")"
-          [[ "$snapshot_asset_id" =~ ^[1-9][0-9]*$ ]]
-          [[ "$snapshot_asset_size" =~ ^[1-9][0-9]*$ ]]
-          test "$snapshot_asset_size" -le $((4 * 1024 * 1024 * 1024))
-          test "$snapshot_asset_size" = "$signed_snapshot_size"
-          snapshot_asset_digest="$(jq -r --arg name "$snapshot_name" \
-            '.[][] | select(.name == $name) | .digest // ""' "$assets")"
-          if [[ -n "$snapshot_asset_digest" ]]; then
-            test "$snapshot_asset_digest" = \
-              "sha256:$(jq -er '.appliance_release_v1.cybex_repository_snapshot.sha256' \
-                "$predecessor_manifest")"
-          fi
-          predecessor_snapshot="$RUNNER_TEMP/$snapshot_name"
-          gh api \
-            -H 'Accept: application/octet-stream' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases/assets/$snapshot_asset_id" \
-            > "$predecessor_snapshot"
-          predecessor_identity="$RUNNER_TEMP/cybex-james-published-predecessor.json"
-          python3 -B ubuntu-appliance/qualification/legacy-bridge-gate.py \
-            identify-predecessor \
-            --compatibility "$previous_asset" \
-            --manifest "$predecessor_manifest" \
-            --package-snapshot "$predecessor_snapshot" \
-            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
-            --release-verifier tools/james-release.py \
-            --github-release-id "$release_id" \
-            --tag-name "$tag_name" \
-            --output "$predecessor_identity"
-          identity_sha256="$(sha256sum "$predecessor_identity" | awk '{print $1}')"
-          identity_b64="$(base64 --wrap=0 "$predecessor_identity")"
-          predecessor_release="$(jq -er '.release_id' "$predecessor_identity")"
-          predecessor_snapshot_id="$(jq -er '.ubuntu_snapshot_id' "$predecessor_identity")"
-          update_contract="$(jq -er '.update_contract' "$predecessor_identity")"
-          printf 'identity_b64=%s\nidentity_sha256=%s\nrelease_id=%s\nsnapshot_id=%s\nupdate_contract=%s\n' \
-            "$identity_b64" "$identity_sha256" "$predecessor_release" \
-            "$predecessor_snapshot_id" "$update_contract" >> "$GITHUB_OUTPUT"
+          directory="$RUNNER_TEMP/cybex-james-predecessor"
+          identity="$RUNNER_TEMP/cybex-james-published-predecessor.json"
+          arguments=()
           if [ "${{ steps.release-candidate.outputs.reuse }}" = true ]; then
-            test -f "$candidate_predecessor" && test ! -L "$candidate_predecessor"
-            cmp --silent -- "$predecessor_identity" "$candidate_predecessor" || {
-              echo '::error::The latest signed predecessor changed; rebuild and requalify the candidate'
-              exit 1
-            }
-          else
-            install -m 0444 "$predecessor_identity" "$candidate_predecessor"
+            arguments+=(--expected-identity dist/cybex-james-build-predecessor.json)
           fi
-          rm -f -- "$predecessor_snapshot"
+          python3 -B ubuntu-appliance/qualification/release_predecessor.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --candidate-version "${{ steps.release-version.outputs.version }}" \
+            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
+            --directory "$directory" --output "$identity" \
+            --github-output "$GITHUB_OUTPUT" "${arguments[@]}"
+          if [ -f "$identity" ]; then
+            [[ "$CYBEX_JAMES_UBUNTU_SNAPSHOT_ID" > "$(jq -er '.ubuntu_snapshot_id' "$identity")" ]]
+            install -m 0444 "$directory/cybex-james-release-compatibility.json" \
+              "$RUNNER_TEMP/cybex-james-previous-release-compatibility.json"
+            if [ "${{ steps.release-candidate.outputs.reuse }}" != true ]; then
+              install -m 0444 "$identity" dist/cybex-james-build-predecessor.json
+            fi
+          fi
 
       - name: Require a monotone legacy-update bridge before signing
         if: steps.release-candidate.outputs.reuse != 'true' && steps.published-predecessor.outputs.update_contract == 'legacy_all_debs'
@@ -681,6 +568,9 @@ jobs:
     needs: release_build
     runs-on: [self-hosted, linux, x64, cybex-james-lab]
     environment: production-release-qualification
+    concurrency:
+      group: james-production-qualification-lab
+      cancel-in-progress: false
     outputs:
       artifact_id: ${{ steps.upload-qualification.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload-qualification.outputs.artifact-digest }}
@@ -694,12 +584,6 @@ jobs:
       CYBEX_JAMES_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
       CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
       CYBEX_JAMES_HAS_PREDECESSOR: ${{ needs.release_build.outputs.has_predecessor }}
-      CYBEX_JAMES_QUALIFICATION_BRIDGE: ${{ vars.CYBEX_JAMES_QUALIFICATION_BRIDGE }}
-      CYBEX_JAMES_QUALIFICATION_PACKAGE_BIND_ADDRESS: ${{ vars.CYBEX_JAMES_QUALIFICATION_PACKAGE_BIND_ADDRESS }}
-      CYBEX_JAMES_QUALIFICATION_MANAGEMENT_CIDR: ${{ vars.CYBEX_JAMES_QUALIFICATION_MANAGEMENT_CIDR }}
-      CYBEX_JAMES_UPDATE_PREDECESSOR_EVIDENCE_B64: ${{ vars.CYBEX_JAMES_UPDATE_PREDECESSOR_EVIDENCE_B64 }}
-      CYBEX_JAMES_UPDATE_PREDECESSOR_EVIDENCE_SHA256: ${{ vars.CYBEX_JAMES_UPDATE_PREDECESSOR_EVIDENCE_SHA256 }}
-      CYBEX_JAMES_UPDATE_PREDECESSOR_DEVICE_ID: ${{ vars.CYBEX_JAMES_UPDATE_PREDECESSOR_DEVICE_ID }}
       CYBEX_JAMES_PUBLISHED_PREDECESSOR_IDENTITY_B64: ${{ needs.release_build.outputs.predecessor_identity_b64 }}
       CYBEX_JAMES_PUBLISHED_PREDECESSOR_IDENTITY_SHA256: ${{ needs.release_build.outputs.predecessor_identity_sha256 }}
       CYBEX_JAMES_PUBLISHED_PREDECESSOR_RELEASE: ${{ needs.release_build.outputs.predecessor_release }}
@@ -746,159 +630,32 @@ jobs:
             --compatibility protocol/compatibility.json \
             --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
 
-      - name: Exercise Secure Boot provisioned-media lifecycle
+      - name: Resolve exact predecessor media for disposable fixtures
         shell: bash
         env:
-          # The sealed secret keeps its pre-rename storage key until it is rotated.
-          CYBEX_JAMES_QUALIFICATION_TOKEN: ${{ secrets.CYBEX_FORGE_QUALIFICATION_TOKEN }}
-          CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
-          test -n "$CYBEX_JAMES_QUALIFICATION_TOKEN"
-          python3 -B tools/james-release.py validate-manage-origin \
-            --expected-manage-origin "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN"
-          test "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN" = \
-            "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN"
-          token_file="$RUNNER_TEMP/james-qualification-token"
-          cleanup_token() { shred -u -n 1 -z -- "$token_file" 2>/dev/null || rm -f -- "$token_file"; }
-          trap cleanup_token EXIT
-          umask 077
-          printf '%s' "$CYBEX_JAMES_QUALIFICATION_TOKEN" > "$token_file"
-          ubuntu-appliance/qualification/run-lifecycle.sh \
-            --template "dist/cybex-james-appliance-template-$CYBEX_JAMES_RELEASE_VERSION-x86_64-linux.iso" \
-            --manifest dist/cybex-james-release.json \
-            --manage-origin "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN" \
-            --token-file "$token_file" \
-            --output "$RUNNER_TEMP/cybex-james-ubuntu-qualification.json"
-          cleanup_token
-          trap - EXIT
+          test "$CYBEX_JAMES_HAS_PREDECESSOR" = true
+          python3 -B ubuntu-appliance/qualification/release_predecessor.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --candidate-version "$CYBEX_JAMES_RELEASE_VERSION" \
+            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
+            --directory "$RUNNER_TEMP/cybex-james-predecessor" \
+            --output "$RUNNER_TEMP/cybex-james-predecessor/identity.json" \
+            --expected-identity dist/cybex-james-build-predecessor.json --download-media
 
-      - name: Exercise real installed predecessor to exact candidate update
-        if: needs.release_build.outputs.has_predecessor == 'true'
+      - name: Qualify fresh installation, real upgrade and automatic rollback
         shell: bash
-        env:
-          # The sealed secret keeps its pre-rename storage key until it is rotated.
-          CYBEX_JAMES_QUALIFICATION_TOKEN: ${{ secrets.CYBEX_FORGE_QUALIFICATION_TOKEN }}
-          CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN }}
+        timeout-minutes: 240
         run: |
           set -Eeuo pipefail
-          : "${CYBEX_JAMES_UPDATE_PREDECESSOR_EVIDENCE_B64:?configure the clean installed predecessor qualification evidence}"
-          [[ "$CYBEX_JAMES_UPDATE_PREDECESSOR_EVIDENCE_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$CYBEX_JAMES_UPDATE_PREDECESSOR_DEVICE_ID" =~ ^[0-9A-Za-z][0-9A-Za-z._:-]{0,255}$ ]]
-          predecessor_evidence="$RUNNER_TEMP/cybex-james-predecessor-qualification.json"
-          predecessor_identity="$RUNNER_TEMP/cybex-james-qualified-predecessor.json"
-          token_file="$RUNNER_TEMP/james-update-qualification-token"
-          package_server_pid=""
-          cleanup_update_inputs() {
-            if [[ -n "$package_server_pid" ]]; then
-              kill "$package_server_pid" 2>/dev/null || true
-              wait "$package_server_pid" 2>/dev/null || true
-            fi
-            shred -u -n 1 -z -- "$token_file" 2>/dev/null || rm -f -- "$token_file"
-            rm -f -- "$predecessor_evidence" \
-              "$RUNNER_TEMP/cybex-james-legacy-canonical-package.tar.zst"
-          }
-          trap cleanup_update_inputs EXIT
-          umask 077
-          printf '%s' "$CYBEX_JAMES_UPDATE_PREDECESSOR_EVIDENCE_B64" | base64 --decode > "$predecessor_evidence"
-          printf '%s' "$CYBEX_JAMES_PUBLISHED_PREDECESSOR_IDENTITY_B64" | base64 --decode > "$predecessor_identity"
-          cmp --silent -- \
-            dist/cybex-james-build-predecessor.json "$predecessor_identity"
-          test "$(stat -c %s "$predecessor_evidence")" -le 1048576
-          test "$(sha256sum "$predecessor_evidence" | awk '{print $1}')" = \
-            "$CYBEX_JAMES_UPDATE_PREDECESSOR_EVIDENCE_SHA256"
-          test "$(sha256sum "$predecessor_identity" | awk '{print $1}')" = \
-            "$CYBEX_JAMES_PUBLISHED_PREDECESSOR_IDENTITY_SHA256"
-          test "$(jq -er '.release_id' "$predecessor_identity")" = \
-            "$CYBEX_JAMES_PUBLISHED_PREDECESSOR_RELEASE"
-          test "$(jq -er '.ubuntu_snapshot_id' "$predecessor_identity")" = \
-            "$CYBEX_JAMES_PUBLISHED_PREDECESSOR_SNAPSHOT"
-          test "$(jq -er '.update_contract' "$predecessor_identity")" = \
-            "$CYBEX_JAMES_PUBLISHED_PREDECESSOR_UPDATE_CONTRACT"
-          test "$(jq -er '.release_version' "$predecessor_evidence")" = \
-            "$CYBEX_JAMES_PUBLISHED_PREDECESSOR_RELEASE"
-          test "$(jq -er '.ubuntu_snapshot_id' "$predecessor_evidence")" = \
-            "$CYBEX_JAMES_PUBLISHED_PREDECESSOR_SNAPSHOT"
-          test "$(jq -er '.release_version' "$predecessor_evidence")" != \
-            "$CYBEX_JAMES_RELEASE_VERSION"
-          package_snapshot="dist/cybex-james-appliance-packages-$CYBEX_JAMES_RELEASE_VERSION-x86_64-linux.tar.zst"
-          package_filename="$(basename "$package_snapshot")"
-          signed_package_url="$(jq -er '.appliance_release_v1.cybex_repository_snapshot.url' \
-            dist/cybex-james-release.json)"
-          test "$(stat -c %s "$package_snapshot")" = \
-            "$(jq -er '.appliance_release_v1.cybex_repository_snapshot.size_bytes' dist/cybex-james-release.json)"
-          test "$(sha256sum "$package_snapshot" | awk '{print $1}')" = \
-            "$(jq -er '.appliance_release_v1.cybex_repository_snapshot.sha256' dist/cybex-james-release.json)"
-          qualification_package_transport_url=""
-          case "$CYBEX_JAMES_PUBLISHED_PREDECESSOR_UPDATE_CONTRACT" in
-            legacy_all_debs)
-              # Frozen dev11 rejects any extra managed-update field. Prove that
-              # the exact signed URL is already readable before asking Manage
-              # to deliver the canonical three-field request.
-              canonical_download="$RUNNER_TEMP/cybex-james-legacy-canonical-package.tar.zst"
-              curl --fail --silent --show-error --location \
-                --proto '=https' --proto-redir '=https' --tlsv1.2 \
-                --max-filesize "$((4 * 1024 * 1024 * 1024))" \
-                --output "$canonical_download" "$signed_package_url"
-              test "$(stat -c %s "$canonical_download")" = \
-                "$(stat -c %s "$package_snapshot")"
-              test "$(sha256sum "$canonical_download" | awk '{print $1}')" = \
-                "$(sha256sum "$package_snapshot" | awk '{print $1}')"
-              rm -f -- "$canonical_download"
-              qualification_package_transport_url="$signed_package_url"
-              ;;
-            selective_roots_v2)
-              mapfile -t bridge_addresses < <(
-                ip -4 -o address show dev "$CYBEX_JAMES_QUALIFICATION_BRIDGE" scope global \
-                  | awk '{sub(/\/.*/, "", $4); print $4}'
-              )
-              package_bind_address="$CYBEX_JAMES_QUALIFICATION_PACKAGE_BIND_ADDRESS"
-              if [[ -n "$package_bind_address" ]]; then
-                printf '%s\n' "${bridge_addresses[@]}" | grep -Fx "$package_bind_address" >/dev/null
-              else
-                for candidate_address in "${bridge_addresses[@]}"; do
-                  if python3 -B -c \
-                    'import ipaddress,sys; a=ipaddress.ip_address(sys.argv[1]); raise SystemExit(not (a.version == 4 and a.is_private and not a.is_loopback))' \
-                    "$candidate_address"
-                  then
-                    package_bind_address="$candidate_address"
-                    break
-                  fi
-                done
-              fi
-              test -n "$package_bind_address"
-              package_port_file="$RUNNER_TEMP/james-update-package-server.port"
-              python3 -B ubuntu-appliance/qualification/serve-package-snapshot.py \
-                --bind "$package_bind_address" --file "$package_snapshot" \
-                --port-file "$package_port_file" &
-              package_server_pid=$!
-              for _attempt in $(seq 1 100); do
-                [[ -s "$package_port_file" ]] && break
-                kill -0 "$package_server_pid"
-                sleep 0.1
-              done
-              package_port="$(tr -d '\r\n' < "$package_port_file")"
-              [[ "$package_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((package_port <= 65535))
-              qualification_package_transport_url="http://$package_bind_address:$package_port/$package_filename"
-              curl --fail --silent --show-error --proto '=http' --head \
-                "$qualification_package_transport_url" >/dev/null
-              ;;
-            *)
-              echo 'error: authenticated predecessor updater contract is unsupported' >&2
-              exit 1
-              ;;
-          esac
-          printf '%s' "$CYBEX_JAMES_QUALIFICATION_TOKEN" > "$token_file"
-          ubuntu-appliance/qualification/run-update-lifecycle.sh \
-            --predecessor-evidence "$predecessor_evidence" \
-            --candidate-manifest dist/cybex-james-release.json \
-            --qualification-package-transport-url "$qualification_package_transport_url" \
-            --manage-origin "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN" \
-            --token-file "$token_file" \
-            --server-device-id "$CYBEX_JAMES_UPDATE_PREDECESSOR_DEVICE_ID" \
-            --output "$RUNNER_TEMP/cybex-james-ubuntu-update-qualification.json"
-          cleanup_update_inputs
-          trap - EXIT
+          sudo -n python3 ubuntu-appliance/qualification/run-production-qualification.py \
+            --run "release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --candidate-dir "$GITHUB_WORKSPACE/dist" \
+            --predecessor-dir "$RUNNER_TEMP/cybex-james-predecessor" \
+            --evidence-dir "$RUNNER_TEMP/cybex-james-evidence" \
+            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
 
       - name: Upload bounded qualification evidence
         id: upload-qualification
@@ -906,9 +663,10 @@ jobs:
         with:
           name: cybex-james-qualified-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/cybex-james-ubuntu-qualification.json
-            ${{ runner.temp }}/cybex-james-ubuntu-update-qualification.json
-            ${{ runner.temp }}/cybex-james-qualified-predecessor.json
+            ${{ runner.temp }}/cybex-james-evidence/cybex-james-ubuntu-qualification.json
+            ${{ runner.temp }}/cybex-james-evidence/cybex-james-ubuntu-update-qualification.json
+            ${{ runner.temp }}/cybex-james-evidence/cybex-james-qualified-predecessor.json
+            ${{ runner.temp }}/cybex-james-evidence/cybex-james-ubuntu-rollback-qualification.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
@@ -1094,6 +852,14 @@ jobs:
               ;;
             *) echo 'error: invalid James predecessor state' >&2; exit 1 ;;
           esac
+          rollback=qualification/cybex-james-ubuntu-rollback-qualification.json
+          test -f "$rollback" && test ! -L "$rollback"
+          test "$(jq -er '.schema' "$rollback")" = cybex.james.ubuntu-appliance-rollback-qualification.v1
+          test "$(jq -er '.ok and .automatic_rollback and .candidate_reboot_observed and .fallback_reboot_observed and .identity_preserved and .runtime_preserved and .secure_boot' "$rollback")" = true
+          test "$(jq -er '.candidate_manifest_sha256' "$rollback")" = "$(sha256sum dist/cybex-james-release.json | awk '{print $1}')"
+          test "$(jq -er '.candidate_release' "$rollback")" = "$version"
+          test "$(jq -er '.predecessor_release' "$rollback")" = "${{ needs.release_build.outputs.predecessor_release }}"
+          test "$(jq -er '.root_generation' "$rollback")" = 0
           test "$(jq -er '.builtin_blueprints_source_free' "$evidence")" = true
           test "$(jq -er '.builtin_blueprints_deliverable' "$evidence")" = true
           test "$(jq -er '.builtin_blueprints_qualified_on_new_james' "$evidence")" = true
@@ -1174,6 +940,7 @@ jobs:
             dist/cybex-james-build-predecessor.json
             qualification/cybex-james-ubuntu-update-qualification.json
             qualification/cybex-james-qualified-predecessor.json
+            qualification/cybex-james-ubuntu-rollback-qualification.json
 
       - name: Remove only a stale draft for this exact tag
         env:
@@ -1233,6 +1000,7 @@ jobs:
               --arg checksums "SHA256SUMS" \
               --arg qualification "cybex-james-ubuntu-qualification.json" \
               --arg update_qualification "cybex-james-ubuntu-update-qualification.json" \
+              --arg rollback_qualification "cybex-james-ubuntu-rollback-qualification.json" \
               --arg predecessor_identity "cybex-james-build-predecessor.json" \
               'type == "array"
                and length <= 10
@@ -1279,6 +1047,7 @@ jobs:
             release_assets+=(
               dist/cybex-james-build-predecessor.json
               qualification/cybex-james-ubuntu-update-qualification.json
+              qualification/cybex-james-ubuntu-rollback-qualification.json
             )
           fi
           gh release upload "$GITHUB_REF_NAME" "${release_assets[@]}"
@@ -1316,6 +1085,7 @@ jobs:
             release_asset_paths+=(
               dist/cybex-james-build-predecessor.json
               qualification/cybex-james-ubuntu-update-qualification.json
+              qualification/cybex-james-ubuntu-rollback-qualification.json
             )
           fi
           expected_asset_count="${#release_asset_paths[@]}"
@@ -1349,97 +1119,26 @@ jobs:
           done
           test "$matched" = "true"
           test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')" = "true"
-          releases="$RUNNER_TEMP/cybex-james-publish-predecessors.json"
-          gh api --paginate --slurp \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$releases"
-          previous="$(jq -c --arg current "$GITHUB_REF_NAME" \
-            '[.[][] | select(
-               .draft == false and .tag_name != $current
-               and ([.assets[]?.name] | index("cybex-james-release.json") != null)
-               and ([.assets[]?.name] | index("cybex-james-release-compatibility.json") != null)
-             )]
-             | sort_by([(.published_at // .created_at), .id]) | last // empty' \
-            "$releases")"
+          # Resolve both signed authorities again under the publication lock.
+          # A changed publication, recovery anchor or package invalidates the run.
+          predecessor="$RUNNER_TEMP/cybex-james-publish-predecessor"
+          arguments=()
           if [ "$CYBEX_JAMES_HAS_PREDECESSOR" = true ]; then
-          test -n "$previous"
-          previous_release_id="$(jq -er '.id' <<<"$previous")"
-          previous_tag_name="$(jq -er '.tag_name' <<<"$previous")"
-          [[ "$previous_release_id" =~ ^[1-9][0-9]*$ ]]
-          [[ "$previous_tag_name" =~ ^v[0-9][0-9A-Za-z.+-]*$ ]]
-          previous_assets="$RUNNER_TEMP/cybex-james-publish-predecessor-assets.json"
-          gh api --paginate --slurp \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases/$previous_release_id/assets?per_page=100" \
-            > "$previous_assets"
-          for required_asset in \
-            cybex-james-release-compatibility.json \
-            cybex-james-release.json
-          do
-            test "$(jq --arg name "$required_asset" \
-              '[.[][] | select(.name == $name)] | length' "$previous_assets")" -eq 1
-          done
-          previous_compatibility_id="$(jq -er \
-            '.[][] | select(.name == "cybex-james-release-compatibility.json") | .id' \
-            "$previous_assets")"
-          previous_manifest_id="$(jq -er \
-            '.[][] | select(.name == "cybex-james-release.json") | .id' \
-            "$previous_assets")"
-          [[ "$previous_compatibility_id" =~ ^[1-9][0-9]*$ ]]
-          [[ "$previous_manifest_id" =~ ^[1-9][0-9]*$ ]]
-          previous_compatibility="$RUNNER_TEMP/cybex-james-publish-predecessor-compatibility.json"
-          previous_manifest="$RUNNER_TEMP/cybex-james-publish-predecessor-manifest.json"
-          gh api \
-            -H 'Accept: application/octet-stream' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases/assets/$previous_compatibility_id" \
-            > "$previous_compatibility"
-          gh api \
-            -H 'Accept: application/octet-stream' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases/assets/$previous_manifest_id" \
-            > "$previous_manifest"
-          previous_snapshot_name="$(jq -er \
-            '.appliance_release_v1.cybex_repository_snapshot.url | split("/") | last' \
-            "$previous_manifest")"
-          [[ "$previous_snapshot_name" =~ ^cybex-james-appliance-packages-[0-9A-Za-z.+-]+-x86_64-linux\.tar\.zst$ ]]
-          test "$(jq --arg name "$previous_snapshot_name" \
-            '[.[][] | select(.name == $name)] | length' "$previous_assets")" -eq 1
-          previous_snapshot_size="$(jq -er --arg name "$previous_snapshot_name" \
-            '.[][] | select(.name == $name) | .size' "$previous_assets")"
-          previous_snapshot_digest="$(jq -er --arg name "$previous_snapshot_name" \
-            '.[][] | select(.name == $name) | .digest' "$previous_assets")"
-          [[ "$previous_snapshot_size" =~ ^[1-9][0-9]*$ ]]
-          [[ "$previous_snapshot_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          test "$previous_snapshot_size" = "$(jq -er \
-            '.appliance_release_v1.cybex_repository_snapshot.size_bytes' \
-            "$previous_manifest")"
-          test "${previous_snapshot_digest#sha256:}" = "$(jq -er \
-            '.appliance_release_v1.cybex_repository_snapshot.sha256' \
-            "$previous_manifest")"
-          python3 -B ubuntu-appliance/qualification/legacy-bridge-gate.py \
-            recheck-predecessor \
-            --qualified-identity qualification/cybex-james-qualified-predecessor.json \
-            --compatibility "$previous_compatibility" \
-            --manifest "$previous_manifest" \
+            arguments+=(--expected-identity qualification/cybex-james-qualified-predecessor.json)
+          fi
+          python3 -B ubuntu-appliance/qualification/release_predecessor.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --candidate-version "$CYBEX_JAMES_RELEASE_VERSION" \
             --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
-            --release-verifier tools/james-release.py \
-            --github-release-id "$previous_release_id" \
-            --tag-name "$previous_tag_name" \
-            --package-snapshot-sha256 "${previous_snapshot_digest#sha256:}" \
-            --package-snapshot-size "$previous_snapshot_size"
-          python3 -B tools/james-release.py verify-successor \
-            --previous-compatibility "$previous_compatibility" \
-            --current-compatibility dist/cybex-james-release-compatibility.json \
-            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
+            --directory "$predecessor" --output "$predecessor/identity.json" \
+            "${arguments[@]}"
+          if [ "$CYBEX_JAMES_HAS_PREDECESSOR" = true ]; then
+            python3 -B tools/james-release.py verify-successor \
+              --previous-compatibility "$predecessor/cybex-james-release-compatibility.json" \
+              --current-compatibility dist/cybex-james-release-compatibility.json \
+              --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
           else
-            # The repository-wide publish lock makes this an atomic first-James
-            # release check. Any concurrent James publication invalidates a
-            # candidate that was built without a predecessor.
-            test "$CYBEX_JAMES_HAS_PREDECESSOR" = false
-            test -z "$previous"
+            test ! -e "$predecessor/identity.json"
             test ! -e qualification/cybex-james-qualified-predecessor.json
             test ! -e qualification/cybex-james-ubuntu-update-qualification.json
             test ! -e dist/cybex-james-build-predecessor.json
@@ -1466,3 +1165,58 @@ jobs:
           for path in "${release_asset_paths[@]}"; do
             gh release verify-asset "$GITHUB_REF_NAME" "$path"
           done
+
+
+  release_cold_qualify:
+    name: Verify published release from a cold production fixture
+    needs: [release_build, release_publish]
+    runs-on: [self-hosted, linux, x64, cybex-james-lab]
+    environment: production-release-qualification
+    concurrency:
+      group: james-production-qualification-lab
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout exact published source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download the same immutable candidate artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.release_build.outputs.artifact_id }}
+          path: dist
+          merge-multiple: true
+
+      - name: Require exact published bytes and cold runtime convergence
+        shell: bash
+        timeout-minutes: 90
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
+        run: |
+          set -Eeuo pipefail
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+          published="$RUNNER_TEMP/cybex-james-published-manifest.json"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/cybex-james-release.json" \
+            --output "$published"
+          cmp dist/cybex-james-release.json "$published"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq '.immutable')" = true
+          sudo -n python3 ubuntu-appliance/qualification/run-production-qualification.py \
+            --run "published-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --candidate-dir "$GITHUB_WORKSPACE/dist" \
+            --evidence-dir "$RUNNER_TEMP/cybex-james-cold-evidence" \
+            --trusted-public-key "$TRUSTED_KEY" --published-cold
+
+      - name: Retain published cold-install qualification evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cybex-james-published-cold-${{ github.run_id }}
+          path: ${{ runner.temp }}/cybex-james-cold-evidence/cybex-james-published-cold-qualification.json
+          if-no-files-found: error
+          retention-days: 90

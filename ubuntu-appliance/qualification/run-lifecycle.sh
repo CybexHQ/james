@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 usage() {
-  echo "usage: $0 --template ISO --manifest JSON --manage-origin URL --token-file FILE --output FILE [--published-predecessor-inputs JSON]" >&2
+  echo "usage: $0 --template ISO --manifest JSON --manage-origin URL --token-file FILE --output FILE [--published-predecessor-inputs JSON] [--retain-fixture DIRECTORY] [--require-candidate-runtime]" >&2
   exit 2
 }
 
@@ -14,6 +14,8 @@ manage_origin=""
 token_file=""
 output=""
 published_predecessor_inputs=""
+fixture_dir=""
+require_candidate_runtime=false
 while (($#)); do
   case "$1" in
     --template) template="${2:-}"; shift 2 ;;
@@ -21,11 +23,16 @@ while (($#)); do
     --manage-origin) manage_origin="${2:-}"; shift 2 ;;
     --token-file) token_file="${2:-}"; shift 2 ;;
     --published-predecessor-inputs) published_predecessor_inputs="${2:-}"; shift 2 ;;
+    --retain-fixture) fixture_dir="${2:-}"; shift 2 ;;
+    --require-candidate-runtime) require_candidate_runtime=true; shift ;;
     --output) output="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
 done
 test -f "$template" && test -f "$manifest" && test -f "$token_file" && test -n "$output"
+if [[ -n "$fixture_dir" ]]; then
+  [[ "$fixture_dir" = /* ]] && test ! -e "$fixture_dir" && test ! -L "$fixture_dir"
+fi
 for command_name in curl git ip jq python3 qemu-system-x86_64 truncate sha256sum openssl ssh-keygen; do
   command -v "$command_name" >/dev/null || { echo "error: missing $command_name" >&2; exit 1; }
 done
@@ -55,6 +62,8 @@ jq -e --arg source_revision "$source_revision" '
 fi
 bridge="${CYBEX_JAMES_QUALIFICATION_BRIDGE:?set the isolated qualification bridge}"
 management_cidr="${CYBEX_JAMES_QUALIFICATION_MANAGEMENT_CIDR:?set the qualification Management CIDR}"
+memory_mib="${CYBEX_JAMES_QUALIFICATION_MEMORY_MIB:-32768}"
+[[ "$memory_mib" =~ ^[0-9]+$ ]] && ((memory_mib >= 32768 && memory_mib <= 65536))
 token="$(tr -d '\r\n' < "$token_file")"
 test -n "$token"
 release_version="$(jq -er '.version' "$manifest")"
@@ -91,6 +100,23 @@ cleanup() {
   fi
   if [[ -f "$personalized" ]]; then
     shred -u -n 1 -z -- "$personalized" 2>/dev/null || rm -f -- "$personalized"
+  fi
+  if [[ "$lifecycle_succeeded" = true && -n "$fixture_dir" ]]; then
+    # Stop the VM before handing off its disk. The update wrapper owns the next
+    # boot and final cleanup; no daemon or stale device-ID variable is retained.
+    mkdir -m 0700 -- "$fixture_dir"
+    mv -- "$work_dir/appliance.raw" "$work_dir/OVMF_VARS.fd" "$fixture_dir/"
+    jq -n --arg device_id "$device_id" --arg bridge "$bridge" \
+      --arg manifest_sha256 "$(sha256sum "$manifest" | awk '{print $1}')" \
+      '{schema:"cybex.james.qualification-fixture.v1",device_id:$device_id,
+        bridge:$bridge,manifest_sha256:$manifest_sha256,mac:"52:54:00:c7:be:01"}' \
+      > "$fixture_dir/fixture.json"
+  fi
+  if [[ "$lifecycle_succeeded" != true && -n "${CYBEX_JAMES_QUALIFICATION_FAILURE_DIRECTORY:-}" && -f "$work_dir/appliance.raw" ]]; then
+    # Private local diagnostics only. The owner removes these with the private
+    # database; they must never be uploaded as public qualification evidence.
+    mkdir -m 0700 -- "$CYBEX_JAMES_QUALIFICATION_FAILURE_DIRECTORY"
+    mv -- "$work_dir/appliance.raw" "$work_dir/OVMF_VARS.fd" "$work_dir/serial.log" "$CYBEX_JAMES_QUALIFICATION_FAILURE_DIRECTORY/"
   fi
   rm -rf -- "$work_dir"
 }
@@ -243,7 +269,7 @@ cp -- "$vars_template" "$work_dir/OVMF_VARS.fd"
 
 start_qemu() {
   qemu-system-x86_64 \
-    -enable-kvm -machine q35,smm=on -cpu host -smp 4 -m 32768 \
+    -enable-kvm -machine q35,smm=on -cpu host -smp 4 -m "$memory_mib" \
     -global driver=cfi.pflash01,property=secure,value=on \
     -drive "if=pflash,format=raw,unit=0,readonly=on,file=$code" \
     -drive "if=pflash,format=raw,unit=1,file=$work_dir/OVMF_VARS.fd" \
@@ -252,7 +278,8 @@ start_qemu() {
     -drive "if=none,id=installer,media=cdrom,readonly=on,format=raw,file=$personalized" \
     -device ide-cd,drive=installer \
     -netdev "bridge,id=net0,br=$bridge" -device virtio-net-pci,netdev=net0,mac=52:54:00:c7:be:01 \
-    -boot "once=d,menu=off" -display none -serial "file:$work_dir/serial.log" &
+    -boot "once=d,menu=off" -display none -serial "file:$work_dir/serial.log" \
+    -qmp "unix:$work_dir/qmp.sock,server=on,wait=off" &
   qemu_pid=$!
 }
 
@@ -284,7 +311,8 @@ approve_body="$(jq -cn \
   --argjson revision "$revision" --arg inventory "$inventory_sha" \
   --arg disk "$disk_id" --arg interface "$interface_id" --arg cidr "$management_cidr" \
   --arg display_name "James release qualification $release_version $session_suffix" \
-  '{session_revision:$revision,inventory_sha256:$inventory,display_name:$display_name,target_disk_id:$disk,network:{mode:"dhcp",interface_id:$interface,address_cidr:null,gateway:null,dns_servers:[]},maintenance_window:{timezone:"UTC",weekday:0,start:"02:00",duration_minutes:120},management_cidrs:[$cidr]}')"
+  --argjson weekday "$(date -u +%w)" --arg start "$(date -u +%H:%M)" \
+  '{session_revision:$revision,inventory_sha256:$inventory,display_name:$display_name,target_disk_id:$disk,network:{mode:"dhcp",interface_id:$interface,address_cidr:null,gateway:null,dns_servers:[]},maintenance_window:{timezone:"UTC",weekday:$weekday,start:$start,duration_minutes:240},management_cidrs:[$cidr]}')"
 api POST "/v1/james/provisioning-sessions/$session_id/approve" "$approve_body" >/dev/null
 
 ready=false
@@ -406,6 +434,17 @@ else
   done
   test "$runtime_operational" = true
   test "$runtime_converged" = true
+fi
+if [[ "$require_candidate_runtime" = true ]]; then
+  # Used after immutable publication with a cold disk. Before publication the
+  # normal compatibility lifecycle truthfully exercises the selected predecessor.
+  test "$runtime_operational" = true
+  for projection in active desired; do
+    test "$(jq -er --arg p "$projection" '.[$p].bundle_sha256' "$runtime_status")" = \
+      "$(jq -er '.workstation_netboot.sha256' "$manifest")"
+    test "$(jq -er --arg p "$projection" '.[$p].runtime_version' "$runtime_status")" = \
+      "$(jq -er '.workstation_netboot.runtime_version' "$manifest")"
+  done
 fi
 
 build_jobs="$work_dir/build-jobs.json"
@@ -539,6 +578,8 @@ jq -n \
   --arg ubuntu_snapshot_id "$ubuntu_snapshot_id" \
   --arg root_generation "$(jq -er '.root_generation | tostring' "$node")" \
   --arg session_id "$session_id" --arg template_sha256 "$template_sha" \
+  --arg device_id "$device_id" \
+  --argjson candidate_runtime_required "$require_candidate_runtime" \
   --arg personalized_sha256 "$personalized_sha" \
   --argjson workstation_runtime_operational "$runtime_operational" \
   --argjson workstation_runtime_converged "$runtime_converged" \
@@ -548,7 +589,8 @@ jq -n \
     harness_revision:$harness_revision,qualification_kind:$qualification_kind,
     qualified_manifest_sha256:$qualified_manifest_sha256,qualified_blueprints:$qualified_blueprints[0],
     ubuntu_snapshot_id:$ubuntu_snapshot_id,root_generation:$root_generation,
-    session_id:$session_id,template_sha256:$template_sha256,
+    session_id:$session_id,device_id:$device_id,template_sha256:$template_sha256,
+    candidate_runtime_required:$candidate_runtime_required,
     personalized_sha256:$personalized_sha256,secure_boot:true,
     no_disk_write_before_approval:true,identity_rotation:true,
     installed_media_left_attached:true,appliance_projection_healthy:true,

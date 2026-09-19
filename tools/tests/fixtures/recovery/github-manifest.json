@@ -1,0 +1,83 @@
+{
+  "schema": "cybex.james.release.v1",
+  "version": "0.2.1-dev.4",
+  "release_url": "https://github.com/CybexHQ/james/releases/tag/v0.2.1-dev.4",
+  "notes_url": "https://github.com/CybexHQ/james/releases/tag/v0.2.1-dev.4",
+  "published_at": "2026-08-19T13:58:19Z",
+  "artifact": {
+    "url": "https://github.com/CybexHQ/james/releases/download/v0.2.1-dev.4/cybex-james-x86_64-linux",
+    "sha256": "ea90326b25655b61150e3947904aac924c4dcb5881acb11c9e1542e9646051fa"
+  },
+  "signature": "OA5lNUxWuLiINK3HTyK/yeSf8jLkh2Kb4lYYyy5x66NpbHpsoENpxmfSI1NY+GRaLyDZW+0YHFwP0JP4DoOLCA==",
+  "installer_iso_template_v2": {
+    "version": "0.2.1-dev.4",
+    "architecture": "x86_64-linux",
+    "base_os": "ubuntu",
+    "base_os_version": "26.04",
+    "url": "https://github.com/CybexHQ/james/releases/download/v0.2.1-dev.4/cybex-james-appliance-template-0.2.1-dev.4-x86_64-linux.iso",
+    "size_bytes": 1662615552,
+    "template_sha256": "c611a60c3bcfa2b096347ca1010bc4b8bc241eaef4798b8a958719a639f9c818",
+    "personalization_offset": 1657298944,
+    "personalization_size": 8192,
+    "placeholder_sha256": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+    "provisioning_public_keys": [
+      "hPP4v57tlss/uP0Rf7FGRFCKuDvrs4Gsx0x4EEN5ohc="
+    ],
+    "manage_origin": "https://manage.cybex.net",
+    "package_delivery": "network-snapshot-v1",
+    "signature": "zgVIyBO4sIHw0E6BiyTTziDBdTcS0L/HybSmFs9TtIcK6i3AqcnzUwZI1Kd8z9UzFFgbO9CTmCLaHvudi5z9Bg=="
+  },
+  "appliance_release_v1": {
+    "schema": "cybex.james.appliance-release.v1",
+    "release_id": "0.2.1-dev.4",
+    "ubuntu_snapshot_id": "20260805T000000Z",
+    "cybex_repository_snapshot": {
+      "url": "https://github.com/CybexHQ/james/releases/download/v0.2.1-dev.4/cybex-james-appliance-packages-0.2.1-dev.4-x86_64-linux.tar.zst",
+      "sha256": "ecc0aafc58ee2df14696d0c72a4ecad90a40b610b38ccf7a4035eb75763c5cdc",
+      "size_bytes": 993487259
+    },
+    "required_package_versions": {
+      "cybex-james": "0.2.1-dev.4-1",
+      "cybex-james-bootstrap": "0.2.1-dev.4-1",
+      "cybex-james-appliance": "0.2.1-dev.4-1",
+      "linux-generic": "7.0.0-29.29",
+      "linux-firmware": "20260319.git217ca6e4.1ubuntu",
+      "nix-bin": "2.34.3+dfsg-1",
+      "python3": "3.14.3-0ubuntu2"
+    },
+    "expected_kernel": "7.0.0-29.29",
+    "minimum_protocol": 4,
+    "minimum_state_schema": 2,
+    "rollback_compatible": true,
+    "release_notes": "https://github.com/CybexHQ/james/releases/tag/v0.2.1-dev.4",
+    "signature": "B2WCd9e6EGRqOnAVB2l4/5VhbD95QGI1BnK1WHmIqiN9OVruWwUts0wX4Sk5kEpx5rT9LENYzZH/vnLtMV83CA=="
+  },
+  "workstation_netboot": {
+    "schema": "cybex.james.workstation-netboot.v1",
+    "runtime_version": "1.0.15",
+    "manage_source_revision": "f9234cbfff592bacd34bcaa8e39137c35e2d08e7",
+    "nixpkgs_revision": "74cc63f702f7d60a557e152a57b40fb1fd0f72ac",
+    "architecture": "x86_64-linux",
+    "format": "split-squashfs-v1",
+    "required_james_protocol": 4,
+    "url": "https://github.com/CybexHQ/james/releases/download/v0.2.1-dev.4/cybex-workstation-netboot-1.0.15-f9234cbfff59-x86_64-linux.tar.zst",
+    "sha256": "525fd961aec31b538aa9d4e8089eb1506391e17b5a91deb449451aec01f250ff",
+    "size_bytes": 1416150311,
+    "manifest_sha256": "618f8bea9c194dfc816d5663a4123321237dd18ce90ab8ed31aaa77f59bb5dbc",
+    "components": {
+      "bzImage": {
+        "sha256": "90e092e32626d6bb10c96b9f546aa25e47b83d849b16242810b4289cda2370f9",
+        "size_bytes": 13517312
+      },
+      "initrd": {
+        "sha256": "f06b5056ac07f5798f34a33b7b51480ee11cf23154d9f74a1d0b391665e315e3",
+        "size_bytes": 31407598
+      },
+      "nix-store.squashfs": {
+        "sha256": "16e7cee40417860bfa8d30af2b2d873c2213bacee31f334d59b6fd2a2a389ed2",
+        "size_bytes": 1384628224
+      }
+    },
+    "signature": "lVyogyfbURDR2kTzmUyR3XCbGjWjhdv9kGOwQcMrBPz+spRF8H+cYqeZ2V0mBRooKRgNPmYsl6MEFwSv3IAaAw=="
+  }
+}

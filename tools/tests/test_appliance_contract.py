@@ -1290,7 +1290,8 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
         self.assertIn('-device ide-cd,drive=installer', script)
         self.assertEqual(script.count("\nstart_qemu\n"), 1)
         self.assertNotIn("start_qemu installed", script)
-        self.assertIn("-m 32768", script)
+        self.assertIn('CYBEX_JAMES_QUALIFICATION_MEMORY_MIB:-32768', script)
+        self.assertIn('-m "$memory_mib"', script)
 
     def test_qualification_makes_the_personalized_iso_private_and_writable(self) -> None:
         script = QUALIFICATION_LIFECYCLE.read_text(encoding="utf-8")
