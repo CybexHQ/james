@@ -103,6 +103,32 @@ class QualificationTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 workstation.require_workstation(bad, descriptor, blueprint, before, verified)
 
+    def test_managed_reboot_requests_one_fresh_probe_only_after_observed_return(self):
+        before = {'facts_json': {'boot_id': 'old'}}
+        calls = []
+        completed = False
+
+        def api(path, body=None):
+            if body:
+                calls.append(body['command_type'])
+                return {'id': 'command'}
+            return {'commands': [{'id': 'command', 'status': 'completed' if completed else 'running'}]}
+
+        def wait_for(label, read, accept, timeout):
+            nonlocal completed
+            after = {'facts_json': {'boot_id': 'new'}, 'last_seen_at': workstation.now().isoformat()}
+            self.assertFalse(accept(after))
+            completed = True
+            self.assertFalse(accept(after | {'facts_json': {'boot_id': 'old'}}))
+            self.assertFalse(accept(after | {'last_seen_at': '2020-01-01T00:00:00Z'}))
+            self.assertTrue(accept(after))
+            self.assertEqual(calls, ['reboot'])
+            return after
+
+        result = workstation.managed_reboot(api, '/v1/devices/owned', before, wait_for, lambda: None)
+        self.assertEqual(result['facts_json']['boot_id'], 'new')
+        self.assertEqual(calls, ['reboot', 'verify_blueprint'])
+
     def test_descriptor_digest_is_independent_of_incoming_json_key_order(self):
         descriptor = {'runtime_version': '1.0.67', 'components': {
             name: {'sha256': 'a' * 64, 'size_bytes': 1}

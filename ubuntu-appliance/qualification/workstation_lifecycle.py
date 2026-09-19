@@ -74,6 +74,25 @@ def require_workstation(device, descriptor, blueprint, previous=None, verified_a
         raise ValueError('Blueprint activation changed the installed workstation identity')
 
 
+def managed_reboot(api, prefix, before, wait_for, device):
+    old_boot = before['facts_json']['boot_id']
+    request_time = now()
+    command = api(prefix + '/commands', {'command_type': 'reboot', 'payload': {}})
+
+    def returned(value):
+        commands = api(prefix + '/commands?limit=100&offset=0')['commands']
+        completed = any(v['id'] == command['id'] and v['status'] == 'completed' for v in commands)
+        return (completed and fresh(value.get('last_seen_at'), request_time)
+                and value.get('facts_json', {}).get('boot_id') not in (None, old_boot))
+
+    result = wait_for('Managed workstation reboot', device, returned, 900)
+    # Heartbeats can arrive inside Manage's reboot grace period. Request the
+    # supported read-only probe rather than waiting for its hourly fallback.
+    # converge still requires fresh, exact compliance from the returned boot.
+    api(prefix + '/commands', {'command_type': 'verify_blueprint', 'payload': {}})
+    return result
+
+
 class Workstation:
     def __init__(self, state):
         self.directory = state / 'workstation'
@@ -195,15 +214,7 @@ def run(api, state, james, manifest, catalog, output):
             return api(prefix)
 
         def reboot(before):
-            old_boot = before['facts_json']['boot_id']
-            request_time = now()
-            command = api(prefix + '/commands', {'command_type': 'reboot', 'payload': {}})
-            def returned(value):
-                commands = api(prefix + '/commands?limit=100&offset=0')['commands']
-                completed = any(v['id'] == command['id'] and v['status'] == 'completed' for v in commands)
-                return (completed and fresh(value.get('last_seen_at'), request_time)
-                        and value.get('facts_json', {}).get('boot_id') not in (None, old_boot))
-            return wait_for('Managed workstation reboot', device, returned, 900)
+            return managed_reboot(api, prefix, before, wait_for, device)
 
         def converge(blueprint, previous=None, verified_after=None):
             reboot_requested = False
