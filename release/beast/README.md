@@ -14,6 +14,12 @@ runner credentials, signing key or private source key. A small allowlist passes
 public build inputs. Signing happens after the container exits, with the existing
 protected environment key and signature/compatibility checks.
 
+Before compilation, `preflight.sh` checks the native packaging tools and performs
+a compressed cpio archive round trip inside the pinned Nix release-tools shell.
+That shell explicitly supplies cpio, jq and Python instead of depending on
+packages preinstalled on a GitHub runner. Nix uses the container's explicit Bash
+path, so no ambient `nixpkgs` channel is needed.
+
 The dedicated paths below `~/.local/state/cybex-james-build` contain Cargo,
 compiled target, Nix and Ubuntu ISO caches. These are deliberately separate from
 the host Nix store and its build-user IDs. Docker is the isolation boundary;

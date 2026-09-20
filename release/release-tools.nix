@@ -9,7 +9,10 @@ let
 in
 pkgs.mkShellNoCC {
   packages = with pkgs; [
+    cpio
     dracut
+    jq
+    python3
     gnutar
     squashfsTools
     zstd

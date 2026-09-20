@@ -77,7 +77,8 @@ def main():
             retained = runner_temp / 'cybex-james-retained-manage-source'
             if retained.exists():
                 shutil.copytree(retained, scratch / retained.name)
-            (scratch / 'build.sh').write_text(sys.stdin.read())
+            (scratch / 'build.sh').write_text(
+                'set -euo pipefail\nbash release/beast/preflight.sh\n' + sys.stdin.read())
             # Only this new copy enters the container, never checkout credentials
             # or arbitrary runner scratch (which may contain signing material).
             output = ROOT / 'dist'
