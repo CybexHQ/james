@@ -199,11 +199,15 @@ class AcceptanceTests(unittest.TestCase):
         with mock.patch.object(sys, 'argv', arguments), \
                 mock.patch.object(promotion.predecessor, 'github', side_effect=api), \
                 mock.patch.object(promotion.subprocess, 'check_output', return_value=archive), \
-                mock.patch.object(promotion.subprocess, 'run', side_effect=edit), \
+                mock.patch.object(promotion.subprocess, 'run', side_effect=edit) as mutation, \
                 mock.patch.object(promotion.predecessor, 'fetch', side_effect=lambda url, path, *_a, **_k:
                     path.write_bytes(bodies[url.rsplit('/', 1)[-1]])), \
                 mock.patch.object(promotion.predecessor, 'verify_pair', return_value=self.manifest), \
                 mock.patch.object(promotion.predecessor, 'resolve', return_value=identity):
+            with mock.patch.object(sys, 'argv', arguments + ['--verify-only']):
+                promotion.main()
+                mutation.assert_not_called()
+                self.assertEqual(promoted, {})
             promotion.main()
         self.assertEqual(promoted['assets'], staged['assets'])
 

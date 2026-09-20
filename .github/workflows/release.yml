@@ -98,6 +98,7 @@ jobs:
     environment: production-release
     outputs:
       version: ${{ steps.release-version.outputs.version }}
+      coordinated: ${{ steps.release-version.outputs.coordinated }}
       manage_origin: ${{ steps.release-version.outputs.manage_origin }}
       artifact_id: ${{ steps.release-artifact.outputs.artifact_id }}
       artifact_digest: ${{ steps.release-artifact.outputs.artifact_digest }}
@@ -135,6 +136,7 @@ jobs:
           set -euo pipefail
           version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
           test "v$version" = "$GITHUB_REF_NAME"
+          python3 tools/coordinated-release.py validate >> "$GITHUB_OUTPUT"
           test -n "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
           test -n "$CYBEX_JAMES_PROVISIONING_PUBLIC_KEYS"
           [[ "$CYBEX_JAMES_UBUNTU_SNAPSHOT_ID" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]
@@ -164,7 +166,7 @@ jobs:
           revision="$(jq -er '.revision' release/workstation-netboot-source.json)"
           runtime_version="$(jq -er '.runtime_version' release/workstation-netboot-source.json)"
           nixpkgs_revision="$(sed -n 's/^[[:space:]]*revision = "\([0-9a-f]*\)";.*/\1/p' release/nixpkgs.nix)"
-          test "$repository" = "CybexHQ/manage"
+          [[ "$repository" = "CybexHQ/manage" || "$repository" = "CybexHQ/development" ]]
           [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
           [[ "$nixpkgs_revision" =~ ^[0-9a-f]{40}$ ]]
           [[ "$runtime_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([-+][0-9A-Za-z.-]+)?$ ]]
@@ -247,7 +249,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           # The sealed secret keeps its pre-rename storage key until it is rotated.
-          ssh-key: ${{ secrets.CYBEX_FORGE_MANAGE_SOURCE_SSH_KEY }}
+          ssh-key: ${{ steps.workstation-source.outputs.repository == 'CybexHQ/development' && secrets.CYBEX_DEVELOPMENT_SOURCE_SSH_KEY || secrets.CYBEX_FORGE_MANAGE_SOURCE_SSH_KEY }}
 
       - name: Verify pinned Manage source and runtime version
         if: steps.release-candidate.outputs.reuse != 'true'
@@ -1245,6 +1247,7 @@ jobs:
           retention-days: 90
 
   release_promote:
+    if: needs.release_build.outputs.coordinated != 'true'
     name: Promote cold-qualified immutable release
     needs: [release_build, release_cold_qualify]
     runs-on: ubuntu-latest

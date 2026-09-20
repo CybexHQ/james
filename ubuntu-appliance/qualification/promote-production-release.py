@@ -45,6 +45,7 @@ def artifact_evidence(body, metadata, expected_digest, run, source):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--verify-only', action='store_true', help='Validate the exact candidate without promoting it')
     parser.add_argument('--repository', required=True)
     parser.add_argument('--tag', required=True)
     parser.add_argument('--source', required=True)
@@ -126,6 +127,9 @@ def main():
             raise ValueError('Existing stable release lacks this exact acceptance provenance')
         if body.splitlines().count('Cybex-Cold-Qualification: required') != 1:
             raise ValueError('Staged release lacks its pending cold-qualification marker')
+        if args.verify_only:
+            print('Exact immutable candidate passed cold qualification; production approval is still required')
+            return
         notes = directory / 'notes.md'
         notes.write_text(body.replace('Cybex-Cold-Qualification: required', '\n'.join(passed)) + '\n')
         subprocess.run(['gh', 'release', 'edit', args.tag, '--repo', args.repository,

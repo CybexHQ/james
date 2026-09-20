@@ -164,3 +164,18 @@ Manage source archive in the appliance package. Signing rejects missing or
 mismatched source identities before qualification. Disposable workstation
 qualification explicitly requests read-only verification after each observed
 managed reboot, while still requiring fresh exact compliance for every profile.
+
+### Coordinated Manage releases
+
+Digital Brain may create a candidate tag with `release/coordinated.json` and an immutable workstation
+source pin to `CybexHQ/development`. The normal release workflow still signs, builds once, publishes
+an immutable prerelease and cold-qualifies James/workstations. These tags skip automatic stable
+promotion. `approve-coordinated-release.yml` promotes only explicitly approved tag/source/run and
+artifact identities, reusing the canonical predecessor/qualification verifier and publication lock.
+`promote-production-release.py --verify-only` checks the same evidence without changing publication.
+
+Configure `CYBEX_DEVELOPMENT_SOURCE_SSH_KEY` in the `production-release` environment with a read-only
+key for the private development repository. Historical production-source pins retain their existing
+read-only key. Never copy development changes into the production Manage checkout to build a runtime.
+The coordinator retains source bundles for recovery; version tags and signed assets must never be
+rewritten. A failed or cancelled coordinated preparation can leave a safe, unpromoted prerelease.
