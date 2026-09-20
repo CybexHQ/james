@@ -179,3 +179,9 @@ key for the private development repository. Historical production-source pins re
 read-only key. Never copy development changes into the production Manage checkout to build a runtime.
 The coordinator retains source bundles for recovery; version tags and signed assets must never be
 rewritten. A failed or cancelled coordinated preparation can leave a safe, unpromoted prerelease.
+
+The production-release environment admits version tags, so dispatch approval and
+`check-development-source.yml` using the prepared `v*` tag as the workflow ref. The source-access
+check reads the requested development commit without building or publishing; it is deliberately
+rejected on `main` by the same environment protection. The private deploy key is available only
+inside that protected environment.
