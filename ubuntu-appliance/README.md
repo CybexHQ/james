@@ -250,7 +250,7 @@ live recovery handoff therefore has no undeclared dependency on `efibootmgr`.
   and readiness transition
 - `getty@tty1.service`: status-only physical console for the managed appliance
 - `cybex-james-firewall.service`: management-CIDR SSH nftables boundary
-- `cybex-james-appliance-update.timer/service`: maintenance-window root
+- `cybex-james-appliance-update.timer/service`: promptly approved root
   generation updater
 - `cybex-james-generation-commit.service`: candidate health/commit or rollback
 - `cybex-james-network-change.path/service`: signed two-phase Netplan changes

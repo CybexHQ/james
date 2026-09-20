@@ -2,9 +2,10 @@
 Description=Check for approved Cybex James appliance updates
 
 [Timer]
-OnBootSec=15min
-OnUnitInactiveSec=15min
-RandomizedDelaySec=5min
+OnBootSec=1min
+OnUnitInactiveSec=30s
+RandomizedDelaySec=5s
+AccuracySec=1s
 Persistent=true
 
 [Install]

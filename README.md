@@ -185,3 +185,20 @@ The production-release environment admits version tags, so dispatch approval and
 check reads the requested development commit without building or publishing; it is deliberately
 rejected on `main` by the same environment protection. The private deploy key is available only
 inside that protected environment.
+
+### Prompt approved appliance updates
+
+James checks for a staged, management-approved appliance update every 30 seconds
+(with up to five seconds of jitter). Approved updates apply immediately by default,
+including outside the installation plan's weekly maintenance window. Active builds,
+offline signature verification, compatibility checks and rollback health checks still
+apply. An offline James picks up the desired update when it reconnects; downloading
+and preparing the signed package snapshot can take longer than the polling interval.
+
+An administrator who needs scheduled appliance reboots can set
+`Environment=CYBEX_JAMES_APPLIANCE_UPDATE_SCHEDULE=maintenance_window` in a root-owned
+systemd drop-in for `cybex-james-appliance-update.service`, then run
+`systemctl daemon-reload`. Removing the override restores immediate delivery. This
+policy comes only from the root service environment, never from update-request data.
+Existing appliances need a signed release containing this updater before the new
+scheduling default takes effect. Workstation installation remains separately approved.

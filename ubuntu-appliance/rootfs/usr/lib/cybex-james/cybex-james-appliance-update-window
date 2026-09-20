@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Root service policy; never read the scheduling mode from the untrusted inbox.
+# Exit 75 means wait for the configured window; other failures are invalid policy.
+set -euo pipefail
+case "${CYBEX_JAMES_APPLIANCE_UPDATE_SCHEDULE:-immediate}" in
+  immediate) exit 0 ;;
+  maintenance_window) ;;
+  *) echo 'Invalid appliance update schedule' >&2; exit 1 ;;
+esac
+plan="${1:?install plan is required}"
+timezone="$(jq -er '.maintenance_window.timezone' "$plan")"
+weekday="$(jq -er '.maintenance_window.weekday' "$plan")"
+start="$(jq -er '.maintenance_window.start' "$plan")"
+duration="$(jq -er '.maintenance_window.duration_minutes' "$plan")"
+[[ "$timezone" =~ ^[A-Za-z0-9_+/-]{1,128}$ ]]
+[[ "$start" =~ ^[0-2][0-9]:[0-5][0-9]$ ]]
+[[ "$duration" =~ ^[0-9]+$ ]] && ((duration >= 15 && duration <= 1440))
+[[ "$weekday" =~ ^[0-6]$ ]]
+approved_day="$weekday"
+current_day="$(TZ="$timezone" date +%w)"
+current_hour="$(TZ="$timezone" date +%H)"
+current_minute="$(TZ="$timezone" date +%M)"
+start_hour="${start%:*}"
+start_minute="${start#*:}"
+current_week_minute=$((10#$current_day * 1440 + 10#$current_hour * 60 + 10#$current_minute))
+start_week_minute=$((approved_day * 1440 + 10#$start_hour * 60 + 10#$start_minute))
+elapsed=$(((current_week_minute - start_week_minute + 10080) % 10080))
+if ((elapsed >= duration)); then
+  exit 75
+fi
