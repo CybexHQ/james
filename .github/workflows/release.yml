@@ -137,6 +137,15 @@ jobs:
           version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
           test "v$version" = "$GITHUB_REF_NAME"
           python3 tools/coordinated-release.py validate >> "$GITHUB_OUTPUT"
+          # A coordinated tag freezes its own cutoff. Reusing the repository's
+          # previous snapshot would fail successor admission on every later release.
+          if [ -f release/coordinated.json ]; then
+            snapshot="$(jq -r '.ubuntu_snapshot_id // empty' release/coordinated.json)"
+            if [ -n "$snapshot" ]; then
+              CYBEX_JAMES_UBUNTU_SNAPSHOT_ID="$snapshot"
+              printf 'CYBEX_JAMES_UBUNTU_SNAPSHOT_ID=%s\n' "$snapshot" >> "$GITHUB_ENV"
+            fi
+          fi
           test -n "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
           test -n "$CYBEX_JAMES_PROVISIONING_PUBLIC_KEYS"
           [[ "$CYBEX_JAMES_UBUNTU_SNAPSHOT_ID" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]

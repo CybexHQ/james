@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pin a coordinated candidate; its tag builds a prerelease, never auto-promotes."""
 import argparse
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
@@ -18,15 +19,26 @@ def validate(root):
             or pin['repository'] != 'CybexHQ/development'
             or not re.fullmatch('[0-9a-f]{40}', pin['revision'])):
         raise ValueError('Invalid coordinated release source; automatic promotion is forbidden')
+    snapshot = value.get('ubuntu_snapshot_id')
+    if snapshot is not None:
+        validate_snapshot(snapshot)
     return True
 
 
-def pin(root, revision, runtime, version):
+def validate_snapshot(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[0-9]{8}T[0-9]{6}Z', value):
+        raise ValueError('An immutable UTC Ubuntu snapshot is required')
+    datetime.strptime(value, '%Y%m%dT%H%M%SZ')
+    return value
+
+
+def pin(root, revision, runtime, version, snapshot=None):
     if not re.fullmatch('[0-9a-f]{40}', revision):
         raise ValueError('An immutable development revision is required')
     for value in (runtime, version):
         if not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', value):
             raise ValueError('A stable semantic version is required')
+    snapshot = validate_snapshot(snapshot or datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
     manifest = root / 'Cargo.toml'
     old = tomllib.loads(manifest.read_text())['package']['version']
     if tuple(map(int, version.split('.'))) <= tuple(map(int, old.split('.'))):
@@ -42,6 +54,7 @@ def pin(root, revision, runtime, version):
     }, indent=2) + '\n')
     (root / 'release/coordinated.json').write_text(json.dumps({
         'schema': 'cybex.coordinated-release.v1', 'manage_revision': revision,
+        'ubuntu_snapshot_id': snapshot,
     }, indent=2) + '\n')
     validate(root)
 
@@ -52,10 +65,11 @@ def main():
     parser.add_argument('--revision')
     parser.add_argument('--runtime')
     parser.add_argument('--version')
+    parser.add_argument('--snapshot-id')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     if args.action == 'pin':
-        pin(root, args.revision or '', args.runtime or '', args.version or '')
+        pin(root, args.revision or '', args.runtime or '', args.version or '', args.snapshot_id)
     else:
         print('coordinated=' + str(validate(root)).lower())
 

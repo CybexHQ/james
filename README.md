@@ -202,3 +202,9 @@ systemd drop-in for `cybex-james-appliance-update.service`, then run
 policy comes only from the root service environment, never from update-request data.
 Existing appliances need a signed release containing this updater before the new
 scheduling default takes effect. Workstation installation remains separately approved.
+
+Coordinated release tags also pin the Ubuntu package snapshot cutoff in
+`release/coordinated.json`. The cutoff is fixed when the tag is prepared (or supplied
+with `--snapshot-id`), reused across every build step, and still must advance the
+authenticated predecessor. This prevents a stale repository variable from blocking
+every subsequent James release. Old tags retain their original configured cutoff.
