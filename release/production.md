@@ -27,8 +27,14 @@ values before signing. Earlier tags, assets and receipts remain unchanged.
 The workstation harness requests a read-only verification after each observed
 managed reboot; it still requires fresh compliance and exact booted identity.
 
-The release workflow builds and signs one candidate, verifies its artifact ID
-and digest, then qualifies those same bytes on `thebeast-james-production`.
+The release workflow builds one candidate inside a disposable Docker container
+on `thebeast-james-production`, then signs it outside the build container. It
+retains the signed files locally and uploads only a bounded inventory receipt
+as the Actions candidate artifact. Qualification and publication authenticate
+that artifact's ID, ZIP digest, run and source, then hash the local files against
+its inventory. Publication uploads the actual release files once. The cold gate
+downloads the published files independently and checks the same inventory.
+The isolated builder and recovery procedure are in [beast/README.md](beast/README.md).
 The disposable production-image qualification instance has its own database,
 private DNS/TLS, sessions, devices and runtime watermarks. No manually retained
 device ID, evidence variable or long-lived qualification token is required.

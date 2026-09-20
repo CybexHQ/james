@@ -94,8 +94,12 @@ jobs:
     name: Build and sign release candidate once
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [contracts, rust-release, nix]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cybex-james-lab]
     environment: production-release
+    timeout-minutes: 240
+    concurrency:
+      group: james-local-candidate-build
+      cancel-in-progress: false
     outputs:
       version: ${{ steps.release-version.outputs.version }}
       coordinated: ${{ steps.release-version.outputs.coordinated }}
@@ -128,6 +132,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Validate governed release inputs
         id: release-version
@@ -218,14 +223,10 @@ jobs:
           count="$(jq '[.artifacts[] | select(.expired == false)] | length' "$response")"
           case "$count" in
             0)
-              [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
-              if [ "$GITHUB_RUN_ATTEMPT" -ne 1 ]; then
-                echo "::error::The build-once candidate is unavailable; refusing to rebuild or re-sign it on workflow attempt $GITHUB_RUN_ATTEMPT"
-                exit 1
-              fi
-              printf 'reuse=false\n' >> "$GITHUB_OUTPUT"
+              python3 tools/local-candidate.py select >> "$GITHUB_OUTPUT"
               ;;
             1)
+              test "$(python3 tools/local-candidate.py select)" = reuse=true
               artifact="$(jq -c '.artifacts[] | select(.expired == false)' "$response")"
               artifact_id="$(jq -r '.id' <<<"$artifact")"
               digest="$(jq -r '.digest' <<<"$artifact")"
@@ -243,10 +244,6 @@ jobs:
               ;;
           esac
           printf 'artifact_name=%s\n' "$CYBEX_JAMES_RELEASE_ARTIFACT" >> "$GITHUB_OUTPUT"
-
-      - name: Install Nix for a new candidate
-        if: steps.release-candidate.outputs.reuse != 'true'
-        uses: cachix/install-nix-action@ab739621df7a23f52766f9ccc97f38da6b7af14f # v31.10.5
 
       - name: Checkout exact pinned Manage source
         if: steps.release-candidate.outputs.reuse != 'true'
@@ -290,19 +287,29 @@ jobs:
           cargo install cargo-audit --version 0.22.1 --locked
           cargo audit --file manage-source/agent/cybex-agent/Cargo.lock
 
-      - name: Install Ubuntu appliance release tools
+      - name: Require local release tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            apt-utils dpkg-dev gpgv jq rsync squashfs-tools ubuntu-keyring xorriso zstd
+          for tool in docker jq zstd openssl gh; do command -v "$tool"; done
+          python3 tools/local-candidate.py prune
 
-      - name: Download the immutable reused candidate for provenance verification
+      - name: Download retained candidate receipt
+        if: steps.release-candidate.outputs.artifact_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 tools/local-candidate.py download-receipt \
+            --artifact-id "${{ steps.release-candidate.outputs.artifact_id }}" \
+            --artifact-digest "${{ steps.release-candidate.outputs.artifact_digest }}" \
+            --receipt candidate-receipt/candidate.json
+
+      - name: Restore exact local bytes without rebuilding or signing
         if: steps.release-candidate.outputs.reuse == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          artifact-ids: ${{ steps.release-candidate.outputs.artifact_id }}
-          path: dist
-          merge-multiple: true
+        run: |
+          arguments=()
+          if [ -f candidate-receipt/candidate.json ]; then
+            arguments+=(--receipt candidate-receipt/candidate.json)
+          fi
+          python3 tools/local-candidate.py restore "${arguments[@]}"
 
       - name: Resolve and authenticate production predecessor
         id: published-predecessor
@@ -338,9 +345,17 @@ jobs:
       - name: Build exact binaries, appliance media, and workstation runtime
         if: steps.release-candidate.outputs.reuse != 'true'
         shell: bash
+        env:
+          BUILD_VERSION: ${{ steps.release-version.outputs.version }}
+          BUILD_BUNDLE: ${{ steps.workstation-source.outputs.bundle_name }}
+          BUILD_RUNTIME: ${{ steps.workstation-source.outputs.runtime_version }}
+          BUILD_MANAGE_REVISION: ${{ steps.workstation-source.outputs.revision }}
+          BUILD_NIXPKGS_REVISION: ${{ steps.workstation-source.outputs.nixpkgs_revision }}
+          BUILD_HAS_PREDECESSOR: ${{ steps.published-predecessor.outputs.exists }}
         run: |
+          python3 tools/beast-build.py <<'BUILD'
           set -euo pipefail
-          version="${{ steps.release-version.outputs.version }}"
+          version="$BUILD_VERSION"
           CYBEX_JAMES_BUILD_MANAGE_ORIGIN="$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" \
             cargo build --release --locked --bin cybex-james --bin cybex-james-bootstrap
           source_epoch="$(git -C manage-source show -s --format=%ct HEAD)"
@@ -362,23 +377,23 @@ jobs:
           done
           nix-shell release/release-tools.nix --run \
             "bash manage-source/deploy/nixos/check-installer-netboot-release.sh --inspect-only --bundle-tree '$staging'"
-          bundle="dist/${{ steps.workstation-source.outputs.bundle_name }}"
+          bundle="dist/$BUILD_BUNDLE"
           nix-shell release/release-tools.nix --run \
             "tar --format=ustar --sort=name --numeric-owner --owner=0 --group=0 --mode=u=rw,go=r --mtime=@$source_epoch -C '$staging' -cf - bzImage initrd manifest.json nix-store.squashfs | zstd -19 --threads=1 --no-progress --no-dictID -o '$bundle'"
           python3 tools/james-release.py inspect-workstation-netboot \
             --workstation-netboot-bundle "$bundle" \
             --workstation-netboot-tree "$staging" \
-            --workstation-netboot-url "https://github.invalid/$GITHUB_REF_NAME/${{ steps.workstation-source.outputs.bundle_name }}" \
-            --workstation-netboot-runtime-version "${{ steps.workstation-source.outputs.runtime_version }}" \
-            --workstation-netboot-manage-revision "${{ steps.workstation-source.outputs.revision }}" \
-            --workstation-netboot-nixpkgs-revision "${{ steps.workstation-source.outputs.nixpkgs_revision }}"
+            --workstation-netboot-url "https://github.invalid/$GITHUB_REF_NAME/$BUILD_BUNDLE" \
+            --workstation-netboot-runtime-version "$BUILD_RUNTIME" \
+            --workstation-netboot-manage-revision "$BUILD_MANAGE_REVISION" \
+            --workstation-netboot-nixpkgs-revision "$BUILD_NIXPKGS_REVISION"
           mapfile -t provisioning_keys < <(printf '%s\n' "$CYBEX_JAMES_PROVISIONING_PUBLIC_KEYS" | sed '/^[[:space:]]*$/d')
           template_args=()
           for key in "${provisioning_keys[@]}"; do
             template_args+=(--provisioning-public-key "$key")
           done
           retained_source_args=()
-          if [ "${{ steps.published-predecessor.outputs.exists }}" = true ]; then
+          if [ "$BUILD_HAS_PREDECESSOR" = true ]; then
             retained_source_args+=(--retained-manage-source-dir "$RUNNER_TEMP/cybex-james-retained-manage-source")
           fi
           ubuntu-appliance/build-package-snapshot.sh \
@@ -388,14 +403,14 @@ jobs:
             --version "$version" \
             --ubuntu-snapshot-id "$CYBEX_JAMES_UBUNTU_SNAPSHOT_ID" \
             --manage-source-dir manage-source \
-            --manage-source-revision "${{ steps.workstation-source.outputs.revision }}" \
+            --manage-source-revision "$BUILD_MANAGE_REVISION" \
             "${retained_source_args[@]}" \
             --expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" \
             --release-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
             "${template_args[@]}"
           ubuntu-appliance/build-template.sh \
             --output-dir dist \
-            --cache-dir "$RUNNER_TEMP/ubuntu-base-cache" \
+            --cache-dir /cache/ubuntu-base \
             --bootstrap-binary "$RUNNER_TEMP/cybex-james-bootstrap" \
             --version "$version" \
             --ubuntu-snapshot-id "$CYBEX_JAMES_UBUNTU_SNAPSHOT_ID" \
@@ -409,6 +424,7 @@ jobs:
             "dist/cybex-james-appliance-packages-$version-x86_64-linux.json" \
             "$RUNNER_TEMP/cybex-james-appliance-packages-metadata.json"
           test "$(dist/cybex-james-x86_64-linux --version)" = "cybex-james $version"
+          BUILD
 
       - name: Require a monotone legacy-update bridge before signing
         if: steps.release-candidate.outputs.reuse != 'true' && steps.published-predecessor.outputs.update_contract == 'legacy_all_debs'
@@ -553,14 +569,17 @@ jobs:
             sha256sum -b "${checksum_files[@]}" > SHA256SUMS
           )
 
-      - name: Upload the one release candidate artifact
+      - name: Seal exact signed files in the local candidate store
+        run: python3 tools/local-candidate.py seal --receipt candidate-receipt/candidate.json
+
+      - name: Upload only the bounded candidate receipt
         id: upload-release-candidate
-        if: steps.release-candidate.outputs.reuse != 'true'
+        if: steps.release-candidate.outputs.artifact_id == ''
         # actions/upload-artifact v4.6.2; rotate only after reviewing the official tag.
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ env.CYBEX_JAMES_RELEASE_ARTIFACT }}
-          path: dist/
+          path: candidate-receipt/candidate.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
@@ -597,6 +616,12 @@ jobs:
             "$artifact_id" "$action_digest" "$CYBEX_JAMES_RELEASE_ARTIFACT" \
             >> "$GITHUB_OUTPUT"
 
+      - name: Remove disposable workspace payloads
+        if: always()
+        run: |
+          rm -rf -- "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE/candidate-receipt" "$GITHUB_WORKSPACE/manage-source"
+
+
   release_qualify:
     name: Boot, install, adopt, and reboot exact candidate
     if: startsWith(github.ref, 'refs/tags/v')
@@ -632,11 +657,16 @@ jobs:
           persist-credentials: false
 
       - name: Download build-once candidate by immutable artifact ID
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          artifact-ids: ${{ env.CYBEX_JAMES_RELEASE_ARTIFACT_ID }}
-          path: dist
-          merge-multiple: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 tools/local-candidate.py download-receipt \
+            --artifact-id "${{ needs.release_build.outputs.artifact_id }}" \
+            --artifact-digest "${{ needs.release_build.outputs.artifact_digest }}" \
+            --receipt candidate-receipt/candidate.json
+
+      - name: Verify receipt and restore exact local candidate
+        run: python3 tools/local-candidate.py restore --receipt candidate-receipt/candidate.json
 
       - name: Verify exact signed candidate before boot
         shell: bash
@@ -706,11 +736,17 @@ jobs:
           compression-level: 0
           retention-days: 90
 
+      - name: Remove disposable workspace payloads
+        if: always()
+        run: |
+          rm -rf -- "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE/candidate-receipt" "$GITHUB_WORKSPACE/manage-source"
+
+
   release_publish:
     name: Attest and stage immutable candidate
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [release_build, release_qualify]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cybex-james-lab]
     environment: production-release
     concurrency:
       # Predecessor verification and immutable publication are one
@@ -750,8 +786,8 @@ jobs:
           test -z "$(git status --porcelain)"
           test "v$CYBEX_JAMES_RELEASE_VERSION" = "$GITHUB_REF_NAME"
 
-      - name: Install independent archive verifier
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zstd
+      - name: Require independent archive verifier
+        run: command -v zstd
 
       - name: Validate candidate artifact provenance
         shell: bash
@@ -789,11 +825,16 @@ jobs:
             "$RUNNER_TEMP/cybex-james-qualification-artifact.json"
 
       - name: Download original release candidate independently by artifact ID
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          artifact-ids: ${{ env.CYBEX_JAMES_RELEASE_ARTIFACT_ID }}
-          path: dist
-          merge-multiple: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 tools/local-candidate.py download-receipt \
+            --artifact-id "${{ needs.release_build.outputs.artifact_id }}" \
+            --artifact-digest "${{ needs.release_build.outputs.artifact_digest }}" \
+            --receipt candidate-receipt/candidate.json
+
+      - name: Verify receipt and restore exact local candidate
+        run: python3 tools/local-candidate.py restore --receipt candidate-receipt/candidate.json
 
       - name: Download exact-candidate qualification evidence by artifact ID
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -1190,6 +1231,11 @@ jobs:
             gh release verify-asset "$GITHUB_REF_NAME" "$path"
           done
 
+      - name: Remove disposable workspace payloads
+        if: always()
+        run: |
+          rm -rf -- "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE/candidate-receipt" "$GITHUB_WORKSPACE/manage-source"
+
 
   release_cold_qualify:
     name: Verify published release from a cold production fixture
@@ -1212,12 +1258,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Download the same immutable candidate artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          artifact-ids: ${{ needs.release_build.outputs.artifact_id }}
-          path: dist
-          merge-multiple: true
+      - name: Download the bounded candidate receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 tools/local-candidate.py download-receipt \
+            --artifact-id "${{ needs.release_build.outputs.artifact_id }}" \
+            --artifact-digest "${{ needs.release_build.outputs.artifact_digest }}" \
+            --receipt candidate-receipt/candidate.json
+
+      - name: Download published payloads independently of the local candidate store
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/local-candidate.py published --receipt candidate-receipt/candidate.json
 
       - name: Require exact published bytes and cold runtime convergence
         shell: bash
@@ -1254,6 +1307,12 @@ jobs:
             ${{ runner.temp }}/cybex-james-cold-evidence/cybex-james-published-workstation-qualification.json
           if-no-files-found: error
           retention-days: 90
+
+      - name: Remove disposable workspace payloads
+        if: always()
+        run: |
+          rm -rf -- "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE/candidate-receipt" "$GITHUB_WORKSPACE/manage-source"
+
 
   release_promote:
     if: needs.release_build.outputs.coordinated != 'true'

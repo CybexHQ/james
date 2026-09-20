@@ -922,7 +922,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
             "ubuntu-appliance/rootfs/usr/lib/cybex-james/*", workflow
         )
         self.assertIn("python3 -m py_compile", workflow)
-        self.assertIn("squashfs-tools", workflow)
+        self.assertIn("squashfs-tools", (REPOSITORY / "release/beast/Dockerfile").read_text())
         self.assertIn(
             "cargo:rerun-if-env-changed=CYBEX_JAMES_BUILD_MANAGE_ORIGIN",
             RUST_BUILD_SCRIPT.read_text(encoding="utf-8"),

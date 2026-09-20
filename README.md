@@ -167,6 +167,13 @@ managed reboot, while still requiring fresh exact compliance for every profile.
 
 ### Coordinated Manage releases
 
+Release candidates build in a disposable Docker container on The Beast, using
+dedicated local Cargo, Nix and Ubuntu caches. Signed files stay on the server
+through appliance qualification; GitHub Actions retains a small hash receipt.
+Publication uploads the verified files once, and cold qualification downloads
+the published payload independently. See [the local release environment](release/beast/README.md)
+for isolation, retention and recovery details.
+
 Digital Brain may create a candidate tag with `release/coordinated.json` and an immutable workstation
 source pin to `CybexHQ/development`. The normal release workflow still signs, builds once, publishes
 an immutable prerelease and cold-qualifies James/workstations. These tags skip automatic stable

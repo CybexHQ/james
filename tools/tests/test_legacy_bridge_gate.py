@@ -1403,7 +1403,10 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
 
     def test_production_publication_keeps_build_once_and_verifies_predecessor_under_lock(self) -> None:
         workflow = (REPOSITORY / ".github/workflows/release.yml").read_text()
-        self.assertIn("refusing to rebuild or re-sign", workflow)
+        self.assertIn("python3 tools/local-candidate.py select", workflow)
+        # Missing retry inputs are exercised by test_local_candidate; source
+        # selection must use that same fail-closed implementation.
+        self.assertIn("never rebuild or re-sign", (REPOSITORY / "tools/local-candidate.py").read_text())
         publish = workflow[workflow.index("  release_publish:"):]
         self.assertIn("group: james-release-publish", publish)
         self.assertLess(publish.index("release_predecessor.py"), publish.index('gh release edit "$GITHUB_REF_NAME" --draft=false'))
