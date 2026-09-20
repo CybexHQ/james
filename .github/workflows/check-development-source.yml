@@ -1,0 +1,31 @@
+name: Check development source access
+run-name: Check development source ${{ inputs.revision }}
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Exact reviewed development commit
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    environment: production-release
+    steps:
+      - name: Require an immutable source revision
+        env:
+          SOURCE: ${{ inputs.revision }}
+        run: '[[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]]'
+      - name: Read the exact development commit with the producer key
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: CybexHQ/development
+          ref: ${{ inputs.revision }}
+          ssh-key: ${{ secrets.CYBEX_DEVELOPMENT_SOURCE_SSH_KEY }}
+          persist-credentials: false
+      - name: Verify source identity without building or publishing
+        env:
+          SOURCE: ${{ inputs.revision }}
+        run: 'test "$(git rev-parse HEAD)" = "$SOURCE"'
