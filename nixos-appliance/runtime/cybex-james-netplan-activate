@@ -14,6 +14,16 @@ ACTIVE = Path('/etc/netplan/90-cybex-james.yaml')
 TARGET = Path('/run/systemd/network/10-cybex-james.network')
 
 
+def prepare_runtime_directory(root, uid=0, gid=0):
+    for path in (root, root / 'systemd', root / 'systemd/network'):
+        path.mkdir(mode=0o755, exist_ok=True)
+        meta = path.lstat()
+        if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid != uid or meta.st_gid != gid
+                or stat.S_IMODE(meta.st_mode) & 0o022):
+            raise ValueError('unsafe networkd runtime directory: ' + str(path))
+        os.chmod(path, 0o755, follow_symlinks=False)
+
+
 def render(value):
     network = value['network']
     if network['version'] != 2 or network['renderer'] != 'networkd' or set(network['ethernets']) != {'cybex-james'}:
@@ -56,7 +66,7 @@ def main():
     if len(raw) > 1024 * 1024:
         raise ValueError('network plan is oversized')
     name, body = render(json.loads(raw))
-    TARGET.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    prepare_runtime_directory(TARGET.parents[2])
     fd, temporary = tempfile.mkstemp(dir=TARGET.parent, prefix='.cybex-network-')
     try:
         with os.fdopen(fd, 'wb') as stream:

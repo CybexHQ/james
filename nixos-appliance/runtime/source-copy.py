@@ -10,11 +10,16 @@ import sys
 import tempfile
 
 
-def copy_source(source, destination):
+def copy_source(source, destination, owner=0):
     source, destination = Path(source), Path(destination)
     destination.mkdir(mode=0o755, parents=True, exist_ok=True)
     meta = destination.lstat()
-    if not stat.S_ISDIR(meta.st_mode) or meta.st_uid != 0 or stat.S_IMODE(meta.st_mode) != 0o755:
+    if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid != owner
+            or stat.S_IMODE(meta.st_mode) & 0o022):
+        raise ValueError('unsafe source destination directory')
+    os.chmod(destination, 0o755, follow_symlinks=False)
+    meta = destination.lstat()
+    if (meta.st_uid != owner or stat.S_IMODE(meta.st_mode) != 0o755):
         raise ValueError('unsafe source destination directory')
     for metadata in sorted(source.glob('*.json')):
         revision = metadata.stem

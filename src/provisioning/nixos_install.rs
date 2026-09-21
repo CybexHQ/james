@@ -294,11 +294,11 @@ pub(super) async fn install(prepared: &PreparedStorage, key_path: &Path) -> Resu
     format_filesystems(prepared, &state, &root, &esp, &swap).await?;
     let target = Path::new(TARGET);
     mount(&root, target, "defaults").await?;
+    prepare_installed_layout(target, 0, 0, 985)?;
     mount(&esp, &target.join("boot"), "umask=0077").await?;
     let target_state = target.join("var/lib/cybex-james/state");
     mount(&prepared.state_mount, &target_state, "bind,nodev,nosuid").await?;
     let target_nix = target.join("var/cache/cybex-james/nix");
-    prepare_nix_backing_directory(&target_nix, 0, 0)?;
     mount(&target_nix, &target.join("nix"), "bind,nodev,nosuid,exec").await?;
     let mut archive = OpenOptions::new()
         .read(true)
@@ -359,7 +359,7 @@ pub(super) async fn install(prepared: &PreparedStorage, key_path: &Path) -> Resu
     }
     // STATE exists before activation and contains all runtime trust/config.
     materialize_state(target, &prepared.state_mount, &state, key_path)?;
-    storage::run_checked(
+    run_checked_with_umask(
         "nixos-install",
         &[
             "--root",
@@ -375,6 +375,7 @@ pub(super) async fn install(prepared: &PreparedStorage, key_path: &Path) -> Resu
             "trusted-public-keys",
             &trust,
         ],
+        0o022,
     )
     .await?;
     if state.next_event_sequence == 7 {
@@ -428,24 +429,78 @@ pub(super) async fn install(prepared: &PreparedStorage, key_path: &Path) -> Resu
     boot_completed(&state, &prepared.state_mount)
 }
 
-fn prepare_nix_backing_directory(path: &Path, expected_uid: u32, expected_gid: u32) -> Result<()> {
-    fs::create_dir_all(path)?;
+fn prepare_owned_directory(
+    path: &Path,
+    expected_uid: u32,
+    expected_gid: u32,
+    mode: u32,
+) -> Result<()> {
+    if !path.exists() {
+        fs::create_dir(path)?;
+    }
     let metadata = fs::symlink_metadata(path)?;
     ensure!(
         metadata.file_type().is_dir()
             && metadata.uid() == expected_uid
-            && metadata.gid() == expected_gid,
-        "unsafe installed Nix backing directory"
+            && metadata.permissions().mode() & 0o022 == 0,
+        "unsafe installed directory {}",
+        path.display()
     );
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    chown(path, expected_uid, expected_gid)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
     let metadata = fs::symlink_metadata(path)?;
     ensure!(
         metadata.file_type().is_dir()
             && metadata.uid() == expected_uid
             && metadata.gid() == expected_gid
-            && metadata.permissions().mode() & 0o7777 == 0o755,
-        "installed Nix backing directory permissions are unsafe"
+            && metadata.permissions().mode() & 0o7777 == mode,
+        "installed directory permissions are unsafe for {}",
+        path.display()
     );
+    Ok(())
+}
+
+fn prepare_installed_layout(
+    target: &Path,
+    expected_uid: u32,
+    expected_gid: u32,
+    service_gid: u32,
+) -> Result<()> {
+    let directories = [
+        ("var", expected_gid, 0o755),
+        ("var/cache", expected_gid, 0o755),
+        ("var/cache/cybex-james", expected_gid, 0o755),
+        ("var/cache/cybex-james/nix", expected_gid, 0o755),
+        ("var/lib", expected_gid, 0o755),
+        ("var/lib/cybex-james", service_gid, 0o750),
+        ("var/lib/cybex-james/state", service_gid, 0o750),
+        ("usr", expected_gid, 0o755),
+        ("usr/share", expected_gid, 0o755),
+        ("usr/share/cybex-james", expected_gid, 0o755),
+    ];
+    for (relative, gid, mode) in directories {
+        prepare_owned_directory(&target.join(relative), expected_uid, gid, mode)?;
+    }
+    Ok(())
+}
+
+async fn run_checked_with_umask(
+    program: &str,
+    arguments: &[&str],
+    mask: libc::mode_t,
+) -> Result<()> {
+    let mut command = tokio::process::Command::new(program);
+    command.args(arguments);
+    // SAFETY: only the post-fork child changes its process-local umask before
+    // exec. The multithreaded bootstrap retains 0077 for every private write.
+    unsafe {
+        command.pre_exec(move || {
+            libc::umask(mask);
+            Ok(())
+        });
+    }
+    let status = command.status().await?;
+    ensure!(status.success(), "{program} failed");
     Ok(())
 }
 
@@ -497,11 +552,6 @@ fn materialize_state(
         chown(&path, 0, 985)?;
     }
     let key_projection = target.join("usr/share/cybex-james/release-public-key");
-    fs::create_dir_all(
-        key_projection
-            .parent()
-            .ok_or_else(|| anyhow!("key parent"))?,
-    )?;
     storage::atomic_write(&key_projection, &fs::read(key_path)?, 0o644)?;
     let config = storage::james_config(target, state, &storage::public_base_url(&state.plan))?
         .replace("/usr/bin/nix", "/run/current-system/sw/bin/nix")
@@ -691,21 +741,108 @@ mod tests {
     }
 
     #[test]
-    fn nix_backing_directory_is_searchable_after_restrictive_creation() {
+    fn installed_layout_repairs_only_explicit_public_and_service_directories() {
         let root =
             std::env::temp_dir().join(format!("cybex-james-nix-backing-{}", uuid::Uuid::new_v4()));
-        let path = root.join("var/cache/cybex-james/nix");
-        fs::create_dir_all(&path).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        let status = Command::new("sh")
+            .args([
+                "-c",
+                "umask 077; mkdir -p \"$1\"/var/cache/cybex-james/nix \"$1\"/var/lib/cybex-james/state \"$1\"/usr/share/cybex-james",
+                "fixture",
+            ])
+            .arg(&root)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let uid = unsafe { libc::geteuid() };
+        let gid = unsafe { libc::getegid() };
+        prepare_installed_layout(&root, uid, gid, gid).unwrap();
 
-        prepare_nix_backing_directory(&path, unsafe { libc::geteuid() }, unsafe {
-            libc::getegid()
-        })
+        for relative in [
+            "var",
+            "var/cache",
+            "var/cache/cybex-james",
+            "var/cache/cybex-james/nix",
+            "var/lib",
+            "usr",
+            "usr/share",
+            "usr/share/cybex-james",
+        ] {
+            assert_eq!(
+                fs::symlink_metadata(root.join(relative))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o7777,
+                0o755,
+                "{relative} retained restrictive bootstrap permissions"
+            );
+        }
+        for relative in ["var/lib/cybex-james", "var/lib/cybex-james/state"] {
+            assert_eq!(
+                fs::symlink_metadata(root.join(relative))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o7777,
+                0o750,
+                "{relative} lost its protected service boundary"
+            );
+        }
+        let unsafe_root = root.with_extension("unsafe");
+        fs::create_dir(&unsafe_root).unwrap();
+        std::os::unix::fs::symlink(&root, unsafe_root.join("var")).unwrap();
+        assert!(prepare_installed_layout(&unsafe_root, uid, gid, gid).is_err());
+        fs::remove_dir_all(unsafe_root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn activation_child_uses_public_umask_without_changing_parent() {
+        let root = std::env::temp_dir().join(format!(
+            "cybex-james-install-umask-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir(&root).unwrap();
+        let before = root.join("parent-before");
+        let child = root.join("child");
+        let installed = root.join("installed");
+        let after = root.join("parent-after");
+        Command::new("sh")
+            .args(["-c", "umask > \"$1\"", "fixture"])
+            .arg(&before)
+            .status()
+            .unwrap();
+        run_checked_with_umask(
+            "sh",
+            &[
+                "-c",
+                "umask > \"$1\"; : > \"$2\"",
+                "fixture",
+                child.to_str().unwrap(),
+                installed.to_str().unwrap(),
+            ],
+            0o022,
+        )
+        .await
         .unwrap();
-
+        Command::new("sh")
+            .args(["-c", "umask > \"$1\"", "fixture"])
+            .arg(&after)
+            .status()
+            .unwrap();
+        assert_eq!(fs::read_to_string(&child).unwrap(), "0022\n");
         assert_eq!(
-            fs::symlink_metadata(&path).unwrap().permissions().mode() & 0o7777,
-            0o755
+            fs::symlink_metadata(&installed)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644
+        );
+        assert_eq!(
+            fs::read_to_string(&after).unwrap(),
+            fs::read_to_string(&before).unwrap()
         );
         fs::remove_dir_all(root).unwrap();
     }

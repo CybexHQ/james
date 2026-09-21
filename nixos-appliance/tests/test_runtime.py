@@ -20,7 +20,7 @@ import generation_update as update
 
 
 def script(name):
-    loader = SourceFileLoader(name.replace('-', '_'), str(RUNTIME / name))
+    loader = SourceFileLoader(name.removesuffix('.py').replace('-', '_'), str(RUNTIME / name))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
@@ -30,6 +30,8 @@ def script(name):
 window = script('cybex-james-appliance-update-window')
 network = script('cybex-james-netplan-activate')
 firewall = script('cybex-james-firewall')
+first_boot = script('cybex-james-first-boot')
+source_copy = script('source-copy.py')
 
 
 class ReadBoundary(unittest.TestCase):
@@ -152,6 +154,60 @@ class NetworkPolicy(unittest.TestCase):
         with self.assertRaises(ValueError):
             firewall.render('192.0.2.0/24; accept', False)
 
+
+class PermissionLayout(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.uid, self.gid = os.getuid(), os.getgid()
+
+    def strict_umask(self):
+        class Umask:
+            def __enter__(_self):
+                _self.previous = os.umask(0o077)
+
+            def __exit__(_self, *_args):
+                os.umask(_self.previous)
+
+        return Umask()
+
+    def test_first_boot_private_parent_and_public_leaves_ignore_service_umask(self):
+        cache = self.root / 'cache'
+        with self.strict_umask():
+            first_boot.prepare_cache_directories(
+                cache, self.uid, self.gid, self.uid, self.gid)
+        self.assertEqual(cache.stat().st_mode & 0o777, 0o755)
+        agent = cache / 'agent'
+        self.assertEqual((agent.stat().st_uid, agent.stat().st_gid, agent.stat().st_mode & 0o777),
+                         (self.uid, self.gid, 0o700))
+        for name in ('home', 'cache', 'config', 'state', 'tmp'):
+            child = agent / name
+            self.assertEqual((child.stat().st_uid, child.stat().st_gid, child.stat().st_mode & 0o777),
+                             (self.uid, self.gid, 0o700))
+        self.assertEqual((cache / 'www').stat().st_mode & 0o777, 0o755)
+        self.assertEqual((cache / 'tftp').stat().st_mode & 0o777, 0o755)
+
+    def test_public_runtime_and_source_directories_repair_only_owned_ordinary_paths(self):
+        runtime = self.root / 'run'
+        source = self.root / 'source'
+        source.mkdir()
+        with self.strict_umask():
+            runtime.mkdir()
+            network.prepare_runtime_directory(runtime, self.uid, self.gid)
+            destination = self.root / 'public-source'
+            source_copy.copy_source(source, destination, owner=self.uid)
+        for path in (runtime, runtime / 'systemd', runtime / 'systemd/network', destination):
+            self.assertEqual(path.stat().st_mode & 0o777, 0o755)
+        unsafe = self.root / 'unsafe-run'
+        unsafe.mkdir()
+        (unsafe / 'systemd').symlink_to(runtime / 'systemd', target_is_directory=True)
+        with self.assertRaises(ValueError):
+            network.prepare_runtime_directory(unsafe, self.uid, self.gid)
+        linked = self.root / 'linked-source'
+        linked.symlink_to(destination, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            source_copy.copy_source(source, linked, owner=self.uid)
 
 class Recovery(unittest.TestCase):
     def setUp(self):

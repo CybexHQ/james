@@ -8,6 +8,22 @@ from appliance_state import CONTROL, STATUS, STATE, INBOX, UID, GID, current, di
 from mount_policy import require_bind_mount, require_mount
 
 
+def prepare_cache_directories(root=Path('/var/cache/cybex-james'), uid=UID, gid=GID,
+                              root_uid=0, root_gid=0):
+    # systemd runs this service with UMask=0077. Materialize every intentional
+    # boundary in parent-before-child order so mkdir's inherited mode cannot
+    # strand the James account behind a root-only intermediate directory.
+    directory(root, 0o755, root_uid, root_gid)
+    directory(root / 'agent', 0o700, uid, gid)
+    for name in ('home', 'cache', 'config', 'state', 'tmp'):
+        directory(root / 'agent' / name, 0o700, uid, gid)
+    directory(root / 'www', 0o755, uid, gid)
+    directory(root / 'www/assets', 0o755, uid, gid)
+    for name in ('www/cache', 'build', 'build-outputs'):
+        directory(root / name, 0o750, uid, gid)
+    directory(root / 'tftp', 0o755, root_uid, root_gid)
+
+
 def main():
     require_mount(STATE, required=('rw', 'nodev', 'nosuid'))
     require_bind_mount(CONTROL, STATE / 'control', required=('rw', 'nodev', 'nosuid'))
@@ -20,13 +36,7 @@ def main():
     directory(STATUS, 0o750)
     directory(STATE / 'agent', 0o700, UID)
     directory(INBOX, 0o700, UID)
-    for name in ('home', 'cache', 'config', 'state', 'tmp'):
-        directory(Path('/var/cache/cybex-james/agent') / name, 0o700, UID)
-    for name in ('www', 'www/assets'):
-        directory(Path('/var/cache/cybex-james') / name, 0o755, UID)
-    for name in ('www/cache', 'build', 'build-outputs'):
-        directory(Path('/var/cache/cybex-james') / name, 0o750, UID)
-    directory('/var/cache/cybex-james/tftp', 0o755, 0, 0)
+    prepare_cache_directories()
     for source, destination, mode in (
         ('config.toml', '/etc/cybex-james/config.toml', 0o640),
         ('ssh-ca.pub', '/etc/ssh/cybex-james-ca.pub', 0o644),
