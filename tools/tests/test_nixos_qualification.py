@@ -54,6 +54,7 @@ class NixosQualificationTests(unittest.TestCase):
             for field in ('mac', 'serial', 'uuid'):
                 self.assertNotEqual(installed[field], other[field])
         self.assertTrue(installed['mac'].startswith('02:'))
+        self.assertLessEqual(len(installed['serial']), 20)  # QEMU SCSI device ID limit
 
     def test_callback_inputs_bind_predecessor_bytes_separately_from_harness(self):
         fixture = module('nixos_fixture_inputs', HELPERS / 'isolated_fixture.py')

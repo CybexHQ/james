@@ -27,7 +27,7 @@ def hardware_identity(scope, role):
     owner = uuid.UUID(scope['owner'])
     digest = hashlib.sha256((str(owner) + ':' + role).encode()).digest()
     return {'mac': '02:' + ':'.join(f'{value:02x}' for value in digest[:5]),
-            'serial': 'JNQ' + owner.hex[:20] + role[0],
+            'serial': 'JNQ' + owner.hex[:16] + role[0],
             'uuid': str(uuid.uuid5(owner, role))}
 
 

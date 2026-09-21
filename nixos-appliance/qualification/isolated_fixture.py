@@ -41,7 +41,8 @@ class API:
         if not path.startswith('/v1/') or path.startswith('//'):
             raise ValueError('Qualification API path is invalid')
         request = urllib.request.Request(self.origin + path,
-            headers={'Authorization': 'Bearer ' + self.token, 'Content-Type': 'application/json'},
+            headers={'Authorization': 'Bearer ' + self.token, 'Content-Type': 'application/json',
+                     'User-Agent': 'cybex-dev-qualification/1'},
             data=None if body is None else json.dumps(body).encode())
         with self.client.open(request, timeout=30) as response:
             value = response.read(16 * 1024**2 + 1)
