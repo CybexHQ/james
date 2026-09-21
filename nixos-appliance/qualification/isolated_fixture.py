@@ -144,7 +144,7 @@ class Fixture:
         try:
             self.tap = SCOPE['tap'](self.state, self.scope['manage_origin'], self.scope['bridge'], 'appliance', True)
             self.process = subprocess.Popen(['qemu-system-x86_64', '-enable-kvm', '-machine', 'q35',
-                '-cpu', 'host', '-smp', '4', '-m', os.environ.get('CYBEX_JAMES_QUALIFICATION_MEMORY_MIB', '16384'),
+                '-cpu', 'host', '-smp', '4', '-m', os.environ.get('CYBEX_JAMES_QUALIFICATION_MEMORY_MIB', '18432'),
                 '-uuid', self.hardware['uuid'],
                 '-drive', 'if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd',
                 '-drive', f'if=pflash,format=raw,unit=1,file={d}/OVMF_VARS.fd',

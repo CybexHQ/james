@@ -28,6 +28,23 @@ S = module('nixos_scope', HELPERS / 'development-scope.py')
 
 
 class NixosQualificationTests(unittest.TestCase):
+    def test_bridge_verification_uses_incus_json_api_and_checks_ownership(self):
+        scope = {'manage_origin': 'https://dev.example.com', 'bridge': 'jnqtest',
+                 'owner': 'owned-run', 'subnet': '10.246.217.1/24'}
+        network = {'name': scope['bridge'], 'type': 'bridge', 'managed': True,
+                   'config': {'user.cybex.nixos-qualification': scope['owner'],
+                              'ipv4.address': scope['subnet'], 'ipv4.nat': 'true',
+                              'ipv6.address': 'none'}}
+        with patch.object(S, 'read_scope', return_value=scope), \
+                patch.object(S, 'incus', return_value=json.dumps(network)) as incus:
+            self.assertEqual(S.verify(Path('/private'), scope['manage_origin'], scope['bridge']),
+                             (scope, network))
+            incus.assert_called_once_with('query', '/1.0/networks/jnqtest')
+            network['config']['user.cybex.nixos-qualification'] = 'another-run'
+            incus.return_value = json.dumps(network)
+            with self.assertRaisesRegex(ValueError, 'ownership receipt'):
+                S.verify(Path('/private'), scope['manage_origin'], scope['bridge'])
+
     def test_hardware_is_unique_between_scopes_and_preserved_within_one(self):
         first = {'owner': '01234567-89ab-cdef-0123-456789abcdef'}
         second = {'owner': '11234567-89ab-cdef-0123-456789abcdef'}

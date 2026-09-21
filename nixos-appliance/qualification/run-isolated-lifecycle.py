@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--retain-fixture", type=Path)
     parser.add_argument("--require-candidate-runtime", action="store_true")
     parser.add_argument("--prepublication-candidate", action="store_true")
+    parser.add_argument("--induce-preflight-retry", action="store_true")
     args = parser.parse_args()
     state = private_state(args.state_dir)
     isolation = SCOPE['read_scope'](state)
@@ -41,6 +42,8 @@ def main():
     template = args.manifest.parent / f"cybex-james-appliance-template-{version}-x86_64-linux.iso"
     command = ["bash", str(Path(__file__).with_name("run-lifecycle.sh")), "--template", str(template), "--manifest", str(args.manifest),
                "--manage-origin", origin, "--token-file", str(state / "session"), "--output", str(args.output)]
+    if args.induce_preflight_retry:
+        command += ["--induce-preflight-retry"]
     if args.predecessor_identity:
         command += ["--predecessor-identity", str(args.predecessor_identity)]
     if args.retain_fixture:

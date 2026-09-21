@@ -79,7 +79,7 @@ def verify(path, origin, bridge):
     scope = read_scope(path)
     if (scope["manage_origin"], scope["bridge"]) != (origin, bridge):
         raise ValueError("qualification origin or network differs from its owned run")
-    network = json.loads(incus("network", "show", bridge, "--format=json"))
+    network = json.loads(incus("query", "/1.0/networks/" + bridge))
     config = network["config"]
     if (network["name"] != bridge or network["type"] != "bridge" or not network["managed"]
             or config.get("user.cybex.nixos-qualification") != scope["owner"]

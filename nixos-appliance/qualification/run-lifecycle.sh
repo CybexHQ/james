@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 usage() {
-  echo "usage: $0 --template ISO --manifest JSON --manage-origin URL --token-file FILE --output FILE [--published-predecessor-inputs JSON] [--retain-fixture DIRECTORY] [--require-candidate-runtime | --prepublication-candidate]" >&2
+  echo "usage: $0 --template ISO --manifest JSON --manage-origin URL --token-file FILE --output FILE [--published-predecessor-inputs JSON] [--retain-fixture DIRECTORY] [--require-candidate-runtime | --prepublication-candidate] [--induce-preflight-retry]" >&2
   exit 2
 }
 
@@ -18,6 +18,7 @@ predecessor_identity=""
 fixture_dir=""
 require_candidate_runtime=false
 prepublication_candidate=false
+induce_preflight_retry=false
 while (($#)); do
   case "$1" in
     --template) template="${2:-}"; shift 2 ;;
@@ -29,6 +30,7 @@ while (($#)); do
     --retain-fixture) fixture_dir="${2:-}"; shift 2 ;;
     --require-candidate-runtime) require_candidate_runtime=true; shift ;;
     --prepublication-candidate) prepublication_candidate=true; shift ;;
+    --induce-preflight-retry) induce_preflight_retry=true; shift ;;
     --output) output="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
@@ -81,7 +83,7 @@ appliance_mac="$(jq -er '.mac' <<<"$hardware")"
 appliance_serial="$(jq -er '.serial' <<<"$hardware")"
 appliance_uuid="$(jq -er '.uuid' <<<"$hardware")"
 management_cidr="${CYBEX_JAMES_QUALIFICATION_MANAGEMENT_CIDR:?set the qualification Management CIDR}"
-memory_mib="${CYBEX_JAMES_QUALIFICATION_MEMORY_MIB:-16384}"
+memory_mib="${CYBEX_JAMES_QUALIFICATION_MEMORY_MIB:-18432}"
 [[ "$memory_mib" =~ ^[0-9]+$ ]] && ((memory_mib >= 16384 && memory_mib <= 65536))
 token="$(tr -d '\r\n' < "$token_file")"
 test -n "$token"
@@ -93,6 +95,10 @@ case "$has_predecessor" in
   *) echo 'error: invalid governed predecessor state' >&2; exit 1 ;;
 esac
 
+if [[ "$induce_preflight_retry" = true ]]; then
+  test ! -e "$CYBEX_JAMES_QUALIFICATION_STATE/q03-diagnostics"
+  test ! -e "$CYBEX_JAMES_QUALIFICATION_STATE/q03-preflight-retry.json"
+fi
 work_dir="$(mktemp -d)"
 qemu_pid=""
 tap_name=""
@@ -147,6 +153,13 @@ cleanup() {
   if [[ -n "$session_id" && -f "$work_dir/serial.log" ]]; then
     cp -- "$work_dir/serial.log" "$(dirname -- "$output")/serial-$session_id.log"
     chmod 0600 "$(dirname -- "$output")/serial-$session_id.log"
+  fi
+  if [[ "$induce_preflight_retry" = true ]]; then
+    diagnostics="$CYBEX_JAMES_QUALIFICATION_STATE/q03-diagnostics"
+    mkdir -m 0700 -- "$diagnostics"
+    for name in fault-responses.jsonl retry-attempt.json initial-approved.json initial-approval.json reapproved.json preflight-failed-serial.log; do
+      if [[ -f "$work_dir/$name" ]]; then cp -- "$work_dir/$name" "$diagnostics/$name"; fi
+    done
   fi
   rm -rf -- "$work_dir"
 }
@@ -226,10 +239,16 @@ case "$package_delivery" in
       "$bridge_ipv4"
 
     package_port_file="$work_dir/package-server.port"
-    python3 -B \
-      "$repository_root/nixos-appliance/qualification/serve-system-closure.py" \
-      --bind "$bridge_ipv4" --file "$package_snapshot" \
-      --port-file "$package_port_file" &
+    if [[ "$induce_preflight_retry" = true ]]; then
+      printf 'corrupt\n' > "$work_dir/fault-control"
+      python3 -B "$repository_root/nixos-appliance/qualification/serve-faulted-closure.py" \
+        --bind "$bridge_ipv4" --file "$package_snapshot" --sha256 "$system_closure_sha256" \
+        --size "$(stat -c '%s' "$package_snapshot")" --port-file "$package_port_file" \
+        --control "$work_dir/fault-control" --receipts "$work_dir/fault-responses.jsonl" &
+    else
+      python3 -B "$repository_root/nixos-appliance/qualification/serve-system-closure.py" \
+        --bind "$bridge_ipv4" --file "$package_snapshot" --port-file "$package_port_file" &
+    fi
     package_server_pid=$!
     for _attempt in $(seq 1 100); do
       [[ -s "$package_port_file" ]] && break
@@ -374,11 +393,41 @@ approve_body="$(jq -cn \
   --arg display_name "James release qualification $release_version $session_suffix" \
   --argjson weekday "$(date -u +%w)" --arg start "$(date -u +%H:%M)" \
   '{session_revision:$revision,inventory_sha256:$inventory,display_name:$display_name,target_disk_id:$disk,network:{mode:"dhcp",interface_id:$interface,address_cidr:null,gateway:null,dns_servers:[]},maintenance_window:{timezone:"UTC",weekday:$weekday,start:$start,duration_minutes:240},management_cidrs:[$cidr]}')"
-api POST "/v1/james/provisioning-sessions/$session_id/approve" "$approve_body" >/dev/null
+printf '%s\n' "$approve_body" > "$work_dir/initial-approval.json"
+api POST "/v1/james/provisioning-sessions/$session_id/approve" "$approve_body" > "$work_dir/initial-approved.json"
 if [[ -n "${CYBEX_JAMES_QUALIFICATION_ALLOW_DEVICE_HELPER:-}" ]]; then
   "$CYBEX_JAMES_QUALIFICATION_ALLOW_DEVICE_HELPER" \
     --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" --session-id "$session_id"
   qualification_guest_control cont
+fi
+
+if [[ "$induce_preflight_retry" = true ]]; then
+  # The ordinary installer must reject altered response bytes before seq1/seq2
+  # authorize any target write. Only this owned guest and transport are affected.
+  python3 -B "$repository_root/nixos-appliance/qualification/preflight_retry.py" begin \
+    --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" --session-id "$session_id" \
+    --initial "$work_dir/initial-approved.json" --qmp "$work_dir/qmp.sock" \
+    --disk "$disk" --disk-digest "$preapproval_digest" --iso "$personalized" \
+    --responses "$work_dir/fault-responses.jsonl" --receipt "$work_dir/retry-attempt.json"
+  # This is an actual same-media cold restart, not a new ISO or replacement disk.
+  # begin left the exact guest paused; no graceful flush can hide a disk write.
+  kill -KILL "$qemu_pid"
+  wait "$qemu_pid" 2>/dev/null || [[ "$?" = 137 ]]
+  qemu_pid=""
+  python3 -B "$repository_root/nixos-appliance/qualification/development-scope.py" tap-delete \
+    --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" --manage-origin "$manage_origin" \
+    --bridge "$bridge" --role appliance
+  tap_name=""
+  mv "$work_dir/serial.log" "$work_dir/preflight-failed-serial.log"
+  rm -f "$work_dir/qmp.sock"
+  restarted_at="$(date -u +'%Y-%m-%dT%H:%M:%S.%NZ')"
+  start_qemu
+  python3 -B "$repository_root/nixos-appliance/qualification/preflight_retry.py" approve \
+    --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" --session-id "$session_id" \
+    --initial "$work_dir/initial-approved.json" --qmp "$work_dir/qmp.sock" \
+    --disk "$disk" --iso "$personalized" --receipt "$work_dir/retry-attempt.json" \
+    --approval "$work_dir/initial-approval.json" --reapproved "$work_dir/reapproved.json" \
+    --control "$work_dir/fault-control" --restarted-at "$restarted_at"
 fi
 
 ready=false
@@ -708,4 +757,11 @@ jq -n \
     final_state:"ready",completed_at:$completed_at}' \
   > "$output"
 chmod 0600 "$output"
+if [[ "$induce_preflight_retry" = true ]]; then
+  python3 -B "$repository_root/nixos-appliance/qualification/preflight_retry.py" complete \
+    --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" --session-id "$session_id" \
+    --receipt "$work_dir/retry-attempt.json" --reapproved "$work_dir/reapproved.json" \
+    --lifecycle "$output" --responses "$work_dir/fault-responses.jsonl" \
+    --output "$CYBEX_JAMES_QUALIFICATION_STATE/q03-preflight-retry.json"
+fi
 lifecycle_succeeded=true
