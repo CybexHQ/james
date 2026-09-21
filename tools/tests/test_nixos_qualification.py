@@ -9,6 +9,7 @@ import sys
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +29,73 @@ S = module('nixos_scope', HELPERS / 'development-scope.py')
 
 
 class NixosQualificationTests(unittest.TestCase):
+    @staticmethod
+    def scope():
+        return {'schema': S.SCHEMA, 'run': 'cleanup-test',
+                'manage_origin': 'https://dev.example.com', 'bridge': 'jnqcleanup01',
+                'owner': '01234567-89ab-4def-8123-456789abcdef',
+                'subnet': '10.246.217.1/24'}
+
+    @staticmethod
+    def network(scope, owner=None):
+        return {'name': scope['bridge'], 'type': 'bridge', 'managed': True, 'used_by': [],
+                'config': {'user.cybex.nixos-qualification': owner or scope['owner'],
+                           'ipv4.address': scope['subnet'], 'ipv4.nat': 'true',
+                           'ipv6.address': 'none'}}
+
+    def test_cleanup_removes_receipted_forwarding_when_bridge_is_absent(self):
+        scope = self.scope()
+        cleanup = Mock()
+        with patch.object(S, 'read_scope', return_value=scope), \
+                patch.object(S, 'incus', return_value='[]') as incus, \
+                patch.dict(S.FORWARD, {'cleanup': cleanup}):
+            S.cleanup(Path('/private'), scope['manage_origin'], scope['bridge'])
+        cleanup.assert_called_once_with(Path('/private'), scope)
+        incus.assert_called_once_with('network', 'list', '--format=json')
+
+    def test_cleanup_removes_forwarding_but_retains_foreign_replacement_bridge(self):
+        scope = self.scope()
+        replacement = self.network(scope, '11111111-1111-4111-8111-111111111111')
+        cleanup = Mock()
+        with patch.object(S, 'read_scope', return_value=scope), \
+                patch.object(S, 'incus', return_value=json.dumps([replacement])) as incus, \
+                patch.dict(S.FORWARD, {'cleanup': cleanup}):
+            S.cleanup(Path('/private'), scope['manage_origin'], scope['bridge'])
+        cleanup.assert_called_once_with(Path('/private'), scope)
+        incus.assert_called_once_with('network', 'list', '--format=json')
+
+    def test_owned_bridge_live_client_precondition_precedes_forwarding_cleanup(self):
+        scope = self.scope()
+        network = self.network(scope)
+        network['used_by'] = ['/1.0/instances/live-client']
+        cleanup = Mock()
+        with patch.object(S, 'read_scope', return_value=scope), \
+                patch.object(S, 'incus', return_value=json.dumps([network])), \
+                patch.dict(S.FORWARD, {'cleanup': cleanup}), \
+                self.assertRaisesRegex(ValueError, 'attached instances'):
+            S.cleanup(Path('/private'), scope['manage_origin'], scope['bridge'])
+        cleanup.assert_not_called()
+
+    def test_forwarding_preparation_failure_uses_bridge_independent_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / 'scope'
+            args = SimpleNamespace(manage_origin='https://dev.example.com', run='failure-test',
+                                   subnet='10.246.217.1/24', state_dir=state)
+            incus = Mock(side_effect=['[]', '', '[]'])
+            prepare = Mock(side_effect=ValueError('induced forwarding failure'))
+            cleanup = Mock()
+            with patch.object(S, 'incus', incus), \
+                    patch.object(S, 'verify', return_value=({}, {})), \
+                    patch.object(S.subprocess, 'check_output', return_value='[]'), \
+                    patch.dict(S.FORWARD, {'prepare': prepare, 'cleanup': cleanup}), \
+                    self.assertRaisesRegex(ValueError, 'induced forwarding failure'):
+                S.prepare(args)
+            actual_scope = S.read_scope(state)
+            prepare.assert_called_once_with(state, actual_scope)
+            cleanup.assert_called_once_with(state, actual_scope)
+            self.assertEqual(incus.call_args_list[-1].args,
+                             ('network', 'list', '--format=json'))
+
     def test_bridge_verification_uses_incus_json_api_and_checks_ownership(self):
         scope = {'manage_origin': 'https://dev.example.com', 'bridge': 'jnqtest',
                  'owner': 'owned-run', 'subnet': '10.246.217.1/24'}
@@ -36,10 +104,12 @@ class NixosQualificationTests(unittest.TestCase):
                               'ipv4.address': scope['subnet'], 'ipv4.nat': 'true',
                               'ipv6.address': 'none'}}
         with patch.object(S, 'read_scope', return_value=scope), \
-                patch.object(S, 'incus', return_value=json.dumps(network)) as incus:
+                patch.object(S, 'incus', return_value=json.dumps(network)) as incus, \
+                patch.dict(S.FORWARD, {'verify': Mock()}) as forward:
             self.assertEqual(S.verify(Path('/private'), scope['manage_origin'], scope['bridge']),
                              (scope, network))
             incus.assert_called_once_with('query', '/1.0/networks/jnqtest')
+            forward['verify'].assert_called_once_with(Path('/private'), scope)
             network['config']['user.cybex.nixos-qualification'] = 'another-run'
             incus.return_value = json.dumps(network)
             with self.assertRaisesRegex(ValueError, 'ownership receipt'):

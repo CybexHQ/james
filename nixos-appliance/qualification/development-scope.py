@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import stat
 import struct
 import subprocess
@@ -19,6 +20,11 @@ import uuid
 
 SCHEMA = "cybex.james.nixos-development-scope.v1"
 FIELDS = {"schema", "run", "manage_origin", "bridge", "subnet", "owner"}
+FORWARD = runpy.run_path(str(Path(__file__).with_name('development_forward.py')))
+COMMAND_ENV = {
+    'LC_ALL': 'C',
+    'PATH': '/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+}
 
 
 def hardware_identity(scope, role):
@@ -41,7 +47,8 @@ def development_origin(value):
 
 
 def incus(*args):
-    result = subprocess.run(["incus", *args], capture_output=True, text=True, check=False)
+    result = subprocess.run(["incus", *args], capture_output=True, text=True, check=False,
+                            env=COMMAND_ENV)
     if result.returncode:
         raise ValueError("owned qualification network operation failed")
     return result.stdout
@@ -74,18 +81,30 @@ def read_scope(path):
     return value
 
 
-def verify(path, origin, bridge):
+def bound_scope(path, origin, bridge):
     development_origin(origin)
     scope = read_scope(path)
     if (scope["manage_origin"], scope["bridge"]) != (origin, bridge):
         raise ValueError("qualification origin or network differs from its owned run")
+    return scope
+
+
+def owned_network(scope, network):
+    config = network.get("config", {})
+    return (network.get("name") == scope["bridge"] and network.get("type") == "bridge"
+            and network.get("managed") is True
+            and config.get("user.cybex.nixos-qualification") == scope["owner"]
+            and config.get("ipv4.address") == scope["subnet"]
+            and config.get("ipv4.nat") == "true" and config.get("ipv6.address") == "none")
+
+
+def verify(path, origin, bridge, *, require_forwarding=True):
+    scope = bound_scope(path, origin, bridge)
     network = json.loads(incus("query", "/1.0/networks/" + bridge))
-    config = network["config"]
-    if (network["name"] != bridge or network["type"] != "bridge" or not network["managed"]
-            or config.get("user.cybex.nixos-qualification") != scope["owner"]
-            or config.get("ipv4.address") != scope["subnet"]
-            or config.get("ipv4.nat") != "true" or config.get("ipv6.address") != "none"):
+    if not owned_network(scope, network):
         raise ValueError("qualification bridge no longer matches its ownership receipt")
+    if require_forwarding:
+        FORWARD['verify'](path, scope)
     return scope, network
 
 
@@ -104,7 +123,8 @@ def prepare(args):
         address = network.get("config", {}).get("ipv4.address", "")
         if "/" in address and subnet.network.overlaps(ipaddress.ip_interface(address).network):
             raise ValueError("qualification subnet overlaps an existing managed network")
-    routes = json.loads(subprocess.check_output(["ip", "-j", "-4", "route", "show"], text=True))
+    routes = json.loads(subprocess.check_output(["ip", "-j", "-4", "route", "show"],
+                                               text=True, env=COMMAND_ENV))
     for route in routes:
         if route.get("dst") not in {None, "default"} and subnet.network.overlaps(ipaddress.ip_network(route["dst"], strict=False)):
             raise ValueError("qualification subnet overlaps an existing host route")
@@ -126,28 +146,43 @@ def prepare(args):
     try:
         incus("network", "create", bridge, "--type=bridge", "ipv4.address=" + str(subnet),
               "ipv4.nat=true", "ipv6.address=none", "user.cybex.nixos-qualification=" + scope["owner"])
+        verify(args.state_dir, args.manage_origin, bridge, require_forwarding=False)
+        FORWARD['prepare'](args.state_dir, scope)
         verify(args.state_dir, args.manage_origin, bridge)
-    except BaseException:
-        # A failed create RPC may still have created the network. Remove only
-        # this durable receipt's exact owner after checking for live clients.
-        observed = json.loads(incus('network', 'list', '--format=json'))
-        matches = [network for network in observed if network['name'] == bridge
-                   and network.get('config', {}).get('user.cybex.nixos-qualification') == scope['owner']]
-        if matches:
+    except BaseException as error:
+        # A failed RPC may have created either family of forwarding rules or
+        # the network. The durable receipts are sufficient to clean each exact
+        # resource even if the bridge disappeared or was replaced meanwhile.
+        try:
             cleanup(args.state_dir, args.manage_origin, bridge)
+        except BaseException as cleanup_error:
+            raise error from cleanup_error
         raise
     print(json.dumps(scope, sort_keys=True))
 
 
 def cleanup(path, origin, bridge):
-    _, network = verify(path, origin, bridge)
+    scope = bound_scope(path, origin, bridge)
+    observed = json.loads(incus('network', 'list', '--format=json'))
+    matches = [network for network in observed if network.get('name') == bridge]
+    if len(matches) > 1:
+        raise ValueError('qualification network inventory is ambiguous')
+    # The forwarding receipt owns exact rules independently of Incus. A
+    # missing or foreign replacement bridge must not strand those rules, and
+    # name equality alone never authorizes deletion of the replacement.
+    if not matches or not owned_network(scope, matches[0]):
+        FORWARD['cleanup'](path, scope)
+        return
+    network = matches[0]
     if network.get('used_by'):
         raise ValueError('qualification network still has attached instances')
     # QEMU clients do not appear in Incus used_by. Never kill a client to make
     # bridge deletion succeed: its owning VM context must release it first.
-    links = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', 'master', bridge], text=True))
+    links = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', 'master', bridge],
+                                              text=True, env=COMMAND_ENV))
     if links:
         raise ValueError('qualification network still has attached host interfaces')
+    FORWARD['cleanup'](path, scope)
     incus('network', 'delete', bridge)
 
 
@@ -156,7 +191,8 @@ def tap(path, origin, bridge, role, create):
     if role not in {'appliance', 'workstation'}:
         raise ValueError('unknown disposable network role')
     name = bridge + ('a' if role == 'appliance' else 'w')
-    links = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show'], text=True))
+    links = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show'], text=True,
+                                              env=COMMAND_ENV))
     current = [link for link in links if link['ifname'] == name]
     if create:
         if current:
@@ -167,15 +203,17 @@ def tap(path, origin, bridge, role, create):
         fd = os.open('/dev/net/tun', os.O_RDWR | os.O_CLOEXEC)
         try:
             fcntl.ioctl(fd, 0x400454ca, struct.pack('16sH', name.encode(), 0x0002 | 0x1000 | 0x8000))
-            subprocess.run(['ip', 'link', 'set', 'dev', name, 'alias', scope['owner']], check=True)
-            subprocess.run(['ip', 'link', 'set', 'dev', name, 'master', bridge, 'up'], check=True)
+            subprocess.run(['ip', 'link', 'set', 'dev', name, 'alias', scope['owner']],
+                           check=True, env=COMMAND_ENV)
+            subprocess.run(['ip', 'link', 'set', 'dev', name, 'master', bridge, 'up'],
+                           check=True, env=COMMAND_ENV)
             fcntl.ioctl(fd, 0x400454cb, 1)
         finally:
             os.close(fd)
     else:
         if len(current) != 1 or current[0].get('ifalias') != scope['owner'] or current[0].get('master') != bridge:
             raise ValueError('TAP no longer matches this run owner and bridge')
-        subprocess.run(['ip', 'link', 'delete', 'dev', name], check=True)
+        subprocess.run(['ip', 'link', 'delete', 'dev', name], check=True, env=COMMAND_ENV)
     return name
 
 
@@ -196,6 +234,10 @@ def main():
         return
     if not args.bridge:
         parser.error("verify and cleanup require --bridge")
+    if args.action == "cleanup":
+        cleanup(args.state_dir, args.manage_origin, args.bridge)
+        print("Removed the exact owned qualification resources; evidence retained")
+        return
     scope, network = verify(args.state_dir, args.manage_origin, args.bridge)
     if args.action == 'hardware':
         print(json.dumps(hardware_identity(scope, args.role), sort_keys=True))
@@ -203,11 +245,7 @@ def main():
     if args.action.startswith('tap-'):
         print(tap(args.state_dir, args.manage_origin, args.bridge, args.role, args.action == 'tap-create'))
         return
-    if args.action == "cleanup":
-        cleanup(args.state_dir, args.manage_origin, args.bridge)
-        print("Removed the exact owned qualification network; evidence retained")
-    else:
-        print("Verified isolated development qualification scope")
+    print("Verified isolated development qualification scope")
 
 
 if __name__ == "__main__":
