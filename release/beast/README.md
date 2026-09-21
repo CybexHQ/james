@@ -62,6 +62,55 @@ verifies that receipt before removing owned resources.
 Cold qualification never reads the candidate store: it downloads each published
 payload from GitHub and verifies the complete receipt inventory before booting.
 
+## Warm predecessor transport cache
+
+The protected warm job can reuse authenticated predecessor transport bytes when
+all of the following are configured: current published ancestry, both explicit
+NixOS predecessor inputs, and
+`CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT`. The cache root is an existing
+runner-owned mode-0700 directory outside the checkout, on storage large enough
+for retained entries plus a staging copy and an output copy. The wrapper retains
+at most two complete identities and 32 GiB by default.
+
+The enabled command is:
+
+```sh
+python3 -B release/beast/release_speed.py cache \
+  --mode github-warm \
+  --cache-root "$CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT" \
+  --directory "$NEW_PREDECESSOR_DIRECTORY" \
+  --predecessor-dir "$CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR" \
+  --predecessor-manifest-sha256 "$CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256" \
+  --expected-identity "$BUILD_ANCESTRY" \
+  --authorization release/recovery-adoption.json \
+  --repository "$GITHUB_REPOSITORY" \
+  --candidate-version "$CYBEX_JAMES_RELEASE_VERSION" \
+  --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
+  --timing-dir "$NEW_PRIVATE_TIMING_DIRECTORY"
+```
+
+The wrapper always performs fresh ancestry resolution and exact comparison,
+signed snapshot authentication, current trust/policy binding, full closure/NAR/
+source/ISO verification and byte verification. A hit saves authenticated transfer
+and copying only. It does not reuse lifecycle success. Missing, corrupt, foreign
+or unsafe cache state fails closed; it is left for owner inspection rather than
+recursively deleted. The no-explicit-pair branch continues to use the original
+resolver. Final publication ancestry verification remains unconditional.
+
+Only `timing.json` is eligible for the separate run-and-attempt-named timing
+artifact. It contains bounded hashes, cache hit/miss, verified byte count and
+whole-cache-command duration. `stdout.log`, `stderr.log`, private paths, command
+arguments, origins and raw API data remain private. If no sidecar exists, no
+measurement is claimed.
+
+The serial `release_speed.py run` facade is not wired into Actions yet. It
+requires root-owned protected input and output trees plus an explicitly reviewed
+resource profile; ordinary runner-workspace paths cannot be trusted through
+`sudo`. Until an owner-reviewed staging adapter exists, the workflow keeps the
+original complete warm and cold runner commands. Do not enable parallel phases,
+rollback-to-update fixture reuse, cold preparation overlap, or offline/zero-egress
+claims from this transport cache.
+
 Retries reuse a sealed candidate, including recovery after sealing succeeded
 but uploading its receipt failed. If a candidate is missing or corrupted, a
 retry fails; it never rebuilds or signs different bytes for that run. Prepare
@@ -97,6 +146,11 @@ depend on sudo retaining the runner environment.
 | `STATE_ROOT` | Dedicated root-owned mode-0700 directory for receipts, private sessions and disposable fixtures. Each phase creates a fresh child; failed runs require owned-resource inspection before cleanup. |
 | `ALLOW_DEVICE_HELPER` | Root-owned, protected executable that admits only the session identified by `--state-dir` and `--session-id`, after verifying its development ownership receipt. It must never authorize devices against production. |
 | `MANAGE_CHECKOUT` | Exact development checkout used by the admission helper to validate qualification inputs and deployed source. This is not the production checkout. |
+
+The optional `CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT` belongs to the
+same protected qualification environment. It authorizes only runner-private warm
+transport storage; it grants no subnet, VM, device-admission, signing, publication
+or promotion authority. If it is absent, the original resolver remains active.
 
 The current Manage checkout and deployed harness identity are separate from
 the exact candidate/predecessor source ancestors encoded in each fixture's
