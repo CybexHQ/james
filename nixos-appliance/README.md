@@ -22,11 +22,12 @@ microcode, Nix, James and systemd-boot versions in the closure manifest.
 Initial evaluated versions are kernel `6.18.38`, Nix `2.34.7` and systemd-boot
 `260.2`; stable OS release is `26.05` despite `lib.version=26.05pre-git`.
 
-The planned non-flake entrypoint `default.nix` exposes the installed system
+The non-flake entrypoint `default.nix` exposes the installed system
 toplevel, local closure cache/manifest, installer ISO and NixOS VM tests. Build
 scripts accept an exact clean James revision, exact Manage source checkout and
 revision, explicit expected canonical HTTPS Manage origin, offline release public
-key, appliance Nix cache public key, and sorted unique provisioning public keys.
+key and sorted unique provisioning public keys. The named appliance Nix key is
+derived from the same release public authority.
 Private signing keys must never be a Nix derivation input or enter the store.
 
 Outputs are build-once immutable candidates:
@@ -52,6 +53,29 @@ do not weaken it to follow untrusted symlinks. The signed
 workstation descriptor, embedded archive and release Manage revision must agree.
 Preserve corresponding source/licence/SPDX material for the pinned udpcast
 implementation and the published GPL source offer.
+
+### Local build commands
+
+From a clean committed checkout, use the wrappers for their source/origin and ISO
+content checks. Public inputs may be command arguments; private keys must stay in
+protected files outside the Nix store and unsigned builder.
+
+```sh
+bash nixos-appliance/build-template.sh \
+  --manage-source-dir "$MANAGE_SOURCE" --manage-source-revision "$MANAGE_REVISION" \
+  --source-revision "$JAMES_REVISION" --expected-manage-origin "$MANAGE_ORIGIN" \
+  --release-public-key "$RELEASE_PUBLIC_KEY" \
+  --provisioning-public-key "$PROVISIONING_PUBLIC_KEY" --output-dir "$ISO_OUTPUT"
+bash nixos-appliance/build-closure.sh \
+  --manage-source-dir "$MANAGE_SOURCE" --manage-source-revision "$MANAGE_REVISION" \
+  --source-revision "$JAMES_REVISION" --expected-manage-origin "$MANAGE_ORIGIN" \
+  --release-public-key "$RELEASE_PUBLIC_KEY" \
+  --provisioning-public-key "$PROVISIONING_PUBLIC_KEY" --unsigned-output-dir "$CACHE_OUTPUT"
+python3 tools/pack-system-closure.py \
+  --cache "$CACHE_OUTPUT/cache" --build-metadata "$CACHE_OUTPUT/build-metadata.json" \
+  --private-key "$SIGNING_KEY_FILE" --output "$SIGNED_CLOSURE" \
+  --metadata-output "$SIGNED_CLOSURE_METADATA"
+```
 
 ## Disk and state contract
 
@@ -86,13 +110,22 @@ store paths and simultaneous staging files. Current, pending and two preceding
 good generations, active job roots and protected artifacts cannot be reclaimed to
 make an update fit. Daily GC uses the job/update exclusion barrier.
 
+Bulk downloaded/private update staging and database rollback copies live under
+`/var/cache/cybex-james/appliance-updates/` on ROOT. Only protected verified and
+transaction receipts live on STATE. When staging/store share a filesystem,
+admission charges new staging + missing NAR bytes + 23 GiB once. A distinct
+staging filesystem reserves 2 GiB; the store still preserves 23 GiB. Pending
+and preparation/commit/rollback receipts fence queued builds after reboot until
+root recovery finishes.
+
 ## Closure archive and safety limits
 
 Export the complete toplevel reference graph to a local binary cache with `nix
 copy --to file://...`, sign every NARInfo with the offline appliance Nix key, and
 pack canonical USTAR through zstd. The archive contains only `manifest.json`,
 `nix-cache-info`, `<hash>.narinfo`, `nar/` and `nar/<safe filename>.nar.zst`.
-Directory/file ownership is numeric root, stable mode and timestamp. Reject
+Directory/file ownership is numeric root, mtime zero, directory mode 0755 and
+regular-file mode 0644. The explicit `nar/` header precedes all NAR payloads. Reject
 duplicates, absolute/traversal paths, links, devices, sparse/extended headers,
 unexpected files, trailing data and incomplete streams.
 
@@ -214,7 +247,15 @@ can touch EFI variables. Materialize STATE config/network/CA/principal/CIDRs,
 record completion durably and reboot without prompting.
 
 Recovery probes existing STATE `ro,noload,nodev,nosuid`. Same-session resume
-requires exact media/session/plan/geometry and freshly verified closure. A
+requires exact media/session/plan/geometry and freshly verified closure while
+installation is incomplete. Before permanent activation, media-key polling may
+recover the exact active signed plan even if power failed before STATE was
+formatted or persisted. Replaying the exact plan-acknowledged and partitioning
+events must succeed before recreating that exact disk's STATE. Empty/unmountable
+STATE alone grants no authority. Once installation is complete, the attached ISO
+performs a signed-plan/hardware/permanent-identity/disk-bound boot-only handoff;
+expired media or unavailable original closure transport cannot block that handoff.
+Expired incomplete media never grants new destructive authority. A
 different session's old STATE is discovery only, never a source of identity,
 tenant, keys or config: unmount it for fresh inventory and wait for a new signed
 exact-disk Console approval with accepted acknowledgement/destructive events
@@ -244,6 +285,12 @@ DHCP addresses. Workstation netboot/runtime import, signed binary cache, Bluepri
 builds and multicast are the existing product paths.
 
 Networkd renders STATE's approved deterministic network JSON before startup.
+A protected `network-committed.json` stores the exact signed change and
+acknowledgement identities. Recurring boot validation rechecks that durable
+authority and repairs derived approved/fallback configuration after an interrupted
+write. The original install plan remains immutable. An error before the new
+receipt is committed restores the previous network; a failure after the exact
+durable receipt preserves it for recovery.
 Historical `netplan-*.json` filenames and candidate hashing are preserved, while
 Netplan itself is absent. Render `/run/systemd/network/10-cybex-james.network`
 0640 root:systemd-network, match the approved MAC/name, reload/reconfigure, then
