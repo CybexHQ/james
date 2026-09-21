@@ -34,6 +34,9 @@ use crate::{
     manage_source, release_transport,
 };
 
+#[path = "netboot_transport.rs"]
+mod transport;
+
 pub const DESCRIPTOR_SCHEMA: &str = "cybex.james.workstation-netboot.v1";
 pub const MANIFEST_SCHEMA: &str = "cybex.james.workstation-netboot-manifest.v1";
 pub const SIGNATURE_DOMAIN: &str = "CYBEX-JAMES-WORKSTATION-NETBOOT-V1";
@@ -192,6 +195,8 @@ pub struct DesiredWorkstationNetboot {
     pub compatibility_epoch: u32,
     pub descriptor: WorkstationNetbootDescriptor,
     pub reconcile_generation: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_transport_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -593,7 +598,10 @@ async fn record_desired_decode_failure(
         (parsed_epoch, desired_generation, value.get("descriptor"))
     {
         let attempted_descriptor = serde_json::to_vec(raw_descriptor)?;
-        let attempted_descriptor_sha256 = sha256_bytes(&attempted_descriptor);
+        let attempted_descriptor_sha256 = transport::raw_attempt_identity(
+            &sha256_bytes(&attempted_descriptor),
+            value.get("bundle_transport_url"),
+        );
         if !reconcile_attempt_is_due(
             state,
             attempted_epoch,
@@ -620,8 +628,8 @@ async fn record_desired_decode_failure(
     }
 
     if let Some(desired) = desired.filter(|desired| desired.reconcile_generation >= 0) {
-        if validate_descriptor_with_policy(
-            &desired.descriptor,
+        if transport::validate_desired(
+            &desired,
             &state.config.update.trusted_public_key,
             state.config.workstation_netboot.allow_private_release_urls,
         )
@@ -676,11 +684,13 @@ pub async fn reconcile_desired(
 ) -> Result<()> {
     let descriptor_json = serde_json::to_string(&desired.descriptor)?;
     let descriptor_sha256 = sha256_bytes(descriptor_json.as_bytes());
+    let attempt_identity =
+        transport::attempt_identity(&descriptor_sha256, desired.bundle_transport_url.as_deref());
     if !reconcile_attempt_is_due(
         state,
         desired.compatibility_epoch,
         desired.reconcile_generation,
-        &descriptor_sha256,
+        &attempt_identity,
     )
     .await?
     {
@@ -693,7 +703,7 @@ pub async fn reconcile_desired(
             state,
             desired.compatibility_epoch,
             desired.reconcile_generation,
-            &descriptor_sha256,
+            &attempt_identity,
             failure_kind,
         )
         .await
@@ -724,7 +734,7 @@ pub async fn reconcile_desired(
         state,
         desired.compatibility_epoch,
         desired.reconcile_generation,
-        &descriptor_sha256,
+        &attempt_identity,
     )
     .await
     {
@@ -842,12 +852,13 @@ async fn reconcile_desired_inner(
     if desired.reconcile_generation < 0 {
         bail!("workstation netboot reconcile generation must not be negative");
     }
-    validate_descriptor_with_policy(
-        &desired.descriptor,
+    transport::validate_desired(
+        desired,
         &state.config.update.trusted_public_key,
         state.config.workstation_netboot.allow_private_release_urls,
     )?;
-    let allow_private_manage_source = state.config.workstation_netboot.allow_private_release_urls
+    let allow_private_manage_source = desired.bundle_transport_url.is_none()
+        && state.config.workstation_netboot.allow_private_release_urls
         && state.config.build.manage_source_url_template
             != manage_source::MANAGE_SOURCE_URL_TEMPLATE;
     manage_source::verify_revision(
@@ -936,7 +947,13 @@ async fn reconcile_desired_inner(
         return Ok(());
     }
 
-    let imported = import_bundle(state, &desired.descriptor, desired.compatibility_epoch).await?;
+    let imported = import_bundle(
+        state,
+        &desired.descriptor,
+        desired.compatibility_epoch,
+        desired.bundle_transport_url.as_deref(),
+    )
+    .await?;
     if !imported {
         return Ok(());
     }
@@ -1086,6 +1103,7 @@ async fn import_bundle(
     state: &AppState,
     descriptor: &WorkstationNetbootDescriptor,
     compatibility_epoch: u32,
+    bundle_transport_url: Option<&str>,
 ) -> Result<bool> {
     let existing_epoch: Option<(i64,)> = sqlx::query_as(
         "SELECT compatibility_epoch FROM workstation_netboot_bundles WHERE bundle_sha256 = ?",
@@ -1128,8 +1146,9 @@ async fn import_bundle(
     }
 
     set_runtime_state(state, "downloading", 1, 0, descriptor.size_bytes).await?;
-    let part = staging_root.join(format!("{}.tar.zst.part", descriptor.sha256));
-    download_bundle(state, descriptor, &part).await?;
+    let part = transport::partial_path(&staging_root, descriptor, bundle_transport_url)?;
+    transport::discard_other_partials(&staging_root, descriptor, &part).await?;
+    download_bundle(state, descriptor, &part, bundle_transport_url).await?;
     set_runtime_state(
         state,
         "verifying",
@@ -1308,7 +1327,12 @@ async fn download_bundle(
     state: &AppState,
     descriptor: &WorkstationNetbootDescriptor,
     part: &Path,
+    bundle_transport_url: Option<&str>,
 ) -> Result<()> {
+    if let Some(value) = bundle_transport_url {
+        validate_descriptor(descriptor, &state.config.update.trusted_public_key)?;
+        transport::validate_url(value, descriptor)?;
+    }
     let mut progress_checkpoint = DownloadProgressCheckpoint::new(Instant::now());
     let mut offset = match tokio_fs::symlink_metadata(part).await {
         Ok(metadata)
@@ -1350,12 +1374,17 @@ async fn download_bundle(
         )
         .await?;
     }
-    let mut response = send_release_request(
-        &descriptor.url,
-        state.config.workstation_netboot.allow_private_release_urls,
-        offset,
-    )
-    .await?;
+    let mut response = match bundle_transport_url {
+        Some(value) => transport::get(value, descriptor, offset).await?,
+        None => {
+            send_release_request(
+                &descriptor.url,
+                state.config.workstation_netboot.allow_private_release_urls,
+                offset,
+            )
+            .await?
+        }
+    };
     let restart_from_zero = offset > 0
         && response.status() == StatusCode::OK
         && response.content_length() == Some(descriptor.size_bytes);
@@ -3059,6 +3088,7 @@ pub fn safe_failure_kind(error: &anyhow::Error) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("netboot_transport_tests.rs");
     use ed25519_dalek::SigningKey;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -3242,6 +3272,7 @@ mod tests {
             "http://127.0.0.1:9".to_string(),
         );
         let raw_desired = serde_json::to_value(DesiredWorkstationNetboot {
+            bundle_transport_url: None,
             compatibility_epoch: COMPATIBILITY_EPOCH + 1,
             descriptor: candidate.clone(),
             reconcile_generation: 2,
@@ -3312,6 +3343,7 @@ mod tests {
         reconcile_desired(
             &fixture.state,
             &DesiredWorkstationNetboot {
+                bundle_transport_url: None,
                 compatibility_epoch: COMPATIBILITY_EPOCH,
                 descriptor: corrected.clone(),
                 reconcile_generation: 7,
@@ -3347,6 +3379,7 @@ mod tests {
         let fixture = RuntimeFilesystemFixture::new().await;
         let mut queue = RuntimeReconcileQueue::new();
         let desired = |generation| DesiredWorkstationNetboot {
+            bundle_transport_url: None,
             compatibility_epoch: COMPATIBILITY_EPOCH,
             descriptor: fixture_descriptor(),
             reconcile_generation: generation,
@@ -3379,6 +3412,7 @@ mod tests {
         let error = reconcile_desired(
             &fixture.state,
             &DesiredWorkstationNetboot {
+                bundle_transport_url: None,
                 compatibility_epoch: COMPATIBILITY_EPOCH,
                 descriptor: candidate.clone(),
                 reconcile_generation: 2,
@@ -3394,6 +3428,7 @@ mod tests {
         reconcile_desired(
             &fixture.state,
             &DesiredWorkstationNetboot {
+                bundle_transport_url: None,
                 compatibility_epoch: COMPATIBILITY_EPOCH,
                 descriptor: candidate.clone(),
                 reconcile_generation: 2,
@@ -3412,6 +3447,7 @@ mod tests {
         let retry_error = reconcile_desired(
             &fixture.state,
             &DesiredWorkstationNetboot {
+                bundle_transport_url: None,
                 compatibility_epoch: COMPATIBILITY_EPOCH,
                 descriptor: candidate,
                 reconcile_generation: 2,
@@ -3443,6 +3479,7 @@ mod tests {
         let error = reconcile_desired(
             &fixture.state,
             &DesiredWorkstationNetboot {
+                bundle_transport_url: None,
                 compatibility_epoch: COMPATIBILITY_EPOCH,
                 descriptor: candidate.clone(),
                 reconcile_generation: 2,
@@ -3458,6 +3495,7 @@ mod tests {
         reconcile_desired(
             &fixture.state,
             &DesiredWorkstationNetboot {
+                bundle_transport_url: None,
                 compatibility_epoch: COMPATIBILITY_EPOCH,
                 descriptor: candidate.clone(),
                 reconcile_generation: 2,
@@ -3494,6 +3532,7 @@ mod tests {
         let retry_error = reconcile_desired(
             &fixture.state,
             &DesiredWorkstationNetboot {
+                bundle_transport_url: None,
                 compatibility_epoch: COMPATIBILITY_EPOCH,
                 descriptor: candidate,
                 reconcile_generation: 2,
@@ -3522,6 +3561,7 @@ mod tests {
         invalid.schema = "unsupported-development-runtime".to_string();
 
         let attempt = |generation| DesiredWorkstationNetboot {
+            bundle_transport_url: None,
             compatibility_epoch: COMPATIBILITY_EPOCH,
             descriptor: invalid.clone(),
             reconcile_generation: generation,
@@ -3613,7 +3653,7 @@ mod tests {
         fs::write(&part, &body[..offset as usize]).unwrap();
         fs::set_permissions(&part, fs::Permissions::from_mode(0o600)).unwrap();
 
-        download_bundle(&fixture.state, &descriptor, &part)
+        download_bundle(&fixture.state, &descriptor, &part, None)
             .await
             .unwrap();
         assert_eq!(fs::read(&part).unwrap(), body);
@@ -3639,7 +3679,7 @@ mod tests {
         fs::write(&part, &body[..5]).unwrap();
         fs::set_permissions(&part, fs::Permissions::from_mode(0o600)).unwrap();
 
-        download_bundle(&fixture.state, &descriptor, &part)
+        download_bundle(&fixture.state, &descriptor, &part, None)
             .await
             .unwrap();
         assert_eq!(fs::read(&part).unwrap(), body);
@@ -3688,7 +3728,7 @@ mod tests {
         let download_state = fixture.state.clone();
         let download_part = part.clone();
         let download = tokio::spawn(async move {
-            download_bundle(&download_state, &descriptor, &download_part).await
+            download_bundle(&download_state, &descriptor, &download_part, None).await
         });
 
         first_chunk_sent.notified().await;
@@ -3952,7 +3992,7 @@ mod tests {
         assert!(report.active_bundle_sha256.is_empty());
         assert_eq!(report.failure_kind, FAILURE_COMPATIBILITY_EPOCH_UNSUPPORTED);
 
-        let error = import_bundle(&fixture.state, &descriptor, COMPATIBILITY_EPOCH)
+        let error = import_bundle(&fixture.state, &descriptor, COMPATIBILITY_EPOCH, None)
             .await
             .unwrap_err();
         assert_eq!(safe_failure_kind(&error), FAILURE_INVALID_DESCRIPTOR);
@@ -4162,6 +4202,7 @@ mod tests {
         let rollback_error = reconcile_desired(
             &fixture.state,
             &DesiredWorkstationNetboot {
+                bundle_transport_url: None,
                 compatibility_epoch: COMPATIBILITY_EPOCH,
                 descriptor: rollback,
                 reconcile_generation: 2,
@@ -4189,6 +4230,7 @@ mod tests {
         reconcile_desired(
             &fixture.state,
             &DesiredWorkstationNetboot {
+                bundle_transport_url: None,
                 compatibility_epoch: COMPATIBILITY_EPOCH,
                 descriptor: corrected.clone(),
                 reconcile_generation: 2,
@@ -4204,6 +4246,7 @@ mod tests {
         let stale_error = reconcile_desired(
             &fixture.state,
             &DesiredWorkstationNetboot {
+                bundle_transport_url: None,
                 compatibility_epoch: COMPATIBILITY_EPOCH,
                 descriptor: stale_newer,
                 reconcile_generation: 1,

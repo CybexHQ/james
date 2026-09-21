@@ -30,7 +30,10 @@ The companion `cybex.james.release-compatibility.v1` asset keeps its historical
 UTF-8 sorted compact JSON plus one LF is signed with
 `CYBEX-JAMES-RELEASE-COMPATIBILITY-V1\n`. It binds the exact main manifest,
 component compatibility contract, and all artifact identities. Protocol 4 and
-workstation runtime epoch 1 / `split-squashfs-v1` remain unchanged.
+workstation runtime epoch 1 / `split-squashfs-v1` remain unchanged. The additive
+`workstation_netboot_transport_v1` capability permits an unsigned fixture endpoint
+only after normal signed-descriptor verification; see the
+[transport contract](protocol/workstation-transport-v1.md).
 
 See [the exact V3 protocol](protocol/appliance-v3.md) and the
 [build/layout guide](nixos-appliance/README.md).

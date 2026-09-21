@@ -33,7 +33,10 @@ ledger determines release readiness; a source change is not a published update.
 - SSH access uses the configured SSH CA and the exact reserved device ID as the
   principal.
 - Workstation netboot bundles are immutable and signature-verified before
-  publication.
+  publication. An optional qualification `bundle_transport_url` is restricted to
+  a canonical RFC1918 IPv4 HTTP endpoint with the exact signed filename, without
+  proxies or redirects. It cannot inherit the legacy private-URL signature bypass;
+  retry and resume identities bind its hash while the signed identity stays intact.
 
 The bootstrap validates envelope canonicalization, signatures, session state,
 target-disk identity, and network plan before destructive installation. It

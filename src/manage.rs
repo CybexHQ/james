@@ -52,6 +52,7 @@ const CAPABILITY_INSTALLER_TARGET_BUILD_V3: &str = "installer_target_build_v3";
 /// This James copies verified exact closures from an approved sibling cache
 /// (`closure_source` in a build spec) instead of rebuilding them.
 const CAPABILITY_CACHE_REPLICA_V1: &str = "cache_replica_v1";
+const CAPABILITY_WORKSTATION_NETBOOT_TRANSPORT_V1: &str = "workstation_netboot_transport_v1";
 const CAPABILITY_WORKSTATION_NETBOOT_V1: &str = "workstation_netboot_v1";
 const CAPABILITY_WORKSTATION_ROOTFS_MULTICAST_V1: &str = crate::netboot_multicast::CAPABILITY;
 const CAPABILITY_JAMES_BOOT_GRANT_V1: &str = "james_boot_grant_v1";
@@ -2489,6 +2490,7 @@ fn james_capabilities(config: &AppConfig) -> Vec<&'static str> {
         CAPABILITY_INSTALLER_TARGET_BUILD_V3,
         CAPABILITY_CACHE_REPLICA_V1,
         CAPABILITY_WORKSTATION_NETBOOT_V1,
+        CAPABILITY_WORKSTATION_NETBOOT_TRANSPORT_V1,
         CAPABILITY_JAMES_BOOT_GRANT_V1,
         CAPABILITY_WAKE_ON_LAN_V1,
     ];
@@ -4435,6 +4437,7 @@ mod tests {
                 "installer_target_build_v3",
                 "cache_replica_v1",
                 "workstation_netboot_v1",
+                "workstation_netboot_transport_v1",
                 "james_boot_grant_v1",
                 "wake_on_lan_v1",
                 "pxe_proxy_v1",

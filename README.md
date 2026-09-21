@@ -51,6 +51,12 @@ appliance reporting, or managed heartbeats. James keeps serving its verified
 active runtime while a newer candidate is retried; the candidate import state
 and current service availability are intentionally separate signals in Manage.
 
+James also advertises `workstation_netboot_transport_v1` for explicitly allowlisted
+offline qualification fixtures. Its optional unsigned `bundle_transport_url` changes
+only the download endpoint; the original signed descriptor and every integrity,
+source and anti-rollback check remain authoritative. See the
+[transport contract](protocol/workstation-transport-v1.md).
+
 James advertises `installer_target_build_v3` when it accepts the device-agnostic
 cohort identity `cybex.installer-target.build.v3` for exact installation jobs.
 That identity names only closure inputs — Blueprint revision and artifact
