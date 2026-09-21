@@ -454,6 +454,102 @@ class KernelTests(unittest.TestCase):
     def tearDown(self):
         subprocess.run(['nft', 'delete', 'table', 'inet', self.table], capture_output=True)
 
+    def test_real_artifact_listener_roles_and_exact_host_self_checks(self):
+        backend = rules.names(self.c)[1]
+        peer, gateway = self.c['peer_ipv4'], '10.99.17.1'
+        children, listeners = [], []
+
+        def call(*args, check=True):
+            return subprocess.run(args, check=check, capture_output=True, text=True)
+
+        def child(bridge, stem, address, gateway_address):
+            process = subprocess.Popen(['unshare', '--net', '--', 'sleep', '60'])
+            children.append(process)
+            for _ in range(100):
+                if os.readlink(f'/proc/{process.pid}/ns/net') != os.readlink('/proc/self/ns/net'):
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail('child did not enter its disposable namespace')
+            call('ip', 'link', 'add', stem + 'h', 'type', 'veth', 'peer', 'name', stem + 'p')
+            call('ip', 'link', 'set', stem + 'p', 'netns', str(process.pid))
+            call('ip', 'link', 'set', stem + 'h', 'master', bridge)
+            call('ip', 'link', 'set', stem + 'h', 'up')
+            prefix = ['nsenter', '--target', str(process.pid), '--net', '--']
+            call(*prefix, 'ip', 'link', 'set', 'lo', 'up')
+            call(*prefix, 'ip', 'link', 'set', stem + 'p', 'up')
+            call(*prefix, 'ip', 'address', 'add', address, 'dev', stem + 'p')
+            call(*prefix, 'ip', 'route', 'add', 'default', 'via', gateway_address)
+            return prefix
+
+        def connect(prefix, address, port, source=None):
+            script = ('import socket,sys; s=socket.socket(); s.settimeout(0.25); '
+                      + ('s.bind((' + repr(source) + ',0)); ' if source else '')
+                      + 's.connect((' + repr(address) + ',' + str(port) + ')); '
+                      + 'assert s.recv(16)==b"artifact"')
+            return call(*prefix, 'python3', '-c', script, check=False).returncode == 0
+
+        bridges = [(self.c['bridge'], self.c['subnet']),
+                   (backend, gateway + '/28'), ('jnq-art-ext', '192.0.2.1/24')]
+        endpoints = [(peer, 18082), (gateway, 18081), (gateway, 18083),
+                     (peer, 18081), (gateway, 18082), (peer, 18084), (gateway, 18084)]
+        try:
+            call('ip', 'link', 'set', 'lo', 'up')
+            for bridge, address in bridges:
+                call('ip', 'link', 'add', bridge, 'type', 'bridge')
+                call('ip', 'address', 'add', address, 'dev', bridge)
+                call('ip', 'link', 'set', bridge, 'up')
+            guest = child(self.c['bridge'], 'ag', '10.99.16.2/24', peer)
+            container = child(backend, 'ab', '10.99.17.2/28', gateway)
+            external = child('jnq-art-ext', 'ae', '192.0.2.2/24', '192.0.2.1')
+            for address, port in endpoints:
+                script = ('import socketserver; '
+                          'H=type("H",(socketserver.BaseRequestHandler,),'
+                          '{"handle":lambda self:self.request.sendall(b"artifact")}); '
+                          'socketserver.TCPServer.allow_reuse_address=True; '
+                          'socketserver.TCPServer((' + repr(address) + ',' + str(port)
+                          + '),H).serve_forever()')
+                listeners.append(subprocess.Popen(['python3', '-c', script],
+                                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+                for _ in range(40):
+                    if connect([], address, port):
+                        break
+                    time.sleep(0.025)
+                else:
+                    self.fail('disposable listener did not start')
+            # Positive controls show all source paths and decoys work before confinement.
+            for prefix in (guest, container, external):
+                for address, port in endpoints[:3]:
+                    self.assertTrue(connect(prefix, address, port))
+            self.assertTrue(connect(guest, peer, 18084))
+            self.assertTrue(connect(container, gateway, 18084))
+            subprocess.run(['nft', '-j', '-f', '-'], input=json.dumps(rules.plan(self.c)).encode(),
+                           check=True, capture_output=True)
+            self.assertTrue(connect(guest, peer, 18082))
+            for port in (18081, 18083):
+                self.assertTrue(connect(container, gateway, port))
+            for address, port in endpoints[:3]:
+                self.assertTrue(connect([], address, port))
+                self.assertFalse(connect(external, address, port))
+            for address, port in endpoints[3:]:
+                self.assertFalse(connect([], address, port))
+            for address, port in [(gateway, 18081), (gateway, 18083), (peer, 18081), (peer, 18084)]:
+                self.assertFalse(connect(guest, address, port))
+            for address, port in [(peer, 18082), (gateway, 18082), (gateway, 18084)]:
+                self.assertFalse(connect(container, address, port))
+            call(*guest, 'ip', 'address', 'add', '10.99.17.3/28', 'dev', 'agp')
+            self.assertFalse(connect(guest, gateway, 18081, source='10.99.17.3'))
+            observed = json.loads(subprocess.check_output(
+                ['nft', '-j', 'list', 'table', 'inet', self.table]))['nftables']
+            network.Adapter.check_table(self.c, observed)
+        finally:
+            for process in listeners + children:
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=3)
+            for bridge, _ in reversed(bridges):
+                call('ip', 'link', 'delete', bridge, check=False)
+
     def test_real_kernel_plan_and_canonicalized_verification(self):
         subprocess.run(['nft', '-j', '-f', '-'],
                        input=json.dumps(rules.plan(self.c)).encode(), check=True, capture_output=True)

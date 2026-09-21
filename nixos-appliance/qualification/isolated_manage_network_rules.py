@@ -82,6 +82,16 @@ def ruleset(c):
     for chain in ('input', 'forward', 'output'):
         objects.append({'chain': {'family': 'inet', 'table': table, 'name': chain,
                                   'type': 'filter', 'hook': chain, 'prio': -10, 'policy': 'accept'}})
+    artifact_endpoints = ((peer, 18082), (backend_gateway, 18081), (backend_gateway, 18083))
+    # Self-checks use the same bound address on both ends of the local route.
+    # These exact TCP tuples precede source-spoof drops; no other loopback
+    # traffic with fixture addresses acquires an exception.
+    for address, port in artifact_endpoints:
+        for chain, direction in (('input', 'iifname'), ('output', 'oifname')):
+            local = [meta(direction, 'lo'), payload('ip', 'saddr', address),
+                     payload('ip', 'daddr', address)]
+            rule(chain, local + [payload('tcp', 'dport', port)], 'accept')
+            rule(chain, local + [payload('tcp', 'sport', port), established], 'accept')
     # Reject fixture-source addresses arriving anywhere except their exact bridge.
     # Interface-only rules otherwise accept a packet that spoofs an owned address.
     for chain in ('input', 'forward'):
@@ -89,7 +99,17 @@ def ruleset(c):
                      match({'meta': {'key': 'iifname'}}, guest, '!=')], 'drop')
         rule(chain, [payload('ip', 'saddr', backend_network),
                      match({'meta': {'key': 'iifname'}}, backend, '!=')], 'drop')
-    # Host services: exact DNS, DHCP, and published TLS only. No arbitrary host API.
+    # Host services: exact DNS, DHCP, published TLS, and immutable artifact
+    # listeners. Backend manifests/ISOs and guest closures/bundles stay separate.
+    for port in (18081, 18083):
+        rule('input', [meta('iifname', backend), payload('ip', 'saddr', backend_network),
+                       payload('ip', 'daddr', backend_gateway), payload('tcp', 'dport', port)], 'accept')
+    rule('input', [meta('iifname', guest), payload('ip', 'saddr', guest_network),
+                   payload('ip', 'daddr', peer), payload('tcp', 'dport', 18082)], 'accept')
+    # Also exclude unrelated host interfaces from these listeners, even when
+    # their source is outside either fixture subnet.
+    for address, port in artifact_endpoints:
+        rule('input', [payload('ip', 'daddr', address), payload('tcp', 'dport', port)], 'drop')
     for source, source_network in ((guest, guest_network), (backend, backend_network)):
         for protocol in ('tcp', 'udp'):
             rule('input', [meta('iifname', source), payload('ip', 'saddr', source_network),
@@ -124,6 +144,10 @@ def ruleset(c):
                     payload('ip', 'daddr', guest_network), established], 'accept')
     rule('output', [meta('oifname', backend), payload('ip', 'saddr', peer),
                     payload('ip', 'daddr', backend_network), established], 'accept')
+    for port in (18081, 18083):
+        rule('output', [meta('oifname', backend), payload('ip', 'saddr', backend_gateway),
+                        payload('ip', 'daddr', backend_network), payload('tcp', 'sport', port),
+                        established], 'accept')
     rule('output', [meta('oifname', guest), payload('ip', 'saddr', peer),
                     payload('udp', 'sport', 67), payload('udp', 'dport', 68)], 'accept')
     rule('output', [meta('oifname', guest), payload('ip', 'saddr', peer),
