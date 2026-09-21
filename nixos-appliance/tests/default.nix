@@ -1,6 +1,7 @@
 { nixpkgs, pkgs, common }:
 {
   console = import ./console-vm.nix { inherit nixpkgs; };
+  sshPolicy = import ./ssh-policy-vm.nix { inherit nixpkgs common; };
   firstBoot = import ./first-boot-vm.nix { inherit nixpkgs common; };
   runtime = import (nixpkgs + "/nixos/tests/make-test-python.nix") ({ pkgs, ... }: {
     name = "cybex-james-nixos-runtime-policy";
