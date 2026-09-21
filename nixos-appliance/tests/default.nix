@@ -1,6 +1,7 @@
 { nixpkgs, pkgs, common }:
 {
   console = import ./console-vm.nix { inherit nixpkgs; };
+  daemonPath = import ./daemon-path-vm.nix { inherit nixpkgs; };
   sshPolicy = import ./ssh-policy-vm.nix { inherit nixpkgs common; };
   firstBoot = import ./first-boot-vm.nix { inherit nixpkgs common; };
   installPermissions = import ./install-permissions-vm.nix { inherit nixpkgs common; };

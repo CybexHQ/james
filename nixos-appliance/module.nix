@@ -143,7 +143,7 @@ in {
       wantedBy = [ "multi-user.target" ]; after = [ "network-online.target" "cybex-james-first-boot.service" "cybex-james-network-runtime.service" "nginx.service" "tftpd-hpa.service" "nix-daemon.service" ];
       requires = [ "cybex-james-first-boot.service" "cybex-james-network-runtime.service" ]; wants = [ "network-online.target" "nginx.service" "tftpd-hpa.service" "nix-daemon.service" ];
       environment = { HOME = "/var/cache/cybex-james/agent/home"; XDG_CACHE_HOME = "/var/cache/cybex-james/agent/cache"; XDG_CONFIG_HOME = "/var/cache/cybex-james/agent/config"; XDG_STATE_HOME = "/var/cache/cybex-james/agent/state"; TMPDIR = "/var/cache/cybex-james/agent/tmp"; NIX_USER_CONF_FILES = "/dev/null"; };
-      path = [ pkgs.nix pkgs.git pkgs.openssh pkgs.coreutils a.udpcast ];
+      path = [ pkgs.nix pkgs.git pkgs.openssh pkgs.coreutils pkgs.iproute2 a.udpcast ];
       serviceConfig = { Type = "notify"; NotifyAccess = "all"; WatchdogSec = "30s"; User = "cybex-james"; Group = "cybex-james"; ExecStart = "${a.package}/bin/cybex-james --config /etc/cybex-james/config.toml serve"; Restart = "always"; RestartSec = "3s"; UMask = "0077"; NoNewPrivileges = true; PrivateTmp = true; PrivateDevices = true; ProtectSystem = "strict"; ProtectHome = true; ProtectKernelTunables = true; ProtectKernelModules = true; ProtectControlGroups = true; CapabilityBoundingSet = ""; AmbientCapabilities = ""; RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ]; ReadWritePaths = [ "/var/lib/cybex-james/state/agent" "/var/lib/cybex-james/state/inbox" "/var/cache/cybex-james" "/run/lock/cybex-james/maintenance.lock" ]; };
     };
     systemd.services.cybex-james-pxe = {
