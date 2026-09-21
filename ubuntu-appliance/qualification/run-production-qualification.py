@@ -88,7 +88,9 @@ def main():
                 '--manifest', args.predecessor_dir / predecessor.MANIFEST)
         shutil.copyfile(identity_path, args.evidence_dir / 'cybex-james-qualified-predecessor.json')
         (args.evidence_dir / 'cybex-james-qualified-predecessor.json').chmod(0o644)
-        phases = ['upgrade', 'rollback', 'fresh']
+        # Roll back first, then upgrade the verified restored predecessor.
+        # Both real update paths share one fully qualified installation.
+        phases = ['upgrade', 'fresh']
     else:
         selected_url = candidate_url
         phases = ['cold']
@@ -103,12 +105,12 @@ def main():
         execute(sys.executable, '/opt/cybex-james-qualification/host-preflight.py')
         try:
             execute(sys.executable, OWNER, 'prepare', '--run', name, '--manifest-url', selected_url)
-            fresh_output = args.evidence_dir / (f'predecessor-{phase}.json' if phase in {'upgrade', 'rollback'}
+            fresh_output = args.evidence_dir / (f'predecessor-{phase}.json' if phase == 'upgrade'
                 else 'cybex-james-ubuntu-qualification.json' if phase == 'fresh' else 'cybex-james-published-cold-qualification.json')
             arguments = ['--state-dir', state, '--manifest',
-                args.predecessor_dir / predecessor.MANIFEST if phase in {'upgrade', 'rollback'} else manifest_path,
+                args.predecessor_dir / predecessor.MANIFEST if phase == 'upgrade' else manifest_path,
                 '--output', fresh_output]
-            if phase in {'upgrade', 'rollback'}:
+            if phase == 'upgrade':
                 arguments += ['--published-predecessor-inputs', inputs, '--retain-fixture', state / 'fixture']
             if phase == 'cold':
                 arguments += ['--require-candidate-runtime', '--retain-fixture', state / 'fixture']
@@ -120,13 +122,11 @@ def main():
                     '--state-dir', state, '--fixture', state / 'fixture', '--james-evidence', fresh_output,
                     '--manifest', manifest_path, '--output',
                     args.evidence_dir / 'cybex-james-published-workstation-qualification.json', memory='45G')
-            if phase in {'upgrade', 'rollback'}:
-                update_output = args.evidence_dir / ('cybex-james-ubuntu-update-qualification.json' if phase == 'upgrade'
-                    else 'cybex-james-ubuntu-rollback-qualification.json')
+            if phase == 'upgrade':
+                update_output = args.evidence_dir / 'cybex-james-ubuntu-update-qualification.json'
                 arguments = ['--state-dir', state, '--fixture', state / 'fixture',
                     '--predecessor-evidence', fresh_output, '--candidate-manifest', manifest_path, '--output', update_output]
-                if phase == 'rollback':
-                    arguments.append('--rollback')
+                arguments += ['--rollback-output', args.evidence_dir / 'cybex-james-ubuntu-rollback-qualification.json']
                 scoped(name + '-update', HELPERS / 'run-isolated-update.py', *arguments)
         finally:
             if (state / 'isolation.json').is_file():

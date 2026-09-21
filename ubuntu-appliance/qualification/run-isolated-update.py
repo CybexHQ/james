@@ -14,6 +14,29 @@ from isolated_fixture import API, Fixture, HELPERS, enter_namespace, private_sta
 import rollback_lifecycle
 
 
+def qualify_paths(api, fixture, manifest, evidence, transport, output, temporary, session,
+                  rollback_only=False, rollback_output=None):
+    if rollback_only and rollback_output is not None:
+        raise ValueError('Choose standalone rollback or rollback followed by upgrade')
+    fixture.wait_ready(api)
+    if rollback_only or rollback_output is not None:
+        rollback_lifecycle.run(api, fixture, manifest, evidence, transport,
+                               output if rollback_only else rollback_output)
+        if rollback_only:
+            return
+        # run() returns only after checking the real fallback, restored generation
+        # zero, identity, Secure Boot, health and retained runtime. The ordinary
+        # upgrade harness independently rechecks that predecessor and must still
+        # reach generation one; no disk, database or receipt is reset for reuse.
+    command = ['bash', str(HELPERS / 'run-update-lifecycle.sh'), '--predecessor-evidence', str(evidence),
+        '--candidate-manifest', str(manifest), '--qualification-package-transport-url', transport,
+        '--manage-origin', 'https://manage.cybex.net', '--token-file', str(session),
+        '--server-device-id', fixture.device, '--output', str(output)]
+    temporary.mkdir(mode=0o700, exist_ok=True)
+    subprocess.run(command, env={**os.environ, 'TMPDIR': str(temporary),
+        'CYBEX_UPDATE_QUALIFICATION_TTL_SECONDS': '3600'}, check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state-dir', type=Path, required=True)
@@ -21,7 +44,9 @@ def main():
     parser.add_argument('--predecessor-evidence', type=Path, required=True)
     parser.add_argument('--candidate-manifest', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--rollback', action='store_true')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--rollback', action='store_true')
+    mode.add_argument('--rollback-output', type=Path, help='Qualify rollback first, then upgrade the restored fixture')
     parser.add_argument('--namespace', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     state = private_state(args.state_dir)
@@ -51,18 +76,9 @@ def main():
         port = int(port_file.read_text().strip())
         transport = f'http://10.62.57.1:{port}/{package.name}'
         with Fixture(state, args.fixture, evidence) as fixture:
-            fixture.wait_ready(api)
-            if args.rollback:
-                rollback_lifecycle.run(api, fixture, args.candidate_manifest, args.predecessor_evidence, transport, args.output)
-            else:
-                command = ['bash', str(HELPERS / 'run-update-lifecycle.sh'), '--predecessor-evidence', str(args.predecessor_evidence),
-                    '--candidate-manifest', str(args.candidate_manifest), '--qualification-package-transport-url', transport,
-                    '--manage-origin', 'https://manage.cybex.net', '--token-file', str(state / 'session'),
-                    '--server-device-id', fixture.device, '--output', str(args.output)]
-                temporary = state / 'temporary'
-                temporary.mkdir(mode=0o700, exist_ok=True)
-                subprocess.run(command, env={**os.environ, 'TMPDIR': str(temporary),
-                    'CYBEX_UPDATE_QUALIFICATION_TTL_SECONDS': '3600'}, check=True)
+            qualify_paths(api, fixture, args.candidate_manifest, args.predecessor_evidence,
+                          transport, args.output, state / 'temporary', state / 'session',
+                          args.rollback, args.rollback_output)
     finally:
         stop(server)
         port_file.unlink(missing_ok=True)

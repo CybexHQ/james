@@ -237,3 +237,17 @@ installation has started, its existing completion/rollback lifecycle owns recove
 The scheduling capability is advertised only after Manage returns
 `update_schedule_supported: true`. Missing support on an older server omits
 that capability while preserving ordinary reports and the existing updater.
+
+### Qualification fixture reuse
+
+Production qualification installs and validates the signed predecessor once.
+It first exercises automatic rollback after a real candidate boot failure,
+verifying the restored generation zero, device identity, Secure Boot, health and
+retained runtime. Only then does the same disposable appliance run the ordinary
+successful upgrade test, which independently requires the unchanged predecessor
+and an exact generation-zero-to-one transition. A failed rollback stops the run.
+The harness never resets its database or fabricates clean state between tests.
+Separate rollback and upgrade receipts still bind the exact signed candidate.
+Fresh candidate installation and published cold workstation acceptance remain
+separate full checks. This removes one predecessor installation and its repeated
+baseline workload; it does not cache qualification across candidate revisions.
