@@ -95,7 +95,7 @@ async fn healthz(
     } else {
         crate::readiness::probe(&state).await
     };
-    let discovery_ready = !crate::appliance::is_managed_ubuntu()
+    let discovery_ready = !crate::appliance::is_managed_appliance()
         || matches!(
             crate::pxe_discovery::status()
                 .get("status")

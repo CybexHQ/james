@@ -48,15 +48,20 @@ struct VerifiedSnapshotMarker {
 pub(crate) enum MediaLayout {
     Embedded,
     Thin,
+    Nixos,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PackageDelivery {
     Embedded,
     NetworkSnapshot,
+    SystemClosure,
 }
 
 pub(crate) fn inspect_media_layout() -> Result<MediaLayout> {
+    if Path::new("/cdrom/cybex/nixos-appliance").is_file() {
+        return Ok(MediaLayout::Nixos);
+    }
     let path = Path::new(EMBEDDED_REPOSITORY_PATH);
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -95,6 +100,11 @@ pub(crate) fn validate_plan_delivery(
     layout: MediaLayout,
 ) -> Result<PackageDelivery> {
     match (plan.schema.as_str(), layout) {
+        (super::protocol::INSTALL_PLAN_SCHEMA_V3, MediaLayout::Nixos)
+            if plan.package_delivery.as_deref() == Some("system-closure-v1") =>
+        {
+            Ok(PackageDelivery::SystemClosure)
+        }
         (INSTALL_PLAN_SCHEMA_V1, MediaLayout::Embedded) => Ok(PackageDelivery::Embedded),
         (INSTALL_PLAN_SCHEMA_V2, MediaLayout::Thin)
             if plan.package_delivery.as_deref() == Some(NETWORK_SNAPSHOT_DELIVERY)
@@ -120,7 +130,8 @@ pub(crate) async fn stage_network_snapshot(
     let release = plan
         .appliance_release
         .as_ref()
-        .ok_or_else(|| anyhow!("network snapshot plan omitted its appliance release"))?;
+        .ok_or_else(|| anyhow!("network snapshot plan omitted its appliance release"))?
+        .legacy()?;
     validate_install_release(
         release,
         &plan.release_version,

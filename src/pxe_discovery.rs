@@ -42,13 +42,14 @@ pub struct Client {
 }
 
 pub fn persist(state: &AppState, desired: Option<&Desired>) -> Result<()> {
-    if !crate::appliance::is_managed_ubuntu() {
+    if !crate::appliance::is_managed_appliance() {
         return Ok(());
     }
-    let parent = state
-        .config
-        .manage
-        .state_path
+    persist_at(&state.config.manage.state_path, desired)
+}
+
+fn persist_at(state_path: &Path, desired: Option<&Desired>) -> Result<()> {
+    let parent = state_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("PXE state directory missing"))?;
     let path = parent.join("pxe-discovery.json");
@@ -130,6 +131,37 @@ pub async fn candidate(State(state): State<AppState>) -> Json<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn inventory_is_atomic_private_and_revoked_when_removed_from_manage() {
+        let directory =
+            std::env::temp_dir().join(format!("pxe-inventory-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let state = directory.join("manage-state.json");
+        let desired = Desired {
+            schema: "cybex.james.pxe-discovery.v1".into(),
+            server_device_id: "qualification".into(),
+            complete: true,
+            peers: Vec::new(),
+            clients: Vec::new(),
+        };
+        persist_at(&state, Some(&desired)).unwrap();
+        let path = directory.join("pxe-discovery.json");
+        let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["desired"]["server_device_id"], "qualification");
+        assert!(value["received_at"].as_i64().unwrap() <= Utc::now().timestamp());
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        persist_at(&state, None).unwrap();
+        let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(value["desired"].is_null());
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn expired_or_future_supervisor_evidence_cannot_claim_availability() {
         let path = std::env::temp_dir().join(format!("pxe-status-{}", uuid::Uuid::new_v4()));

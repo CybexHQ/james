@@ -304,6 +304,14 @@ pub fn spawn(state: AppState) {
 async fn worker_loop(state: AppState, worker_index: usize) {
     let mut claim_failures: u32 = 0;
     loop {
+        let _maintenance_lease = match crate::maintenance::acquire_build_lease().await {
+            Ok(lease) => lease,
+            Err(error) => {
+                warn!(%error, "build admission barrier unavailable");
+                sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+        };
         match db::claim_next_build_job(&state.db).await {
             Ok(Some(job)) => {
                 claim_failures = 0;
@@ -316,10 +324,12 @@ async fn worker_loop(state: AppState, worker_index: usize) {
                 cleanup_job_dirs(&state.config, job_id).await;
             }
             Ok(None) => {
+                drop(_maintenance_lease);
                 claim_failures = 0;
                 sleep(Duration::from_secs(2)).await;
             }
             Err(err) => {
+                drop(_maintenance_lease);
                 claim_failures = claim_failures.saturating_add(1);
                 let delay = (5u64 << claim_failures.saturating_sub(1).min(5)).min(120);
                 warn!(error = %err, worker_index, retry_in_seconds = delay, "failed to claim James build job");

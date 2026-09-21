@@ -5,9 +5,12 @@
 //! that installed identity.
 
 mod inventory;
+mod network_receipt;
 mod network_runtime;
+mod nixos_install;
 mod packages;
-mod protocol;
+pub(crate) mod protocol;
+mod recovery;
 mod storage;
 
 use anyhow::{Context, Result, bail};
@@ -92,7 +95,12 @@ pub(crate) struct DurableProvisioningState {
 
 impl DurableProvisioningState {
     pub(crate) fn path(state_mount: &Path) -> PathBuf {
-        state_mount.join("provisioning-state.json")
+        let protected = state_mount.join("control/provisioning-state.json");
+        if protected.exists() {
+            protected
+        } else {
+            state_mount.join("provisioning-state.json")
+        }
     }
 
     pub(crate) fn signing_key(&self) -> Result<SigningKey> {
@@ -109,6 +117,27 @@ pub fn validate_legacy_state_promotion(
     state_mount: &Path,
     config_path: &Path,
     provisioning_keys_path: &Path,
+) -> Result<()> {
+    validate_installed_state_inner(state_mount, config_path, provisioning_keys_path, false)
+}
+
+/// Recurring NixOS boot verification also accepts an authenticated network
+/// transaction committed after installation, independently of legacy migration.
+pub fn validate_installed_state(
+    state_mount: &Path,
+    config_path: &Path,
+    provisioning_keys_path: &Path,
+) -> Result<()> {
+    validate_installed_state_inner(state_mount, config_path, provisioning_keys_path, true)
+}
+
+pub use network_receipt::{commit_network_change, verify_committed_network_change};
+
+fn validate_installed_state_inner(
+    state_mount: &Path,
+    config_path: &Path,
+    provisioning_keys_path: &Path,
+    allow_network_changes: bool,
 ) -> Result<()> {
     let control = Path::new("/var/lib/cybex-james/control");
     let agent = if Path::new("/etc/cybex-james/legacy-state-layout").is_file() {
@@ -205,13 +234,21 @@ pub fn validate_legacy_state_promotion(
         bail!("promoted James agent identity is inconsistent")
     }
 
-    let approved: serde_json::Value = serde_json::from_slice(&read_bounded_nofollow(
-        &control.join("netplan-approved.json"),
-        1024 * 1024,
-        "promoted approved Netplan",
-    )?)?;
-    if approved != storage::netplan(&plan.network, &plan) {
-        bail!("promoted approved Netplan is not derived from the authenticated plan")
+    let committed_network =
+        allow_network_changes && control.join("network-committed.json").try_exists()?;
+    if committed_network {
+        network_receipt::restore_approved(control, &durable, None)?;
+    } else {
+        let approved: serde_json::Value = serde_json::from_slice(&read_bounded_nofollow(
+            &control.join("netplan-approved.json"),
+            1024 * 1024,
+            "promoted approved Netplan",
+        )?)?;
+        if approved != storage::netplan(&plan.network, &plan) {
+            bail!(
+                "approved Netplan is not derived from authenticated installation or committed network authority"
+            )
+        }
     }
     let fallback_plan = protocol::JamesProvisioningNetworkPlan {
         mode: "dhcp".to_string(),
@@ -225,7 +262,7 @@ pub fn validate_legacy_state_promotion(
         1024 * 1024,
         "promoted fallback Netplan",
     )?)?;
-    if fallback != storage::netplan(&fallback_plan, &plan) {
+    if !committed_network && fallback != storage::netplan(&fallback_plan, &plan) {
         bail!("promoted fallback Netplan is not derived from the authenticated plan")
     }
     let cidrs = read_bounded_nofollow(
@@ -239,7 +276,7 @@ pub fn validate_legacy_state_promotion(
     Ok(())
 }
 
-fn read_bounded_nofollow(path: &Path, maximum: u64, label: &str) -> Result<Vec<u8>> {
+pub(crate) fn read_bounded_nofollow(path: &Path, maximum: u64, label: &str) -> Result<Vec<u8>> {
     let before = fs::symlink_metadata(path).with_context(|| format!("inspect {label}"))?;
     if !before.file_type().is_file()
         || before.nlink() != 1
@@ -285,8 +322,12 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
     if let Some(probe) =
         storage::existing_state_for_session(&options.state_mount, verified.envelope.session_id)?
     {
+        if !probe.state.installation_complete {
+            protocol::require_current_envelope(&verified)?;
+        }
         return resume_prepare(&options, &verified, probe, media_layout).await;
     }
+    protocol::require_current_envelope(&verified)?;
 
     let provisioning_key = protocol::derive_provisioning_key(&verified.envelope.media_secret)?;
     let inventory = inventory::collect_inventory().await?;
@@ -295,24 +336,29 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
         &verified.envelope.manage_origin,
         verified.envelope.session_id,
     )?;
-    let mut session = client
-        .claim(
-            &verified.envelope.media_secret,
-            &provisioning_key,
-            &inventory,
-            &hardware_digest,
-        )
-        .await?;
-
-    let mut signed_plan = wait_for_approved_plan(
+    // Polling with the still-active media key recovers an approved attempt
+    // even if power failed after GPT erasure and before durable STATE existed.
+    let (mut session, recovering) = recovery::initial_session(
         &client,
-        &provisioning_key,
         &verified,
+        &provisioning_key,
         &inventory,
-        &mut session,
-        None,
+        &hardware_digest,
     )
     .await?;
+    let mut signed_plan = if recovering {
+        recovery::active_plan(&session, &verified, &inventory)?
+    } else {
+        wait_for_approved_plan(
+            &client,
+            &provisioning_key,
+            &verified,
+            &inventory,
+            &mut session,
+            None,
+        )
+        .await?
+    };
     let (package_delivery, fresh_inventory) = loop {
         match prepare_approved_plan(
             &signed_plan,
@@ -324,6 +370,11 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
         {
             Ok(prepared) => break prepared,
             Err(failure) => {
+                if recovering {
+                    // Sequence 1 may already be committed and disk preparation
+                    // may already have started. Never describe this as untouched.
+                    return Err(failure.source).context("Interrupted approved installation could not be revalidated; earlier disk preparation may already have changed the target");
+                }
                 signed_plan = report_failure_and_wait_for_retry(
                     &client,
                     &provisioning_key,
@@ -337,32 +388,10 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
         }
     };
 
-    // Acknowledgement is deliberately the final pre-write event. Any local
-    // hardware, network, media, or package failure before this point can be
-    // reported and retried without consuming the monotonic install sequence.
+    // Both acknowledgements must succeed before any target write. Recovery
+    // replays identical evidence, including the deterministic event IDs.
     client
-        .send_event(
-            &provisioning_key,
-            &signed_plan,
-            1,
-            "plan_acknowledged",
-            "succeeded",
-            Some(5),
-            "Approved install plan validated",
-        )
-        .await?;
-    // This is the server-side point of no return. No target-disk mutation runs
-    // before the accepted destructive-stage event.
-    client
-        .send_event(
-            &provisioning_key,
-            &signed_plan,
-            2,
-            "partitioning",
-            "started",
-            Some(10),
-            "Creating plan-bound appliance storage",
-        )
+        .authorize_storage_creation(&provisioning_key, &signed_plan)
         .await?;
 
     let prepared =
@@ -434,6 +463,9 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
         .await?;
     durable.next_event_sequence = 6;
     storage::save_durable_state(&prepared.state_mount, &durable)?;
+    if package_delivery == packages::PackageDelivery::SystemClosure {
+        return nixos_install::install(&prepared, &options.release_public_key_path).await;
+    }
     storage::write_autoinstall(
         &options.autoinstall_path,
         &prepared,
@@ -503,6 +535,17 @@ async fn prepare_approved_plan(
                 error,
             )
         })?;
+    if package_delivery == packages::PackageDelivery::SystemClosure {
+        nixos_install::stage_closure(plan, release_public_key_path)
+            .await
+            .map_err(|error| {
+                PreDestructiveFailure::new(
+                    "system_closure_verification_failed",
+                    "James could not download and verify its approved system closure.",
+                    error,
+                )
+            })?;
+    }
     if package_delivery == packages::PackageDelivery::NetworkSnapshot {
         packages::stage_network_snapshot(plan, release_public_key_path)
             .await
@@ -660,25 +703,21 @@ async fn resume_prepare(
     media_layout: packages::MediaLayout,
 ) -> Result<()> {
     let mut durable = probe.state.clone();
-    if durable.manage_origin != verified.envelope.manage_origin
-        || durable.management_signing_public_key_b64
-            != protocol::standard_base64(verified.signing_key.to_bytes())
-        || durable.next_event_sequence < 3
-        || durable.next_event_sequence > 6
-    {
-        bail!("durable appliance recovery state does not match this signed media")
-    }
     let inventory = inventory::collect_inventory().await?;
-    let signed_plan = protocol::verify_durable_install_plan(
-        serde_json::to_value(&durable.plan)?,
-        &verified.signing_key,
-        &verified.envelope,
-        &inventory,
-    )?;
+    let signed_plan = recovery::durable_plan(&durable, verified, &inventory)?;
     let package_delivery = packages::validate_plan_delivery(&signed_plan, media_layout)?;
-    inventory::revalidate_durable_plan_hardware(&signed_plan, &inventory)?;
+    if durable.installation_complete {
+        storage::validate_completed_state_probe(&options.state_mount, &probe)?;
+        if package_delivery != packages::PackageDelivery::SystemClosure {
+            return storage::boot_installed_appliance();
+        }
+        return nixos_install::boot_completed(&durable, &options.state_mount);
+    }
     inventory::preflight_network(&signed_plan, &inventory, &verified.envelope.manage_origin)
         .await?;
+    if package_delivery == packages::PackageDelivery::SystemClosure {
+        nixos_install::stage_closure(&signed_plan, &options.release_public_key_path).await?;
+    }
     if package_delivery == packages::PackageDelivery::NetworkSnapshot {
         packages::stage_network_snapshot(&signed_plan, &options.release_public_key_path).await?;
     }
@@ -711,7 +750,7 @@ async fn resume_prepare(
                 "state_partition_created",
                 "succeeded",
                 Some(20),
-                "Persistent appliance state recovered",
+                "Persistent appliance state created",
             )
             .await?;
         durable.next_event_sequence = 4;
@@ -726,7 +765,7 @@ async fn resume_prepare(
                 "identity_persisted",
                 "succeeded",
                 Some(25),
-                "Long-term device identity recovered",
+                "Long-term device identity persisted",
             )
             .await?;
         durable.next_event_sequence = 5;
@@ -749,11 +788,14 @@ async fn resume_prepare(
                 "partitioning",
                 "succeeded",
                 Some(30),
-                "Appliance partition table recovered",
+                "Appliance partition table is ready",
             )
             .await?;
         durable.next_event_sequence = 6;
         storage::save_durable_state(&prepared.state_mount, &durable)?;
+    }
+    if package_delivery == packages::PackageDelivery::SystemClosure {
+        return nixos_install::install(&prepared, &options.release_public_key_path).await;
     }
     storage::write_autoinstall(
         &options.autoinstall_path,
@@ -849,7 +891,7 @@ mod tests {
             .find("report_failure_and_wait_for_retry(")
             .expect("signed failure recovery");
         let acknowledged = prepare
-            .find("\"plan_acknowledged\"")
+            .find("authorize_storage_creation(")
             .expect("plan acknowledgement");
 
         assert!(preflight < recovery);

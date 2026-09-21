@@ -158,7 +158,13 @@ struct AgentJamesConfigResponse {
     #[serde(default)]
     protected_cache_artifacts_complete: bool,
     #[serde(default)]
-    appliance_update: Option<crate::appliance::ManagedApplianceUpdate>,
+    appliance_update: Option<
+        crate::appliance::ManagedApplianceUpdate<crate::appliance::release_v3::ReleaseDescriptor>,
+    >,
+    #[serde(default)]
+    update_schedule_supported: bool,
+    #[serde(default)]
+    update_schedule: Option<crate::appliance::schedule::SignedPolicy>,
     #[serde(default)]
     network_change: Option<crate::appliance::SignedApplianceNetworkChange>,
     #[serde(default)]
@@ -988,8 +994,14 @@ async fn apply_james_desired(
         }
     }
 
+    if let Err(error) = crate::appliance::schedule::store(
+        desired.update_schedule,
+        desired.update_schedule_supported,
+    ) {
+        retain_sync_failure(first_failure, "appliance update schedule", error);
+    }
     if let Some(update) = desired.appliance_update {
-        if !crate::appliance::queue_update_request(update) {
+        if !crate::appliance::nixos::queue(update) {
             debug!("coalesced the latest appliance update behind the in-flight download");
         }
     }
@@ -1359,6 +1371,14 @@ async fn report_james_state(
     let response =
         parse_success_json::<JamesReportResponse>(response, "report managed james state").await?;
     accept_james_report_response(&response, managed, &body)?;
+    crate::appliance::nixos::record_manage_contact(
+        managed_device_id(managed)?,
+        managed
+            .public_key_fingerprint
+            .as_deref()
+            .ok_or_else(|| anyhow!("managed fingerprint missing"))?,
+        &state.config.manage.api_url,
+    )?;
     accept_workstation_multicast_receipt(state, &response, &body).await;
     if let Err(error) = crate::wake_on_lan::acknowledge(&state.db, &response.wake_on_lan).await {
         debug!(error = %error, "Wake-on-LAN receipts remain queued for acknowledgement");
@@ -2474,8 +2494,15 @@ fn james_capabilities(config: &AppConfig) -> Vec<&'static str> {
     ];
     capabilities.push(crate::pxe_discovery::CAPABILITY);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V1);
-    capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V2);
+    capabilities.push(if crate::appliance::nixos::is_nixos() {
+        crate::appliance::nixos::CAPABILITY
+    } else {
+        CAPABILITY_APPLIANCE_UPDATE_V2
+    });
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1);
+    if crate::appliance::nixos::is_nixos() {
+        capabilities.push(crate::appliance::schedule::CAPABILITY);
+    }
     if crate::netboot_multicast::binary_available(config) {
         capabilities.push(CAPABILITY_WORKSTATION_ROOTFS_MULTICAST_V1);
     }
@@ -3099,7 +3126,7 @@ fn normalize_managed_settings(
     settings: &ManagedBootSettings,
     config: &AppConfig,
 ) -> Result<NormalizedManagedSettings> {
-    normalize_managed_settings_for_mode(settings, config, crate::appliance::is_managed_ubuntu())
+    normalize_managed_settings_for_mode(settings, config, crate::appliance::is_managed_appliance())
 }
 
 fn normalize_managed_settings_for_mode(
@@ -5555,7 +5582,12 @@ mod tests {
             )
         );
         assert_eq!(
-            current.release.cybex_repository_snapshot.url,
+            current
+                .release
+                .legacy()
+                .unwrap()
+                .cybex_repository_snapshot
+                .url,
             "https://releases.example/cybex-james-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst"
         );
     }

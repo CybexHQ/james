@@ -35,7 +35,7 @@ impl Default for NetworkRuntimeOptions {
             fallback_marker_path: PathBuf::from(
                 "/var/lib/cybex-james/control/network-fallback-active",
             ),
-            ip_binary: PathBuf::from("/usr/sbin/ip"),
+            ip_binary: PathBuf::from("ip"),
             sys_class_net_root: PathBuf::from("/sys/class/net"),
         }
     }

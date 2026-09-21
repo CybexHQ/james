@@ -1,4 +1,8 @@
-//! Ubuntu appliance state and health projection.
+pub mod closure;
+pub mod nixos;
+pub mod release_v3;
+pub mod schedule;
+// Ubuntu appliance state and health projection.
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{
@@ -102,10 +106,10 @@ pub struct SignedApplianceRelease {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ManagedApplianceUpdate {
+pub struct ManagedApplianceUpdate<R = SignedApplianceRelease> {
     pub attempt_id: uuid::Uuid,
     pub requested_at: DateTime<Utc>,
-    pub release: SignedApplianceRelease,
+    pub release: R,
     /// Unsigned, exact-attempt transport hint used only by release qualification.
     /// The signed release URL remains the artifact identity and production path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -195,22 +199,35 @@ pub struct ApplianceReport {
     pub base_os: String,
     pub base_os_version: String,
     pub appliance_release: String,
-    pub ubuntu_snapshot_id: String,
-    pub root_generation: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ubuntu_snapshot_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root_generation: Option<String>,
     pub kernel_version: String,
-    pub secure_boot: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secure_boot: Option<bool>,
     pub boot_mode: String,
-    pub firmware_version: String,
-    pub microcode_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub firmware_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub microcode_version: Option<String>,
     pub nix_version: String,
     pub at_rest_protection: String,
     pub network: Value,
     pub package_update: Value,
     pub local_health: Value,
+    #[serde(flatten)]
+    pub nixos: BTreeMap<String, Value>,
+}
+
+pub fn is_managed_appliance() -> bool {
+    nixos::is_nixos() || is_managed_ubuntu()
 }
 
 pub fn is_managed_ubuntu() -> bool {
-    Path::new(RELEASE_PATH).is_file() && Path::new(INSTALLED_STATE_PATH).is_file()
+    !nixos::is_nixos()
+        && Path::new(RELEASE_PATH).is_file()
+        && Path::new(INSTALLED_STATE_PATH).is_file()
 }
 
 pub fn queue_update_request(update: ManagedApplianceUpdate) -> bool {
@@ -309,6 +326,9 @@ pub async fn store_update_request(update: Option<ManagedApplianceUpdate>) -> Res
 /// Re-verify the offline-signed descriptor and exact archive as root, then
 /// extract the package snapshot into the root updater's private staging tree.
 pub fn verify_and_extract_stored_update() -> Result<PathBuf> {
+    if nixos::is_nixos() {
+        return nixos::verify_update();
+    }
     verify_and_extract_stored_update_with_mode(false)
 }
 
@@ -1293,6 +1313,16 @@ fn write_atomic_json(path: &Path, value: &impl Serialize, mode: u32) -> Result<(
             .write(true)
             .open(&temporary)?;
         file.set_permissions(fs::Permissions::from_mode(mode))?;
+        if nixos::is_nixos()
+            && unsafe { libc::geteuid() } == 0
+            && (path.starts_with("/var/lib/cybex-james/control")
+                || path.starts_with("/var/lib/cybex-james/status"))
+        {
+            use std::os::fd::AsRawFd;
+            if unsafe { libc::fchown(file.as_raw_fd(), 0, 985) } != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
         file.write_all(&body)?;
         file.write_all(b"\n")?;
         file.sync_all()?;
@@ -1373,7 +1403,7 @@ pub fn store_network_change(change: Option<SignedApplianceNetworkChange>) -> Res
     let Some(change) = change else {
         return Ok(());
     };
-    if !is_managed_ubuntu() {
+    if !is_managed_appliance() {
         bail!("received an appliance network change on a non-appliance James host")
     }
     validate_network_change(&change, false)?;
@@ -1576,7 +1606,7 @@ fn validate_network_change(
     )
 }
 
-fn verify_management_signature<T: Serialize>(
+pub(crate) fn verify_management_signature<T: Serialize>(
     value: &T,
     signature_field: &str,
     signature: &str,
@@ -1634,7 +1664,7 @@ fn load_provisioning_state() -> Result<crate::provisioning::DurableProvisioningS
     Ok(state)
 }
 
-fn validate_network_input(network: &ApplianceNetworkInput) -> Result<()> {
+pub(crate) fn validate_network_input(network: &ApplianceNetworkInput) -> Result<()> {
     if network.interface_id.is_empty()
         || network.interface_id.len() > 256
         || network.interface_id != network.interface_id.trim()
@@ -1691,7 +1721,7 @@ fn same_ipv4_subnet(left: std::net::Ipv4Addr, right: std::net::Ipv4Addr, prefix:
     u32::from(left) & mask == u32::from(right) & mask
 }
 
-fn resolve_wired_interface(stable_id: &str) -> Result<(String, String)> {
+pub(crate) fn resolve_wired_interface(stable_id: &str) -> Result<(String, String)> {
     let mut matches = Vec::new();
     for entry in fs::read_dir("/sys/class/net")? {
         let entry = entry?;
@@ -1735,6 +1765,9 @@ fn resolve_wired_interface(stable_id: &str) -> Result<(String, String)> {
 }
 
 pub async fn report(state: &crate::AppState) -> Result<Option<ApplianceReport>> {
+    if nixos::is_nixos() {
+        return nixos::report(state).await.map(Some);
+    }
     if !is_managed_ubuntu() {
         return Ok(None);
     }
@@ -1782,26 +1815,29 @@ pub async fn report(state: &crate::AppState) -> Result<Option<ApplianceReport>> 
         base_os: "ubuntu".to_string(),
         base_os_version: "26.04".to_string(),
         appliance_release: release.release_id,
-        ubuntu_snapshot_id: release.ubuntu_snapshot_id,
-        root_generation: installed
-            .get("root_generation")
-            .and_then(Value::as_str)
-            .unwrap_or(&release.root_generation)
-            .to_string(),
+        ubuntu_snapshot_id: Some(release.ubuntu_snapshot_id),
+        root_generation: Some(
+            installed
+                .get("root_generation")
+                .and_then(Value::as_str)
+                .unwrap_or(&release.root_generation)
+                .to_string(),
+        ),
         kernel_version: command_text("uname", &["-r"]).await,
-        secure_boot: secure_boot_enabled(),
+        secure_boot: Some(secure_boot_enabled()),
         boot_mode: if Path::new("/sys/firmware/efi").is_dir() {
             "uefi".to_string()
         } else {
             "legacy".to_string()
         },
-        firmware_version: read_trimmed("/sys/class/dmi/id/bios_version"),
-        microcode_version: microcode_version(),
+        firmware_version: Some(read_trimmed("/sys/class/dmi/id/bios_version")),
+        microcode_version: Some(microcode_version()),
         nix_version: command_text("nix", &["--version"]).await,
         at_rest_protection: "none".to_string(),
         network,
         package_update,
         local_health,
+        nixos: BTreeMap::new(),
     }))
 }
 

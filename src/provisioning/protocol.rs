@@ -2,7 +2,6 @@ use super::inventory::{
     JamesProvisioningDisk, JamesProvisioningEthernetInterface, JamesProvisioningInventory,
     hardware_digest, inventory_sha256,
 };
-use crate::appliance::SignedApplianceRelease;
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{
     Engine as _,
@@ -24,6 +23,7 @@ const ENVELOPE_SIGNATURE_DOMAIN: &str = "CYBEX-JAMES-PROVISIONING-ENVELOPE-V1";
 const KEY_DERIVATION_DOMAIN: &[u8] = b"CYBEX-JAMES-PROVISIONING-KEY-V1\0";
 const REQUEST_SIGNATURE_DOMAIN: &str = "CYBEX-JAMES-PROVISIONING-V1";
 pub(crate) const INSTALL_PLAN_SCHEMA_V1: &str = "cybex.james.install-plan.v1";
+pub(crate) const INSTALL_PLAN_SCHEMA_V3: &str = "cybex.james.install-plan.v3";
 pub(crate) const INSTALL_PLAN_SCHEMA_V2: &str = "cybex.james.install-plan.v2";
 const INSTALL_PLAN_SIGNATURE_DOMAIN_V1: &str = "CYBEX-JAMES-INSTALL-PLAN-V1";
 const INSTALL_PLAN_SIGNATURE_DOMAIN_V2: &str = "CYBEX-JAMES-INSTALL-PLAN-V2";
@@ -105,7 +105,7 @@ pub struct SignedInstallPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_delivery: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub appliance_release: Option<SignedApplianceRelease>,
+    pub appliance_release: Option<crate::appliance::release_v3::ReleaseDescriptor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_transport_url: Option<String>,
     pub issued_at: DateTime<Utc>,
@@ -204,6 +204,8 @@ pub(crate) fn load_trusted_provisioning_keys(path: &Path) -> Result<Vec<Verifyin
     Ok(keys)
 }
 
+/// Authenticate retained media for a read-only completed-install probe. Fresh
+/// install authority must separately pass `require_current_envelope`.
 pub(crate) fn load_and_verify_envelope(
     path: &Path,
     trusted_keys: &[VerifyingKey],
@@ -287,11 +289,17 @@ fn validate_envelope_fields(
     }
     let now = Utc::now();
     if envelope.issued_at > now + chrono::Duration::minutes(5)
-        || envelope.expires_at <= now
         || envelope.expires_at <= envelope.issued_at
         || envelope.expires_at - envelope.issued_at > chrono::Duration::hours(24)
     {
-        bail!("provisioning envelope is expired or has invalid validity")
+        bail!("provisioning envelope has invalid validity")
+    }
+    Ok(())
+}
+
+pub(super) fn require_current_envelope(verified: &VerifiedEnvelope) -> Result<()> {
+    if verified.envelope.expires_at <= Utc::now() {
+        bail!("provisioning media expired; fresh installation authority is required")
     }
     Ok(())
 }
@@ -361,13 +369,28 @@ pub(crate) fn verify_promoted_install_plan(
         {
             INSTALL_PLAN_SIGNATURE_DOMAIN_V2
         }
+        INSTALL_PLAN_SCHEMA_V3
+            if package_field_count == 3
+                && plan.package_delivery.as_deref() == Some("system-closure-v1")
+                && plan
+                    .appliance_release
+                    .as_ref()
+                    .is_some_and(|r| r.nixos().is_ok())
+                && plan.package_transport_url.is_some() =>
+        {
+            "CYBEX-JAMES-INSTALL-PLAN-V3"
+        }
         _ => bail!("promoted install plan package-delivery contract is incompatible"),
     };
     if plan.organization_id.is_nil()
         || plan.session_id.is_nil()
         || plan.id.is_nil()
-        || plan.base_os != "ubuntu"
-        || plan.base_os_version != "26.04"
+        || !((plan.schema == INSTALL_PLAN_SCHEMA_V3
+            && plan.base_os == "nixos"
+            && plan.base_os_version == "26.05")
+            || (plan.schema != INSTALL_PLAN_SCHEMA_V3
+                && plan.base_os == "ubuntu"
+                && plan.base_os_version == "26.04"))
         || plan.at_rest_protection != "none"
         || plan.plan_revision <= 0
         || plan.session_revision <= 0
@@ -473,6 +496,17 @@ fn verify_install_plan_inner(
         {
             INSTALL_PLAN_SIGNATURE_DOMAIN_V2
         }
+        INSTALL_PLAN_SCHEMA_V3
+            if package_field_count == 3
+                && plan.package_delivery.as_deref() == Some("system-closure-v1")
+                && plan
+                    .appliance_release
+                    .as_ref()
+                    .is_some_and(|r| r.nixos().is_ok())
+                && plan.package_transport_url.is_some() =>
+        {
+            "CYBEX-JAMES-INSTALL-PLAN-V3"
+        }
         _ => bail!("install plan package-delivery contract is incompatible"),
     };
     let organization_slug = plan
@@ -483,11 +517,15 @@ fn verify_install_plan_inner(
     if plan.session_id != envelope.session_id
         || plan.organization_id.is_nil()
         || plan.release_version != envelope.release_version
-        || plan.inventory_sha256 != expected_inventory_sha256
+        || (!acknowledged_attempt && plan.inventory_sha256 != expected_inventory_sha256)
         || plan.hardware_digest != expected_hardware_digest
         || plan.provisioning_public_key_fingerprint != expected_provisioning_fingerprint
-        || plan.base_os != "ubuntu"
-        || plan.base_os_version != "26.04"
+        || !((plan.schema == INSTALL_PLAN_SCHEMA_V3
+            && plan.base_os == "nixos"
+            && plan.base_os_version == "26.05")
+            || (plan.schema != INSTALL_PLAN_SCHEMA_V3
+                && plan.base_os == "ubuntu"
+                && plan.base_os_version == "26.04"))
         || plan.at_rest_protection != "none"
         || plan.plan_revision <= 0
         || plan.session_revision <= 0
@@ -585,6 +623,44 @@ impl ProvisioningClient {
             session_id,
             http,
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_client(origin: String, session_id: Uuid) -> Self {
+        Self {
+            origin,
+            session_id,
+            http: reqwest::Client::builder().no_proxy().build().unwrap(),
+        }
+    }
+
+    /// Replay these exact event bytes after interruption. The server checks
+    /// their body digests and retired identities before acknowledging replay.
+    pub(super) async fn authorize_storage_creation(
+        &self,
+        key: &SigningKey,
+        plan: &SignedInstallPlan,
+    ) -> Result<()> {
+        self.send_event(
+            key,
+            plan,
+            1,
+            "plan_acknowledged",
+            "succeeded",
+            Some(5),
+            "Approved install plan validated",
+        )
+        .await?;
+        self.send_event(
+            key,
+            plan,
+            2,
+            "partitioning",
+            "started",
+            Some(10),
+            "Creating plan-bound appliance storage",
+        )
+        .await
     }
 
     pub(crate) async fn claim(
@@ -783,7 +859,8 @@ impl ProvisioningClient {
         if !status.is_success() {
             return Err(safe_http_error(status, &bytes));
         }
-        serde_json::from_slice(&bytes).context("parse provisioning response")
+        let value = crate::appliance::release_v3::strict_json(&bytes)?;
+        serde_json::from_value(value).context("parse provisioning response")
     }
 
     fn validate_session_response(
@@ -797,6 +874,19 @@ impl ProvisioningClient {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("Management rejected provisioning request ({status}, {code})")]
+struct ProvisioningHttpError {
+    status: StatusCode,
+    code: String,
+}
+
+pub(super) fn unclaimed_session(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ProvisioningHttpError>()
+        .is_some_and(|error| error.status == StatusCode::UNAUTHORIZED)
+}
+
 fn safe_http_error(status: StatusCode, body: &[u8]) -> anyhow::Error {
     let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
     let code = value
@@ -804,7 +894,11 @@ fn safe_http_error(status: StatusCode, body: &[u8]) -> anyhow::Error {
         .and_then(Value::as_str)
         .filter(|value| value.len() <= 64)
         .unwrap_or("request_rejected");
-    anyhow!("Management rejected provisioning request ({status}, {code})")
+    ProvisioningHttpError {
+        status,
+        code: code.to_owned(),
+    }
+    .into()
 }
 
 fn deterministic_event_id(session_id: Uuid, plan_id: Uuid, sequence: i64) -> Uuid {
@@ -897,10 +991,10 @@ fn canonical_json(value: Value) -> Value {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn signed_plan_fixture(
+    pub(crate) fn signed_plan_fixture(
         schema: &str,
         signature_domain: &str,
     ) -> (
@@ -1052,7 +1146,11 @@ mod tests {
         (plan, envelope, inventory, signing_key)
     }
 
-    fn resign_plan(mut plan: Value, signature_domain: &str, signing_key: &SigningKey) -> Value {
+    pub(crate) fn resign_plan(
+        mut plan: Value,
+        signature_domain: &str,
+        signing_key: &SigningKey,
+    ) -> Value {
         let object = plan.as_object_mut().unwrap();
         object.remove("plan_sha256");
         object.remove("signature");
@@ -1069,6 +1167,50 @@ mod tests {
             ("signature".to_string(), json!(signature)),
         ]);
         plan
+    }
+
+    #[test]
+    fn retained_media_authentication_preserves_signatures_but_grants_no_fresh_authority() {
+        use ed25519_dalek::Signer;
+        let (_, mut envelope, _, signing) =
+            signed_plan_fixture(INSTALL_PLAN_SCHEMA_V2, INSTALL_PLAN_SIGNATURE_DOMAIN_V2);
+        envelope.issued_at = Utc::now() - chrono::Duration::days(2);
+        envelope.expires_at = envelope.issued_at + chrono::Duration::hours(24);
+        let mut unsigned = serde_json::to_value(&envelope).unwrap();
+        unsigned.as_object_mut().unwrap().remove("signature");
+        unsigned.as_object_mut().unwrap().remove("zero_padding");
+        let mut payload = ENVELOPE_SIGNATURE_DOMAIN.as_bytes().to_vec();
+        payload.push(b'\n');
+        payload.extend(serde_json::to_vec(&canonical_json(unsigned)).unwrap());
+        envelope.signature = URL_SAFE_NO_PAD.encode(signing.sign(&payload).to_bytes());
+        let directory =
+            std::env::temp_dir().join(format!("james-retained-media-{}", Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("envelope.bin");
+        let mut body = serde_json::to_vec(&envelope).unwrap();
+        body.resize(ENVELOPE_SIZE, 0);
+        fs::write(&path, body).unwrap();
+        let verified =
+            load_and_verify_envelope(&path, &[signing.verifying_key()], &envelope.manage_origin)
+                .unwrap();
+        assert!(require_current_envelope(&verified).is_err());
+        assert!(
+            load_and_verify_envelope(
+                &path,
+                &[SigningKey::from_bytes(&[4; 32]).verifying_key()],
+                &envelope.manage_origin
+            )
+            .is_err()
+        );
+        envelope.release_version = "other".into();
+        let mut body = serde_json::to_vec(&envelope).unwrap();
+        body.resize(ENVELOPE_SIZE, 0);
+        fs::write(&path, body).unwrap();
+        assert!(
+            load_and_verify_envelope(&path, &[signing.verifying_key()], &envelope.manage_origin)
+                .is_err()
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1200,5 +1342,45 @@ mod tests {
             .to_string();
         assert!(error.contains("signer is not package-trusted"));
         assert_ne!(attacker_key.verifying_key(), governed_key);
+    }
+    #[test]
+    fn nixos_plan_requires_v3_domain_identity_and_accepts_secure_boot_off() {
+        let (mut value, envelope, mut inventory, key) =
+            signed_plan_fixture(INSTALL_PLAN_SCHEMA_V2, INSTALL_PLAN_SIGNATURE_DOMAIN_V2);
+        inventory.secure_boot = false;
+        value["schema"] = INSTALL_PLAN_SCHEMA_V3.into();
+        value["base_os"] = "nixos".into();
+        value["base_os_version"] = "26.05".into();
+        value["package_delivery"] = "system-closure-v1".into();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../protocol/fixtures/james-appliance-v3.json"
+        ))
+        .unwrap();
+        value["appliance_release"] = fixture["appliance_release"].clone();
+        value["package_transport_url"]="https://releases.example/1.2.3/cybex-james-appliance-closure-1.2.3-x86_64-linux.tar.zst".into();
+        value["inventory_sha256"] = inventory_sha256(&inventory).unwrap().into();
+        let sign = |value: &mut Value, domain: &str| {
+            let mut unsigned = value.clone();
+            let o = unsigned.as_object_mut().unwrap();
+            o.remove("signature");
+            o.remove("plan_sha256");
+            let body = serde_json::to_vec(&canonical_json(unsigned)).unwrap();
+            value["plan_sha256"] = sha256_hex(&body).into();
+            let mut payload = format!("{domain}\n").into_bytes();
+            payload.extend(body);
+            value["signature"] = URL_SAFE_NO_PAD.encode(key.sign(&payload).to_bytes()).into();
+        };
+        sign(&mut value, "CYBEX-JAMES-INSTALL-PLAN-V3");
+        let plan = verify_install_plan(value.clone(), &key.verifying_key(), &envelope, &inventory)
+            .unwrap();
+        assert!(plan.appliance_release.unwrap().nixos().is_ok());
+        sign(&mut value, INSTALL_PLAN_SIGNATURE_DOMAIN_V2);
+        assert!(
+            verify_install_plan(value.clone(), &key.verifying_key(), &envelope, &inventory)
+                .is_err()
+        );
+        value["base_os"] = "ubuntu".into();
+        sign(&mut value, "CYBEX-JAMES-INSTALL-PLAN-V3");
+        assert!(verify_install_plan(value, &key.verifying_key(), &envelope, &inventory).is_err());
     }
 }

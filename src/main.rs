@@ -20,6 +20,16 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let command = cli.command.clone().unwrap_or(Command::Serve);
+    if let Command::VerifyApplianceDatabase { database } = &command {
+        return cybex_james::appliance::nixos::verify_database(database).await;
+    }
+    if matches!(command, Command::VerifyApplianceUpdatePolicy) {
+        println!(
+            "{}",
+            cybex_james::appliance::schedule::verify_stored()?.display()
+        );
+        return Ok(());
+    }
     if matches!(command, Command::VerifyApplianceUpdate) {
         #[cfg(unix)]
         if effective_uid() != 0 {
@@ -118,6 +128,12 @@ async fn main() -> anyhow::Result<()> {
         Command::ValidateApplianceConfig => {
             unreachable!("validate-appliance-config exits before database setup")
         }
+        Command::VerifyApplianceDatabase { .. } => {
+            unreachable!("database verification exits before config loading")
+        }
+        Command::VerifyApplianceUpdatePolicy => {
+            unreachable!("policy verification exits before config loading")
+        }
         Command::VerifyApplianceUpdate => {
             unreachable!("appliance update verification exits before config loading")
         }
@@ -164,6 +180,8 @@ fn managed_command_requires_service_user(
             Command::PrintConfig
                 | Command::ValidateApplianceConfig
                 | Command::VerifyApplianceUpdate
+                | Command::VerifyApplianceUpdatePolicy
+                | Command::VerifyApplianceDatabase { .. }
                 | Command::VerifyApplianceCandidateUpdate
                 | Command::VerifyApplianceNetworkChange
                 | Command::VerifyApplianceNetworkChangeRecovery

@@ -2,15 +2,16 @@ use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use cybex_james::provisioning::{
     FinalizeOptions, NetworkRuntimeOptions, PrepareOptions, REQUIRED_MANAGE_ORIGIN,
-    finalize_target, prepare, reconcile_network_runtime, report_install_stage,
-    validate_legacy_state_promotion,
+    commit_network_change, finalize_target, prepare, reconcile_network_runtime,
+    report_install_stage, validate_installed_state, validate_legacy_state_promotion,
+    verify_committed_network_change,
 };
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "cybex-james-bootstrap",
-    about = "Fail-closed provisioned Ubuntu appliance bootstrap",
+    about = "Fail-closed signed appliance bootstrap",
     version
 )]
 struct Cli {
@@ -64,6 +65,31 @@ enum Command {
             default_value = "/var/lib/cybex-james/control/netplan-approved.json"
         )]
         network_plan: PathBuf,
+    },
+    /// Verify recurring installed identity and an acknowledged managed network.
+    ValidateInstalledState {
+        #[arg(long, default_value = "/var/lib/cybex-james/state")]
+        state_mount: PathBuf,
+        #[arg(long, default_value = "/etc/cybex-james/config.toml")]
+        config: PathBuf,
+        #[arg(
+            long,
+            default_value = "/usr/share/cybex-james/provisioning-public-keys"
+        )]
+        provisioning_keys: PathBuf,
+    },
+    /// Durably retain exact signed network change and acknowledgement evidence.
+    CommitNetworkChange {
+        #[arg(long)]
+        candidate: PathBuf,
+    },
+    /// Recover an already committed network transaction without fresh authority.
+    VerifyCommittedNetworkChange {
+        #[arg(long)]
+        change_id: uuid::Uuid,
+        /// Authenticate the durable receipt without repairing derived profiles.
+        #[arg(long)]
+        no_repair: bool,
     },
     /// Authenticate a dev.3 flat state migration against installed trust anchors.
     ValidateLegacyStatePromotion {
@@ -130,6 +156,30 @@ async fn main() -> Result<()> {
             let outcome =
                 reconcile_network_runtime(NetworkRuntimeOptions::new(config, network_plan))?;
             println!("{}", outcome.as_str());
+            Ok(())
+        }
+        Command::ValidateInstalledState {
+            state_mount,
+            config,
+            provisioning_keys,
+        } => {
+            require_root()?;
+            validate_installed_state(&state_mount, &config, &provisioning_keys)
+        }
+        Command::CommitNetworkChange { candidate } => {
+            require_root()?;
+            println!("{}", commit_network_change(&candidate)?);
+            Ok(())
+        }
+        Command::VerifyCommittedNetworkChange {
+            change_id,
+            no_repair,
+        } => {
+            require_root()?;
+            println!(
+                "{}",
+                verify_committed_network_change(change_id, !no_repair)?
+            );
             Ok(())
         }
         Command::ValidateLegacyStatePromotion {

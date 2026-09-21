@@ -43,6 +43,13 @@ pub enum Command {
     ValidateApplianceConfig,
     /// Re-verify and extract the currently staged signed Ubuntu package update.
     VerifyApplianceUpdate,
+    /// Verify and persist an exact signed NixOS maintenance schedule.
+    VerifyApplianceUpdatePolicy,
+    /// Read-only verification of one root-owned database compatibility snapshot.
+    VerifyApplianceDatabase {
+        #[arg(long)]
+        database: PathBuf,
+    },
     /// Re-authenticate a legacy update request from its already-booted candidate.
     VerifyApplianceCandidateUpdate,
     /// Re-verify and materialize the currently staged signed Netplan change.
@@ -266,8 +273,11 @@ impl AppConfig {
             &self.cache.root_dir,
             "/var/cache/cybex-james/www/cache",
         )?;
-        if self.build.nix_binary != "/usr/bin/nix" {
-            bail!("appliance build.nix_binary must remain /usr/bin/nix");
+        if !matches!(
+            self.build.nix_binary.as_str(),
+            "/usr/bin/nix" | "/run/current-system/sw/bin/nix"
+        ) {
+            bail!("appliance build.nix_binary must use the installed system Nix binary");
         }
         if self.build.manage_source_url_template != manage_source::MANAGE_SOURCE_URL_TEMPLATE {
             bail!(

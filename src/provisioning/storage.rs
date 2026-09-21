@@ -36,9 +36,10 @@ const EFI_LOAD_OPTION_ACTIVE: u32 = 0x0000_0001;
 pub(crate) struct PreparedStorage {
     pub disk_path: PathBuf,
     pub state_mount: PathBuf,
-    sector_size: u64,
-    partition_starts: [u64; 5],
-    partition_ends: [u64; 5],
+    pub(super) sector_size: u64,
+    pub(super) nixos: bool,
+    pub(super) partition_starts: [u64; 5],
+    pub(super) partition_ends: [u64; 5],
 }
 
 #[derive(Clone, Debug)]
@@ -48,63 +49,138 @@ pub(crate) struct ExistingStateProbe {
     requires_rw_mount: bool,
 }
 
+pub(super) fn validate_completed_state_probe(
+    state_mount: &Path,
+    probe: &ExistingStateProbe,
+) -> Result<()> {
+    validate_existing_recovery_probe(state_mount)?;
+    let index = if probe.state.plan.schema == super::protocol::INSTALL_PLAN_SCHEMA_V3 {
+        1
+    } else {
+        3
+    };
+    let expected = partition_path(Path::new(&probe.state.plan.target_disk.path), index)?;
+    let actual = fs::metadata(&probe.device_path)?;
+    let expected = fs::metadata(&expected)?;
+    if !actual.file_type().is_block_device()
+        || !expected.file_type().is_block_device()
+        || actual.rdev() != expected.rdev()
+    {
+        bail!("completed STATE is not on the exact approved target disk")
+    }
+    validate_state_mount(state_mount, &probe.device_path)?;
+    let metadata = fs::symlink_metadata(DurableProvisioningState::path(state_mount))?;
+    if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        bail!("completed provisioning evidence is not protected root-owned state")
+    }
+    Ok(())
+}
+
 pub(crate) fn existing_state_for_session(
     state_mount: &Path,
     session_id: Uuid,
 ) -> Result<Option<ExistingStateProbe>> {
     let Some(device_path) = existing_state_device()? else {
-        if DurableProvisioningState::path(state_mount).exists() {
+        if DurableProvisioningState::path(state_mount).exists()
+            || state_mount_is_mounted(state_mount)?
+        {
             bail!("mounted CYBEX_STATE has no unique partition-label device")
         }
         return Ok(None);
     };
-    let state_path = DurableProvisioningState::path(state_mount);
-    let requires_rw_mount = if state_path.exists() {
+    if state_mount_is_mounted(state_mount)? {
         validate_state_mount(state_mount, &device_path)?;
         validate_existing_recovery_probe(state_mount)?;
-        true
-    } else {
-        mount_existing_state_probe(state_mount, &device_path)?;
-        true
-    };
-    if !state_path.exists() {
-        bail!("CYBEX_STATE does not contain durable provisioning state")
+    } else if !mount_existing_state_probe(state_mount, &device_path)? {
+        // An interrupted mkfs or an as-yet unformatted partition is not durable
+        // authority. Only a separately authenticated active plan can recreate it.
+        return Ok(None);
     }
-    let state = load_durable_state(state_mount)?;
-    if state.session_id == session_id {
-        if state.installation_complete {
-            boot_installed_appliance()?;
-            bail!("completed appliance reboot command unexpectedly returned")
+    finish_existing_state_probe(state_mount, session_id, device_path, || {
+        unmount_probe(state_mount)
+    })
+}
+
+fn finish_existing_state_probe(
+    state_mount: &Path,
+    session_id: Uuid,
+    device_path: PathBuf,
+    unmount: impl FnOnce() -> Result<()>,
+) -> Result<Option<ExistingStateProbe>> {
+    let state = if DurableProvisioningState::path(state_mount).exists() {
+        match load_durable_state(state_mount) {
+            Ok(state) => Some(state),
+            Err(error) => {
+                unmount()?;
+                return Err(error);
+            }
         }
+    } else {
+        None
+    };
+    if let Some(state) = state.filter(|state| state.session_id == session_id) {
         return Ok(Some(ExistingStateProbe {
             state,
             device_path,
-            requires_rw_mount,
+            requires_rw_mount: true,
         }));
     }
-    bail!("an existing CYBEX_STATE identity belongs to different provisioning media")
+    // Empty or foreign STATE never grants disk-write authority. Unmount before
+    // collecting inventory and asking Manage for the current signed authority.
+    unmount()?;
+    Ok(None)
+}
+
+fn state_mount_is_mounted(path: &Path) -> Result<bool> {
+    let mountinfo = fs::read("/proc/self/mountinfo").context("read STATE mount metadata")?;
+    if mountinfo.len() > 4 * 1024 * 1024 {
+        bail!("STATE mount metadata exceeds its bound")
+    }
+    let escaped = escape_mountinfo_path(path.as_os_str().as_bytes());
+    Ok(mountinfo
+        .split(|byte| *byte == b'\n')
+        .any(|line| line.split(|byte| *byte == b' ').nth(4) == Some(escaped.as_slice())))
+}
+
+fn unmount_probe(state_mount: &Path) -> Result<()> {
+    let status = StdCommand::new("umount")
+        .arg(state_mount)
+        .status()
+        .context("unmount STATE discovery")?;
+    if !status.success() || state_mount_is_mounted(state_mount)? {
+        bail!("STATE discovery could not be unmounted")
+    }
+    Ok(())
 }
 
 fn existing_state_device() -> Result<Option<PathBuf>> {
-    let mut candidates = fs::read_dir("/dev/disk/by-partlabel")
-        .ok()
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| entry.file_name() == "CYBEX_STATE")
-        .map(|entry| entry.path())
-        .collect::<Vec<_>>();
-    candidates.sort();
-    if candidates.is_empty() {
+    let output = StdCommand::new("blkid")
+        .args(["-t", "PARTLABEL=CYBEX_STATE", "-o", "device"])
+        .output()
+        .context("enumerate existing STATE partitions")?;
+    if output.status.code() == Some(2) {
         return Ok(None);
     }
-    if candidates.len() != 1 {
+    if !output.status.success() || output.stdout.len() > 64 * 1024 {
+        bail!("cannot safely enumerate STATE partitions")
+    }
+    let text = String::from_utf8(output.stdout)?;
+    let mut candidates = text.lines().map(PathBuf::from).collect::<Vec<_>>();
+    candidates.sort();
+    candidates.dedup();
+    if candidates.len() > 1 {
         bail!("multiple CYBEX_STATE partitions are present; detach unrelated appliance disks")
     }
-    Ok(candidates.pop())
+    let Some(path) = candidates.pop() else {
+        return Ok(None);
+    };
+    if !path.starts_with("/dev") || !fs::metadata(&path)?.file_type().is_block_device() {
+        bail!("STATE discovery returned an invalid device")
+    }
+    Ok(Some(path))
 }
 
-fn mount_existing_state_probe(state_mount: &Path, device_path: &Path) -> Result<()> {
+fn mount_existing_state_probe(state_mount: &Path, device_path: &Path) -> Result<bool> {
     fs::create_dir_all(state_mount).context("create existing state mountpoint")?;
     let status = StdCommand::new("mount")
         .args(["-t", "ext4", "-o", recovery_probe_mount_options()])
@@ -113,11 +189,21 @@ fn mount_existing_state_probe(state_mount: &Path, device_path: &Path) -> Result<
         .status()
         .context("mount existing CYBEX_STATE recovery probe")?;
     if !status.success() {
-        bail!("existing CYBEX_STATE could not be mounted read-only without journal replay")
+        if state_mount_is_mounted(state_mount)? {
+            unmount_probe(state_mount)?;
+        }
+        tracing::warn!(
+            "STATE is unformatted or unreadable; no durable recovery authority was discovered"
+        );
+        return Ok(false);
     }
-    validate_state_mount(state_mount, device_path)?;
-    validate_existing_recovery_probe(state_mount)?;
-    Ok(())
+    if let Err(error) = validate_state_mount(state_mount, device_path)
+        .and_then(|_| validate_existing_recovery_probe(state_mount))
+    {
+        unmount_probe(state_mount)?;
+        return Err(error);
+    }
+    Ok(true)
 }
 
 pub(crate) fn activate_existing_state(
@@ -285,7 +371,7 @@ fn validate_recovered_state_transition(
     Ok(())
 }
 
-fn boot_installed_appliance() -> Result<()> {
+pub(super) fn boot_installed_appliance() -> Result<()> {
     select_installed_boot_entry(Path::new(EFIVARS_PATH))?;
     let _ = StdCommand::new("sync").status();
     let status = StdCommand::new("systemctl")
@@ -422,27 +508,38 @@ pub(crate) async fn create_state_partition_first(
         bail!("approved target is not an explicit block device")
     }
     let sector_size = command_u64("blockdev", &["--getss", &disk.path]).await?;
-    let total_sectors = command_u64("blockdev", &["--getsz", &disk.path]).await?;
+    let total_bytes = command_u64("blockdev", &["--getsize64", &disk.path]).await?;
+    if !matches!(sector_size, 512 | 4096) {
+        bail!("unsupported disk logical sector size")
+    }
+    let total_sectors = total_bytes / sector_size;
     if !matches!(sector_size, 512 | 4096)
         || total_sectors.checked_mul(sector_size).unwrap_or(0) != disk.size_bytes
     {
         bail!("target disk geometry changed after approval")
     }
-    let (starts, ends) = calculate_layout(sector_size, total_sectors)?;
+    let nixos = plan.schema == super::protocol::INSTALL_PLAN_SCHEMA_V3;
+    let (starts, ends) = if nixos {
+        super::nixos_install::calculate_layout(sector_size, total_bytes)?
+    } else {
+        calculate_layout(sector_size, total_sectors)?
+    };
 
+    let state_index = if nixos { 1 } else { 3 };
+    let slot = usize::from(state_index - 1);
     run_checked("sgdisk", &["--zap-all", &disk.path]).await?;
     run_checked(
         "sgdisk",
         &[
-            &format!("--new=3:{}:{}", starts[2], ends[2]),
-            "--typecode=3:8300",
-            "--change-name=3:CYBEX_STATE",
+            &format!("--new={state_index}:{}:{}", starts[slot], ends[slot]),
+            &format!("--typecode={state_index}:8300"),
+            &format!("--change-name={state_index}:CYBEX_STATE"),
             &disk.path,
         ],
     )
     .await?;
     settle_partitions(&disk.path).await?;
-    let state_partition = partition_path(&disk_path, 3)?;
+    let state_partition = partition_path(&disk_path, state_index)?;
     run_checked(
         "mkfs.ext4",
         &[
@@ -474,6 +571,7 @@ pub(crate) async fn create_state_partition_first(
         disk_path,
         state_mount: state_mount.to_path_buf(),
         sector_size,
+        nixos,
         partition_starts: starts,
         partition_ends: ends,
     })
@@ -489,7 +587,14 @@ pub(crate) async fn resume_prepared_storage(
         .iter()
         .find(|disk| disk.id == plan.target_disk_id)
         .ok_or_else(|| anyhow!("approved target disk disappeared during recovery"))?;
-    if disk != &plan.target_disk || disk.removable || disk.held {
+    if disk.id != plan.target_disk.id
+        || disk.path != plan.target_disk.path
+        || disk.size_bytes != plan.target_disk.size_bytes
+        || disk.serial != plan.target_disk.serial
+        || disk.wwn != plan.target_disk.wwn
+        || disk.removable
+        || disk.held
+    {
         bail!("approved disk identity changed during recovery")
     }
     let disk_path = PathBuf::from(&disk.path);
@@ -499,14 +604,33 @@ pub(crate) async fn resume_prepared_storage(
         bail!("recovery target is not an explicit block device")
     }
     let sector_size = command_u64("blockdev", &["--getss", &disk.path]).await?;
-    let total_sectors = command_u64("blockdev", &["--getsz", &disk.path]).await?;
+    let total_bytes = command_u64("blockdev", &["--getsize64", &disk.path]).await?;
+    if !matches!(sector_size, 512 | 4096) {
+        bail!("unsupported disk logical sector size")
+    }
+    let total_sectors = total_bytes / sector_size;
     if !matches!(sector_size, 512 | 4096)
         || total_sectors.checked_mul(sector_size).unwrap_or(0) != disk.size_bytes
     {
         bail!("target disk geometry changed during recovery")
     }
-    let (starts, ends) = calculate_layout(sector_size, total_sectors)?;
-    validate_existing_partition(&disk.path, 3, starts[2], ends[2], "8300", "CYBEX_STATE").await?;
+    let nixos = plan.schema == super::protocol::INSTALL_PLAN_SCHEMA_V3;
+    let (starts, ends) = if nixos {
+        super::nixos_install::calculate_layout(sector_size, total_bytes)?
+    } else {
+        calculate_layout(sector_size, total_sectors)?
+    };
+    let index = if nixos { 1 } else { 3 };
+    let slot = usize::from(index - 1);
+    validate_existing_partition(
+        &disk.path,
+        index,
+        starts[slot],
+        ends[slot],
+        "8300",
+        "CYBEX_STATE",
+    )
+    .await?;
     if !DurableProvisioningState::path(state_mount).is_file() {
         bail!("recovery state partition is not mounted at the expected path")
     }
@@ -514,12 +638,16 @@ pub(crate) async fn resume_prepared_storage(
         disk_path,
         state_mount: state_mount.to_path_buf(),
         sector_size,
+        nixos,
         partition_starts: starts,
         partition_ends: ends,
     })
 }
 
 pub(crate) async fn create_remaining_partitions(prepared: &PreparedStorage) -> Result<()> {
+    if prepared.nixos {
+        return super::nixos_install::create_remaining(prepared).await;
+    }
     let disk = prepared
         .disk_path
         .to_str()
@@ -563,7 +691,7 @@ pub(crate) async fn create_remaining_partitions(prepared: &PreparedStorage) -> R
 }
 
 #[derive(Debug)]
-struct ExistingPartition {
+pub(super) struct ExistingPartition {
     first_sector: u64,
     last_sector: u64,
     type_code: String,
@@ -571,7 +699,7 @@ struct ExistingPartition {
 }
 
 impl ExistingPartition {
-    fn validate(
+    pub(super) fn validate(
         &self,
         first_sector: u64,
         last_sector: u64,
@@ -602,7 +730,7 @@ fn partition_type_matches(reported: &str, expected_short_code: &str) -> bool {
     reported.eq_ignore_ascii_case(expected_guid)
 }
 
-async fn validate_existing_partition(
+pub(super) async fn validate_existing_partition(
     disk: &str,
     index: u8,
     first_sector: u64,
@@ -616,7 +744,7 @@ async fn validate_existing_partition(
         .validate(first_sector, last_sector, type_code, name)
 }
 
-async fn inspect_partition(disk: &str, index: u8) -> Result<Option<ExistingPartition>> {
+pub(super) async fn inspect_partition(disk: &str, index: u8) -> Result<Option<ExistingPartition>> {
     let output = Command::new("sgdisk")
         .args([format!("--info={index}"), disk.to_string()])
         .output()
@@ -677,12 +805,19 @@ pub(crate) fn save_durable_state(
     if bytes.len() > 512 * 1024 {
         bail!("durable provisioning state exceeds its size limit")
     }
-    atomic_write(&DurableProvisioningState::path(state_mount), &bytes, 0o600)
+    let path = DurableProvisioningState::path(state_mount);
+    let protected = state.plan.schema == super::protocol::INSTALL_PLAN_SCHEMA_V3
+        && path.parent() == Some(state_mount.join("control").as_path());
+    atomic_write(&path, &bytes, if protected { 0o640 } else { 0o600 })?;
+    if protected {
+        super::nixos_install::chown(&path, 0, 985)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn load_durable_state(state_mount: &Path) -> Result<DurableProvisioningState> {
     let path = DurableProvisioningState::path(state_mount);
-    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let bytes = super::read_bounded_nofollow(&path, 512 * 1024, "durable provisioning state")?;
     if bytes.len() > 512 * 1024 {
         bail!("durable provisioning state exceeds its size limit")
     }
@@ -811,6 +946,7 @@ fn offline_package_install_commands(package_delivery: PackageDelivery) -> Value 
             "; umount /target/cdrom",
         ),
         PackageDelivery::NetworkSnapshot => ("", ""),
+        PackageDelivery::SystemClosure => unreachable!("NixOS cannot execute APT"),
     };
     let repository = repository_path(package_delivery);
     let install = format!(
@@ -837,6 +973,7 @@ fn repository_path(package_delivery: PackageDelivery) -> &'static str {
     match package_delivery {
         PackageDelivery::Embedded => "/cdrom/cybex/apt",
         PackageDelivery::NetworkSnapshot => STAGED_REPOSITORY_PATH,
+        PackageDelivery::SystemClosure => unreachable!("NixOS cannot select an APT repository"),
     }
 }
 
@@ -1061,7 +1198,7 @@ pub(crate) fn netplan(network: &JamesProvisioningNetworkPlan, plan: &SignedInsta
     })
 }
 
-fn james_config(
+pub(super) fn james_config(
     target: &Path,
     state: &DurableProvisioningState,
     public_base_url: &str,
@@ -1108,7 +1245,7 @@ fn james_config(
     ))
 }
 
-fn public_base_url(plan: &SignedInstallPlan) -> String {
+pub(super) fn public_base_url(plan: &SignedInstallPlan) -> String {
     let address = plan
         .network
         .address_cidr
@@ -1194,7 +1331,7 @@ fn calculate_layout(sector_size: u64, total_sectors: u64) -> Result<([u64; 5], [
     Ok((starts, ends))
 }
 
-fn partition_path(disk: &Path, number: u8) -> Result<PathBuf> {
+pub(super) fn partition_path(disk: &Path, number: u8) -> Result<PathBuf> {
     let value = disk
         .to_str()
         .ok_or_else(|| anyhow!("disk path is not UTF-8"))?;
@@ -1207,12 +1344,12 @@ fn partition_path(disk: &Path, number: u8) -> Result<PathBuf> {
     ))
 }
 
-async fn settle_partitions(disk: &str) -> Result<()> {
+pub(super) async fn settle_partitions(disk: &str) -> Result<()> {
     run_checked("partprobe", &[disk]).await?;
     run_checked("udevadm", &["settle", "--timeout=30"]).await
 }
 
-async fn command_u64(program: &str, arguments: &[&str]) -> Result<u64> {
+pub(super) async fn command_u64(program: &str, arguments: &[&str]) -> Result<u64> {
     let output = Command::new(program)
         .args(arguments)
         .output()
@@ -1228,7 +1365,7 @@ async fn command_u64(program: &str, arguments: &[&str]) -> Result<u64> {
         .with_context(|| format!("parse {program} output"))
 }
 
-async fn run_checked(program: &str, arguments: &[&str]) -> Result<()> {
+pub(super) async fn run_checked(program: &str, arguments: &[&str]) -> Result<()> {
     let status = Command::new(program)
         .args(arguments)
         .status()
@@ -1240,7 +1377,7 @@ async fn run_checked(program: &str, arguments: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn atomic_write(path: &Path, body: &[u8], mode: u32) -> Result<()> {
+pub(super) fn atomic_write(path: &Path, body: &[u8], mode: u32) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("output path has no parent"))?;
@@ -1409,6 +1546,64 @@ mod tests {
             .to_string();
         assert!(error.contains("install plan organization slug is missing"));
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_foreign_or_corrupt_state_is_unmounted_without_granting_authority() {
+        let root = std::env::temp_dir().join(format!("james-state-probe-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let durable = durable_state_fixture();
+        let unmounted = std::cell::Cell::new(false);
+        let probe = || {
+            unmounted.set(true);
+            Ok(())
+        };
+        assert!(
+            finish_existing_state_probe(
+                &root,
+                durable.session_id,
+                PathBuf::from("/dev/fixture"),
+                probe
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(unmounted.replace(false));
+        save_durable_state(&root, &durable).unwrap();
+        assert!(
+            finish_existing_state_probe(
+                &root,
+                Uuid::new_v4(),
+                PathBuf::from("/dev/fixture"),
+                probe
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(unmounted.replace(false));
+        assert!(
+            finish_existing_state_probe(
+                &root,
+                durable.session_id,
+                PathBuf::from("/dev/fixture"),
+                probe
+            )
+            .unwrap()
+            .is_some()
+        );
+        assert!(!unmounted.get());
+        fs::write(DurableProvisioningState::path(&root), "truncated-state").unwrap();
+        assert!(
+            finish_existing_state_probe(
+                &root,
+                durable.session_id,
+                PathBuf::from("/dev/fixture"),
+                probe
+            )
+            .is_err()
+        );
+        assert!(unmounted.get());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1752,6 +1947,7 @@ mod tests {
             disk_path: PathBuf::from("/dev/sda"),
             state_mount: PathBuf::from("/run/cybex-state"),
             sector_size: 512,
+            nixos: false,
             partition_starts: starts,
             partition_ends: ends,
         };
@@ -1780,6 +1976,7 @@ mod tests {
             disk_path: PathBuf::from("/dev/sda"),
             state_mount: PathBuf::from("/run/cybex-state"),
             sector_size: 512,
+            nixos: false,
             partition_starts: starts,
             partition_ends: ends,
         };

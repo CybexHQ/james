@@ -298,7 +298,7 @@ impl Drop for ProbeGuard<'_> {
 static READINESS_CACHE: OnceLock<ReadinessCache> = OnceLock::new();
 
 pub async fn probe(state: &AppState) -> ApplianceReadiness {
-    if !crate::appliance::is_managed_ubuntu() {
+    if !crate::appliance::is_managed_appliance() {
         return ApplianceReadiness::standalone();
     }
     let runtime = state.runtime_settings();
@@ -310,7 +310,7 @@ pub async fn probe(state: &AppState) -> ApplianceReadiness {
 }
 
 pub(crate) async fn probe_fresh(state: &AppState) -> ApplianceReadiness {
-    if !crate::appliance::is_managed_ubuntu() {
+    if !crate::appliance::is_managed_appliance() {
         return ApplianceReadiness::standalone();
     }
     probe_uncached(state, state.runtime_settings()).await

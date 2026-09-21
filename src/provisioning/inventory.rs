@@ -140,8 +140,8 @@ pub(crate) fn revalidate_plan_hardware(
     if hardware_digest(inventory)? != plan.hardware_digest {
         bail!("stable hardware identity changed after approval")
     }
-    if inventory.boot_mode != "uefi" || !inventory.secure_boot {
-        bail!("UEFI Secure Boot must remain enabled")
+    if inventory.boot_mode != "uefi" {
+        bail!("UEFI boot must remain active")
     }
     let disk = inventory
         .disks
@@ -169,11 +169,8 @@ pub(crate) fn revalidate_durable_plan_hardware(
     plan: &SignedInstallPlan,
     inventory: &JamesProvisioningInventory,
 ) -> Result<()> {
-    if hardware_digest(inventory)? != plan.hardware_digest
-        || inventory.boot_mode != "uefi"
-        || !inventory.secure_boot
-    {
-        bail!("hardware identity or Secure Boot changed during installation recovery")
+    if hardware_digest(inventory)? != plan.hardware_digest || inventory.boot_mode != "uefi" {
+        bail!("hardware identity or UEFI boot changed during installation recovery")
     }
     let disk = inventory
         .disks
@@ -574,6 +571,9 @@ async fn bounded_command_success(
 }
 
 async fn bounded_live_arping_success(arguments: &[&str], timeout: Duration) -> Result<bool> {
+    if Path::new("/cdrom/cybex/nixos-appliance").is_file() {
+        return bounded_command_success("arping", arguments, timeout).await;
+    }
     let mut busybox_arguments = Vec::with_capacity(arguments.len() + 1);
     busybox_arguments.push("arping");
     busybox_arguments.extend_from_slice(arguments);
