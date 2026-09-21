@@ -497,7 +497,7 @@ for _attempt in $(seq 1 1080); do
   fi
   if ((reboot_deadline > 0 && SECONDS >= reboot_deadline))
   then
-    echo 'error: installed James did not complete its automatic reboot within five minutes; qualification will not force a restart or remove media' >&2
+    echo 'error: James did not report Ready within five minutes of requesting reboot; inspect installed boot and first-boot service evidence; qualification will not force a restart or remove media' >&2
     jq '{state,heartbeat_at,progress,failure_code,failure_message}' "$session" >&2
     if [[ -s "$work_dir/serial.log" ]]; then
       echo 'bounded qualification serial console follows:' >&2
