@@ -772,7 +772,7 @@ fn appliance_update_transport(
     })
 }
 
-fn validate_qualification_package_transport_url(
+pub(crate) fn validate_qualification_package_transport_url(
     value: &str,
     snapshot: &ApplianceRepositorySnapshot,
 ) -> Result<()> {

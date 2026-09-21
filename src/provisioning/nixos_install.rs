@@ -3,7 +3,11 @@ use super::{
     DurableProvisioningState, SignedInstallPlan,
     storage::{self, PreparedStorage},
 };
-use crate::appliance::{closure, nixos, release_v3::NixosRelease};
+use crate::appliance::{
+    ApplianceRepositorySnapshot, closure, nixos,
+    release_v3::{NixosRelease, SystemClosure},
+    validate_qualification_package_transport_url,
+};
 use anyhow::{Result, anyhow, ensure};
 use serde_json::json;
 use std::{
@@ -32,6 +36,24 @@ fn release(plan: &SignedInstallPlan) -> Result<&NixosRelease> {
     );
     Ok(release)
 }
+
+fn validate_closure_transport(transport: &str, artifact: &SystemClosure) -> Result<()> {
+    if transport == artifact.url {
+        return Ok(());
+    }
+    // The signed plan may select the same bounded private bridge accepted by
+    // Manage qualification and appliance updates. It changes only transport:
+    // the independently signed closure identity and NAR checks still apply.
+    validate_qualification_package_transport_url(
+        transport,
+        &ApplianceRepositorySnapshot {
+            url: artifact.url.clone(),
+            sha256: artifact.sha256.clone(),
+            size_bytes: artifact.size_bytes,
+        },
+    )
+}
+
 pub(super) async fn stage_closure(plan: &SignedInstallPlan, key_path: &Path) -> Result<()> {
     let release = release(plan)?;
     let key = release.verify_file(key_path)?;
@@ -39,20 +61,7 @@ pub(super) async fn stage_closure(plan: &SignedInstallPlan, key_path: &Path) -> 
         .package_transport_url
         .as_deref()
         .ok_or_else(|| anyhow!("plan missing transport"))?;
-    let url = reqwest::Url::parse(transport)?;
-    let origin = reqwest::Url::parse(super::REQUIRED_MANAGE_ORIGIN)?;
-    if transport != release.system_closure.url {
-        ensure!(
-            url.origin() == origin.origin()
-                && url.scheme() == "https"
-                && url.query().is_none()
-                && url.fragment().is_none()
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.as_str() == transport,
-            "plan transport must be the signed Manage origin"
-        );
-    }
+    validate_closure_transport(transport, &release.system_closure)?;
     fs::create_dir_all(STAGING)?;
     let metadata = fs::symlink_metadata(STAGING)?;
     ensure!(
@@ -584,6 +593,63 @@ pub(super) fn boot_completed(state: &DurableProvisioningState, _state_mount: &Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn closure_artifact() -> SystemClosure {
+        SystemClosure {
+            url: "https://releases.example/1.2.3/cybex-james-appliance-closure-1.2.3-x86_64-linux.tar.zst".into(),
+            sha256: "a".repeat(64),
+            size_bytes: 1024,
+        }
+    }
+
+    #[test]
+    fn closure_transport_accepts_signed_url_or_exact_private_qualification_archive() {
+        let artifact = closure_artifact();
+        assert!(validate_closure_transport(&artifact.url, &artifact).is_ok());
+        let filename = "cybex-james-appliance-closure-1.2.3-x86_64-linux.tar.zst";
+        for authority in [
+            "10.20.30.40:8080",
+            "192.168.50.1:8080",
+            "127.0.0.1:8080",
+            "[fd00::10]:8080",
+            "[::1]:8080",
+        ] {
+            let transport = format!("http://{authority}/qualification/{filename}");
+            assert!(
+                validate_closure_transport(&transport, &artifact).is_ok(),
+                "authenticated qualification transport was rejected: {transport}"
+            );
+        }
+    }
+
+    #[test]
+    fn closure_transport_rejects_unsafe_or_rebound_qualification_urls() {
+        let artifact = closure_artifact();
+        let filename = "cybex-james-appliance-closure-1.2.3-x86_64-linux.tar.zst";
+        for transport in [
+            format!("http://bridge.internal:8080/{filename}"),
+            format!("http://8.8.8.8:8080/{filename}"),
+            format!("http://169.254.169.254:8080/{filename}"),
+            format!("http://2130706433:8080/{filename}"),
+            format!("https://10.20.30.40:8080/{filename}"),
+            format!("https://dev.example.com/qualification/{filename}"),
+            format!("http://127.0.0.1/{filename}"),
+            format!("http://127.0.0.1:0/{filename}"),
+            format!("http://user@10.20.30.40:8080/{filename}"),
+            format!("http://user:password@10.20.30.40:8080/{filename}"),
+            "http://10.20.30.40:8080/other.tar.zst".into(),
+            format!("http://10.20.30.40:8080/{filename}?token=fixture"),
+            format!("http://10.20.30.40:8080/{filename}#debug"),
+            format!("http://10.20.30.40:8080/path/../{filename}"),
+            format!(" http://10.20.30.40:8080/{filename}"),
+        ] {
+            assert!(
+                validate_closure_transport(&transport, &artifact).is_err(),
+                "unsafe qualification transport was accepted: {transport}"
+            );
+        }
+    }
+
     #[test]
     fn geometry_is_byte_correct_for_512_and_4096() {
         for sector in [512, 4096] {
