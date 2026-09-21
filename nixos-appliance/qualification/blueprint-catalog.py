@@ -4,10 +4,12 @@ import argparse
 import json
 import re
 from pathlib import Path
+import runpy
 import urllib.request
 import uuid
 
 BUILTINS = {'standard_workstation': 'taskbar', 'dock_workstation': 'dock'}
+HTTP = runpy.run_path(str(Path(__file__).with_name('qualification_http.py')))
 
 
 def catalog(rows, configs, tiling_slug):
@@ -78,11 +80,8 @@ def main():
     def get(path):
         request = urllib.request.Request(origin + path, headers={'Authorization': 'Bearer ' + token,
                                                                   'User-Agent': 'cybex-dev-qualification/1'})
-        with client.open(request, timeout=10) as response:
-            data = response.read(2 * 1024 * 1024 + 1)
-            if len(data) > 2 * 1024 * 1024:
-                raise ValueError('Qualification API response exceeds the supported bound')
-            return json.loads(data)
+        return HTTP['request_json'](client, request, timeout=10,
+                                    max_bytes=2 * 1024 * 1024)
 
     rows = []
     while True:

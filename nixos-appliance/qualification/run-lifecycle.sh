@@ -169,26 +169,46 @@ trap 'exit 130' INT TERM
 api() {
   local method="$1" path="$2" body="${3:-}"
   local response="$work_dir/api-response.json"
-  local retries=()
+  local attempt=1 max_attempts=1 status http_code
+  local curl_args=(-4 --fail --silent --show-error --proto '=https' --tlsv1.2
+    --noproxy '*' --connect-timeout 15 --max-time 120 --output "$response"
+    --write-out '%{http_code}' --request "$method"
+    --header "Authorization: Bearer $token")
   # Read-only polling can tolerate a gateway disconnect. Never retry mutations:
   # their response may have been lost after the server accepted the operation.
   if [[ "$method" = GET ]]; then
-    retries=(--retry 3 --retry-all-errors --retry-delay 1)
+    max_attempts=4
   fi
   if [[ -n "$body" ]]; then
-    curl -4 --fail --silent --show-error --proto '=https' --tlsv1.2 \
-      --connect-timeout 15 --max-time 120 "${retries[@]}" --output "$response" \
-      --request "$method" \
-      --header "Authorization: Bearer $token" \
-      --header 'Content-Type: application/json' \
-      --data-binary "$body" "$manage_origin$path"
-  else
-    curl -4 --fail --silent --show-error --proto '=https' --tlsv1.2 \
-      --connect-timeout 15 --max-time 120 "${retries[@]}" --output "$response" \
-      --request "$method" --header "Authorization: Bearer $token" "$manage_origin$path"
+    curl_args+=(--header 'Content-Type: application/json' --data-binary "$body")
   fi
-  cat -- "$response"
-  rm -- "$response"
+  while ((attempt <= max_attempts)); do
+    rm -f -- "$response"
+    if http_code="$(curl "${curl_args[@]}" "$manage_origin$path")"; then
+      status=0
+    else
+      status=$?
+    fi
+    if ((status == 0)) && [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+      cat -- "$response"
+      rm -f -- "$response"
+      return 0
+    fi
+    # Curl 22 identifies an HTTP failure; all other listed codes are bounded
+    # connection, timeout, incomplete-response, or TLS-handshake failures.
+    if ((attempt == max_attempts)) || {
+      [[ "$status" = 22 ]] && [[ ! "$http_code" =~ ^(408|429|502|503|504)$ ]]
+    } || {
+      [[ "$status" != 22 ]] && [[ ! "$status" =~ ^(6|7|18|28|35|52|55|56|92)$ ]]
+    }; then
+      rm -f -- "$response"
+      ((status == 0)) && status=22 # Redirects are refused rather than followed.
+      return "$status"
+    fi
+    rm -f -- "$response"
+    sleep 1
+    ((attempt += 1))
+  done
 }
 
 check_delivery_policy() {

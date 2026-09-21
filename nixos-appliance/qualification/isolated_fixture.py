@@ -10,10 +10,11 @@ import subprocess
 import sys
 import time
 import urllib.request
+import runpy
 
 HELPERS = Path(__file__).resolve().parent
-import runpy
 SCOPE = runpy.run_path(str(HELPERS / 'development-scope.py'))
+HTTP = runpy.run_path(str(HELPERS / 'qualification_http.py'))
 
 
 def private_state(path):
@@ -44,11 +45,8 @@ class API:
             headers={'Authorization': 'Bearer ' + self.token, 'Content-Type': 'application/json',
                      'User-Agent': 'cybex-dev-qualification/1'},
             data=None if body is None else json.dumps(body).encode())
-        with self.client.open(request, timeout=30) as response:
-            value = response.read(16 * 1024**2 + 1)
-        if len(value) > 16 * 1024**2:
-            raise ValueError('Qualification API response exceeded its bound')
-        return json.loads(value) if value else None
+        return HTTP['request_json'](self.client, request, timeout=30,
+                                    max_bytes=16 * 1024**2)
 
 
 def stop(process):
