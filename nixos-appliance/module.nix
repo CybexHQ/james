@@ -117,7 +117,8 @@ in {
       '';
     };
     systemd.services.cybex-james-network-render = (rootService "network-render") // {
-      wantedBy = [ "network-pre.target" ]; before = [ "systemd-networkd.service" "network-pre.target" ];
+      wantedBy = [ "network-pre.target" ]; requiredBy = [ "systemd-networkd.service" ];
+      before = [ "systemd-networkd.service" "network-pre.target" ];
       after = [ "local-fs.target" "systemd-tmpfiles-setup.service" ]; unitConfig.DefaultDependencies = false;
       unitConfig.RequiresMountsFor = [ "/var/lib/cybex-james/control" ];
     };
