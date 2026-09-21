@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: ["main"]
+    branches: ["main", "james-nixos"]
     tags: ["v*"]
 
 permissions:
@@ -29,30 +29,48 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      - name: Verify Python producer with Rust installer
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends zstd
+          cargo test --locked python_packer_archive_verifies_and_extracts_in_rust -- --ignored
+
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   scripts:
-    name: Ubuntu Appliance Scripts
+    name: Appliance and release contracts
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install native checks
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dnsmasq-base ripgrep shellcheck
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dnsmasq-base ripgrep shellcheck zstd
 
       - name: Bash syntax
         shell: bash
         run: |
           mapfile -t appliance_helpers < <(rg -l '^#!.*(bash|/sh)$' ubuntu-appliance/rootfs/usr/lib/cybex-james | sort)
           bash -n ubuntu-appliance/*.sh ubuntu-appliance/qualification/*.sh "${appliance_helpers[@]}" ubuntu-appliance/rootfs/etc/grub.d/09_cybex_generations
+          mapfile -t nixos_helpers < <(rg -l '^#!.*(bash|/sh)$' nixos-appliance | sort)
+          for helper in "${nixos_helpers[@]}"; do bash -n "$helper"; done
 
       - name: Shellcheck
         shell: bash
         run: |
           mapfile -t appliance_helpers < <(rg -l '^#!.*(bash|/sh)$' ubuntu-appliance/rootfs/usr/lib/cybex-james | sort)
           shellcheck ubuntu-appliance/*.sh ubuntu-appliance/qualification/*.sh "${appliance_helpers[@]}" ubuntu-appliance/rootfs/etc/grub.d/09_cybex_generations
+          mapfile -t nixos_helpers < <(rg -l '^#!.*(bash|/sh)$' nixos-appliance | sort)
+          if ((${#nixos_helpers[@]})); then shellcheck "${nixos_helpers[@]}"; fi
+
+      - name: NixOS Python syntax
+        run: |
+          python3 -B - <<'PY'
+          from pathlib import Path
+          for path in Path('nixos-appliance').rglob('*'):
+              if path.is_file() and (path.suffix == '.py' or path.read_bytes().startswith(b'#!/usr/bin/env python3')):
+                  compile(path.read_bytes(), str(path), 'exec')
+          PY
 
       - name: Release tooling tests
         run: python3 -B -m unittest discover -s tools/tests -v

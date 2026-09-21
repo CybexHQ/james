@@ -779,8 +779,8 @@ class JamesReleaseToolTests(unittest.TestCase):
         command = re.search(r'          python3 tools/james-release.py manifest .*?--published-at "\$published_at"',
                             workflow, re.DOTALL).group()
         command = re.sub(r'\$\{\{.*?\}\}', 'fixture', command)
-        metadata = self.directory / "cybex-james-appliance-packages-metadata.json"
-        metadata.write_text(json.dumps({"manage_source_sha256": "c" * 64, "manage_source_size_bytes": 123}))
+        metadata = self.directory / "cybex-james-appliance-closure-metadata.json"
+        metadata.write_text(json.dumps({"manage_source": {"sha256": "c" * 64, "size_bytes": 123}}))
         # Execute the real workflow invocation, capturing argv before signing.
         script = 'python3() { printf "%s\\0" "$@"; }; template_args=(); ' + command
         result = subprocess.run(['bash', '-ec', script], env={**os.environ, 'RUNNER_TEMP': str(self.directory)},

@@ -3,8 +3,8 @@ set -Eeuo pipefail
 
 # Fail before expensive compilation when the minimal image lacks a native
 # packaging dependency. This runs in the same unprivileged build container.
-for tool in apt-ftparchive apt-get awk cargo cmp cpio curl dpkg-deb dpkg-scanpackages \
-  git gpgv gzip jq nix-build nix-shell openssl python3 rsync sha256sum stat tar \
+for tool in awk cargo cmp cpio curl git gzip jq nix nix-build nix-instantiate nix-store \
+  nix-shell openssl python3 rsync sha256sum stat tar \
   unsquashfs xorriso zstd; do
   command -v "$tool" >/dev/null || { echo "Missing release build tool: $tool" >&2; exit 127; }
 done

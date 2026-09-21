@@ -14,11 +14,12 @@ BUNDLE = 'cybex-workstation-netboot-1.0.67-9bc0d5862bc1-x86_64-linux.tar.zst'
 ASSETS = [
     'cybex-james-x86_64-linux',
     'cybex-james-appliance-template-0.2.2-x86_64-linux.iso',
-    'cybex-james-appliance-packages-0.2.2-x86_64-linux.tar.zst',
+    'cybex-james-appliance-closure-0.2.2-x86_64-linux.tar.zst',
     BUNDLE, 'cybex-james-release.json', 'cybex-james-release-compatibility.json',
-    'SHA256SUMS', 'cybex-james-ubuntu-qualification.json',
-    'cybex-james-build-predecessor.json', 'cybex-james-ubuntu-update-qualification.json',
-    'cybex-james-ubuntu-rollback-qualification.json',
+    'SHA256SUMS', 'cybex-james-nixos-qualification.json',
+    'cybex-james-build-predecessor.json', 'cybex-james-nixos-update-qualification.json',
+    'cybex-james-nixos-rollback-qualification.json',
+    'cybex-james-qualified-predecessor.json', 'cybex-james-qualified-predecessor-release.json',
 ]
 BODY = '\n'.join([
     'Cybex-Release-Workflow: https://github.com/CybexHQ/james/actions/runs/42',

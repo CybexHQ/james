@@ -2,8 +2,8 @@
 FROM rust:1.85.0-bookworm@sha256:16a7f242108de02f10fe4a392991679bafa7694e59f5b40a54d5af1be9b40d03 AS rust
 FROM ubuntu:24.04@sha256:496754492fb28b4d3049432f2ca787449331e23fb14f0dd3fffea86bf5a93eb4
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    apt-utils build-essential ca-certificates cpio curl dpkg-dev git gpgv jq libssl-dev \
-    nix-bin openssl pkg-config python3 rsync squashfs-tools ubuntu-keyring xorriso xz-utils zstd \
+    build-essential ca-certificates cpio curl git jq libssl-dev \
+    nix-bin openssl pkg-config python3 rsync squashfs-tools xorriso xz-utils zstd \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=rust /usr/local/rustup /usr/local/rustup
 COPY --from=rust /usr/local/cargo /usr/local/cargo

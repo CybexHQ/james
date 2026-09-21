@@ -882,9 +882,9 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
         self.assertIn("cybex.james.manage-source.v1", source_builder)
 
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-        snapshot_build = workflow.index("build-package-snapshot.sh")
+        closure_build = workflow.index("nixos-appliance/build-closure.sh")
         template_build = workflow.index("build-template.sh")
-        self.assertLess(snapshot_build, template_build)
+        self.assertLess(closure_build, template_build)
         self.assertIn(
             '--installer-iso-template-package-delivery "$package_delivery"',
             workflow,
@@ -897,20 +897,20 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
             '--expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN"',
             workflow,
         )
-        self.assertIn("--manage-source-dir manage-source", workflow)
+        self.assertIn('--manage-source-dir "$PWD/manage-source"', workflow)
         self.assertIn("--manage-source-revision", workflow)
         self.assertGreaterEqual(
             workflow.count(
                 '--expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN"'
             ),
-            5,
+            4,
         )
         self.assertEqual(
-            workflow.count("--appliance-package-snapshot-metadata"),
+            workflow.count("--appliance-system-closure-metadata"),
             1,
         )
         self.assertIn(
-            '"$RUNNER_TEMP/cybex-james-appliance-packages-metadata.json"',
+            '"$RUNNER_TEMP/cybex-james-appliance-closure-metadata.json"',
             workflow,
         )
         self.assertIn('--installer-iso-template-metadata', workflow)
