@@ -12,6 +12,7 @@ import argparse
 import base64
 import datetime as dt
 import hashlib
+import importlib.util
 import ipaddress
 import json
 import os
@@ -23,8 +24,23 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from types import SimpleNamespace
 from typing import Any, NoReturn, Sequence
 from urllib.parse import urlsplit
+
+_v3_spec = importlib.util.spec_from_file_location(
+    "cybex_appliance_v3", Path(__file__).with_name("appliance_v3.py")
+)
+assert _v3_spec is not None and _v3_spec.loader is not None
+appliance_v3 = importlib.util.module_from_spec(_v3_spec)
+_v3_spec.loader.exec_module(appliance_v3)
+
+_closure_spec = importlib.util.spec_from_file_location(
+    "cybex_system_closure", Path(__file__).with_name("system_closure.py")
+)
+assert _closure_spec is not None and _closure_spec.loader is not None
+system_closure = importlib.util.module_from_spec(_closure_spec)
+_closure_spec.loader.exec_module(system_closure)
 
 
 SCHEMA = "cybex.james.release.v1"
@@ -502,7 +518,7 @@ def _load_manifest(path: Path) -> dict[str, object]:
     finally:
         os.close(fd)
     try:
-        value = json.loads(b"".join(chunks).decode("utf-8"))
+        value = json.loads(b"".join(chunks).decode("utf-8"), object_pairs_hook=appliance_v3.unique_object)
     except (UnicodeDecodeError, json.JSONDecodeError):
         _fail("release manifest is not valid UTF-8 JSON")
     if not isinstance(value, dict):
@@ -540,7 +556,7 @@ def _load_bounded_json(
         os.close(fd)
     body = b"".join(chunks)
     try:
-        value = json.loads(body.decode("utf-8"))
+        value = json.loads(body.decode("utf-8"), object_pairs_hook=appliance_v3.unique_object)
     except (UnicodeDecodeError, json.JSONDecodeError):
         _fail(f"{label} is not valid UTF-8 JSON")
     if not isinstance(value, dict):
@@ -607,6 +623,8 @@ def _canonical_message(version: str, sha256: str, artifact_url: str) -> bytes:
 
 
 def _installer_iso_template_message(descriptor: dict[str, Any]) -> bytes:
+    if descriptor.get("package_delivery") == appliance_v3.DELIVERY:
+        return appliance_v3.template_message(descriptor)
     message = (
         f"{INSTALLER_ISO_TEMPLATE_SIGNATURE_DOMAIN}\n"
         f"{descriptor['version']}\n"
@@ -692,7 +710,7 @@ def _installer_iso_template_inputs(
         _fail("provisioning public keys must contain between one and eight unique keys")
     if normalized_keys != sorted(normalized_keys):
         _fail("provisioning public keys must be supplied in sorted order")
-    if package_delivery not in (None, INSTALLER_ISO_TEMPLATE_NETWORK_PACKAGE_DELIVERY):
+    if package_delivery not in (None, INSTALLER_ISO_TEMPLATE_NETWORK_PACKAGE_DELIVERY, appliance_v3.DELIVERY):
         _fail("installer ISO template package delivery is invalid")
     expected_manage_origin = _validate_manage_origin(expected_manage_origin_value)
     metadata_path = Path(metadata_value) if metadata_value else None
@@ -730,15 +748,18 @@ def _validate_installer_iso_template_metadata(
         "placeholder_sha256",
         "provisioning_public_keys",
     }
-    optional_fields = {"package_delivery", "ubuntu_snapshot_id"}
+    optional_fields = {"package_delivery", "ubuntu_snapshot_id", "nixpkgs_revision"}
     if not required_fields <= set(metadata) or not set(metadata) <= (
         required_fields | optional_fields
     ):
         _fail("installer ISO template build metadata fields are not the exact supported set")
-    if metadata["schema"] != INSTALLER_ISO_TEMPLATE_BUILD_SCHEMA:
+    expected_schema = ("cybex.james.installer-template-build.v3"
+                       if descriptor.get("package_delivery") == appliance_v3.DELIVERY
+                       else INSTALLER_ISO_TEMPLATE_BUILD_SCHEMA)
+    if metadata["schema"] != expected_schema:
         _fail(
             "installer ISO template build metadata schema must be "
-            f"{INSTALLER_ISO_TEMPLATE_BUILD_SCHEMA}"
+            f"{expected_schema}"
         )
     metadata_origin = _validate_manage_origin(
         metadata["manage_origin"], "installer ISO template metadata manage origin"
@@ -764,7 +785,11 @@ def _validate_installer_iso_template_metadata(
     if metadata_delivery != descriptor.get("package_delivery"):
         _fail("installer ISO template build metadata package delivery does not match")
     snapshot_id = metadata.get("ubuntu_snapshot_id")
-    if metadata_delivery == INSTALLER_ISO_TEMPLATE_NETWORK_PACKAGE_DELIVERY:
+    if metadata_delivery == appliance_v3.DELIVERY:
+        if snapshot_id is not None:
+            _fail("NixOS ISO metadata must not contain an Ubuntu snapshot")
+        _validate_revision(metadata.get("nixpkgs_revision", ""), "ISO nixpkgs revision")
+    elif metadata_delivery == INSTALLER_ISO_TEMPLATE_NETWORK_PACKAGE_DELIVERY:
         if not isinstance(snapshot_id, str) or not re.fullmatch(
             r"[0-9]{8}T[0-9]{6}Z", snapshot_id
         ):
@@ -776,6 +801,7 @@ def _validate_installer_iso_template_metadata(
 def _inspect_installer_iso_template(
     inputs: tuple[Path, str, int, list[str], str | None, str, Path | None],
     version: str,
+    *, base_os_version: str | None = None,
 ) -> dict[str, Any]:
     (
         path,
@@ -802,11 +828,21 @@ def _inspect_installer_iso_template(
         os.close(fd)
     if placeholder != bytes(INSTALLER_ISO_TEMPLATE_PERSONALIZATION_SIZE):
         _fail("installer ISO template personalization slot must contain exactly zero bytes")
+    nixos = package_delivery == appliance_v3.DELIVERY
+    if nixos and metadata_path is not None:
+        metadata, _ = _load_bounded_json(metadata_path, "NixOS ISO metadata", maximum_bytes=64 * 1024)
+        os_version = metadata.get("base_os_version")
+    elif nixos:
+        # The current shared pin supplies this identity; verification below also
+        # binds the signed descriptor and companion system closure release.
+        os_version = base_os_version or "26.05"
+    else:
+        os_version = INSTALLER_ISO_TEMPLATE_BASE_OS_VERSION
     descriptor = {
         "version": version,
         "architecture": INSTALLER_ISO_ARCHITECTURE,
-        "base_os": INSTALLER_ISO_TEMPLATE_BASE_OS,
-        "base_os_version": INSTALLER_ISO_TEMPLATE_BASE_OS_VERSION,
+        "base_os": "nixos" if nixos else INSTALLER_ISO_TEMPLATE_BASE_OS,
+        "base_os_version": os_version,
         "url": url,
         "size_bytes": size_bytes,
         "template_sha256": template_sha256,
@@ -820,10 +856,14 @@ def _inspect_installer_iso_template(
         descriptor["package_delivery"] = package_delivery
     if metadata_path is not None:
         _validate_installer_iso_template_metadata(metadata_path, descriptor)
+    if nixos:
+        appliance_v3.validate_template(descriptor, version, signed=False)
     return descriptor
 
 
 def _appliance_release_message(descriptor: dict[str, Any]) -> bytes:
+    if descriptor.get("schema") == appliance_v3.SCHEMA:
+        return appliance_v3.descriptor_message(descriptor)
     canonical = json.dumps(
         descriptor, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("utf-8")
@@ -853,6 +893,8 @@ def _appliance_release_inputs(
         )
     if not any(values):
         return None
+    if getattr(arguments, "installer_iso_template_package_delivery", None) == appliance_v3.DELIVERY:
+        return _nixos_appliance_release_inputs(arguments, version, notes_url)
     bundle = Path(arguments.appliance_package_snapshot)
     metadata_path = Path(arguments.appliance_package_snapshot_metadata)
     expected_name = f"cybex-james-appliance-packages-{version}-x86_64-linux.tar.zst"
@@ -1012,6 +1054,54 @@ def _appliance_release_inputs(
         (bundle, "appliance package snapshot"),
         (metadata_path, "appliance package snapshot metadata"),
     ]
+
+
+def _nixos_appliance_release_inputs(arguments, version, notes_url):
+    bundle = Path(arguments.appliance_package_snapshot)
+    metadata_path = Path(arguments.appliance_package_snapshot_metadata)
+    metadata, _ = _load_bounded_json(metadata_path, "NixOS closure build metadata", maximum_bytes=256 * 1024)
+    metadata_fields = {
+        "schema", "release_id", "base_os", "base_os_version", "source_revision",
+        "manage_source_revision", "nixpkgs_revision", "system_toplevel",
+        "required_system_versions", "sqlite_migrations_sha256", "nix_signing_public_key",
+        "manage_origin", "manage_source", "microcode_versions", "filename", "sha256", "size_bytes",
+    }
+    _require_exact_object_keys(metadata, metadata_fields, "NixOS closure build metadata")
+    if metadata["schema"] != "cybex.james.appliance-closure-build.v1":
+        _fail("NixOS closure build metadata schema is incompatible")
+    if metadata["manage_origin"] != _validate_manage_origin(arguments.expected_manage_origin):
+        _fail("NixOS closure metadata differs from the explicit Management origin")
+    name = appliance_v3.archive_name(version)
+    if bundle.name != name or metadata["filename"] != name:
+        _fail("NixOS closure archive does not have its release-bound filename")
+    sha, size = _inspect_artifact(bundle, "NixOS closure", maximum_bytes=appliance_v3.MAX_ARCHIVE_BYTES)
+    if metadata["sha256"] != sha or metadata["size_bytes"] != size:
+        _fail("NixOS closure metadata does not match archive bytes")
+    descriptor = {name: metadata[name] for name in (
+        "release_id", "base_os", "base_os_version", "source_revision", "manage_source_revision",
+        "nixpkgs_revision", "system_toplevel", "required_system_versions", "sqlite_migrations_sha256",
+    )}
+    descriptor.update({
+        "schema": appliance_v3.SCHEMA,
+        "system_closure": {"url": arguments.appliance_package_snapshot_url, "sha256": sha, "size_bytes": size},
+        "minimum_protocol": 4, "minimum_state_schema": 3, "rollback_compatible": True,
+        "release_notes": notes_url,
+    })
+    appliance_v3.validate_descriptor(descriptor, version, signed=False)
+    if metadata["source_revision"] != getattr(arguments, "appliance_source_revision", None):
+        _fail("NixOS closure James source revision differs from the explicit release input")
+    if metadata["manage_source_revision"] != getattr(arguments, "workstation_netboot_manage_revision", None):
+        _fail("NixOS closure and workstation runtime must use the same exact Manage source")
+    if metadata["nixpkgs_revision"] != getattr(arguments, "workstation_netboot_nixpkgs_revision", None):
+        _fail("NixOS closure and workstation runtime must use the same nixpkgs pin")
+    source = _require_exact_object_keys(metadata["manage_source"],
+        {"revision", "sha256", "size_bytes", "store_path"}, "NixOS embedded Manage source")
+    if source["revision"] != metadata["manage_source_revision"]:
+        _fail("NixOS embedded Manage source revision differs from its closure")
+    for field in ("sha256", "size_bytes"):
+        if source[field] != getattr(arguments, "workstation_netboot_manage_source_" + field, None):
+            _fail("NixOS embedded Manage source identity differs from the workstation runtime")
+    return descriptor, [(bundle, "NixOS system closure"), (metadata_path, "NixOS closure build metadata")]
 
 
 def _normalized_tar_name(name: str, label: str) -> str:
@@ -1832,7 +1922,7 @@ def _manifest_command(arguments: argparse.Namespace) -> None:
     appliance_release: dict[str, Any] | None = None
     if (
         installer_iso_template_inputs[4]
-        == INSTALLER_ISO_TEMPLATE_NETWORK_PACKAGE_DELIVERY
+        in (INSTALLER_ISO_TEMPLATE_NETWORK_PACKAGE_DELIVERY, appliance_v3.DELIVERY)
         and appliance_release_inputs is None
     ):
         _fail("network installer ISO templates require an appliance package snapshot")
@@ -1861,6 +1951,14 @@ def _manifest_command(arguments: argparse.Namespace) -> None:
             workstation_netboot_inputs
         )
         protected_inputs.extend(workstation_protected)
+    if installer_iso_template is not None and installer_iso_template.get("package_delivery") == appliance_v3.DELIVERY:
+        if appliance_release is None or appliance_release.get("schema") != appliance_v3.SCHEMA or workstation_netboot is None:
+            _fail("NixOS releases require matching signed system closure and workstation runtime")
+        if installer_iso_template["base_os_version"] != appliance_release["base_os_version"]:
+            _fail("NixOS ISO and installed system release must match")
+        template_metadata, _ = _load_bounded_json(installer_iso_template_inputs[6], "ISO metadata", maximum_bytes=64 * 1024)
+        if template_metadata["nixpkgs_revision"] != appliance_release["nixpkgs_revision"]:
+            _fail("NixOS ISO and installed system must use the same nixpkgs pin")
     _validate_output(output, protected_inputs)
     sha256, _artifact_size = _inspect_artifact(artifact, "artifact")
     private_fd = _open_regular(private_key, "private key", private=True)
@@ -1868,6 +1966,13 @@ def _manifest_command(arguments: argparse.Namespace) -> None:
         private_identity = _private_key_identity(private_fd)
         public_der = _public_der(private_fd)
         _require_stable_private_key(private_fd, private_identity)
+        if appliance_release is not None and appliance_release["schema"] == appliance_v3.SCHEMA:
+            trusted_key = base64.b64encode(public_der[len(ED25519_PUBLIC_DER_PREFIX):]).decode("ascii")
+            closure_manifest = system_closure.verify_archive(
+                Path(arguments.appliance_package_snapshot), appliance_release, trusted_key,
+                SimpleNamespace(**globals()),
+            )
+            _verify_nixos_source_identity(closure_manifest, workstation_netboot)
         message = _canonical_message(version, sha256, artifact_url)
         signature = _sign(private_fd, message)
         _require_stable_private_key(private_fd, private_identity)
@@ -1927,7 +2032,9 @@ def _manifest_command(arguments: argparse.Namespace) -> None:
         installer_iso_template["signature"] = base64.b64encode(
             installer_template_signature
         ).decode("ascii")
-        manifest["installer_iso_template_v2"] = installer_iso_template
+        template_key = ("installer_iso_template_v3" if installer_iso_template.get("package_delivery") == appliance_v3.DELIVERY
+                        else "installer_iso_template_v2")
+        manifest[template_key] = installer_iso_template
     if appliance_release is not None and appliance_release_signature is not None:
         appliance_release["signature"] = base64.b64encode(
             appliance_release_signature
@@ -2211,6 +2318,8 @@ def _release_manifest_artifact_identities(
 ) -> tuple[str, dict[str, object], list[tuple[bytes, bytes]]]:
     if not isinstance(value, dict):
         _fail("release manifest must be a JSON object")
+    template_key = "installer_iso_template_v3" if "installer_iso_template_v3" in value else "installer_iso_template_v2"
+    nixos = template_key == "installer_iso_template_v3"
     required_fields = {
         "schema",
         "version",
@@ -2219,7 +2328,7 @@ def _release_manifest_artifact_identities(
         "published_at",
         "artifact",
         "signature",
-        "installer_iso_template_v2",
+        template_key,
     }
     optional_fields = {"appliance_release_v1", "workstation_netboot"}
     if not required_fields <= set(value) or not set(value) <= (
@@ -2275,7 +2384,7 @@ def _release_manifest_artifact_identities(
         "manage_origin",
         "signature",
     }
-    template_value = value["installer_iso_template_v2"]
+    template_value = value[template_key]
     if isinstance(template_value, dict) and "package_delivery" in template_value:
         template_fields.add("package_delivery")
     template = _require_exact_object_keys(
@@ -2284,12 +2393,14 @@ def _release_manifest_artifact_identities(
     if (
         template["version"] != version
         or template["architecture"] != INSTALLER_ISO_ARCHITECTURE
-        or template["base_os"] != INSTALLER_ISO_TEMPLATE_BASE_OS
-        or template["base_os_version"] != INSTALLER_ISO_TEMPLATE_BASE_OS_VERSION
+        or template["base_os"] != ("nixos" if nixos else INSTALLER_ISO_TEMPLATE_BASE_OS)
+        or (not nixos and template["base_os_version"] != INSTALLER_ISO_TEMPLATE_BASE_OS_VERSION)
         or template["personalization_size"]
         != INSTALLER_ISO_TEMPLATE_PERSONALIZATION_SIZE
     ):
         _fail("installer ISO template descriptor is incompatible")
+    if nixos:
+        appliance_v3.validate_template(template, version)
     if not isinstance(template["url"], str):
         _fail("installer ISO template URL must be a string")
     template_url = _validate_url(template["url"], "installer-iso-template-url")
@@ -2337,8 +2448,11 @@ def _release_manifest_artifact_identities(
     if package_delivery not in (
         None,
         INSTALLER_ISO_TEMPLATE_NETWORK_PACKAGE_DELIVERY,
+        appliance_v3.DELIVERY,
     ):
         _fail("installer ISO template package delivery is invalid")
+    if (package_delivery == appliance_v3.DELIVERY) != nixos:
+        _fail("ISO template generation and delivery contract disagree")
     template_unsigned = dict(template)
     template_signature = _canonical_base64(
         template_unsigned.pop("signature"),
@@ -2352,90 +2466,100 @@ def _release_manifest_artifact_identities(
     appliance_identity: dict[str, object] | None = None
     if "appliance_release_v1" in value:
         appliance_value = value["appliance_release_v1"]
-        appliance_fields = {
-            "schema",
-            "release_id",
-            "ubuntu_snapshot_id",
-            "cybex_repository_snapshot",
-            "required_package_versions",
-            "expected_kernel",
-            "minimum_protocol",
-            "minimum_state_schema",
-            "rollback_compatible",
-            "release_notes",
-            "signature",
-        }
-        if isinstance(appliance_value, dict) and "source_revision" in appliance_value:
-            appliance_fields.add("source_revision")
-        appliance = _require_exact_object_keys(
-            appliance_value,
-            appliance_fields,
-            "appliance release descriptor",
-        )
-        source_revision = appliance.get("source_revision")
-        if (
-            (
-                appliance["schema"] == APPLIANCE_RELEASE_SCHEMA_V1
-                and source_revision is not None
+        if nixos:
+            appliance = appliance_v3.validate_descriptor(appliance_value, version)
+            if appliance["release_notes"] != value["notes_url"] or appliance["base_os_version"] != template["base_os_version"]:
+                _fail("NixOS closure identity differs from its release or ISO")
+            signed_messages.append((
+                _canonical_base64(appliance["signature"], "NixOS release signature", expected_bytes=64),
+                appliance_v3.descriptor_message(appliance),
+            ))
+            appliance_identity = {**appliance["system_closure"], "minimum_state_schema": 3}
+        else:
+            appliance_fields = {
+                "schema",
+                "release_id",
+                "ubuntu_snapshot_id",
+                "cybex_repository_snapshot",
+                "required_package_versions",
+                "expected_kernel",
+                "minimum_protocol",
+                "minimum_state_schema",
+                "rollback_compatible",
+                "release_notes",
+                "signature",
+            }
+            if isinstance(appliance_value, dict) and "source_revision" in appliance_value:
+                appliance_fields.add("source_revision")
+            appliance = _require_exact_object_keys(
+                appliance_value,
+                appliance_fields,
+                "appliance release descriptor",
             )
-            or (
-                appliance["schema"] == APPLIANCE_RELEASE_SCHEMA_V2
-                and (
-                    not isinstance(source_revision, str)
-                    or _validate_revision(
-                        source_revision, "appliance source revision"
-                    )
-                    != source_revision
+            source_revision = appliance.get("source_revision")
+            if (
+                (
+                    appliance["schema"] == APPLIANCE_RELEASE_SCHEMA_V1
+                    and source_revision is not None
                 )
+                or (
+                    appliance["schema"] == APPLIANCE_RELEASE_SCHEMA_V2
+                    and (
+                        not isinstance(source_revision, str)
+                        or _validate_revision(
+                            source_revision, "appliance source revision"
+                        )
+                        != source_revision
+                    )
+                )
+                or appliance["schema"]
+                not in {APPLIANCE_RELEASE_SCHEMA_V1, APPLIANCE_RELEASE_SCHEMA_V2}
+                or appliance["release_id"] != version
+                or appliance["minimum_protocol"] != WORKSTATION_NETBOOT_REQUIRED_JAMES_PROTOCOL
+                or appliance["minimum_state_schema"] != 2
+                or appliance["rollback_compatible"] is not True
+            ):
+                _fail("appliance release descriptor is incompatible")
+            snapshot = _require_exact_object_keys(
+                appliance["cybex_repository_snapshot"],
+                {"url", "sha256", "size_bytes"},
+                "appliance repository snapshot",
             )
-            or appliance["schema"]
-            not in {APPLIANCE_RELEASE_SCHEMA_V1, APPLIANCE_RELEASE_SCHEMA_V2}
-            or appliance["release_id"] != version
-            or appliance["minimum_protocol"] != WORKSTATION_NETBOOT_REQUIRED_JAMES_PROTOCOL
-            or appliance["minimum_state_schema"] != 2
-            or appliance["rollback_compatible"] is not True
-        ):
-            _fail("appliance release descriptor is incompatible")
-        snapshot = _require_exact_object_keys(
-            appliance["cybex_repository_snapshot"],
-            {"url", "sha256", "size_bytes"},
-            "appliance repository snapshot",
-        )
-        if not isinstance(snapshot["url"], str):
-            _fail("appliance package snapshot URL must be a string")
-        snapshot_url = _validate_url(
-            snapshot["url"], "appliance-package-snapshot-url"
-        )
-        expected_snapshot_name = (
-            f"cybex-james-appliance-packages-{version}-x86_64-linux.tar.zst"
-        )
-        if urlsplit(snapshot_url).path.rsplit("/", 1)[-1] != expected_snapshot_name:
-            _fail("appliance package snapshot URL does not bind its release filename")
-        snapshot_sha256 = _require_sha256(
-            snapshot["sha256"], "appliance package snapshot SHA-256"
-        )
-        snapshot_size = _require_positive_int(
-            snapshot["size_bytes"],
-            "appliance package snapshot size",
-            maximum=APPLIANCE_PACKAGE_SNAPSHOT_MAX_BYTES,
-        )
-        appliance_unsigned = dict(appliance)
-        appliance_signature = _canonical_base64(
-            appliance_unsigned.pop("signature"),
-            "appliance release signature",
-            expected_bytes=64,
-        )
-        signed_messages.append(
-            (appliance_signature, _appliance_release_message(appliance_unsigned))
-        )
-        appliance_identity = {
-            "url": snapshot_url,
-            "sha256": snapshot_sha256,
-            "size_bytes": snapshot_size,
-            "minimum_state_schema": appliance["minimum_state_schema"],
-        }
+            if not isinstance(snapshot["url"], str):
+                _fail("appliance package snapshot URL must be a string")
+            snapshot_url = _validate_url(
+                snapshot["url"], "appliance-package-snapshot-url"
+            )
+            expected_snapshot_name = (
+                f"cybex-james-appliance-packages-{version}-x86_64-linux.tar.zst"
+            )
+            if urlsplit(snapshot_url).path.rsplit("/", 1)[-1] != expected_snapshot_name:
+                _fail("appliance package snapshot URL does not bind its release filename")
+            snapshot_sha256 = _require_sha256(
+                snapshot["sha256"], "appliance package snapshot SHA-256"
+            )
+            snapshot_size = _require_positive_int(
+                snapshot["size_bytes"],
+                "appliance package snapshot size",
+                maximum=APPLIANCE_PACKAGE_SNAPSHOT_MAX_BYTES,
+            )
+            appliance_unsigned = dict(appliance)
+            appliance_signature = _canonical_base64(
+                appliance_unsigned.pop("signature"),
+                "appliance release signature",
+                expected_bytes=64,
+            )
+            signed_messages.append(
+                (appliance_signature, _appliance_release_message(appliance_unsigned))
+            )
+            appliance_identity = {
+                "url": snapshot_url,
+                "sha256": snapshot_sha256,
+                "size_bytes": snapshot_size,
+                "minimum_state_schema": appliance["minimum_state_schema"],
+            }
     if (
-        package_delivery == INSTALLER_ISO_TEMPLATE_NETWORK_PACKAGE_DELIVERY
+        package_delivery in (INSTALLER_ISO_TEMPLATE_NETWORK_PACKAGE_DELIVERY, appliance_v3.DELIVERY)
         and appliance_identity is None
     ):
         _fail("network installer ISO template is missing its appliance release")
@@ -2555,6 +2679,12 @@ def _release_manifest_artifact_identities(
         )
         workstation_identity = workstation_unsigned
 
+    if nixos:
+        if appliance_identity is None or workstation_identity is None:
+            _fail("NixOS releases require the complete appliance and workstation artifact set")
+        for field in ("nixpkgs_revision", "manage_source_revision"):
+            if appliance[field] != workstation_identity[field]:
+                _fail("NixOS appliance and workstation runtime source pins disagree")
     identities: dict[str, object] = {
         "james_binary": {"url": artifact_url, "sha256": artifact_sha256},
         "appliance_iso_template": {
@@ -3048,8 +3178,82 @@ def _verify_release_successor_command(arguments: argparse.Namespace) -> None:
     )
 
 
+def _verify_nixos_source_identity(closure, workstation):
+    source = closure["manage_source"]
+    if (source["revision"] != workstation["manage_source_revision"]
+            or source["sha256"] != workstation.get("manage_source_sha256")
+            or source["size_bytes"] != workstation.get("manage_source_size_bytes")):
+        _fail("closure embedded Manage source must exactly match the workstation descriptor")
+
+
+def _verify_nixos_command(arguments, manifest):
+    version, _identities, messages = _release_manifest_artifact_identities(manifest)
+    public_der = ED25519_PUBLIC_DER_PREFIX + _trusted_public_key(arguments.trusted_public_key)
+    _verify_signed_messages(public_der, messages)
+    if not arguments.appliance_package_snapshot or not arguments.workstation_netboot_bundle or not arguments.workstation_netboot_tree:
+        _fail("NixOS verification requires the complete closure, ISO and workstation artifacts")
+    artifact = Path(arguments.artifact)
+    if artifact.name != "cybex-james-x86_64-linux":
+        _fail("binary artifact must be named cybex-james-x86_64-linux")
+    digest, _ = _inspect_artifact(artifact, "James binary")
+    if digest != manifest["artifact"]["sha256"]:
+        _fail("James binary differs from its signed identity")
+    template = manifest["installer_iso_template_v3"]
+    if template["manage_origin"] != _validate_manage_origin(arguments.expected_manage_origin):
+        _fail("NixOS ISO Management origin differs from the explicit expected origin")
+    iso_args = argparse.Namespace(
+        installer_iso_template=arguments.installer_iso_template,
+        installer_iso_template_url=template["url"],
+        installer_iso_template_personalization_offset=template["personalization_offset"],
+        provisioning_public_key=template["provisioning_public_keys"],
+        installer_iso_template_package_delivery=appliance_v3.DELIVERY,
+        expected_manage_origin=arguments.expected_manage_origin,
+        installer_iso_template_metadata=None,
+    )
+    iso_inputs = _installer_iso_template_inputs(iso_args, version, require_build_metadata=False)
+    inspected = _inspect_installer_iso_template(iso_inputs, version, base_os_version=template["base_os_version"])
+    if inspected != {key: value for key, value in template.items() if key != "signature"}:
+        _fail("NixOS ISO bytes differ from their signed descriptor")
+    release = manifest["appliance_release_v1"]
+    closure_path = Path(arguments.appliance_package_snapshot)
+    if closure_path.name != appliance_v3.archive_name(version):
+        _fail("NixOS closure filename differs from its signed release")
+    closure = system_closure.verify_archive(closure_path, release, arguments.trusted_public_key, SimpleNamespace(**globals()))
+    workstation = manifest["workstation_netboot"]
+    _verify_nixos_source_identity(closure, workstation)
+    workstation_args = argparse.Namespace(
+        workstation_netboot_bundle=arguments.workstation_netboot_bundle,
+        workstation_netboot_tree=arguments.workstation_netboot_tree,
+        workstation_netboot_url=workstation["url"],
+        workstation_netboot_runtime_version=workstation["runtime_version"],
+        workstation_netboot_manage_revision=workstation["manage_source_revision"],
+        workstation_netboot_nixpkgs_revision=workstation["nixpkgs_revision"],
+        workstation_netboot_manage_source_sha256=workstation["manage_source_sha256"],
+        workstation_netboot_manage_source_size_bytes=workstation["manage_source_size_bytes"],
+    )
+    inspected_workstation, _ = _inspect_workstation_netboot(_workstation_netboot_inputs(workstation_args))
+    if inspected_workstation != {key: value for key, value in workstation.items() if key != "signature"}:
+        _fail("workstation artifact bytes differ from their signed descriptor")
+    if arguments.appliance_package_snapshot_metadata:
+        build_args = argparse.Namespace(
+            **vars(workstation_args),
+            appliance_package_snapshot=arguments.appliance_package_snapshot,
+            appliance_package_snapshot_metadata=arguments.appliance_package_snapshot_metadata,
+            appliance_package_snapshot_url=release["system_closure"]["url"],
+            appliance_source_revision=release["source_revision"],
+            expected_manage_origin=arguments.expected_manage_origin,
+        )
+        inspected_release, _ = _nixos_appliance_release_inputs(build_args, version, manifest["notes_url"])
+        if inspected_release != {key: value for key, value in release.items() if key != "signature"}:
+            _fail("NixOS build metadata differs from its signed release")
+    print(f"verified signed NixOS James release: version={version} system_closure_sha256={release['system_closure']['sha256']}")
+
+
 def _verify_command(arguments: argparse.Namespace) -> None:
     manifest_path = Path(arguments.manifest)
+    parsed_manifest = _load_manifest(manifest_path)
+    if "installer_iso_template_v3" in parsed_manifest:
+        return _verify_nixos_command(arguments, parsed_manifest)
     artifact_path = Path(arguments.artifact)
     verify_workstation_netboot = bool(
         arguments.workstation_netboot_bundle or arguments.workstation_netboot_tree
@@ -3444,7 +3648,7 @@ def _parser() -> argparse.ArgumentParser:
     manifest.add_argument(
         "--installer-iso-template",
         required=True,
-        help="Ubuntu provisionable ISO template with an all-zero fixed slot",
+        help="Provisionable ISO template with an all-zero fixed slot",
     )
     manifest.add_argument(
         "--installer-iso-template-url",
@@ -3469,7 +3673,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     manifest.add_argument(
         "--installer-iso-template-package-delivery",
-        choices=[INSTALLER_ISO_TEMPLATE_NETWORK_PACKAGE_DELIVERY],
+        choices=[INSTALLER_ISO_TEMPLATE_NETWORK_PACKAGE_DELIVERY, appliance_v3.DELIVERY],
         help="package source contract for a network-delivered thin installer",
     )
     manifest.add_argument(
@@ -3478,15 +3682,15 @@ def _parser() -> argparse.ArgumentParser:
         help="sorted standard-Base64 online provisioning Ed25519 public key; repeat for rotation overlap",
     )
     manifest.add_argument(
-        "--appliance-package-snapshot",
-        help="deterministic offline APT repository tar.zst for managed root generations",
+        "--appliance-package-snapshot", "--appliance-system-closure",
+        help="signed NixOS system closure (or historical Ubuntu snapshot) tar.zst",
     )
     manifest.add_argument(
-        "--appliance-package-snapshot-metadata",
+        "--appliance-package-snapshot-metadata", "--appliance-system-closure-metadata",
         help="bounded build metadata for --appliance-package-snapshot",
     )
     manifest.add_argument(
-        "--appliance-package-snapshot-url",
+        "--appliance-package-snapshot-url", "--appliance-system-closure-url",
         help="exact immutable HTTP(S) URL for --appliance-package-snapshot",
     )
     manifest.add_argument(
@@ -3684,14 +3888,14 @@ def _parser() -> argparse.ArgumentParser:
     verify = commands.add_parser(
         "verify",
         allow_abbrev=False,
-        help="independently verify a signed Ubuntu appliance release candidate",
+        help="independently verify a signed appliance release candidate",
     )
     verify.add_argument("--manifest", required=True, help="signed release manifest")
     verify.add_argument("--artifact", required=True, help="exact binary artifact")
     verify.add_argument(
         "--installer-iso-template",
         required=True,
-        help="exact provisionable Ubuntu installer ISO template",
+        help="exact provisionable installer ISO template",
     )
     verify.add_argument(
         "--expected-manage-origin",
@@ -3699,11 +3903,11 @@ def _parser() -> argparse.ArgumentParser:
         help="explicit canonical HTTPS Management origin expected in the signed template descriptor",
     )
     verify.add_argument(
-        "--appliance-package-snapshot",
-        help="exact signed managed Ubuntu package snapshot bundle",
+        "--appliance-package-snapshot", "--appliance-system-closure",
+        help="exact signed system closure (or historical Ubuntu snapshot)",
     )
     verify.add_argument(
-        "--appliance-package-snapshot-metadata",
+        "--appliance-package-snapshot-metadata", "--appliance-system-closure-metadata",
         help="exact package-snapshot build metadata binding the installed bootstrap origin",
     )
     verify.add_argument(
@@ -3729,7 +3933,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     try:
         arguments.handler(arguments)
-    except ReleaseError as error:
+    except (ReleaseError, appliance_v3.ContractError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     except OSError:
