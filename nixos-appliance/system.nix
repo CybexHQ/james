@@ -14,7 +14,7 @@
   boot.initrd.systemd.emergencyAccess = false;
   boot.initrd.systemd.settings.Manager = { RuntimeWatchdogSec = "120s"; RebootWatchdogSec = "10min"; };
   boot.initrd.systemd.targets.initrd.unitConfig = { JobTimeoutSec = "180s"; JobTimeoutAction = "reboot-force"; };
-  boot.initrd.systemd.services.emergency.serviceConfig.ExecStart = lib.mkForce "${pkgs.systemd}/bin/systemctl --no-block reboot";
+  boot.initrd.systemd.services.emergency.serviceConfig.ExecStart = lib.mkForce [ "" "${pkgs.systemd}/bin/systemctl --no-block reboot" ];
   boot.kernelParams = [ "panic=30" "console=ttyS0,115200n8" "console=tty0" ];
   hardware.enableRedistributableFirmware = true;
   hardware.cpu.intel.updateMicrocode = true;

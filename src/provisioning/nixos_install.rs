@@ -298,7 +298,7 @@ pub(super) async fn install(prepared: &PreparedStorage, key_path: &Path) -> Resu
     let target_state = target.join("var/lib/cybex-james/state");
     mount(&prepared.state_mount, &target_state, "bind,nodev,nosuid").await?;
     let target_nix = target.join("var/cache/cybex-james/nix");
-    fs::create_dir_all(&target_nix)?;
+    prepare_nix_backing_directory(&target_nix, 0, 0)?;
     mount(&target_nix, &target.join("nix"), "bind,nodev,nosuid,exec").await?;
     let mut archive = OpenOptions::new()
         .read(true)
@@ -427,6 +427,28 @@ pub(super) async fn install(prepared: &PreparedStorage, key_path: &Path) -> Resu
     File::open(target)?.sync_all()?;
     boot_completed(&state, &prepared.state_mount)
 }
+
+fn prepare_nix_backing_directory(path: &Path, expected_uid: u32, expected_gid: u32) -> Result<()> {
+    fs::create_dir_all(path)?;
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.file_type().is_dir()
+            && metadata.uid() == expected_uid
+            && metadata.gid() == expected_gid,
+        "unsafe installed Nix backing directory"
+    );
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.file_type().is_dir()
+            && metadata.uid() == expected_uid
+            && metadata.gid() == expected_gid
+            && metadata.permissions().mode() & 0o7777 == 0o755,
+        "installed Nix backing directory permissions are unsafe"
+    );
+    Ok(())
+}
+
 fn materialize_state(
     target: &Path,
     state_mount: &Path,
@@ -666,5 +688,25 @@ mod tests {
         assert!(calculate_layout(4096, 160 * GIB - 1).is_err());
         assert!(calculate_layout(512, 159 * GIB).is_err());
         assert!(calculate_layout(1024, 160 * GIB).is_err());
+    }
+
+    #[test]
+    fn nix_backing_directory_is_searchable_after_restrictive_creation() {
+        let root =
+            std::env::temp_dir().join(format!("cybex-james-nix-backing-{}", uuid::Uuid::new_v4()));
+        let path = root.join("var/cache/cybex-james/nix");
+        fs::create_dir_all(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+
+        prepare_nix_backing_directory(&path, unsafe { libc::geteuid() }, unsafe {
+            libc::getegid()
+        })
+        .unwrap();
+
+        assert_eq!(
+            fs::symlink_metadata(&path).unwrap().permissions().mode() & 0o7777,
+            0o755
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

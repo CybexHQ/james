@@ -122,11 +122,12 @@ in {
       unitConfig.RequiresMountsFor = [ "/var/lib/cybex-james/control" ];
     };
     systemd.services.cybex-james-first-boot = (rootService "first-boot") // {
-      wantedBy = [ "multi-user.target" ]; after = [ "network-online.target" "systemd-tmpfiles-setup.service" ]; wants = [ "network-online.target" ];
+      wantedBy = [ "multi-user.target" ]; after = [ "network-online.target" "sshd-keygen.service" "systemd-tmpfiles-setup.service" ]; wants = [ "network-online.target" ];
+      requires = [ "sshd-keygen.service" ];
       before = [ "cybex-james.service" "nginx.service" "tftpd-hpa.service" ];
       unitConfig.RequiresMountsFor = [ "/var/lib/cybex-james/state" "/var/lib/cybex-james/control" "/var/lib/cybex-james/status" "/nix" ];
       environment.CYBEX_IPXE_SOURCE = toString ipxe;
-      environment.CYBEX_HANDOFF_SOURCE = toString ./autoexec.ipxe;
+      environment.CYBEX_HANDOFF_SOURCE = "${./autoexec.ipxe}";
       serviceConfig = { Type = "oneshot"; ExecStart = command "first-boot"; RemainAfterExit = true; TimeoutStartSec = "180s"; };
     };
     systemd.services.cybex-james-firewall = (rootService "firewall") // {

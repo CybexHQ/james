@@ -5,12 +5,16 @@ import os
 from pathlib import Path
 import subprocess
 from appliance_state import CONTROL, STATUS, STATE, INBOX, UID, GID, current, directory, load, read, run, save, write
+from mount_policy import require_bind_mount, require_mount
 
 
 def main():
-    for mount in (STATE, CONTROL, STATUS, Path('/nix')):
-        if not os.path.ismount(mount):
-            raise ValueError('missing protected appliance mount: ' + str(mount))
+    require_mount(STATE, required=('rw', 'nodev', 'nosuid'))
+    require_bind_mount(CONTROL, STATE / 'control', required=('rw', 'nodev', 'nosuid'))
+    require_bind_mount(STATUS, STATE / 'status', required=('rw', 'nodev', 'nosuid'))
+    require_bind_mount(
+        Path('/nix'), Path('/var/cache/cybex-james/nix'),
+        required=('rw', 'nodev', 'nosuid'), forbidden=('noexec',), root_searchable=True)
     directory(STATE, 0o750)
     directory(CONTROL, 0o750)
     directory(STATUS, 0o750)
@@ -29,9 +33,6 @@ def main():
         ('principals', '/etc/ssh/cybex-james-principals', 0o644),
     ):
         write(Path(destination), read(CONTROL / source), mode=mode)
-    store_options = set(run('findmnt', '-n', '-o', 'OPTIONS', '/nix').split(','))
-    if not {'rw', 'nodev', 'nosuid'} <= store_options or 'noexec' in store_options:
-        raise ValueError('unsafe Nix store mount policy')
     if Path('/nix/store').stat().st_uid != 0:
         raise ValueError('Nix store is not root owned')
     source = Path(os.environ['CYBEX_IPXE_SOURCE'])
