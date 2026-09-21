@@ -431,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "cybex-james"
-version = "0.2.5"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "axum",
