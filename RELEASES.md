@@ -103,10 +103,10 @@ publication gate still resolves ancestry again.
 When any cache prerequisite is absent, the workflow retains the existing
 authenticated predecessor resolver. Cold qualification never consults this
 cache: it independently downloads the published assets and checks them against
-the sealed candidate receipt before booting. The cache command supports only
-the network-enabled `github-warm` mode. `candidate-only` rehearsal means no
-tag, publication or promotion; it does not mean zero network access. There is
-no supported offline/no-fetch cache execution mode.
+the sealed candidate receipt before booting. The separate `cache` command
+supports only the network-enabled `--mode github-warm`; `cache --mode
+candidate-only` remains unsupported. There is no supported offline/no-fetch
+cache execution mode.
 
 The `nixos-appliance/qualification/` harness requires explicit development
 origin, private token file, root-owned state root and a new isolated subnet.
@@ -153,6 +153,27 @@ as the allowlisted `timing.json`, named by workflow run and attempt; private chi
 logs are never uploaded. The five warm and two cold acceptance members remain
 separate success-gated artifacts.
 
+For a warm phase, `run --candidate-only` means prepublication execution without
+a tag, publication or promotion. It remains subject to the normal exact-source,
+private-path, signed-media and resource admission and may fetch through the
+existing authenticated transport. `run --offline-artifacts` remains refused,
+including in candidate-only mode. Cold candidate-only is also refused because it
+cannot establish independently downloaded published proof.
+
+The wrapper removes only `SUDO_UID` and `SUDO_GID` from the qualification child
+environment. All other inherited entries, including existing authentication
+transport, are preserved; the exception prevents the child from transferring
+the evidence tree away from root before mandatory acceptance completes. A future
+workflow adapter must stage private inputs and explicitly export only accepted
+mandatory receipts plus the allowlisted timing sidecar. It must not export raw
+diagnostic globs or weaken private ancestor checks.
+
+Disk headroom is measured on the actual `--state-root` filesystem, including the
+reservation and 100 GiB safety headroom used for fixture allocation. The profile's
+private `disk_root` remains a required compatibility field, but it is not the
+free-space authority. Resource-profile admission does not itself authorize a VM,
+network, session or device allocation.
+
 Warm execution still performs two independent predecessor installations: one
 for update and one for rollback, followed by a fresh candidate installation.
 The 18 GiB appliance guest default preserves the 16 GiB usable-memory admission.
@@ -163,5 +184,8 @@ password rejection. The current cold runner uses the selected shared development
 service; it is not evidence of a new private empty database. A future migration
 owner facade must preserve these distinctions.
 
-The release-speed target of 3,600 seconds or less remains unverified. There is no
-current-NixOS live baseline, and helper unit-test duration is not release timing.
+The historical measured successful workflows remain exactly 9,911 and 11,500
+seconds. The release-speed target of 3,600 seconds or less remains unverified.
+There is no current-NixOS live baseline; protected environment, operator, media,
+network and resource prerequisites and the N1-N7 owner work remain unverified.
+Helper unit-test duration is not release timing.

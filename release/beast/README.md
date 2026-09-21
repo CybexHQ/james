@@ -89,6 +89,12 @@ python3 -B release/beast/release_speed.py cache \
   --timing-dir "$NEW_PRIVATE_TIMING_DIRECTORY"
 ```
 
+`$NEW_PREDECESSOR_DIRECTORY` must be a new child of a caller-owned mode-0700
+snapshot parent. The workflow creates that parent beneath `RUNNER_TEMP`; it does
+not change the permissions of the shared runner directory. The fallback resolver
+uses the same private parent and remains active whenever a cache prerequisite is
+absent.
+
 The wrapper always performs fresh ancestry resolution and exact comparison,
 signed snapshot authentication, current trust/policy binding, full closure/NAR/
 source/ISO verification and byte verification. A hit saves authenticated transfer
@@ -110,6 +116,25 @@ resource profile; ordinary runner-workspace paths cannot be trusted through
 original complete warm and cold runner commands. Do not enable parallel phases,
 rollback-to-update fixture reuse, cold preparation overlap, or offline/zero-egress
 claims from this transport cache.
+
+Warm `run --candidate-only` is supported for prepublication execution, subject
+to the same clean exact source, signed candidate/predecessor, private-path and
+resource admission as an ordinary warm run. It may fetch through existing
+authenticated transport. This is distinct from the cache CLI: `cache --mode
+candidate-only` is unsupported. `run --offline-artifacts` remains refused, and
+cold candidate-only remains refused because it cannot assert published proof.
+
+The run child inherits the wrapper environment except for `SUDO_UID` and
+`SUDO_GID`. Removing only those ownership hints keeps the evidence root-private
+until the wrapper completes the full five-member warm or two-member cold
+acceptance inventory. A future Actions adapter must explicitly export only those
+accepted receipts and the allowlisted timing sidecar from private storage; it
+must not upload raw diagnostic globs or relax ancestor ownership checks.
+
+Disk admission measures free space at the actual `--state-root`, including the
+reservation plus 100 GiB headroom. The resource profile still requires its
+private `disk_root` field for schema compatibility, but that field is not the
+allocation or free-space authority. Admission does not authorize allocation.
 
 Retries reuse a sealed candidate, including recovery after sealing succeeded
 but uploading its receipt failed. If a candidate is missing or corrupted, a
@@ -173,3 +198,8 @@ new protected environment, its six explicit variables, development admission
 helper and source-bound inputs before qualification can run. Its production
 release lifecycle must treat the production-origin isolation gap as a blocker,
 not an available release, and must not reuse development evidence for promotion.
+
+Historical successful workflow measurements remain exactly 9,911 and 11,500
+seconds. The 3,600-second target, live timing, operator/media/resource readiness,
+and N1-N7 owner changes remain unverified. Unit tests and cache sidecars are not
+whole-workflow timing evidence.
