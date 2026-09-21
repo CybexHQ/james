@@ -8,7 +8,6 @@ readonly attention_after_checks=6
 
 appliance_state=starting
 non_ready_checks=0
-last_screen=
 
 unit_failed() {
   systemctl is-failed --quiet "$1" >/dev/null 2>&1
@@ -103,10 +102,9 @@ render_screen() {
   else
     printf -v screen 'CYBEX JAMES\n\n%s' "$state_lines"
   fi
-  if [[ "$screen" != "$last_screen" ]]; then
-    printf '\033[2J\033[H%s\n' "$screen"
-    last_screen="$screen"
-  fi
+  # Framebuffer initialization and VT resets can clear an unchanged screen.
+  # Repaint on the bounded refresh interval even when the status is stable.
+  printf '\033[2J\033[H%s\n' "$screen"
 }
 
 main() {

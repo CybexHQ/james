@@ -161,6 +161,10 @@ in {
     };
     systemd.services.cybex-james-gc = (rootService "gc");
     systemd.timers.cybex-james-gc = { wantedBy = [ "timers.target" ]; timerConfig = { OnCalendar = "daily"; Persistent = true; }; };
-    systemd.services."getty@tty1" = lib.mkForce { wantedBy = [ "getty.target" ]; conflicts = [ "rescue.service" ]; before = [ "getty.target" "rescue.service" ]; serviceConfig = { Type = "idle"; ExecStart = command "console"; Restart = "always"; RestartSec = "2s"; StandardInput = "tty"; StandardOutput = "tty"; StandardError = "journal"; TTYPath = "/dev/tty1"; TTYReset = true; TTYVHangup = true; TTYVTDisallocate = true; }; };
+    # Mask both login paths. A dedicated unit avoids getty@.service.d's
+    # template ExecStart override replacing our console command with agetty.
+    systemd.services."autovt@tty1".enable = false;
+    systemd.services."getty@tty1".enable = false;
+    systemd.services.cybex-james-console = { wantedBy = [ "getty.target" ]; conflicts = [ "rescue.service" ]; before = [ "getty.target" "rescue.service" ]; serviceConfig = { Type = "idle"; ExecStart = command "console"; Restart = "always"; RestartSec = "2s"; StandardInput = "tty"; StandardOutput = "tty"; StandardError = "journal"; TTYPath = "/dev/tty1"; TTYReset = true; TTYVHangup = true; TTYVTDisallocate = true; }; };
   };
 }

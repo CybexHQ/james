@@ -1,5 +1,6 @@
 { nixpkgs, pkgs, common }:
 {
+  console = import ./console-vm.nix { inherit nixpkgs; };
   runtime = import (nixpkgs + "/nixos/tests/make-test-python.nix") ({ pkgs, ... }: {
     name = "cybex-james-nixos-runtime-policy";
     nodes.machine = { config, lib, ... }: {

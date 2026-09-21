@@ -57,6 +57,11 @@ in {
   systemd.network.networks."20-cybex-installer" = { matchConfig.Name = "en* eth*"; networkConfig = { DHCP = "ipv4"; IPv6AcceptRA = false; }; };
   services.resolved.enable = true;
   services.timesyncd.enable = true;
+  # timesyncd does not include its optional wait unit in this nixpkgs pin.
+  # Give NTP a bounded opportunity before HTTPS; an offline clock must not
+  # prevent the setup screen or bootstrap retry loop from starting forever.
+  systemd.additionalUpstreamSystemUnits = [ "systemd-time-wait-sync.service" ];
+  systemd.services.systemd-time-wait-sync.serviceConfig.TimeoutStartSec = "60s";
   services.openssh.enable = lib.mkForce false;
   services.getty.autologinUser = lib.mkForce null;
   environment.systemPackages = [ a.package pkgs.nix pkgs.nixos-install-tools pkgs.iputils pkgs.iproute2 pkgs.gptfdisk pkgs.e2fsprogs pkgs.dosfstools pkgs.util-linux pkgs.curl pkgs.jq pkgs.zstd pkgs.python3 ];
@@ -68,11 +73,20 @@ in {
       mkdir -p /cdrom
       mountpoint -q /cdrom || mount --bind /iso /cdrom
     '';
-    serviceConfig = { Type = "simple"; ExecStart = "${a.package}/bin/cybex-james-bootstrap prepare"; Restart = "on-failure"; RestartSec = "15s"; StandardOutput = "journal+console"; StandardError = "journal+console"; UMask = "0077"; TimeoutStartSec = "infinity"; };
+    serviceConfig = { Type = "simple"; ExecStart = "${a.package}/bin/cybex-james-bootstrap prepare"; Restart = "on-failure"; RestartSec = "15s"; StandardOutput = "journal"; StandardError = "journal"; UMask = "0077"; TimeoutStartSec = "infinity"; };
   };
   systemd.services."getty@tty1".enable = false;
+  # getty.target and logind use this alias, not getty@tty1. Mask the exact
+  # instance as well so neither boot nor a VT switch starts a login prompt.
+  systemd.services."autovt@tty1".enable = false;
   systemd.services.cybex-james-setup-console = {
     wantedBy = [ "multi-user.target" ];
-    serviceConfig = { ExecStart = "${pkgs.bash}/bin/bash -c 'printf \"Cybex James Setup\\nContinue in Cybex Manage.\\n\"; exec ${pkgs.coreutils}/bin/sleep infinity'"; StandardOutput = "tty"; TTYPath = "/dev/tty1"; };
+    serviceConfig = { ExecStart = pkgs.writeShellScript "cybex-james-setup-console" ''
+      while true; do
+        # Graphics initialization or a VT reset can erase an unchanged screen.
+        printf '\033[2J\033[HCybex James Setup\nContinue in Cybex Manage.\n'
+        ${pkgs.coreutils}/bin/sleep 10
+      done
+    ''; Restart = "always"; RestartSec = "2s"; StandardInput = "null"; StandardOutput = "tty"; StandardError = "journal"; TTYPath = "/dev/tty1"; TTYReset = true; TTYVHangup = true; TTYVTDisallocate = true; };
   };
 }
