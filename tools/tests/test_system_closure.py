@@ -107,6 +107,21 @@ class SystemClosureTests(unittest.TestCase):
     def test_complete_signed_closure_and_source_verify(self):
         self.assertEqual(self.verify(self.archive()), self.manifest)
 
+    def test_noncanonical_archive_modes_are_rejected(self):
+        original = self.archive()
+        raw = bytearray(subprocess.run(["zstd", "-q", "-d", "-c", str(original)],
+                                     capture_output=True, check=True).stdout)
+        for mode in (0o444, 0o666, 0o4755):
+            with self.subTest(mode=mode):
+                raw[100:108] = (f"{mode:07o}\0").encode()
+                raw[148:156] = b" " * 8
+                raw[148:156] = (f"{sum(raw[:512]):06o}\0 ").encode()
+                original.write_bytes(subprocess.run(["zstd", "-q", "-c"], input=raw,
+                                                    capture_output=True, check=True).stdout)
+                self.bind(original)
+                with self.assertRaisesRegex(API.ReleaseError, "archive mode"):
+                    self.verify(original)
+
     def test_external_signer_roundtrip_and_wrong_key_rejected(self):
         metadata = {k: v for k, v in self.manifest.items() if k not in {"store_paths", "total_nar_bytes"}}
         metadata.update(schema="cybex.james.appliance-closure-build.v1", manage_origin="https://console.example.invalid")

@@ -405,12 +405,17 @@ def extract_ustar(path, destination, fail, *, pass_fds=()):
                 fail("closure tar member name, count or uniqueness is invalid")
             if not names and name != "manifest.json":
                 fail("closure tar must begin with its manifest")
+            if name.startswith("nar/") and name != "nar/" and "nar/" not in names:
+                fail("closure NAR directory must precede payloads")
             if name.startswith("nar/"):
                 payload_started = True
             elif payload_started:
                 fail("closure metadata must precede every NAR payload")
             names.add(name)
             size, kind = number(header[124:136]), header[156:157]
+            expected_mode = 0o755 if name == "nar/" else 0o644
+            if number(header[100:108]) != expected_mode:
+                fail("closure tar has a noncanonical archive mode")
             if name == "nar/":
                 if size or kind != b"5":
                     fail("closure nar directory header is invalid")

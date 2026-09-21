@@ -58,6 +58,7 @@ def pack(cache, output):
     """Canonical USTAR: manifest, cache metadata, NARInfos, then NAR payloads."""
     members = [cache / "manifest.json", cache / "nix-cache-info"]
     members += sorted(cache.glob("*.narinfo"))
+    members += [cache / "nar"]
     members += sorted((cache / "nar").glob("*.nar.zst"))
     with output.open("xb") as target:
         process = subprocess.Popen(["zstd", "-q", "-T1", "-10", "--long=27", "-c"],
@@ -66,11 +67,16 @@ def pack(cache, output):
             with tarfile.open(fileobj=process.stdin, mode="w|", format=tarfile.USTAR_FORMAT) as archive:
                 for member in members:
                     name = member.relative_to(cache).as_posix()
+                    if name == "nar":
+                        info = tarfile.TarInfo("nar/")
+                        info.type, info.mode = tarfile.DIRTYPE, 0o755
+                        archive.addfile(info)
+                        continue
                     if len(name) > 100:
                         API._fail("closure member cannot fit the canonical USTAR name field")
                     info = tarfile.TarInfo(name)
                     info.size = member.stat().st_size
-                    info.mode, info.uid, info.gid, info.mtime = 0o444, 0, 0, 0
+                    info.mode, info.uid, info.gid, info.mtime = 0o644, 0, 0, 0
                     with member.open("rb") as source:
                         archive.addfile(info, source)
             process.stdin.close()

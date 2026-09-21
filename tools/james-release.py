@@ -3017,6 +3017,38 @@ def _verify_signed_messages(
         _self_verify(public_der, signature, message)
 
 
+def _authorized_previous_key(path, current_key, current_version, authorization_path):
+    """A current signature may authorize exactly one historical predecessor.
+
+    This does not authorize its recovery URL, any other old-key artifact, or an
+    Ubuntu update. Ancestry is separate from NixOS lifecycle qualification.
+    """
+    previous, body = _load_bounded_json(path, "previous compatibility", maximum_bytes=1024 * 1024)
+    if previous.get("public_key") == current_key:
+        return current_key
+    if authorization_path is None:
+        _fail("historical predecessor authority requires an explicit signed authorization")
+    authorization, auth_body = _load_bounded_json(Path(authorization_path), "historical authorization", maximum_bytes=1024 * 1024)
+    if (authorization.get("schema") != "cybex.james.recovery-adoption.v1"
+            or authorization.get("public_key") != current_key
+            or authorization.get("successor_version") != current_version
+            or auth_body != _canonical_json_body(authorization)):
+        _fail("historical predecessor authorization does not bind this successor")
+    signature = _canonical_base64(authorization.get("signature"), "historical authorization signature", expected_bytes=64)
+    payload = {k: v for k, v in authorization.items() if k != "signature"}
+    _self_verify(ED25519_PUBLIC_DER_PREFIX + _trusted_public_key(current_key), signature,
+                 b"CYBEX-JAMES-RECOVERY-ADOPTION-V1\n" + _canonical_json_body(payload))
+    published = authorization.get("published", {})
+    expected_url = (f"https://github.com/{authorization.get('repository')}/releases/download/"
+                    f"{published.get('tag_name')}/cybex-james-release.json")
+    if (published.get("public_key") != previous.get("public_key")
+            or published.get("compatibility_sha256") != hashlib.sha256(body).hexdigest()
+            or published.get("manifest_sha256") != previous.get("release_manifest", {}).get("sha256")
+            or previous.get("release_manifest", {}).get("url") != expected_url):
+        _fail("historical predecessor differs from its exact authorization")
+    return published["public_key"]
+
+
 def _release_compatibility_command(arguments: argparse.Namespace) -> None:
     manifest_path = Path(arguments.manifest)
     compatibility_path = Path(arguments.compatibility)
@@ -3061,10 +3093,12 @@ def _release_compatibility_command(arguments: argparse.Namespace) -> None:
         )
         _verify_signed_messages(public_der, manifest_signed_messages)
         if previous_compatibility_path is not None:
+            previous_key = _authorized_previous_key(previous_compatibility_path, public_key,
+                payload["james_release_version"], getattr(arguments, "historical_authorization", None))
             _enforce_runtime_identity_transition(
                 previous_compatibility_path,
                 payload,
-                public_key,
+                previous_key,
             )
             previous_asset, previous_body = _load_bounded_json(
                 previous_compatibility_path,
@@ -3074,7 +3108,7 @@ def _release_compatibility_command(arguments: argparse.Namespace) -> None:
             previous_payload = _verified_release_compatibility_payload(
                 previous_asset,
                 previous_body,
-                public_key,
+                previous_key,
                 require_current_runtime_contract=False,
                 require_current_installer_origin=False,
             )
@@ -3154,7 +3188,8 @@ def _verify_release_successor_command(arguments: argparse.Namespace) -> None:
     previous_payload = _verified_release_compatibility_payload(
         previous_asset,
         previous_body,
-        arguments.trusted_public_key,
+        _authorized_previous_key(previous_path, arguments.trusted_public_key,
+            current_payload["james_release_version"], getattr(arguments, "historical_authorization", None)),
         require_current_runtime_contract=False,
         require_current_installer_origin=False,
     )
@@ -3168,7 +3203,8 @@ def _verify_release_successor_command(arguments: argparse.Namespace) -> None:
     _enforce_runtime_identity_transition(
         previous_path,
         current_payload,
-        arguments.trusted_public_key,
+        _authorized_previous_key(previous_path, arguments.trusted_public_key,
+            current_version, getattr(arguments, "historical_authorization", None)),
     )
     _enforce_appliance_state_schema_transition(previous_payload, current_payload)
     _enforce_installer_manage_origin_transition(previous_payload, current_payload)
@@ -3778,6 +3814,7 @@ def _parser() -> argparse.ArgumentParser:
             "required by production aggregation when a prior release exists"
         ),
     )
+    compatibility.add_argument("--historical-authorization", help="current-key authorization for one exact historical predecessor")
     compatibility.add_argument(
         "--output",
         required=True,
@@ -3828,6 +3865,7 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         help="latest published signed release compatibility asset",
     )
+    verify_successor.add_argument("--historical-authorization", help="current-key authorization for one exact historical predecessor")
     verify_successor.add_argument(
         "--current-compatibility",
         required=True,
