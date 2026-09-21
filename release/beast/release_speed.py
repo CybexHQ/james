@@ -165,7 +165,7 @@ def main(argv=None):
             'scenario_order': ['update', 'rollback', 'fresh'] if args.phase == 'warm' else ['cold', 'workstation'],
             'reason': 'requires_scheduled_execution_and_full_runner_admission'}).decode(), end='')
         return
-    if args.candidate_only or args.offline_artifacts:
+    if args.offline_artifacts:
         raise ValueError('Current runner cannot guarantee no-fetch artifact admission')
     if os.geteuid() != 0:
         raise ValueError('Existing qualification runner requires root')
@@ -179,10 +179,16 @@ def main(argv=None):
         'manifest_sha256': args.candidate_manifest_sha256,
         'profile_sha256': io.digest(io.read(args.profile)),
         'run_sha256': io.digest(io.canonical({'run': args.run, 'attempt': args.attempt}))}
-    with resources.admission(value, identity):
+    # The unchanged runner uses SUDO_UID/GID to hand output to its caller.
+    # This wrapper owns acceptance: retain its private evidence directory until
+    # acceptance finishes. Any later artifact export is a separate operation.
+    environment = dict(os.environ)
+    environment.pop('SUDO_UID', None)
+    environment.pop('SUDO_GID', None)
+    with resources.admission(value, identity, args.state_root):
         args.evidence_dir.mkdir(mode=0o700)
         timing.measure(delegate(args), args.timing_dir, args.phase, identity, args.timeout,
-            accept=lambda out, err: acceptance(args, out, err))
+            accept=lambda out, err: acceptance(args, out, err), env=environment)
     print('Serial runner and mandatory acceptance completed')
 
 

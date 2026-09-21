@@ -48,7 +48,7 @@ def check(value, available):
 
 
 @contextmanager
-def admission(value, identity):
+def admission(value, identity, state_root):
     if (set(identity) != {'run_sha256', 'source_sha256', 'manifest_sha256', 'profile_sha256'}
             or any(not re.fullmatch('[0-9a-f]{64}', v) for v in identity.values())):
         raise ValueError('Exact run identity required')
@@ -60,7 +60,10 @@ def admission(value, identity):
             marker = root / 'active.json'
             if marker.exists() or marker.is_symlink():
                 raise ValueError('Unresolved prior ownership requires operator cleanup proof')
-            check(value, availability(value['disk_root']))
+            # The runner allocates every phase's fixture beneath state_root.
+            # disk_root remains a validated profile field for compatibility,
+            # but its filesystem's free space cannot authorize these writes.
+            check(value, availability(io.directory(state_root)))
             io.write(marker, io.canonical({'schema': 'cybex.james.serial-lease.v1',
                 'identity': identity, 'pid': os.getpid(), 'process_start': Path('/proc/self/stat').read_text().split(') ', 1)[1].split()[19]}))
             io.sync(root)

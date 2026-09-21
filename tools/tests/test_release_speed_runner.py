@@ -167,7 +167,7 @@ while True: time.sleep(0.01)
         self.assertEqual(command[command.index('--phase') + 1], 'cold')
         self.assertEqual(command[command.index('--workstation') + 1], str(args.evidence_dir / S.COLD[1]))
 
-    def test_plan_and_candidate_only_never_launch_runner(self):
+    def test_plan_and_offline_run_never_launch_runner(self):
         args = self.args()
         args.command = 'plan'
         args.candidate_only = True
@@ -255,20 +255,20 @@ class ResourceTests(unittest.TestCase):
         host = self.root / 'host.lock'
         with patch.object(R, 'HOST_LOCK', host), patch.object(R, 'availability', return_value=self.available):
             with I.lock(host):
-                with self.assertRaises(BlockingIOError), R.admission(self.value, self.identity):
+                with self.assertRaises(BlockingIOError), R.admission(self.value, self.identity, self.root):
                     self.fail('must not admit')
-            with R.admission(self.value, self.identity):
+            with R.admission(self.value, self.identity, self.root):
                 self.assertTrue((self.root / 'active.json').exists())
             self.assertFalse((self.root / 'active.json').exists())
-            with self.assertRaises(RuntimeError), R.admission(self.value, self.identity):
+            with self.assertRaises(RuntimeError), R.admission(self.value, self.identity, self.root):
                 raise RuntimeError('cleanup unproven')
-            with self.assertRaisesRegex(ValueError, 'ownership'), R.admission(self.value, self.identity):
+            with self.assertRaisesRegex(ValueError, 'ownership'), R.admission(self.value, self.identity, self.root):
                 self.fail('must not readmit')
 
     def test_low_headroom_creates_no_lease(self):
         with patch.object(R, 'HOST_LOCK', self.root / 'host.lock'), patch.object(R, 'availability',
                 return_value=self.available | {'memory': 0}):
-            with self.assertRaises(ValueError), R.admission(self.value, self.identity):
+            with self.assertRaises(ValueError), R.admission(self.value, self.identity, self.root):
                 self.fail('must not admit')
         self.assertFalse((self.root / 'active.json').exists())
 

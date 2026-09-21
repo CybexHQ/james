@@ -13,7 +13,7 @@ class RunFailed(Exception):
         self.code = code
 
 
-def measure(command, output, phase, context, timeout, grace=180, accept=None, facts=None):
+def measure(command, output, phase, context, timeout, grace=180, accept=None, facts=None, env=None):
     if phase not in {'warm', 'cold', 'cache'}:
         raise ValueError('Unknown timing phase')
     import re
@@ -40,7 +40,7 @@ def measure(command, output, phase, context, timeout, grace=180, accept=None, fa
         io.write(output / 'stdout.log', b'')
         io.write(output / 'stderr.log', b'')
         with io.append(output / 'stdout.log') as stdout, io.append(output / 'stderr.log') as stderr:
-            child = subprocess.Popen(command, stdout=stdout, stderr=stderr, start_new_session=True)
+            child = subprocess.Popen(command, stdout=stdout, stderr=stderr, start_new_session=True, env=env)
             if received:
                 child.send_signal(signal.SIGTERM if received[0] == signal.SIGHUP else received[0])
             while child.poll() is None:
