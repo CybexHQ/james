@@ -164,6 +164,8 @@ struct AgentJamesConfigResponse {
     #[serde(default)]
     update_schedule: Option<crate::appliance::update_schedule::SignedPolicy>,
     #[serde(default)]
+    update_schedule_supported: bool,
+    #[serde(default)]
     workstation_netboot: Option<Value>,
     #[serde(default)]
     workstation_multicast: Option<Value>,
@@ -910,8 +912,10 @@ async fn sync_james_foundation(
 ) -> Result<JamesReportReceipt> {
     let mut first_failure = None;
     let mut peer_runtime_epoch = None;
+    let mut peer_supports_scheduling = false;
     match fetch_james_config(state, managed).await {
         Ok(desired) => {
+            peer_supports_scheduling = desired.update_schedule_supported;
             peer_runtime_epoch = desired
                 .compatibility
                 .as_ref()
@@ -924,7 +928,14 @@ async fn sync_james_foundation(
             error,
         ),
     }
-    let report = match report_james_state(state, managed, peer_runtime_epoch.is_some()).await {
+    let report = match report_james_state(
+        state,
+        managed,
+        peer_runtime_epoch.is_some(),
+        peer_supports_scheduling,
+    )
+    .await
+    {
         Ok(report) => Some(report),
         Err(error) => {
             retain_sync_failure(&mut first_failure, "James state report", error);
@@ -1178,6 +1189,7 @@ async fn report_james_state(
     state: &AppState,
     managed: &mut ManagedState,
     peer_supports_runtime_fencing: bool,
+    peer_supports_scheduling: bool,
 ) -> Result<JamesReportReceipt> {
     let (build_jobs, build_listing_valid) = match db::list_build_jobs_report_page(
         &state.db,
@@ -1336,7 +1348,7 @@ async fn report_james_state(
     .collect();
     let body = JamesAgentReportRequest {
         protocol_version: CYBEX_COMPONENT_PROTOCOL_VERSION,
-        capabilities: james_capabilities(&state.config),
+        capabilities: james_capabilities(&state.config, peer_supports_scheduling),
         cache,
         build_jobs,
         cache_artifacts,
@@ -2463,7 +2475,7 @@ async fn signed_request_for_config(
     })
 }
 
-fn james_capabilities(config: &AppConfig) -> Vec<&'static str> {
+fn james_capabilities(config: &AppConfig, peer_supports_scheduling: bool) -> Vec<&'static str> {
     let mut capabilities = vec![
         CAPABILITY_BOOT_V1,
         CAPABILITY_BUILDER_V1,
@@ -2480,7 +2492,9 @@ fn james_capabilities(config: &AppConfig) -> Vec<&'static str> {
     capabilities.push(crate::pxe_discovery::CAPABILITY);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V1);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V2);
-    capabilities.push(crate::appliance::update_schedule::CAPABILITY);
+    if peer_supports_scheduling {
+        capabilities.push(crate::appliance::update_schedule::CAPABILITY);
+    }
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1);
     if crate::netboot_multicast::binary_available(config) {
         capabilities.push(CAPABILITY_WORKSTATION_ROOTFS_MULTICAST_V1);
@@ -4403,7 +4417,7 @@ mod tests {
     fn james_capabilities_report_build_and_cache() {
         let config = AppConfig::default();
         assert_eq!(
-            james_capabilities(&config),
+            james_capabilities(&config, true),
             vec![
                 "boot_v1",
                 "builder_v1",
@@ -4422,6 +4436,25 @@ mod tests {
                 "appliance_update_schedule_v1",
                 "appliance_update_qualification_transport_v1"
             ]
+        );
+    }
+
+    #[test]
+    fn scheduling_capability_requires_explicit_manage_support() {
+        let older: AgentJamesConfigResponse = serde_json::from_value(json!({})).unwrap();
+        let newer: AgentJamesConfigResponse =
+            serde_json::from_value(json!({"update_schedule_supported":true})).unwrap();
+        let config = AppConfig::default();
+        let legacy = james_capabilities(&config, older.update_schedule_supported);
+        let modern = james_capabilities(&config, newer.update_schedule_supported);
+        assert!(!legacy.contains(&crate::appliance::update_schedule::CAPABILITY));
+        assert!(modern.contains(&crate::appliance::update_schedule::CAPABILITY));
+        assert_eq!(
+            modern
+                .into_iter()
+                .filter(|cap| *cap != crate::appliance::update_schedule::CAPABILITY)
+                .collect::<Vec<_>>(),
+            legacy
         );
     }
 

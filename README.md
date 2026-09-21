@@ -233,3 +233,7 @@ signed package verification, update compatibility and recovery safeguards remain
 The agent reports the root-accepted revision in `local_health.update_schedule`.
 Saving the recurring schedule clears an outstanding manual exception. Once an
 installation has started, its existing completion/rollback lifecycle owns recovery.
+
+The scheduling capability is advertised only after Manage returns
+`update_schedule_supported: true`. Missing support on an older server omits
+that capability while preserving ordinary reports and the existing updater.
