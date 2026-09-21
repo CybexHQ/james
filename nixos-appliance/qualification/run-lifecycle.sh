@@ -168,16 +168,27 @@ trap 'exit 130' INT TERM
 
 api() {
   local method="$1" path="$2" body="${3:-}"
+  local response="$work_dir/api-response.json"
+  local retries=()
+  # Read-only polling can tolerate a gateway disconnect. Never retry mutations:
+  # their response may have been lost after the server accepted the operation.
+  if [[ "$method" = GET ]]; then
+    retries=(--retry 3 --retry-all-errors --retry-delay 1)
+  fi
   if [[ -n "$body" ]]; then
-    curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+    curl -4 --fail --silent --show-error --proto '=https' --tlsv1.2 \
+      --connect-timeout 15 --max-time 120 "${retries[@]}" --output "$response" \
       --request "$method" \
       --header "Authorization: Bearer $token" \
       --header 'Content-Type: application/json' \
       --data-binary "$body" "$manage_origin$path"
   else
-    curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+    curl -4 --fail --silent --show-error --proto '=https' --tlsv1.2 \
+      --connect-timeout 15 --max-time 120 "${retries[@]}" --output "$response" \
       --request "$method" --header "Authorization: Bearer $token" "$manage_origin$path"
   fi
+  cat -- "$response"
+  rm -- "$response"
 }
 
 check_delivery_policy() {
