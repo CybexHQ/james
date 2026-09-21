@@ -98,16 +98,37 @@ def check_file(path, digest=None, size=None, maximum=4 * 1024**3):
         raise ValueError('Predecessor artifact differs from its signed size or digest')
 
 
-def verify_pair(directory, trusted_key, manifest_url=None):
-    asset, _ = checked_json(directory / COMPATIBILITY)
+def verify_pair_snapshot(directory, trusted_key, manifest_url=None):
+    """Authenticate and retain the exact descriptor bytes used by verification."""
+    directory = Path(directory)
+    manifest, manifest_body = checked_json(directory / MANIFEST)
+    asset, compatibility_body = checked_json(directory / COMPATIBILITY)
     url = manifest_url or asset['release_manifest']['url']
     with tempfile.TemporaryDirectory(prefix='james-predecessor-contract-') as temporary:
-        contract = Path(temporary) / 'compatibility.json'
+        snapshot = Path(temporary)
+        manifest_path = snapshot / MANIFEST
+        compatibility_path = snapshot / COMPATIBILITY
+        contract = snapshot / 'compatibility.json'
+        manifest_path.write_bytes(manifest_body)
+        compatibility_path.write_bytes(compatibility_body)
         contract.write_bytes(canonical(asset['compatibility']))
         release._verify_release_compatibility_command(argparse.Namespace(
-            asset=directory / COMPATIBILITY, manifest=directory / MANIFEST, manifest_url=url,
+            asset=compatibility_path, manifest=manifest_path, manifest_url=url,
             compatibility=contract, trusted_public_key=trusted_key))
-    return checked_json(directory / MANIFEST)[0]
+    # Authentication happened against private copies. Reject a concurrent
+    # replacement of either source, then return only the authenticated copies
+    # so callers never need to reread a mutable descriptor path.
+    for path, expected in ((directory / MANIFEST, manifest_body),
+                           (directory / COMPATIBILITY, compatibility_body)):
+        if checked_json(path)[1] != expected:
+            raise ValueError('Signed release descriptor changed during authentication')
+    return {'manifest': manifest, 'manifest_body': manifest_body,
+            'compatibility': asset, 'compatibility_body': compatibility_body}
+
+
+def verify_pair(directory, trusted_key, manifest_url=None):
+    """Compatibility wrapper returning the authenticated manifest value."""
+    return verify_pair_snapshot(directory, trusted_key, manifest_url)['manifest']
 
 
 def advance(candidate, previous):

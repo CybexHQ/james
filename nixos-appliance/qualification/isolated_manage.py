@@ -38,15 +38,18 @@ def sibling(name):
 inputs = sibling('isolated_manage_config')
 resources = sibling('isolated_manage_resources')
 transport = sibling('isolated_manage_transport')
-SCHEMA = 'cybex.james.isolated-manage.v1'
+SCHEMA = 'cybex.james.isolated-manage.v2'
 GUARD_SCHEMA = 'cybex.james.isolated-manage-network.v1'
+ARTIFACT_URL_SCHEMA = 'cybex.james.isolated-manage-artifact-urls.v1'
+RELEASES = ('predecessor', 'candidate')
 
 
 class Owner:
-    def __init__(self, state_dir, adapter, *, run=inputs.command):
+    def __init__(self, state_dir, adapter, *, artifact_factory=None, run=inputs.command):
         self.state = Path(state_dir)
         self.directory = self.state / 'manage'
-        self.adapter, self.run = adapter, run
+        self.adapter, self.artifact_factory, self.run = adapter, artifact_factory, run
+        self.artifacts = None
         if adapter is None or any(not callable(getattr(adapter, method, None)) for method in ('prepare', 'verify', 'cleanup')):
             raise ValueError('a reviewed, verifying default-deny network adapter is required')
 
@@ -134,8 +137,61 @@ class Owner:
             raise ValueError('network adapter could not verify its actual owned confinement')
         return True
 
+    def artifact_urls(self, receipt, value):
+        if (not isinstance(value, dict) or set(value) != {'schema', 'owner', 'releases'}
+                or value['schema'] != ARTIFACT_URL_SCHEMA or value['owner'] != receipt['owner']
+                or not isinstance(value['releases'], dict)
+                or set(value['releases']) != set(RELEASES)):
+            raise ValueError('artifact coordinator URL receipt differs from the exact fixture')
+        gateway = str(ipaddress.ip_network(receipt['context']['backend_subnet'])[1])
+        expected = {
+            'predecessor': {'manifest_transport_url': (gateway, 18081),
+                            'installer_iso_transport_url': (gateway, 18081),
+                            'package_transport_url': (receipt['peer_ipv4'], 18082),
+                            'bundle_transport_url': (receipt['peer_ipv4'], 18082)},
+            'candidate': {'manifest_transport_url': (gateway, 18083),
+                          'installer_iso_transport_url': (gateway, 18083),
+                          'package_transport_url': (receipt['peer_ipv4'], 18082),
+                          'bundle_transport_url': (receipt['peer_ipv4'], 18082)},
+        }
+        for role in RELEASES:
+            urls = value['releases'][role]
+            filenames = receipt['releases'][role]['transport_filenames']
+            if not isinstance(urls, dict) or set(urls) != set(expected[role]):
+                raise ValueError('artifact coordinator URL receipt is incomplete')
+            for kind, (address, port) in expected[role].items():
+                url = urlsplit(urls[kind])
+                if (url.scheme != 'http' or url.hostname != address or url.port != port
+                        or url.netloc != f'{address}:{port}' or url.path != '/' + filenames[kind]
+                        or url.username or url.password or url.query or url.fragment):
+                    raise ValueError('artifact coordinator URL is not the exact signed transport')
+        return value
+
+    def verify_artifacts(self, receipt):
+        if self.artifacts is None:
+            raise ValueError('artifact coordinator is not retained by this Owner process')
+        urls = self.artifact_urls(receipt, self.artifacts.verify(receipt['context']))
+        coordinator_receipt = getattr(self.artifacts, 'receipt', None)
+        expected = {role: {key: receipt['releases'][role][key]
+                           for key in ('version', 'manifest_sha256', 'compatibility_sha256')}
+                    for role in RELEASES}
+        attested = coordinator_receipt.get('releases') if isinstance(coordinator_receipt, dict) else None
+        if (not isinstance(coordinator_receipt, dict)
+                or coordinator_receipt.get('owner') != receipt['owner']
+                or not isinstance(attested, dict) or set(attested) != set(RELEASES)
+                or any(not isinstance(attested[role], dict)
+                       or any(attested[role].get(key) != value
+                              for key, value in expected[role].items())
+                       for role in RELEASES)):
+            raise ValueError('artifact coordinator release attestation differs from verified releases')
+        if receipt.get('artifact_transports') != urls:
+            raise ValueError('durable artifact transports differ from live listener receipts')
+        return urls
+
     def prepare(self, config_path, candidate_dir, predecessor_dir):
         with self.lock():
+            if not callable(self.artifact_factory):
+                raise ValueError('offline fixture prepare requires a retained artifact coordinator factory')
             if any(path.exists() or path.is_symlink()
                    for path in (self.directory, self.state / 'manage.json', self.state / 'session')):
                 raise ValueError('refusing to adopt an existing Manage fixture')
@@ -154,14 +210,20 @@ class Owner:
                        'source_revision': config['manage_revision'], 'releases': releases,
                        'selected_release': config['initial_release'], 'status': 'preparing',
                        'containers': {}, 'files': {}, 'guard': None, 'allowed_device_id': None,
+                       'artifact_status': None, 'artifact_transports': None, 'pending_release': None,
                        'context': {'owner': scope['owner'], 'bridge': scope['bridge'], 'subnet': scope['subnet'],
                                    'manage_origin': config['manage_origin'],
                                    'peer_ipv4': str(ipaddress.ip_interface(scope['subnet']).ip),
                                    'network_id': None, 'backend_subnet': config['backend_subnet'],
                                    'egress_hosts': config['egress_hosts']}}
             docker = self.docker(receipt)
-            receipt['images'] = {role: docker.image(config[key], role, config['manage_revision'])
-                                 for role, key in (('app', 'app_image'), ('db', 'postgres_image'), ('tls', 'tls_image'))}
+            receipt['images'] = {
+                'app': {role: docker.image(config['app_images'][role], 'app', config['manage_revision'],
+                                           releases[role]['compatibility_sha256'])
+                        for role in RELEASES},
+                'db': docker.image(config['postgres_image'], 'db'),
+                'tls': docker.image(config['tls_image'], 'tls'),
+            }
             self.directory.mkdir(mode=0o700)
             self.save(receipt)
             try:
@@ -169,6 +231,27 @@ class Owner:
                 self.save(receipt)
                 receipt['guard'] = self.adapter.prepare(dict(receipt['context']))
                 self.save(receipt)
+                self.guard(receipt)
+                coordinator_releases = {
+                    role: {'directory': releases[role]['directory'],
+                           'compatibility_sha256': releases[role]['compatibility_sha256']}
+                    for role in RELEASES
+                }
+                self.artifacts = self.artifact_factory(
+                    self.state, dict(receipt['context']), coordinator_releases,
+                    config['release_public_key'])
+                receipt['artifact_status'] = 'preparing'
+                self.save(receipt)
+                prepared_urls = self.artifact_urls(
+                    receipt, self.artifacts.prepare(receipt['context']))
+                verified_urls = self.artifact_urls(
+                    receipt, self.artifacts.verify(receipt['context']))
+                if prepared_urls != verified_urls:
+                    raise ValueError('artifact coordinator changed URLs after preparation')
+                receipt['artifact_transports'] = verified_urls
+                receipt['artifact_status'] = 'ready'
+                self.save(receipt)
+                self.verify_artifacts(receipt)
                 self.guard(receipt)
                 self.materialize(receipt, config, secret)
                 for role in ('db', 'app', 'tls'):
@@ -202,7 +285,9 @@ class Owner:
         self.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'isolated-qualification', '-f', ca])
         ssh_ca = base64.b64encode(inputs.read_file(ca)).decode()
         database_password = random.token_hex(32)
-        app_env = resources.environment(config, secret, receipt['releases'][receipt['selected_release']],
+        selected = receipt['selected_release']
+        app_env = resources.environment(config, secret, receipt['releases'][selected],
+                                        receipt['artifact_transports']['releases'][selected],
                                         database_password, ssh_ca, receipt['guard']['proxy_url'])
         values = {'app': (10001, app_env, 'exec /opt/cybex/bin/cybex\n'),
                   'db': (999, {'PATH': '/usr/local/bin:/usr/bin:/bin', 'POSTGRES_USER': 'fixture',
@@ -228,7 +313,8 @@ class Owner:
                                          ('nginx.conf', resources.nginx_config(receipt), 0o444)):
                     resources.write(self.directory / name, body, uid=uid if name == 'tls.key' else 0, mode=mode)
                     mounts.append([str(self.directory / name), '/run/fixture/' + name, True])
-            receipt['containers'][role] = {'id': None, 'image': receipt['images'][role], 'uid': uid,
+            image = receipt['images']['app'][selected] if role == 'app' else receipt['images'][role]
+            receipt['containers'][role] = {'id': None, 'image': image, 'uid': uid,
                                            'mounts': mounts, 'peer': receipt['peer_ipv4'] if role == 'tls' else None}
         for path in self.directory.iterdir():
             if path.is_file():
@@ -322,6 +408,7 @@ class Owner:
 
     def recreate_app(self, receipt):
         """Replace the exact app after its durable image/environment receipt changed."""
+        self.verify_artifacts(receipt)
         docker = self.docker(receipt)
         app = receipt['containers']['app']
         docker.remove_owned('app', app['id'])
@@ -348,6 +435,78 @@ class Owner:
         if not value['State']['Running']:
             raise ValueError('fixture TLS container did not recover after app replacement')
         self.wait_health(receipt)
+        self.verify_artifacts(receipt)
+
+    def replace_release_environment(self, receipt, role):
+        release = receipt['releases'][role]
+        transports = receipt['artifact_transports']['releases'][role]
+        replacements = {
+            'CYBEX_JAMES_RELEASE_MANIFEST_URL': release['manifest_url'],
+            'CYBEX_JAMES_RELEASE_MANIFEST_SHA256': release['manifest_sha256'],
+            'CYBEX_JAMES_RELEASE_VERSION': release['version'],
+            'CYBEX_JAMES_COMPATIBILITY_PROJECTION_SHA256': release['compatibility_sha256'],
+            'CYBEX_DEV_JAMES_RELEASE_MANIFEST_TRANSPORT_URL': transports['manifest_transport_url'],
+            'CYBEX_DEV_JAMES_WORKSTATION_TRANSPORT_URL': transports['bundle_transport_url'],
+        }
+        path = self.directory / 'app.env'
+        body = inputs.read_file(path, private=False, uid=10001)
+        found = {key: 0 for key in replacements}
+        lines = []
+        for line in body.decode().splitlines():
+            key = line.partition('=')[0]
+            if key in replacements:
+                found[key] += 1
+                line = resources.env_body({key: replacements[key]}).decode().rstrip('\n')
+            lines.append(line)
+        if any(count != 1 for count in found.values()):
+            raise ValueError('fixture release environment does not contain one exact pinned value')
+        updated = ('\n'.join(lines) + '\n').encode()
+        temporary = self.directory / ('app.env.' + random.token_hex(8))
+        try:
+            resources.write(temporary, updated, uid=10001)
+            os.replace(temporary, path)
+            fd = os.open(self.directory, os.O_DIRECTORY | os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        finally:
+            temporary.unlink(missing_ok=True)
+        info = path.stat()
+        receipt['files']['app.env'] = {'sha256': hashlib.sha256(updated).hexdigest(),
+                                       'uid': info.st_uid,
+                                       'mode': stat.S_IMODE(info.st_mode)}
+
+    def select_release(self, role):
+        if role not in RELEASES:
+            raise ValueError('fixture release selection must be predecessor or candidate')
+        with self.lock():
+            receipt = self.read()
+            if receipt['status'] == 'ready':
+                receipt = self.verify()
+                if receipt['selected_release'] == role:
+                    return receipt
+                receipt['status'] = 'selecting-release'
+                receipt['pending_release'] = role
+                self.save(receipt)
+            elif receipt['status'] == 'selecting-release':
+                if receipt.get('pending_release') != role:
+                    raise ValueError('interrupted fixture selection binds a different release')
+                self.guard(receipt)
+                self.verify_artifacts(receipt)
+            else:
+                raise ValueError('isolated Manage fixture cannot select a release in its current state')
+            # Repeating these writes is intentional: interruption at any save boundary
+            # resumes the same durable role without consulting "latest" state.
+            self.replace_release_environment(receipt, role)
+            receipt['selected_release'] = role
+            receipt['containers']['app']['image'] = receipt['images']['app'][role]
+            self.save(receipt)
+            self.recreate_app(receipt)
+            receipt['pending_release'] = None
+            receipt['status'] = 'ready'
+            self.save(receipt)
+            return self.verify()
 
     def allow_device(self, device_id):
         if not re.fullmatch(r'dev_[0-9a-f]{32}', device_id):
@@ -382,6 +541,12 @@ class Owner:
         receipt = self.read()
         if receipt['status'] != 'ready':
             raise ValueError('isolated Manage fixture has not completed fresh bootstrap')
+        if (receipt.get('selected_release') not in RELEASES or receipt.get('pending_release') is not None
+                or receipt.get('artifact_status') != 'ready'
+                or receipt.get('containers', {}).get('app', {}).get('image')
+                != receipt.get('images', {}).get('app', {}).get(receipt.get('selected_release'))):
+            raise ValueError('isolated Manage release selection is not exact and complete')
+        self.verify_artifacts(receipt)
         self.guard(receipt)
         docker = self.docker(receipt)
         docker.verify_network(receipt['context']['network_id'], receipt['context']['backend_subnet'],
@@ -491,11 +656,21 @@ class Owner:
                 return receipt
             docker = self.docker(receipt)
             phase = receipt.get('cleanup_phase')
-            if phase not in (None, 'backend'):
+            if phase not in (None, 'artifacts', 'backend'):
                 raise ValueError('invalid fixture cleanup phase')
             if phase is None:
+                if receipt.get('artifact_status') is not None and self.artifacts is None:
+                    raise ValueError('cleanup requires the retained artifact coordinator instance')
                 for role in ('tls', 'app', 'db'):
                     docker.remove_owned(role, receipt['containers'].get(role, {}).get('id'))
+                if receipt.get('artifact_status') is not None:
+                    if self.artifacts.cleanup(receipt['context'], purge=True) is not True:
+                        raise ValueError('artifact coordinator did not confirm exact cleanup')
+                    receipt['artifact_status'] = 'stopped'
+                receipt['cleanup_phase'] = 'artifacts'
+                self.save(receipt)
+                phase = 'artifacts'
+            if phase == 'artifacts':
                 if receipt['guard'] is not None:
                     # Cleanup adapter must itself refuse unrelated rules/processes.
                     self.adapter.cleanup(receipt['context'], receipt['guard'])

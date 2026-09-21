@@ -16,6 +16,9 @@ def write(path, body, *, uid=0, mode=0o400):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     try:
         os.fchown(fd, uid, uid)
+        # The owning runner keeps umask 0077. Public launch/configuration files
+        # still need their explicit read mode for the unprivileged containers.
+        os.fchmod(fd, mode)
         view = memoryview(body)
         while view:
             view = view[os.write(fd, view):]
@@ -28,7 +31,7 @@ def env_body(values):
     return ''.join(f'{key}={shlex.quote(str(value))}\n' for key, value in sorted(values.items())).encode()
 
 
-def environment(config, secrets, release, db_password, ssh_ca, proxy_url):
+def environment(config, secrets, release, transports, db_password, ssh_ca, proxy_url):
     values = {
         'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/var/lib/cybex',
         'CYBEX_DATABASE_URL': f'postgres://fixture:{db_password}@db:5432/fixture',
@@ -48,6 +51,8 @@ def environment(config, secrets, release, db_password, ssh_ca, proxy_url):
         'CYBEX_JAMES_RELEASE_MANIFEST_SHA256': release['manifest_sha256'],
         'CYBEX_JAMES_RELEASE_VERSION': release['version'],
         'CYBEX_JAMES_COMPATIBILITY_PROJECTION_SHA256': release['compatibility_sha256'],
+        'CYBEX_DEV_JAMES_RELEASE_MANIFEST_TRANSPORT_URL': transports['manifest_transport_url'],
+        'CYBEX_DEV_JAMES_WORKSTATION_TRANSPORT_URL': transports['bundle_transport_url'],
     }
     if proxy_url:
         values.update(HTTPS_PROXY=proxy_url, https_proxy=proxy_url,
@@ -104,7 +109,7 @@ class Docker:
     def name(self, role):
         return self.prefix + '-' + role
 
-    def image(self, reference, role, revision=None):
+    def image(self, reference, role, revision=None, projection=None):
         value = json.loads(self.call('image', 'inspect', reference))[0]
         if ((reference.startswith('sha256:') and value['Id'] != reference)
                 or ('@' in reference and reference not in (value.get('RepoDigests') or []))):
@@ -114,7 +119,8 @@ class Docker:
             raise ValueError('fixture image declares unowned persistent volumes')
         labels = config.get('Labels') or {}
         if role == 'app' and (labels.get('org.opencontainers.image.revision') != revision
-                             or labels.get('org.opencontainers.image.source') != 'https://github.com/CybexHQ/development'):
+                             or labels.get('org.opencontainers.image.source') != 'https://github.com/CybexHQ/development'
+                             or labels.get('net.cybex.manage.james-compatibility-projection-sha256') != projection):
             raise ValueError('Manage fixture image lacks exact reviewed development source labels')
         return value['Id']
 

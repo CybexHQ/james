@@ -13,10 +13,10 @@ import stat
 import subprocess
 from urllib.parse import urlsplit
 
-SCHEMA = 'cybex.james.isolated-manage-config.v1'
+SCHEMA = 'cybex.james.isolated-manage-config.v2'
 SOURCE = 'https://github.com/CybexHQ/development'
 PRODUCTION = Path('/home/john/Code/Cybex/manage')
-FIELDS = {'schema', 'manage_origin', 'manage_checkout', 'manage_revision', 'app_image',
+FIELDS = {'schema', 'manage_origin', 'manage_checkout', 'manage_revision', 'app_images',
           'postgres_image', 'tls_image', 'backend_subnet', 'tls_certificate', 'tls_private_key',
           'provisioning_seed_file', 'release_public_key', 'egress_hosts', 'initial_release'}
 
@@ -91,11 +91,14 @@ def origin(value):
 def validate(value):
     if not isinstance(value, dict) or set(value) != FIELDS or value['schema'] != SCHEMA:
         raise ValueError('unexpected isolated Manage configuration fields')
-    hostname = origin(value['manage_origin'])
+    origin(value['manage_origin'])
     if not re.fullmatch(r'[0-9a-f]{40}', value['manage_revision']):
         raise ValueError('fixture needs an exact reviewed Manage source revision')
-    for field in ('app_image', 'postgres_image', 'tls_image'):
-        if not re.fullmatch(r'(?:[a-z0-9][a-z0-9./:_-]*@)?sha256:[0-9a-f]{64}', value[field]):
+    if not isinstance(value['app_images'], dict) or set(value['app_images']) != {'predecessor', 'candidate'}:
+        raise ValueError('fixture needs explicit predecessor and candidate Manage images')
+    for reference in (*value['app_images'].values(), value['postgres_image'], value['tls_image']):
+        if not isinstance(reference, str) or not re.fullmatch(
+                r'(?:[a-z0-9][a-z0-9./:_-]*@)?sha256:[0-9a-f]{64}', reference):
             raise ValueError('fixture images must be pinned by image ID or digest')
     network = ipaddress.ip_network(value['backend_subnet'])
     if (network.version != 4 or network.prefixlen != 28
@@ -103,10 +106,8 @@ def validate(value):
                        for private in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))):
         raise ValueError('fixture backend must be an explicit private IPv4 /28')
     hosts = value['egress_hosts']
-    if (not isinstance(hosts, list) or hosts != sorted(set(hosts))
-            or any(origin('https://' + host) != host for host in hosts)
-            or hostname in hosts or any(host.endswith('.test') or host.endswith('.local') for host in hosts)):
-        raise ValueError('explicit egress hosts must exclude the logical Manage origin and private names')
+    if hosts != []:
+        raise ValueError('offline fixture cannot admit external egress hosts')
     raw_key(value['release_public_key'])
     if value['initial_release'] not in {'candidate', 'predecessor'}:
         raise ValueError('initial fixture release must be explicit')
@@ -174,17 +175,35 @@ def signed_releases(config, secrets, candidate_dir, predecessor_dir, *, verifier
     result = {}
     for role, directory in (('candidate', candidate_dir), ('predecessor', predecessor_dir)):
         directory = Path(directory)
-        manifest = predecessor.verify_pair(directory, config['release_public_key'])
+        snapshot = predecessor.verify_pair_snapshot(directory, config['release_public_key'])
+        if (not isinstance(snapshot, dict)
+                or set(snapshot) != {'manifest', 'manifest_body', 'compatibility', 'compatibility_body'}
+                or not isinstance(snapshot['manifest_body'], bytes)
+                or not isinstance(snapshot['compatibility_body'], bytes)):
+            raise ValueError('release verifier returned an invalid authenticated snapshot')
+        manifest = snapshot['manifest']
+        asset = snapshot['compatibility']
         descriptor = manifest['installer_iso_template_v3']
         if (descriptor['manage_origin'] != config['manage_origin']
                 or secrets['public_key'] not in descriptor['provisioning_public_keys']
                 or manifest['appliance_release_v1']['schema'] != predecessor.release.appliance_v3.SCHEMA):
             raise ValueError('both exact signed NixOS ISOs must admit this origin and fixture signer')
-        asset, _ = predecessor.checked_json(directory / predecessor.COMPATIBILITY)
-        result[role] = {'manifest_sha256': predecessor.sha(directory / predecessor.MANIFEST),
+        artifacts = {
+            'manifest_transport_url': predecessor.MANIFEST,
+            'installer_iso_transport_url': urlsplit(descriptor['url']).path.rsplit('/', 1)[-1],
+            'package_transport_url': urlsplit(
+                manifest['appliance_release_v1']['system_closure']['url']).path.rsplit('/', 1)[-1],
+            'bundle_transport_url': urlsplit(manifest['workstation_netboot']['url']).path.rsplit('/', 1)[-1],
+        }
+        if any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,254}', name)
+               for name in artifacts.values()):
+            raise ValueError('signed release artifact filename is invalid')
+        result[role] = {'directory': str(directory),
+                        'manifest_sha256': hashlib.sha256(snapshot['manifest_body']).hexdigest(),
                         'version': manifest['version'], 'manifest_url': asset['release_manifest']['url'],
-                        'compatibility_sha256': asset['compatibility_sha256']}
-        if role == 'candidate' and manifest['appliance_release_v1']['manage_source_revision'] != config['manage_revision']:
-            raise ValueError('candidate Manage provenance differs from the reviewed fixture image')
+                        'compatibility_sha256': asset['compatibility_sha256'],
+                        'transport_filenames': artifacts}
+        if manifest['appliance_release_v1']['manage_source_revision'] != config['manage_revision']:
+            raise ValueError('release Manage provenance differs from the reviewed fixture image')
     predecessor.advance(result['candidate']['version'], result['predecessor']['version'])
     return result

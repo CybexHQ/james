@@ -11,6 +11,7 @@ from pathlib import Path
 import socket
 import ssl
 import subprocess
+import sys
 import tempfile
 import threading
 import types
@@ -30,11 +31,13 @@ transport = owner_module.transport
 def configuration():
     return {'schema': config.SCHEMA, 'manage_origin': 'https://dev.example.test',
             'manage_checkout': '/reviewed/development', 'manage_revision': 'a' * 40,
-            'app_image': 'sha256:' + 'a' * 64, 'postgres_image': 'sha256:' + 'b' * 64,
+            'app_images': {'predecessor': 'sha256:' + 'a' * 64,
+                           'candidate': 'sha256:' + 'd' * 64},
+            'postgres_image': 'sha256:' + 'b' * 64,
             'tls_image': 'sha256:' + 'c' * 64, 'backend_subnet': '10.99.17.0/28',
             'tls_certificate': '/private/tls.crt', 'tls_private_key': '/private/tls.key',
             'provisioning_seed_file': '/private/seed', 'release_public_key': base64.b64encode(b'k' * 32).decode(),
-            'egress_hosts': ['cache.nixos.org', 'github.com'], 'initial_release': 'predecessor'}
+            'egress_hosts': [], 'initial_release': 'predecessor'}
 
 
 def receipt():
@@ -43,16 +46,62 @@ def receipt():
             'owner': '20dcb130-736e-4d79-b8d2-338781735419'}
 
 
+def release_receipt():
+    value = receipt() | {
+        'context': {'owner': receipt()['owner'], 'bridge': 'jnq0123456789',
+                    'subnet': '10.99.16.1/24', 'manage_origin': receipt()['manage_origin'],
+                    'peer_ipv4': '10.99.16.1', 'network_id': 'a' * 64,
+                    'backend_subnet': '10.99.17.0/28', 'egress_hosts': []},
+        'releases': {},
+    }
+    urls = {'schema': owner_module.ARTIFACT_URL_SCHEMA, 'owner': value['owner'], 'releases': {}}
+    for role, port, version, marker in (
+            ('predecessor', 18081, '1.2.2', '1'), ('candidate', 18083, '1.2.3', '2')):
+        filenames = {'manifest_transport_url': 'cybex-james-release.json',
+                     'installer_iso_transport_url': role + '.iso',
+                     'package_transport_url': role + '-closure.tar.zst',
+                     'bundle_transport_url': role + '-workstation.tar.zst'}
+        value['releases'][role] = {
+            'directory': '/private/' + role, 'version': version,
+            'manifest_url': 'https://example.org/' + role + '/cybex-james-release.json',
+            'manifest_sha256': marker * 64, 'compatibility_sha256': marker * 64,
+            'transport_filenames': filenames,
+        }
+        urls['releases'][role] = {
+            'manifest_transport_url': f'http://10.99.17.1:{port}/cybex-james-release.json',
+            'installer_iso_transport_url': f'http://10.99.17.1:{port}/{role}.iso',
+            'package_transport_url': f'http://10.99.16.1:18082/{role}-closure.tar.zst',
+            'bundle_transport_url': f'http://10.99.16.1:18082/{role}-workstation.tar.zst',
+        }
+    value['artifact_transports'] = urls
+    return value
+
+
 class InputTests(unittest.TestCase):
+    def test_materialized_file_modes_survive_private_parent_umask(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            script = '''
+import importlib.util, os, pathlib, sys
+spec = importlib.util.spec_from_file_location('fixture_resources', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+os.umask(0o077)
+for mode in (0o444, 0o400, 0o600):
+    module.write(pathlib.Path(sys.argv[2]) / str(mode), b'fixture', uid=os.getuid(), mode=mode)
+'''
+            subprocess.run([sys.executable, '-B', '-c', script,
+                            str(HELPERS / 'isolated_manage_resources.py'), temporary], check=True)
+            for mode in (0o444, 0o400, 0o600):
+                self.assertEqual((Path(temporary) / str(mode)).stat().st_mode & 0o777, mode)
+
     def test_closed_configuration_and_canonical_origin(self):
         self.assertEqual(config.validate(configuration()), configuration())
-        for field, value in [('app_image', 'cybex/manage:latest'), ('manage_revision', 'main'),
+        for field, value in [('app_images', {'predecessor': 'cybex/manage:latest'}), ('manage_revision', 'main'),
                               ('backend_subnet', '8.8.8.0/28'), ('backend_subnet', '127.0.0.0/28'),
                               ('manage_origin', 'https://dev.example.test:443'),
                               ('manage_origin', 'https://dev.example.test/path'),
                               ('manage_origin', 'https://user@dev.example.test'),
                               ('egress_hosts', ['dev.example.test']), ('egress_hosts', ['127.0.0.1']),
-                              ('egress_hosts', ['*.github.com']), ('egress_hosts', ['github.com', 'github.com']),
+                              ('egress_hosts', ['github.com']),
                               ('initial_release', 'latest'), ('release_public_key', 'not-base64')]:
             with self.subTest(field=field, value=value), self.assertRaises((ValueError, TypeError)):
                 config.validate(configuration() | {field: value})
@@ -99,40 +148,67 @@ class InputTests(unittest.TestCase):
     def test_images_require_development_provenance_and_no_implicit_volumes(self):
         image = {'Id': 'sha256:' + 'a' * 64, 'Config': {'Labels': {
             'org.opencontainers.image.revision': 'a' * 40,
-            'org.opencontainers.image.source': config.SOURCE}}}
+            'org.opencontainers.image.source': config.SOURCE,
+            'net.cybex.manage.james-compatibility-projection-sha256': 'c' * 64}}}
         docker = resources.Docker(lambda args: json.dumps([image]).encode(), receipt()['owner'], 'fixture')
-        self.assertEqual(docker.image(image['Id'], 'app', 'a' * 40), image['Id'])
+        self.assertEqual(docker.image(image['Id'], 'app', 'a' * 40, 'c' * 64), image['Id'])
         for bad in [image | {'Id': 'sha256:' + 'b' * 64}, image | {'Config': {'Labels': {}}},
+                    image | {'Config': image['Config'] | {'Labels': image['Config']['Labels'] |
+                             {'net.cybex.manage.james-compatibility-projection-sha256': 'd' * 64}}},
                     image | {'Config': image['Config'] | {'Volumes': {'/host-data': {}}}}]:
             docker.run = lambda args: json.dumps([bad]).encode()
             with self.assertRaises(ValueError):
-                docker.image(image['Id'], 'app', 'a' * 40)
+                docker.image(image['Id'], 'app', 'a' * 40, 'c' * 64)
 
     def test_signer_and_origin_must_match_both_authenticated_descriptors(self):
         key = base64.b64encode(b's' * 32).decode()
         manifest = {'version': '1.2.3', 'installer_iso_template_v3': {
-            'manage_origin': configuration()['manage_origin'], 'provisioning_public_keys': [key]},
-            'appliance_release_v1': {'schema': 'v3', 'manage_source_revision': 'a' * 40}}
+            'manage_origin': configuration()['manage_origin'], 'provisioning_public_keys': [key],
+            'url': 'https://example.org/cybex-james.iso'},
+            'appliance_release_v1': {'schema': 'v3', 'manage_source_revision': 'a' * 40,
+                                     'system_closure': {'url': 'https://example.org/closure.tar.zst'}},
+            'workstation_netboot': {'url': 'https://example.org/workstation.tar.zst'}}
         manifests = [copy.deepcopy(manifest), copy.deepcopy(manifest) | {'version': '1.2.2'}]
+        compatibility = {'release_manifest': {
+            'url': 'https://github.com/org/repo/releases/manifest.json'},
+            'compatibility_sha256': 'c' * 64}
+        def snapshots(values):
+            return [{'manifest': value, 'manifest_body': ('manifest-' + value['version']).encode(),
+                     'compatibility': copy.deepcopy(compatibility),
+                     'compatibility_body': b'authenticated-compatibility'}
+                    for value in values]
         verifier = types.SimpleNamespace(
-            verify_pair=mock.Mock(side_effect=manifests), checked_json=lambda path: ({
-                'release_manifest': {'url': 'https://github.com/org/repo/releases/manifest.json'},
-                'compatibility_sha256': 'c' * 64}, b'{}'), sha=lambda path: 'd' * 64,
+            verify_pair_snapshot=mock.Mock(side_effect=snapshots(manifests)),
+            checked_json=mock.Mock(side_effect=AssertionError('must not reread compatibility')),
+            sha=mock.Mock(side_effect=AssertionError('must not rehash mutable manifest path')),
             COMPATIBILITY='compat.json', MANIFEST='manifest.json',
             release=types.SimpleNamespace(appliance_v3=types.SimpleNamespace(SCHEMA='v3')), advance=mock.Mock())
         result = config.signed_releases(configuration(), {'public_key': key}, Path('/candidate'),
                                         Path('/predecessor'), verifier=verifier)
         self.assertEqual(result['candidate']['version'], '1.2.3')
-        self.assertEqual(verifier.verify_pair.call_count, 2)
+        self.assertEqual(result['predecessor']['transport_filenames']['package_transport_url'],
+                         'closure.tar.zst')
+        self.assertEqual(result['candidate']['manifest_sha256'],
+                         hashlib.sha256(b'manifest-1.2.3').hexdigest())
+        self.assertEqual(verifier.verify_pair_snapshot.call_count, 2)
+        verifier.checked_json.assert_not_called()
+        verifier.sha.assert_not_called()
         for role in range(2):
             for field, value in [('manage_origin', 'https://other.example.test'), ('provisioning_public_keys', ['other'])]:
                 bad = copy.deepcopy(manifests)
                 bad[role]['installer_iso_template_v3'][field] = value
-                verifier.verify_pair = mock.Mock(side_effect=bad)
+                verifier.verify_pair_snapshot = mock.Mock(side_effect=snapshots(bad))
                 with self.subTest(role=role, field=field), self.assertRaises(ValueError):
                     config.signed_releases(configuration(), {'public_key': key}, Path('/candidate'),
                                             Path('/predecessor'), verifier=verifier)
-        verifier.verify_pair = mock.Mock(side_effect=ValueError('invalid signature'))
+            bad = copy.deepcopy(manifests)
+            bad[role]['appliance_release_v1']['manage_source_revision'] = 'b' * 40
+            verifier.verify_pair_snapshot = mock.Mock(side_effect=snapshots(bad))
+            with self.subTest(role=role, field='manage_source_revision'), \
+                    self.assertRaisesRegex(ValueError, 'reviewed fixture image'):
+                config.signed_releases(configuration(), {'public_key': key}, Path('/candidate'),
+                                        Path('/predecessor'), verifier=verifier)
+        verifier.verify_pair_snapshot = mock.Mock(side_effect=ValueError('invalid signature'))
         with self.assertRaisesRegex(ValueError, 'invalid signature'):
             config.signed_releases(configuration(), {'public_key': key}, Path('/candidate'),
                                     Path('/predecessor'), verifier=verifier)
@@ -143,12 +219,16 @@ class InputTests(unittest.TestCase):
             values = resources.environment(configuration(), {'seed': 'seed', 'public_key': 'public',
                 'encryption_key': 'fresh'}, {'manifest_url': 'https://github.com/exact',
                     'manifest_sha256': 'digest', 'version': '1.2.3', 'compatibility_sha256': 'compat'},
+                {'manifest_transport_url': 'http://10.99.17.1:18081/cybex-james-release.json',
+                 'bundle_transport_url': 'http://10.99.16.1:18082/workstation.tar.zst'},
                 'newpassword', 'newsshca', 'http://10.99.17.1:3128')
         self.assertNotIn('SMTP_PASSWORD', values)
         self.assertEqual(values['CYBEX_DATABASE_URL'], 'postgres://fixture:newpassword@db:5432/fixture')
         self.assertEqual(values['CYBEX_JAMES_RELEASE_MANIFEST_URL'], 'https://github.com/exact')
         self.assertEqual(values['CYBEX_JAMES_APPLIANCE_AUTOMATIC_ROLLOUTS'], 'false')
         self.assertEqual(values['HTTPS_PROXY'], 'http://10.99.17.1:3128')
+        self.assertEqual(values['CYBEX_DEV_JAMES_RELEASE_MANIFEST_TRANSPORT_URL'],
+                         'http://10.99.17.1:18081/cybex-james-release.json')
 
 
 class GuardTests(unittest.TestCase):
@@ -183,6 +263,41 @@ class GuardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.owner.guard({'context': context, 'guard': self.guard | context})
         self.assertTrue(self.owner.guard({'context': context, 'guard': self.guard | context | {'proxy_url': None}}))
+
+    def test_artifact_urls_bind_owner_roles_ports_and_signed_filenames(self):
+        saved = release_receipt()
+        urls = saved['artifact_transports']
+        self.assertIs(self.owner.artifact_urls(saved, urls), urls)
+        mutations = [
+            urls | {'owner': str(uuid.uuid4())},
+            copy.deepcopy(urls),
+            copy.deepcopy(urls),
+        ]
+        mutations[1]['releases']['predecessor']['manifest_transport_url'] = \
+            'http://10.99.17.1:18083/cybex-james-release.json'
+        mutations[2]['releases']['candidate']['package_transport_url'] = \
+            'http://10.99.16.1:18082/predecessor-closure.tar.zst'
+        for changed in mutations:
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                self.owner.artifact_urls(saved, changed)
+
+    def test_live_coordinator_attests_release_pins_and_cannot_be_adopted(self):
+        saved = release_receipt()
+        expected = {role: {key: saved['releases'][role][key]
+                           for key in ('version', 'manifest_sha256', 'compatibility_sha256')}
+                    for role in owner_module.RELEASES}
+        coordinator = mock.Mock()
+        coordinator.verify.return_value = saved['artifact_transports']
+        coordinator.receipt = {'owner': saved['owner'], 'releases': expected}
+        self.owner.artifacts = coordinator
+        self.assertEqual(self.owner.verify_artifacts(saved), saved['artifact_transports'])
+        coordinator.receipt = copy.deepcopy(coordinator.receipt)
+        coordinator.receipt['releases']['candidate']['manifest_sha256'] = 'f' * 64
+        with self.assertRaisesRegex(ValueError, 'attestation'):
+            self.owner.verify_artifacts(saved)
+        self.owner.artifacts = None
+        with self.assertRaisesRegex(ValueError, 'not retained'):
+            self.owner.verify_artifacts(saved)
 
     def test_cleanup_refuses_changed_label_or_identity_without_removing_anything(self):
         for labels, identity in [({resources.LABEL: 'other', resources.ROLE: 'app'}, 'exact'),
@@ -293,6 +408,28 @@ class GuardTests(unittest.TestCase):
                                                              mock.call('db', None), mock.call('backend', 'network-id')])
         self.assertEqual(result['status'], 'stopped')
 
+    def test_artifact_cleanup_requires_retained_instance_and_precedes_guard_removal(self):
+        saved = {'context': self.context, 'guard': self.guard, 'containers': {},
+                 'status': 'failed', 'artifact_status': 'preparing'}
+        self.owner.lock = contextlib.nullcontext
+        self.owner.read = lambda: saved
+        docker = mock.Mock()
+        self.owner.docker = lambda receipt: docker
+        with self.assertRaisesRegex(ValueError, 'retained artifact coordinator'):
+            self.owner.cleanup()
+        docker.remove_owned.assert_not_called()
+        self.adapter.cleanup.assert_not_called()
+        events = []
+        coordinator = mock.Mock()
+        coordinator.cleanup.side_effect = lambda *_args, **_kwargs: events.append('artifacts') or True
+        self.owner.artifacts = coordinator
+        self.adapter.cleanup.side_effect = lambda *_args: events.append('guard')
+        self.owner.save = mock.Mock()
+        self.owner.cleanup()
+        self.assertEqual(events, ['artifacts', 'guard'])
+        coordinator.cleanup.assert_called_once_with(self.context, purge=True)
+        self.assertEqual(saved['artifact_status'], 'stopped')
+
     def test_cleanup_resumes_after_backend_removal_and_failed_terminal_save(self):
         persisted = {'context': self.context, 'guard': None, 'containers': {}, 'status': 'failed'}
         backend_removed = False
@@ -391,6 +528,71 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(saved['files']['app.env']['sha256'], hashlib.sha256(body.encode()).hexdigest())
             self.assertEqual(list(owner.directory.glob('app.env.*')), [])
 
+    def test_release_environment_replacement_changes_exact_pins_and_transports(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            owner = owner_module.Owner(Path(temporary), self.adapter)
+            owner.directory.mkdir()
+            saved = release_receipt() | {'files': {'app.env': {}}}
+            keys = {
+                'CYBEX_JAMES_RELEASE_MANIFEST_URL': 'old-url',
+                'CYBEX_JAMES_RELEASE_MANIFEST_SHA256': 'old-manifest',
+                'CYBEX_JAMES_RELEASE_VERSION': 'old-version',
+                'CYBEX_JAMES_COMPATIBILITY_PROJECTION_SHA256': 'old-projection',
+                'CYBEX_DEV_JAMES_RELEASE_MANIFEST_TRANSPORT_URL': 'old-transport',
+                'CYBEX_DEV_JAMES_WORKSTATION_TRANSPORT_URL': 'old-bundle',
+            }
+            path = owner.directory / 'app.env'
+            path.write_bytes(resources.env_body({'UNCHANGED': 'retained', **keys}))
+            path.chmod(0o400)
+            def write_plain(target, body, **_kwargs):
+                Path(target).write_bytes(body)
+                Path(target).chmod(0o400)
+            with mock.patch.object(config, 'read_file', return_value=path.read_bytes()), \
+                    mock.patch.object(resources, 'write', side_effect=write_plain):
+                owner.replace_release_environment(saved, 'candidate')
+            body = path.read_text()
+            self.assertIn('UNCHANGED=retained\n', body)
+            self.assertIn('CYBEX_JAMES_RELEASE_VERSION=1.2.3\n', body)
+            self.assertIn('CYBEX_DEV_JAMES_RELEASE_MANIFEST_TRANSPORT_URL=http://10.99.17.1:18083/cybex-james-release.json\n', body)
+            self.assertIn('CYBEX_DEV_JAMES_WORKSTATION_TRANSPORT_URL=http://10.99.16.1:18082/candidate-workstation.tar.zst\n', body)
+            self.assertEqual(saved['files']['app.env']['sha256'], hashlib.sha256(body.encode()).hexdigest())
+
+    def test_release_selection_resumes_only_same_durable_role_and_preserves_db(self):
+        saved = release_receipt() | {
+            'status': 'ready', 'selected_release': 'predecessor', 'pending_release': None,
+            'images': {'app': {'predecessor': 'pred-image', 'candidate': 'candidate-image'},
+                       'db': 'db-image', 'tls': 'tls-image'},
+            'containers': {
+                'app': {'id': 'app-id', 'image': 'pred-image'},
+                'db': {'id': 'db-id', 'image': 'db-image'},
+                'tls': {'id': 'tls-id', 'image': 'tls-image'},
+            },
+        }
+        self.owner.lock = contextlib.nullcontext
+        self.owner.read = lambda: saved
+        self.owner.verify = mock.Mock(side_effect=lambda: saved)
+        self.owner.guard = mock.Mock(return_value=True)
+        self.owner.verify_artifacts = mock.Mock(return_value=saved['artifact_transports'])
+        self.owner.replace_release_environment = mock.Mock()
+        self.owner.save = mock.Mock()
+        self.owner.recreate_app = mock.Mock(side_effect=ValueError('interrupted after durable selection'))
+        with self.assertRaisesRegex(ValueError, 'interrupted'):
+            self.owner.select_release('candidate')
+        self.assertEqual(saved['status'], 'selecting-release')
+        self.assertEqual(saved['pending_release'], 'candidate')
+        self.assertEqual(saved['selected_release'], 'candidate')
+        self.assertEqual(saved['containers']['app']['image'], 'candidate-image')
+        self.assertEqual(saved['containers']['db'], {'id': 'db-id', 'image': 'db-image'})
+        with self.assertRaisesRegex(ValueError, 'different release'):
+            self.owner.select_release('predecessor')
+        self.owner.recreate_app = mock.Mock()
+        result = self.owner.select_release('candidate')
+        self.assertIs(result, saved)
+        self.assertEqual(saved['status'], 'ready')
+        self.assertIsNone(saved['pending_release'])
+        self.assertEqual(saved['containers']['db']['id'], 'db-id')
+        self.assertEqual(saved['containers']['tls']['id'], 'tls-id')
+
     def test_allow_device_recreates_only_app_and_persists_one_exact_target(self):
         saved = {'status': 'ready', 'organization_id': str(uuid.uuid4()), 'allowed_device_id': None,
                  'peer_ipv4': '10.99.16.1', 'context': self.context,
@@ -402,6 +604,7 @@ class GuardTests(unittest.TestCase):
         self.owner.verify = mock.Mock(return_value=saved)
         self.owner.save = mock.Mock()
         self.owner.guard = mock.Mock(return_value=True)
+        self.owner.verify_artifacts = mock.Mock(return_value={})
         self.owner.replace_app_environment = mock.Mock()
         self.owner.wait_health = mock.Mock()
         client = mock.Mock()
@@ -436,6 +639,7 @@ class GuardTests(unittest.TestCase):
         self.owner.lock = contextlib.nullcontext
         self.owner.verify = mock.Mock(return_value=saved)
         self.owner.save = mock.Mock(side_effect=lambda value: snapshots.append(copy.deepcopy(value)))
+        self.owner.verify_artifacts = mock.Mock(return_value={})
         self.owner.replace_app_environment = mock.Mock()
         client = mock.Mock()
         device = 'dev_' + '1' * 32
@@ -496,7 +700,9 @@ class GuardTests(unittest.TestCase):
 
     def test_adapter_failure_precedes_container_start_and_retains_owned_cleanup_context(self):
         with tempfile.TemporaryDirectory() as temporary:
-            owner = owner_module.Owner(Path(temporary), self.adapter)
+            factory = mock.Mock()
+            owner = owner_module.Owner(Path(temporary), self.adapter,
+                                       artifact_factory=factory)
             owner.lock = contextlib.nullcontext
             owner.scope = lambda: self.context | {'schema': 'scope', 'run': 'test'}
             owner.save = mock.Mock()
@@ -507,14 +713,67 @@ class GuardTests(unittest.TestCase):
             self.adapter.prepare.return_value = self.guard
             self.adapter.verify.return_value = False
             settings = configuration() | {'manage_origin': self.context['manage_origin']}
+            releases = {role: {'compatibility_sha256': letter * 64}
+                        for role, letter in (('predecessor', '1'), ('candidate', '2'))}
             with mock.patch.object(config, 'load', return_value=(settings, {'certificate_sha256': 'a' * 64})), \
-                 mock.patch.object(config, 'signed_releases', return_value={}):
+                 mock.patch.object(config, 'signed_releases', return_value=releases):
                 with self.assertRaises(ValueError):
                     owner.prepare(Path('/config'), Path('/candidate'), Path('/predecessor'))
             docker.create.assert_not_called()
+            factory.assert_not_called()
             saved = owner.save.call_args.args[0]
             self.assertEqual(saved['status'], 'failed')
             self.assertEqual(saved['context']['network_id'], 'network-id')
+
+    def test_prepare_orders_backend_guard_and_verified_listeners_before_app_start(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            events = []
+            saved_release = release_receipt()
+            coordinator = mock.Mock()
+            coordinator.prepare.side_effect = lambda scope: events.append('listeners-prepare') or saved_release['artifact_transports']
+            coordinator.verify.side_effect = lambda scope: events.append('listeners-verify') or saved_release['artifact_transports']
+            coordinator.receipt = {
+                'owner': saved_release['owner'],
+                'releases': {role: {key: saved_release['releases'][role][key]
+                                    for key in ('version', 'manifest_sha256', 'compatibility_sha256')}
+                             for role in owner_module.RELEASES},
+            }
+            factory = mock.Mock(return_value=coordinator)
+            owner = owner_module.Owner(Path(temporary), self.adapter, artifact_factory=factory)
+            owner.lock = contextlib.nullcontext
+            scope = saved_release['context'] | {'schema': 'scope', 'run': 'test'}
+            owner.scope = lambda: scope
+            owner.save = mock.Mock()
+            docker = mock.Mock()
+            docker.image.side_effect = lambda reference, *_args: reference
+            docker.network.return_value = 'a' * 64
+            docker.create.side_effect = lambda role, *_args, **_kwargs: events.append('create-' + role) or role + '-id'
+            docker.verify_container.return_value = {'State': {'Running': True}}
+            owner.docker = lambda receipt: docker
+            self.adapter.prepare.side_effect = lambda context: events.append('guard') or {
+                'schema': owner_module.GUARD_SCHEMA, **context, 'guard_id': 'exact-rules', 'proxy_url': None}
+            self.adapter.verify.return_value = True
+            owner.wait_database = mock.Mock()
+            owner.wait_health = mock.Mock()
+            owner.bootstrap = mock.Mock()
+            def materialize(current, *_args):
+                current['containers'] = {
+                    role: {'id': None,
+                           'image': current['images']['app'][current['selected_release']]
+                           if role == 'app' else current['images'][role],
+                           'uid': 10001, 'mounts': [],
+                           'peer': current['peer_ipv4'] if role == 'tls' else None}
+                    for role in ('db', 'app', 'tls')}
+            owner.materialize = materialize
+            settings = configuration() | {'manage_origin': scope['manage_origin']}
+            secret = {'certificate_sha256': 'a' * 64}
+            with mock.patch.object(config, 'load', return_value=(settings, secret)), \
+                    mock.patch.object(config, 'signed_releases', return_value=saved_release['releases']):
+                result = owner.prepare(Path('/config'), Path('/candidate'), Path('/predecessor'))
+            self.assertEqual(result['status'], 'ready')
+            self.assertLess(events.index('guard'), events.index('listeners-prepare'))
+            self.assertLess(events.index('listeners-verify'), events.index('create-db'))
+            factory.assert_called_once()
 
 
 class TLSTests(unittest.TestCase):
