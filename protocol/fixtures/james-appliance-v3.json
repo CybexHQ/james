@@ -1,0 +1,52 @@
+{
+  "description": "Public signature test vector only; artifact bytes do not exist. Contains no private key.",
+  "public_key": "GX9rI+FshTLGq8g4+s1ep4m+DHaykgM0A5v6iz02jWE=",
+  "appliance_release": {
+    "schema": "cybex.james.appliance-release.v3",
+    "release_id": "1.2.3",
+    "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "base_os": "nixos",
+    "base_os_version": "26.05",
+    "nixpkgs_revision": "74cc63f702f7d60a557e152a57b40fb1fd0f72ac",
+    "manage_source_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "system_toplevel": "/nix/store/00000000000000000000000000000000-nixos-system-cybex-james-26.05",
+    "system_closure": {
+      "url": "https://releases.example/1.2.3/cybex-james-appliance-closure-1.2.3-x86_64-linux.tar.zst",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "size_bytes": 1048576
+    },
+    "required_system_versions": {
+      "kernel": "6.18.38",
+      "linux-firmware": "20260622",
+      "nix": "2.34.7",
+      "cybex-james": "1.2.3",
+      "systemd-boot": "260.2"
+    },
+    "sqlite_migrations_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "minimum_protocol": 4,
+    "minimum_state_schema": 3,
+    "rollback_compatible": true,
+    "release_notes": "https://releases.example/1.2.3",
+    "signature": "R/j+1QwBge9AH2MPyOinluhvT/ON9ObcvylwEm1e0gH7Y6wxLdVVh36e91f7uVQxwt6EN8MHk9+848fAE9AtCQ=="
+  },
+  "appliance_release_message_base64": "Q1lCRVgtSkFNRVMtQVBQTElBTkNFLVJFTEVBU0UtVjMKeyJiYXNlX29zIjoibml4b3MiLCJiYXNlX29zX3ZlcnNpb24iOiIyNi4wNSIsIm1hbmFnZV9zb3VyY2VfcmV2aXNpb24iOiJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiIiwibWluaW11bV9wcm90b2NvbCI6NCwibWluaW11bV9zdGF0ZV9zY2hlbWEiOjMsIm5peHBrZ3NfcmV2aXNpb24iOiI3NGNjNjNmNzAyZjdkNjBhNTU3ZTE1MmE1N2I0MGZiMWZkMGY3MmFjIiwicmVsZWFzZV9pZCI6IjEuMi4zIiwicmVsZWFzZV9ub3RlcyI6Imh0dHBzOi8vcmVsZWFzZXMuZXhhbXBsZS8xLjIuMyIsInJlcXVpcmVkX3N5c3RlbV92ZXJzaW9ucyI6eyJjeWJleC1qYW1lcyI6IjEuMi4zIiwia2VybmVsIjoiNi4xOC4zOCIsImxpbnV4LWZpcm13YXJlIjoiMjAyNjA2MjIiLCJuaXgiOiIyLjM0LjciLCJzeXN0ZW1kLWJvb3QiOiIyNjAuMiJ9LCJyb2xsYmFja19jb21wYXRpYmxlIjp0cnVlLCJzY2hlbWEiOiJjeWJleC5qYW1lcy5hcHBsaWFuY2UtcmVsZWFzZS52MyIsInNvdXJjZV9yZXZpc2lvbiI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJzcWxpdGVfbWlncmF0aW9uc19zaGEyNTYiOiJkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkIiwic3lzdGVtX2Nsb3N1cmUiOnsic2hhMjU2IjoiY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjYyIsInNpemVfYnl0ZXMiOjEwNDg1NzYsInVybCI6Imh0dHBzOi8vcmVsZWFzZXMuZXhhbXBsZS8xLjIuMy9jeWJleC1qYW1lcy1hcHBsaWFuY2UtY2xvc3VyZS0xLjIuMy14ODZfNjQtbGludXgudGFyLnpzdCJ9LCJzeXN0ZW1fdG9wbGV2ZWwiOiIvbml4L3N0b3JlLzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwLW5peG9zLXN5c3RlbS1jeWJleC1qYW1lcy0yNi4wNSJ9",
+  "installer_iso_template": {
+    "version": "1.2.3",
+    "architecture": "x86_64-linux",
+    "base_os": "nixos",
+    "base_os_version": "26.05",
+    "url": "https://releases.example/1.2.3/cybex-james-appliance-template-1.2.3-x86_64-linux.iso",
+    "size_bytes": 16777216,
+    "template_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "personalization_offset": 1048576,
+    "personalization_size": 8192,
+    "placeholder_sha256": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+    "provisioning_public_keys": [
+      "GX9rI+FshTLGq8g4+s1ep4m+DHaykgM0A5v6iz02jWE="
+    ],
+    "package_delivery": "system-closure-v1",
+    "manage_origin": "https://console.example",
+    "signature": "5VZksQN0ytLz2Ss9oJ1NQkq4i1sgdIa0pMXN4nM5Hu6eYfAPMY+VoNvi+MgE1LHWUy7b9E+yfmrSlS4J7RmUBA=="
+  },
+  "installer_iso_template_message_base64": "Q1lCRVgtSkFNRVMtSU5TVEFMTEVSLUlTTy1URU1QTEFURS1WMwoxLjIuMwp4ODZfNjQtbGludXgKbml4b3MKMjYuMDUKaHR0cHM6Ly9yZWxlYXNlcy5leGFtcGxlLzEuMi4zL2N5YmV4LWphbWVzLWFwcGxpYW5jZS10ZW1wbGF0ZS0xLjIuMy14ODZfNjQtbGludXguaXNvCjE2Nzc3MjE2CmVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWUKMTA0ODU3Ngo4MTkyCjlmMWRjYmMzNWMzNTBkNjAyN2Y5OGJlMGY1YzhiNDNiNDJjYTUyYjc2MDQ0NTljMGM0MmJlM2FhODg5MTNkNDcKR1g5ckkrRnNoVExHcThnNCtzMWVwNG0rREhheWtnTTBBNXY2aXowMmpXRT0Kc3lzdGVtLWNsb3N1cmUtdjEKaHR0cHM6Ly9jb25zb2xlLmV4YW1wbGUK"
+}
