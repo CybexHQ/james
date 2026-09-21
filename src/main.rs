@@ -20,6 +20,22 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let command = cli.command.clone().unwrap_or(Command::Serve);
+    if matches!(
+        command,
+        Command::ApplyApplianceUpdateSchedule | Command::CheckApplianceUpdateSchedule
+    ) {
+        if effective_uid() != 0 {
+            anyhow::bail!("appliance update policy must run as root");
+        }
+        cybex_james::appliance::update_schedule::apply()?;
+        if matches!(command, Command::CheckApplianceUpdateSchedule) {
+            println!(
+                "{}",
+                cybex_james::appliance::update_schedule::readiness(chrono::Utc::now())?
+            );
+        }
+        return Ok(());
+    }
     if matches!(command, Command::VerifyApplianceUpdate) {
         #[cfg(unix)]
         if effective_uid() != 0 {
@@ -118,6 +134,9 @@ async fn main() -> anyhow::Result<()> {
         Command::ValidateApplianceConfig => {
             unreachable!("validate-appliance-config exits before database setup")
         }
+        Command::ApplyApplianceUpdateSchedule | Command::CheckApplianceUpdateSchedule => {
+            unreachable!("root command handled before opening state")
+        }
         Command::VerifyApplianceUpdate => {
             unreachable!("appliance update verification exits before config loading")
         }
@@ -164,6 +183,8 @@ fn managed_command_requires_service_user(
             Command::PrintConfig
                 | Command::ValidateApplianceConfig
                 | Command::VerifyApplianceUpdate
+                | Command::ApplyApplianceUpdateSchedule
+                | Command::CheckApplianceUpdateSchedule
                 | Command::VerifyApplianceCandidateUpdate
                 | Command::VerifyApplianceNetworkChange
                 | Command::VerifyApplianceNetworkChangeRecovery

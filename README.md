@@ -215,3 +215,21 @@ Coordinated release tags also pin the Ubuntu package snapshot cutoff in
 with `--snapshot-id`), reused across every build step, and still must advance the
 authenticated predecessor. This prevents a stale repository variable from blocking
 every subsequent James release. Old tags retain their original configured cutoff.
+
+### Managed nightly schedules and one-update exceptions
+
+The additive `appliance_update_schedule_v1` capability accepts a signed maintenance
+policy from Manage. Root independently verifies its installation identity and
+signature, rejects replayed/conflicting revisions, and atomically stores the
+accepted policy in `control/update-schedule.json`. A root timer reconciles saved
+settings even when no update is queued; the updater also reconciles before checking
+timing. Neither command opens the running agent's SQLite database.
+
+A signed schedule takes precedence over the legacy service scheduling mode.
+All seven weekdays selects every night; local IANA time-zone rules handle DST
+and windows crossing midnight. A signed **Update now** exception names one exact
+attempt, release and package digest. It changes timing only: active builds,
+signed package verification, update compatibility and recovery safeguards remain.
+The agent reports the root-accepted revision in `local_health.update_schedule`.
+Saving the recurring schedule clears an outstanding manual exception. Once an
+installation has started, its existing completion/rollback lifecycle owns recovery.

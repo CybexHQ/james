@@ -25,6 +25,8 @@ use tokio::process::Command;
 
 use crate::release_transport;
 
+pub mod update_schedule;
+
 pub const APPLIANCE_UPDATE_CAPABILITY: &str = "appliance_update_v1";
 pub const APPLIANCE_UPDATE_CAPABILITY_V2: &str = "appliance_update_v2";
 /// Additive capability for an unsigned, exact-attempt qualification transport
@@ -1777,7 +1779,8 @@ pub async fn report(state: &crate::AppState) -> Result<Option<ApplianceReport>> 
             64 * 1024,
         ).unwrap_or_else(|| json!({"status":"idle"})),
     });
-    let local_health = local_health(crate::readiness::probe(state).await).await;
+    let mut local_health = local_health(crate::readiness::probe(state).await).await;
+    local_health["update_schedule"] = update_schedule::report();
     Ok(Some(ApplianceReport {
         base_os: "ubuntu".to_string(),
         base_os_version: "26.04".to_string(),

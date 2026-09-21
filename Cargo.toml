@@ -19,6 +19,7 @@ anyhow = "1.0"
 axum = { version = "0.7", features = ["macros"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["clock", "serde"] }
+chrono-tz = "0.10"
 clap = { version = "4.5", features = ["derive", "env"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 hex = "0.4"

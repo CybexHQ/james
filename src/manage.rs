@@ -162,6 +162,8 @@ struct AgentJamesConfigResponse {
     #[serde(default)]
     network_change: Option<crate::appliance::SignedApplianceNetworkChange>,
     #[serde(default)]
+    update_schedule: Option<crate::appliance::update_schedule::SignedPolicy>,
+    #[serde(default)]
     workstation_netboot: Option<Value>,
     #[serde(default)]
     workstation_multicast: Option<Value>,
@@ -988,6 +990,9 @@ async fn apply_james_desired(
         }
     }
 
+    if let Err(error) = crate::appliance::update_schedule::store(desired.update_schedule) {
+        retain_sync_failure(first_failure, "appliance update schedule", error);
+    }
     if let Some(update) = desired.appliance_update {
         if !crate::appliance::queue_update_request(update) {
             debug!("coalesced the latest appliance update behind the in-flight download");
@@ -2475,6 +2480,7 @@ fn james_capabilities(config: &AppConfig) -> Vec<&'static str> {
     capabilities.push(crate::pxe_discovery::CAPABILITY);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V1);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V2);
+    capabilities.push(crate::appliance::update_schedule::CAPABILITY);
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1);
     if crate::netboot_multicast::binary_available(config) {
         capabilities.push(CAPABILITY_WORKSTATION_ROOTFS_MULTICAST_V1);
@@ -4413,6 +4419,7 @@ mod tests {
                 "pxe_proxy_v1",
                 "appliance_update_v1",
                 "appliance_update_v2",
+                "appliance_update_schedule_v1",
                 "appliance_update_qualification_transport_v1"
             ]
         );

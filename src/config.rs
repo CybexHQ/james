@@ -43,6 +43,8 @@ pub enum Command {
     ValidateApplianceConfig,
     /// Re-verify and extract the currently staged signed Ubuntu package update.
     VerifyApplianceUpdate,
+    ApplyApplianceUpdateSchedule,
+    CheckApplianceUpdateSchedule,
     /// Re-authenticate a legacy update request from its already-booted candidate.
     VerifyApplianceCandidateUpdate,
     /// Re-verify and materialize the currently staged signed Netplan change.
