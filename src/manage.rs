@@ -165,7 +165,7 @@ struct AgentJamesConfigResponse {
     #[serde(default)]
     update_schedule_supported: bool,
     #[serde(default)]
-    update_schedule: Option<crate::appliance::schedule::SignedPolicy>,
+    update_schedule: Option<Value>,
     #[serde(default)]
     network_change: Option<crate::appliance::SignedApplianceNetworkChange>,
     #[serde(default)]
@@ -915,8 +915,10 @@ async fn sync_james_foundation(
 ) -> Result<JamesReportReceipt> {
     let mut first_failure = None;
     let mut peer_runtime_epoch = None;
+    let mut peer_supports_scheduling = false;
     match fetch_james_config(state, managed).await {
         Ok(desired) => {
+            peer_supports_scheduling = desired.update_schedule_supported;
             peer_runtime_epoch = desired
                 .compatibility
                 .as_ref()
@@ -929,7 +931,14 @@ async fn sync_james_foundation(
             error,
         ),
     }
-    let report = match report_james_state(state, managed, peer_runtime_epoch.is_some()).await {
+    let report = match report_james_state(
+        state,
+        managed,
+        peer_runtime_epoch.is_some(),
+        peer_supports_scheduling,
+    )
+    .await
+    {
         Ok(report) => Some(report),
         Err(error) => {
             retain_sync_failure(&mut first_failure, "James state report", error);
@@ -940,6 +949,17 @@ async fn sync_james_foundation(
         return Err(error);
     }
     Ok(report.expect("successful James report returns its receipt"))
+}
+
+fn store_update_schedule(policy: Option<Value>, supported: bool) -> Result<()> {
+    if crate::appliance::nixos::is_nixos() {
+        crate::appliance::schedule::store(
+            policy.map(serde_json::from_value).transpose()?,
+            supported,
+        )
+    } else {
+        crate::appliance::update_schedule::store(policy.map(serde_json::from_value).transpose()?)
+    }
 }
 
 async fn apply_james_desired(
@@ -995,10 +1015,9 @@ async fn apply_james_desired(
         }
     }
 
-    if let Err(error) = crate::appliance::schedule::store(
-        desired.update_schedule,
-        desired.update_schedule_supported,
-    ) {
+    if let Err(error) =
+        store_update_schedule(desired.update_schedule, desired.update_schedule_supported)
+    {
         retain_sync_failure(first_failure, "appliance update schedule", error);
     }
     if let Some(update) = desired.appliance_update {
@@ -1186,6 +1205,7 @@ async fn report_james_state(
     state: &AppState,
     managed: &mut ManagedState,
     peer_supports_runtime_fencing: bool,
+    peer_supports_scheduling: bool,
 ) -> Result<JamesReportReceipt> {
     let (build_jobs, build_listing_valid) = match db::list_build_jobs_report_page(
         &state.db,
@@ -1344,7 +1364,7 @@ async fn report_james_state(
     .collect();
     let body = JamesAgentReportRequest {
         protocol_version: CYBEX_COMPONENT_PROTOCOL_VERSION,
-        capabilities: james_capabilities(&state.config),
+        capabilities: james_capabilities(&state.config, peer_supports_scheduling),
         cache,
         build_jobs,
         cache_artifacts,
@@ -2479,7 +2499,7 @@ async fn signed_request_for_config(
     })
 }
 
-fn james_capabilities(config: &AppConfig) -> Vec<&'static str> {
+fn james_capabilities(config: &AppConfig, peer_supports_scheduling: bool) -> Vec<&'static str> {
     let mut capabilities = vec![
         CAPABILITY_BOOT_V1,
         CAPABILITY_BUILDER_V1,
@@ -2502,7 +2522,7 @@ fn james_capabilities(config: &AppConfig) -> Vec<&'static str> {
         CAPABILITY_APPLIANCE_UPDATE_V2
     });
     capabilities.push(CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1);
-    if crate::appliance::nixos::is_nixos() {
+    if peer_supports_scheduling {
         capabilities.push(crate::appliance::schedule::CAPABILITY);
     }
     if crate::netboot_multicast::binary_available(config) {
@@ -4426,7 +4446,7 @@ mod tests {
     fn james_capabilities_report_build_and_cache() {
         let config = AppConfig::default();
         assert_eq!(
-            james_capabilities(&config),
+            james_capabilities(&config, true),
             vec![
                 "boot_v1",
                 "builder_v1",
@@ -4443,8 +4463,28 @@ mod tests {
                 "pxe_proxy_v1",
                 "appliance_update_v1",
                 "appliance_update_v2",
-                "appliance_update_qualification_transport_v1"
+                "appliance_update_qualification_transport_v1",
+                "appliance_update_schedule_v1"
             ]
+        );
+    }
+
+    #[test]
+    fn scheduling_capability_requires_explicit_manage_support() {
+        let older: AgentJamesConfigResponse = serde_json::from_value(json!({})).unwrap();
+        let newer: AgentJamesConfigResponse =
+            serde_json::from_value(json!({"update_schedule_supported":true})).unwrap();
+        let config = AppConfig::default();
+        let legacy = james_capabilities(&config, older.update_schedule_supported);
+        let modern = james_capabilities(&config, newer.update_schedule_supported);
+        assert!(!legacy.contains(&crate::appliance::update_schedule::CAPABILITY));
+        assert!(modern.contains(&crate::appliance::update_schedule::CAPABILITY));
+        assert_eq!(
+            modern
+                .into_iter()
+                .filter(|cap| *cap != crate::appliance::update_schedule::CAPABILITY)
+                .collect::<Vec<_>>(),
+            legacy
         );
     }
 

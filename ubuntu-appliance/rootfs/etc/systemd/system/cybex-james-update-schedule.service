@@ -1,0 +1,8 @@
+[Unit]
+Description=Apply the signed Cybex James maintenance schedule
+After=cybex-james.service
+ConditionPathExists=/var/lib/cybex-james/state/inbox/update-schedule.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/cybex-james apply-appliance-update-schedule

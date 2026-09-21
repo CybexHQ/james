@@ -30,6 +30,22 @@ async fn main() -> anyhow::Result<()> {
         );
         return Ok(());
     }
+    if matches!(
+        command,
+        Command::ApplyApplianceUpdateSchedule | Command::CheckApplianceUpdateSchedule
+    ) {
+        if effective_uid() != 0 {
+            anyhow::bail!("appliance update policy must run as root");
+        }
+        cybex_james::appliance::update_schedule::apply()?;
+        if matches!(command, Command::CheckApplianceUpdateSchedule) {
+            println!(
+                "{}",
+                cybex_james::appliance::update_schedule::readiness(chrono::Utc::now())?
+            );
+        }
+        return Ok(());
+    }
     if matches!(command, Command::VerifyApplianceUpdate) {
         #[cfg(unix)]
         if effective_uid() != 0 {
@@ -134,6 +150,9 @@ async fn main() -> anyhow::Result<()> {
         Command::VerifyApplianceUpdatePolicy => {
             unreachable!("policy verification exits before config loading")
         }
+        Command::ApplyApplianceUpdateSchedule | Command::CheckApplianceUpdateSchedule => {
+            unreachable!("root command handled before opening state")
+        }
         Command::VerifyApplianceUpdate => {
             unreachable!("appliance update verification exits before config loading")
         }
@@ -182,6 +201,8 @@ fn managed_command_requires_service_user(
                 | Command::VerifyApplianceUpdate
                 | Command::VerifyApplianceUpdatePolicy
                 | Command::VerifyApplianceDatabase { .. }
+                | Command::ApplyApplianceUpdateSchedule
+                | Command::CheckApplianceUpdateSchedule
                 | Command::VerifyApplianceCandidateUpdate
                 | Command::VerifyApplianceNetworkChange
                 | Command::VerifyApplianceNetworkChangeRecovery

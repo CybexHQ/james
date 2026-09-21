@@ -50,6 +50,8 @@ pub enum Command {
         #[arg(long)]
         database: PathBuf,
     },
+    ApplyApplianceUpdateSchedule,
+    CheckApplianceUpdateSchedule,
     /// Re-authenticate a legacy update request from its already-booted candidate.
     VerifyApplianceCandidateUpdate,
     /// Re-verify and materialize the currently staged signed Netplan change.

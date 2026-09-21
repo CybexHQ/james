@@ -87,7 +87,7 @@ systemctl mask apt-daily.service apt-daily-upgrade.service \
   apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service >/dev/null 2>&1 || true
 systemctl daemon-reload >/dev/null 2>&1 || true
 systemctl enable cybex-james-first-boot.service cybex-james-firewall.service cybex-james.service \
-  cybex-james-generation-commit.service cybex-james-appliance-update.timer \
+  cybex-james-generation-commit.service cybex-james-appliance-update.timer cybex-james-update-schedule.timer \
   cybex-james-network-change.path cybex-james-network-runtime.timer cybex-james-pxe.service \
   getty@tty1.service nginx tftpd-hpa nix-daemon ssh >/dev/null 2>&1 || true
 

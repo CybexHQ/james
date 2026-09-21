@@ -2,6 +2,12 @@
 # Root service policy; never read the scheduling mode from the untrusted inbox.
 # Exit 75 means wait for the configured window; other failures are invalid policy.
 set -euo pipefail
+case "$(/usr/bin/cybex-james check-appliance-update-schedule)" in
+  ready) exit 0 ;;
+  waiting) exit 75 ;;
+  legacy) ;;
+  *) echo "Invalid signed appliance schedule" >&2; exit 1 ;;
+esac
 case "${CYBEX_JAMES_APPLIANCE_UPDATE_SCHEDULE:-immediate}" in
   immediate) exit 0 ;;
   maintenance_window) ;;
