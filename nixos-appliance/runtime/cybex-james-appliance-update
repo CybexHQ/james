@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+from generation_update import stage
+try:
+    stage()
+except BlockingIOError:
+    pass  # A live build/network/GC transaction retains admission; timer retries.

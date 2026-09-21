@@ -1,0 +1,3 @@
+#!/usr/bin/env python3
+from generation_update import commit
+commit()

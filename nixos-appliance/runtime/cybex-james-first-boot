@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Materialize only protected state and inspect the actually booted generation."""
+import hashlib
+import os
+from pathlib import Path
+import subprocess
+from appliance_state import CONTROL, STATUS, STATE, INBOX, UID, GID, current, directory, load, read, run, save, write
+
+
+def main():
+    for mount in (STATE, CONTROL, STATUS, Path('/nix')):
+        if not os.path.ismount(mount):
+            raise ValueError('missing protected appliance mount: ' + str(mount))
+    directory(STATE, 0o750)
+    directory(CONTROL, 0o750)
+    directory(STATUS, 0o750)
+    directory(STATE / 'agent', 0o700, UID)
+    directory(INBOX, 0o700, UID)
+    for name in ('home', 'cache', 'config', 'state', 'tmp'):
+        directory(Path('/var/cache/cybex-james/agent') / name, 0o700, UID)
+    for name in ('www', 'www/assets'):
+        directory(Path('/var/cache/cybex-james') / name, 0o755, UID)
+    for name in ('www/cache', 'build', 'build-outputs'):
+        directory(Path('/var/cache/cybex-james') / name, 0o750, UID)
+    directory('/var/cache/cybex-james/tftp', 0o755, 0, 0)
+    for source, destination, mode in (
+        ('config.toml', '/etc/cybex-james/config.toml', 0o640),
+        ('ssh-ca.pub', '/etc/ssh/cybex-james-ca.pub', 0o644),
+        ('principals', '/etc/ssh/cybex-james-principals', 0o644),
+    ):
+        write(Path(destination), read(CONTROL / source), mode=mode)
+    store_options = set(run('findmnt', '-n', '-o', 'OPTIONS', '/nix').split(','))
+    if not {'rw', 'nodev', 'nosuid'} <= store_options or 'noexec' in store_options:
+        raise ValueError('unsafe Nix store mount policy')
+    if Path('/nix/store').stat().st_uid != 0:
+        raise ValueError('Nix store is not root owned')
+    source = Path(os.environ['CYBEX_IPXE_SOURCE'])
+    for filename in ('snponly.efi', 'ipxe.efi'):
+        body = (source / filename).read_bytes()
+        if not 32768 <= len(body) <= 4194304 or body[:2] != b'MZ':
+            raise ValueError('invalid immutable iPXE image')
+        write(Path('/var/cache/cybex-james/tftp') / filename, body, mode=0o644, group=0)
+    body = Path(os.environ['CYBEX_HANDOFF_SOURCE']).read_bytes()
+    if not body.startswith(b'#!ipxe\n') or not 64 <= len(body) <= 4096:
+        raise ValueError('invalid iPXE handoff')
+    write(Path('/var/cache/cybex-james/tftp/autoexec.ipxe'), body, mode=0o644, group=0)
+    run('/usr/lib/cybex-james/cybex-james-bootstrap', 'validate-installed-state')
+    run('/usr/lib/cybex-james/cybex-james-network-guard', timeout=120)
+    run('/usr/lib/cybex-james/cybex-james-bootstrap', 'reconcile-network-runtime')
+    run('/usr/bin/cybex-james', '--config', '/etc/cybex-james/config.toml', 'validate-appliance-config')
+    run('sshd', '-t')
+    from generation_update import recover_boot
+    recover_boot()
+
+
+if __name__ == '__main__':
+    main()

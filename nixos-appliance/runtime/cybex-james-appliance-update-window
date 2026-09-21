@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""Only a root-verified signed policy can authorize time-window or Update now."""
+import datetime
+import json
+from pathlib import Path
+import subprocess
+import sys
+from zoneinfo import ZoneInfo
+from appliance_state import CONTROL, INBOX, UID, load, run
+
+
+def allowed(policy, request, now):
+    immediate = policy.get('run_now')
+    release = request['release']
+    if immediate and (immediate['attempt_id'] == request['attempt_id']
+            and immediate['release_id'] == release['release_id']
+            and immediate['system_closure_sha256'] == release['system_closure']['sha256']):
+        return True
+    schedule = policy['schedule']
+    local = now.astimezone(ZoneInfo(schedule['timezone']))
+    current_minute = ((local.weekday() + 1) % 7) * 1440 + local.hour * 60 + local.minute
+    hour, minute = map(int, schedule['start'].split(':'))
+    return any((current_minute - day * 1440 - hour * 60 - minute) % 10080 < schedule['duration_minutes'] for day in schedule['weekdays'])
+
+
+def main():
+    if not (INBOX / 'update-schedule.json').exists() and not (CONTROL / 'update-schedule.json').exists():
+        return 75
+    verified = run('/usr/bin/cybex-james', 'verify-appliance-update-policy')
+    if verified != str(CONTROL / 'update-schedule.json'):
+        raise ValueError('invalid verified policy path')
+    policy = load(Path(verified), maximum=64 * 1024)
+    request = load(INBOX / 'appliance-update-request.json', owner=UID)
+    return 0 if allowed(policy, request, datetime.datetime.now(datetime.timezone.utc)) else 75
+
+
+if __name__ == '__main__':
+    sys.exit(main())

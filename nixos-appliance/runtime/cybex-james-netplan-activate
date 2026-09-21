@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Render the historical signed network JSON directly to networkd, without Netplan."""
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import tempfile
+import time
+
+ACTIVE = Path('/etc/netplan/90-cybex-james.yaml')
+TARGET = Path('/run/systemd/network/10-cybex-james.network')
+
+
+def render(value):
+    network = value['network']
+    if network['version'] != 2 or network['renderer'] != 'networkd' or set(network['ethernets']) != {'cybex-james'}:
+        raise ValueError('invalid approved network contract')
+    interface = network['ethernets']['cybex-james']
+    name = interface['set-name']
+    mac = interface['match']['macaddress']
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}', name) or name == 'lo':
+        raise ValueError('invalid interface name')
+    if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac) or int(mac[:2], 16) & 1:
+        raise ValueError('invalid interface MAC')
+    if type(interface['dhcp4']) is not bool or interface.get('dhcp6') is not False:
+        raise ValueError('invalid DHCP mode')
+    lines = ['[Match]', f'Name={name}', f'MACAddress={mac}', '', '[Network]',
+             'IPv6AcceptRA=no', 'LinkLocalAddressing=no', 'DHCP=ipv4' if interface['dhcp4'] else 'DHCP=no']
+    if not interface['dhcp4']:
+        if len(interface['addresses']) != 1 or len(interface['routes']) != 1:
+            raise ValueError('invalid static address set')
+        address = ipaddress.IPv4Interface(interface['addresses'][0])
+        route = interface['routes'][0]
+        if route['to'] != 'default':
+            raise ValueError('invalid default route')
+        gateway = ipaddress.IPv4Address(route['via'])
+        lines += [f'Address={address}', f'Gateway={gateway}']
+        dns = interface['nameservers']['addresses']
+        if not 1 <= len(dns) <= 8:
+            raise ValueError('invalid resolver count')
+        lines += [f'DNS={ipaddress.IPv4Address(value)}' for value in dns]
+    return name, ('\n'.join(lines) + '\n').encode()
+
+
+def main():
+    import grp
+    fd = os.open(ACTIVE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        meta = os.fstat(stream.fileno())
+        if not stat.S_ISREG(meta.st_mode) or meta.st_uid != 0 or meta.st_nlink != 1 or stat.S_IMODE(meta.st_mode) != 0o600:
+            raise ValueError('unsafe active network plan')
+        raw = stream.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise ValueError('network plan is oversized')
+    name, body = render(json.loads(raw))
+    TARGET.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=TARGET.parent, prefix='.cybex-network-')
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            os.fchmod(stream.fileno(), 0o640)
+            os.fchown(stream.fileno(), 0, grp.getgrnam('systemd-network').gr_gid)
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, TARGET)
+        if os.environ.get('CYBEX_NETWORK_RENDER_ONLY') == '1':
+            return
+        subprocess.run(['networkctl', 'reload'], check=True)
+        subprocess.run(['networkctl', 'reconfigure', name], check=True)
+        for _ in range(60):
+            status = subprocess.run(['networkctl', '--no-pager', 'status', name], capture_output=True, text=True, timeout=5,
+                                    env={**os.environ, 'SYSTEMD_COLORS': '0', 'SYSTEMD_URLIFY': '0', 'LC_ALL': 'C'})
+            if re.search(r'Network File:\s*' + re.escape(str(TARGET)) + r'\s*$', status.stdout, re.MULTILINE):
+                return
+            time.sleep(.5)
+        raise RuntimeError('networkd did not select the managed profile')
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+"""Replace the complete support SSH boundary atomically in one nft transaction."""
+import ipaddress
+from pathlib import Path
+import subprocess
+from appliance_state import read
+
+
+def render(content, existing):
+    addresses = [ipaddress.ip_network(line.strip(), strict=True) for line in content.splitlines() if line.strip()]
+    if len(addresses) > 128:
+        raise ValueError('too many management CIDRs')
+    rules = ['delete table inet cybex_james'] if existing else []
+    rules += ['table inet cybex_james {', 'chain input {', 'type filter hook input priority -10; policy accept;']
+    for version, family in ((4, 'ip'), (6, 'ip6')):
+        selected = [str(address) for address in addresses if address.version == version]
+        if selected:
+            rules += [family + ' saddr { ' + ', '.join(selected) + ' } tcp dport 22 accept']
+    rules += ['tcp dport 22 drop', '}', '}']
+    return '\n'.join(rules) + '\n'
+
+
+def main():
+    content = read(Path('/var/lib/cybex-james/control/management-cidrs.txt'), maximum=16384).decode('ascii')
+    existing = subprocess.run(['nft', 'list', 'table', 'inet', 'cybex_james'], capture_output=True).returncode == 0
+    rules = render(content, existing)
+    subprocess.run(['nft', '--check', '-f', '-'], input=rules, text=True, check=True)
+    subprocess.run(['nft', '-f', '-'], input=rules, text=True, check=True)
+
+
+if __name__ == '__main__':
+    main()

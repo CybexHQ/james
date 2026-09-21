@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+from generation_update import gc
+try:
+    gc()
+except BlockingIOError:
+    pass
