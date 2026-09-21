@@ -9,7 +9,9 @@ import urllib.error
 
 
 GET_ATTEMPTS = 4
-RETRYABLE_STATUS = frozenset({408, 429, 502, 503, 504})
+# 525 is an authenticated gateway response for an upstream handshake failure.
+# Client certificate validation and gateway invalid-origin-certificate 526 stay fatal.
+RETRYABLE_STATUS = frozenset({408, 429, 502, 503, 504, 525})
 RETRYABLE_ERRNOS = frozenset({
     errno.ECONNABORTED,
     errno.ECONNREFUSED,

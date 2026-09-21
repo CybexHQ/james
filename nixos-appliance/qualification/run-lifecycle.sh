@@ -197,7 +197,7 @@ api() {
     # Curl 22 identifies an HTTP failure; all other listed codes are bounded
     # connection, timeout, incomplete-response, or TLS-handshake failures.
     if ((attempt == max_attempts)) || {
-      [[ "$status" = 22 ]] && [[ ! "$http_code" =~ ^(408|429|502|503|504)$ ]]
+      [[ "$status" = 22 ]] && [[ ! "$http_code" =~ ^(408|429|502|503|504|525)$ ]]
     } || {
       [[ "$status" != 22 ]] && [[ ! "$status" =~ ^(6|7|18|28|35|52|55|56|92)$ ]]
     }; then

@@ -63,7 +63,7 @@ class QualificationHttpTests(unittest.TestCase):
         self.assertEqual(sleep.call_count, HTTP.GET_ATTEMPTS - 1)
 
     def test_only_selected_transient_http_statuses_are_retried(self):
-        for status in (408, 429, 502, 503, 504):
+        for status in (408, 429, 502, 503, 504, 525):
             with self.subTest(status=status):
                 client = Mock()
                 error = urllib.error.HTTPError(
@@ -83,6 +83,17 @@ class QualificationHttpTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError):
             HTTP.request_json(client, request(), timeout=10, max_bytes=1024)
         client.open.assert_called_once()
+
+    def test_gateway_retry_does_not_retry_mutations_or_invalid_origin_certificates(self):
+        for method, status in (('POST', 525), ('GET', 526)):
+            with self.subTest(method=method, status=status):
+                client = Mock()
+                client.open.side_effect = urllib.error.HTTPError(
+                    request().full_url, status, 'gateway failure', {}, io.BytesIO())
+                with self.assertRaises(urllib.error.HTTPError):
+                    HTTP.request_json(client, request(method), timeout=10,
+                                      max_bytes=1024, sleep=Mock())
+                client.open.assert_called_once()
 
     def test_response_cap_is_not_retried(self):
         client = Mock()
@@ -129,6 +140,32 @@ class QualificationHttpTests(unittest.TestCase):
         with self.assertRaises(urllib.error.URLError):
             HTTP.request_json(client, request(), timeout=10, max_bytes=1024)
         client.open.assert_called_once()
+
+    def test_shell_gateway_handshake_retries_are_bounded_and_readonly(self):
+        script = (ROOT / 'nixos-appliance/qualification/run-lifecycle.sh').read_text()
+        function = script[script.index('api() {'):script.index('\n}\n\ncheck_delivery_policy') + 2]
+        command = function + r'''
+curl() {
+  local calls
+  calls="$(cat "$work_dir/calls" 2>/dev/null || printf 0)"
+  printf '%s' "$((calls + 1))" > "$work_dir/calls"
+  printf '%s' "$reported_code"
+  return 22
+}
+sleep() { :; }
+work_dir="$1"
+reported_code="$2"
+token=private
+manage_origin=https://dev.example.test
+if api "$3" /v1/test; then exit 99; else status=$?; fi
+[[ "$status" = 22 ]]
+'''
+        for method, status, attempts in (('GET', 525, 4), ('POST', 525, 1), ('GET', 526, 1)):
+            with self.subTest(method=method, status=status), tempfile.TemporaryDirectory() as temporary:
+                result = subprocess.run(['bash', '-c', command, 'test', temporary, str(status), method],
+                                        capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((Path(temporary) / 'calls').read_text(), str(attempts))
 
     def test_shell_api_propagates_curl_failure_from_conditional_call(self):
         script = (ROOT / 'nixos-appliance/qualification/run-lifecycle.sh').read_text()
