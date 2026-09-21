@@ -2,6 +2,7 @@
 import base64
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,18 @@ import uuid
 
 import release_acceptance
 import release_predecessor
+
+try:
+    import schedule_admission
+except ModuleNotFoundError as error:
+    if error.name != 'schedule_admission':
+        raise
+    # Some unit tests load this file directly without placing its sibling
+    # directory on sys.path. Load the same reviewed helper by exact path.
+    _spec = importlib.util.spec_from_file_location(
+        'transition_schedule_admission', Path(__file__).with_name('schedule_admission.py'))
+    schedule_admission = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(schedule_admission)
 
 UTC = datetime.timezone.utc
 EXPECTED_FIELDS = ('device_incarnation_id', 'current_release', 'nixpkgs_revision',
@@ -157,7 +170,8 @@ def write_evidence(output, evidence):
 
 def run(api, fixture, candidate, candidate_body, previous, previous_body, evidence,
         evidence_digest, transport_url, output, source, rollback=False, *, clock=time.monotonic,
-        sleep=time.sleep, now=lambda: datetime.datetime.now(UTC), timeout=3600):
+        sleep=time.sleep, now=lambda: datetime.datetime.now(UTC), timeout=3600,
+        exercise_admission=False):
     before = fixture.wait_ready(api)
     if before.get('device_id') != evidence['device_id'] or fixture.device != evidence['device_id']:
         raise ValueError('Running predecessor identity differs from its fixture')
@@ -165,14 +179,27 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
     # heartbeats nor a cached local response advance james_reported_at.
     seen_before = timestamp(before['james_reported_at'])
     prefix = f'/v1/james/nodes/{fixture.device}'
-    expected = verify_preflight(api(prefix + '/qualification-updates'), before,
-        previous['appliance_release_v1'], evidence['system_generation'])
-    preserved_identity = identity(before)
-    request = {'request_id': str(uuid.uuid4()), 'expires_at': (now() + datetime.timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        'expected': expected, 'candidate': {'release_manifest_json_b64': base64.b64encode(candidate_body).decode(),
-        'release_manifest_sha256': hashlib.sha256(candidate_body).hexdigest(), 'package_transport_url': transport_url}}
-    started = now()
-    attempt = verify_admission(api(prefix + '/qualification-updates', request), request, candidate, fixture.device)
+    admission = (schedule_admission.AdmissionExercise(api, fixture.device, clock=clock,
+        sleep=sleep, now=now, timeout=min(timeout, 300)) if exercise_admission else None)
+    try:
+        expected = verify_preflight(api(prefix + '/qualification-updates'), before,
+            previous['appliance_release_v1'], evidence['system_generation'])
+        preserved_identity = identity(before)
+        request = {'request_id': str(uuid.uuid4()), 'expires_at': (now() + datetime.timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'expected': expected, 'candidate': {'release_manifest_json_b64': base64.b64encode(candidate_body).decode(),
+            'release_manifest_sha256': hashlib.sha256(candidate_body).hexdigest(), 'package_transport_url': transport_url}}
+        if admission:
+            admission.prepare(request)
+        started = now()
+        if admission:
+            admission.mark_queue_started()
+        attempt = verify_admission(api(prefix + '/qualification-updates', request), request, candidate, fixture.device)
+        admission_evidence = (admission.activate(attempt, expected, candidate['version'],
+            candidate['appliance_release_v1']['system_closure']['sha256'], started) if admission else None)
+    except BaseException:
+        if admission:
+            admission.cleanup(False)
+        raise
     deadline = clock() + timeout
     first_reset = fallback_reset = None
     reset_reports_after = None
@@ -263,11 +290,19 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
                     fault='isolated_candidate_nic_disconnected_until_automatic_fallback')
             else:
                 result.update(fresh_health_successes=len(fresh_health), authenticated_manage_contact=True)
+            if admission:
+                result['q07_admission'] = admission_evidence
             release_acceptance.validate_transition(candidate, result['candidate_manifest_sha256'], previous,
                 result['predecessor_manifest_sha256'], result, source, phase)
+            if admission:
+                admission.mark_terminal()
+                admission.cleanup(True)
+                admission = None
             write_evidence(output, result)
             return result
         raise ValueError('Appliance transition qualification timed out')
     finally:
         if nic_down and fixture.process.poll() is None:
             fixture.monitor.call('set_link', {'name': 'nic0', 'up': True})
+        if admission:
+            admission.cleanup(False)

@@ -64,7 +64,8 @@ def execute(args):
         transport = f'http://{bind}:{port}/{filename}'
         with fixture:
             return transition_lifecycle.run(api, fixture, candidate, candidate_body, previous, previous_body,
-                evidence, hashlib.sha256(evidence_body).hexdigest(), transport, args.output, source, args.rollback)
+                evidence, hashlib.sha256(evidence_body).hexdigest(), transport, args.output, source, args.rollback,
+                exercise_admission=getattr(args, 'exercise_admission', False))
     finally:
         stop(server)
         port_file.unlink(missing_ok=True)
@@ -76,6 +77,8 @@ def main():
     for name in ('state-dir', 'fixture', 'predecessor-evidence', 'predecessor-manifest', 'candidate-manifest', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--rollback', action='store_true')
+    parser.add_argument('--exercise-admission', action='store_true',
+        help='exercise bounded Q07 schedule, hold, lease, and Update now policy')
     execute(parser.parse_args())
 
 
