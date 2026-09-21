@@ -169,7 +169,10 @@ def main(argv=None):
         raise ValueError('Current runner cannot guarantee no-fetch artifact admission')
     if os.geteuid() != 0:
         raise ValueError('Existing qualification runner requires root')
-    io.directory(args.evidence_dir.parent)
+    for path in (args.candidate_dir, args.state_root, args.evidence_dir.parent, args.timing_dir.parent):
+        io.directory(path)
+    if args.phase == 'warm':
+        io.directory(args.predecessor_dir)
     if args.evidence_dir.exists() or args.evidence_dir.is_symlink():
         raise ValueError('Fresh evidence directory required')
     identity = {'source_sha256': io.digest(args.source.encode()),
