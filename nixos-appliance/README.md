@@ -171,6 +171,12 @@ validate. No public substituter or build fallback is allowed during installation
 or update import. Root reopens and privately pins a daemon-downloaded archive
 before verifying/importing it; an untrusted inbox path is never a trust receipt.
 
+The installed Blueprint builder uses `https://cache.nixos.org` with its pinned
+public signing key and mandatory signatures for workstation dependencies. This
+is separate from appliance import: the ISO has release-only trust, and the
+installer/updater verify the release archive and disable remote substitution.
+The James service remains an untrusted Nix daemon user.
+
 ## V3 release and media contract
 
 James protocol remains **4**; workstation epoch **1** and `split-squashfs-v1`

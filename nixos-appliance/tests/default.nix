@@ -1,6 +1,7 @@
 { nixpkgs, pkgs, common }:
 {
   console = import ./console-vm.nix { inherit nixpkgs; };
+  blueprintCachePolicy = import ./blueprint-cache-policy.nix { inherit nixpkgs pkgs; };
   daemonPath = import ./daemon-path-vm.nix { inherit nixpkgs; };
   sshPolicy = import ./ssh-policy-vm.nix { inherit nixpkgs common; };
   firstBoot = import ./first-boot-vm.nix { inherit nixpkgs common; };

@@ -47,8 +47,15 @@ in {
       sandbox = true;
       allowed-users = [ "root" "@nix-users" ];
       trusted-users = [ "root" ];
-      substituters = lib.mkForce [];
-      trusted-public-keys = lib.mkForce [ "cybex-james-appliance-1:${a.releasePublicKey}" ];
+      # Blueprint builds need upstream binary dependencies. Appliance imports
+      # separately verify every NAR against the release key and disable remote
+      # substitution explicitly; recovery media retains release-only trust.
+      substituters = lib.mkForce [ "https://cache.nixos.org" ];
+      trusted-public-keys = lib.mkForce [
+        "cybex-james-appliance-1:${a.releasePublicKey}"
+        "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+      ];
+      require-sigs = true;
       experimental-features = [ "nix-command" "flakes" ]; # existing Blueprint jobs use governed flakes
       auto-optimise-store = false; # source exposure explicitly preserves nlink=1
     };
