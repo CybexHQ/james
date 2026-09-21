@@ -666,6 +666,9 @@ jobs:
           set -Eeuo pipefail
           arguments=()
           explicit_fixture=false
+          snapshot_parent="$RUNNER_TEMP/cybex-james-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          predecessor="$snapshot_parent/predecessor"
+          install -d -m 0700 "$snapshot_parent"
           if [ "$CYBEX_JAMES_HAS_PREDECESSOR" = true ]; then
             arguments+=(--expected-identity dist/cybex-james-build-predecessor.json)
           fi
@@ -690,7 +693,7 @@ jobs:
             python3 -B release/beast/release_speed.py cache \
               --mode github-warm \
               --cache-root "$CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT" \
-              --directory "$RUNNER_TEMP/cybex-james-qualification-predecessor" \
+              --directory "$predecessor" \
               --predecessor-dir "$CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR" \
               --predecessor-manifest-sha256 "$CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256" \
               --expected-identity dist/cybex-james-build-predecessor.json \
@@ -704,11 +707,11 @@ jobs:
               --repository "$GITHUB_REPOSITORY" \
               --candidate-version "$CYBEX_JAMES_RELEASE_VERSION" \
               --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
-              --directory "$RUNNER_TEMP/cybex-james-qualification-predecessor" \
-              --output "$RUNNER_TEMP/cybex-james-qualification-predecessor/identity.json" \
+              --directory "$predecessor" \
+              --output "$predecessor/identity.json" \
               --download-media "${arguments[@]}"
           fi
-          test "$(jq -er '.appliance_release_v1.schema' "$RUNNER_TEMP/cybex-james-qualification-predecessor/cybex-james-release.json")" = cybex.james.appliance-release.v3
+          test "$(jq -er '.appliance_release_v1.schema' "$predecessor/cybex-james-release.json")" = cybex.james.appliance-release.v3
 
       - name: Upload bounded predecessor-cache timing
         if: always()
@@ -733,7 +736,7 @@ jobs:
             --allow-device-helper "$CYBEX_JAMES_QUALIFICATION_ALLOW_DEVICE_HELPER" \
             --manage-checkout "$CYBEX_JAMES_QUALIFICATION_MANAGE_CHECKOUT" \
             --candidate-dir "$GITHUB_WORKSPACE/dist" \
-            --predecessor-dir "$RUNNER_TEMP/cybex-james-qualification-predecessor" \
+            --predecessor-dir "$RUNNER_TEMP/cybex-james-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/predecessor" \
             --evidence-dir "$RUNNER_TEMP/cybex-james-evidence" \
             --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
 
@@ -758,6 +761,7 @@ jobs:
           rm -rf -- "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE/candidate-receipt" "$GITHUB_WORKSPACE/manage-source"
           rm -rf -- "$RUNNER_TEMP/cybex-james-unsigned-closure" "$RUNNER_TEMP/cybex-james-template" "$RUNNER_TEMP/cybex-workstation-netboot-tree"
           rm -rf -- "$RUNNER_TEMP/cybex-james-predecessor" "$RUNNER_TEMP/cybex-james-qualification-predecessor" "$RUNNER_TEMP/cybex-james-retained-manage-source"
+          rm -rf -- "$RUNNER_TEMP/cybex-james-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           rm -rf -- "$RUNNER_TEMP/cybex-james-release-speed-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 
 
