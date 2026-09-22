@@ -88,12 +88,13 @@ class Server:
         operation = value.get('operation')
         if operation == 'api' and set(value) == {'operation', 'path', 'body'}:
             return self.owner.api(value['path'], value['body'])
-        if operation == 'closure_url' and set(value) == {'operation', 'manifest_sha256'}:
+        if operation == 'installer_transports' and set(value) == {'operation', 'manifest_sha256'}:
             receipt = self.owner.verify()
             selected = receipt['selected_release']
             if value['manifest_sha256'] != receipt['releases'][selected]['manifest_sha256']:
                 raise ValueError('closure request does not match the selected authenticated release')
-            return receipt['artifact_transports']['releases'][selected]['package_transport_url']
+            transports = receipt['artifact_transports']['releases'][selected]
+            return {key: transports[key] for key in ('package_transport_url', 'installer_iso_transport_url')}
         if operation == 'personalize' and set(value) == {'operation', 'path', 'secret'}:
             import re
             if not re.fullmatch(r'/v1/james/provisioning-sessions/[0-9a-f-]{36}/personalization-envelope', value['path']):
@@ -130,7 +131,7 @@ class Server:
 def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument('--state-dir', type=Path, required=True)
-    parser.add_argument('operation', choices=('api', 'personalize', 'allow-device', 'closure-url'))
+    parser.add_argument('operation', choices=('api', 'personalize', 'allow-device', 'installer-transports'))
     parser.add_argument('--path')
     parser.add_argument('--body')
     parser.add_argument('--output', type=Path)
@@ -141,8 +142,8 @@ def main():
     if args.operation == 'api':
         print(json.dumps(request(args.state_dir, 'api', path=args.path,
                                  body=json.loads(args.body) if args.body else None)))
-    elif args.operation == 'closure-url':
-        print(request(args.state_dir, 'closure_url', manifest_sha256=args.manifest_sha256))
+    elif args.operation == 'installer-transports':
+        print(json.dumps(request(args.state_dir, 'installer_transports', manifest_sha256=args.manifest_sha256)))
     elif args.operation == 'personalize':
         secret = sys.stdin.readline(8193).strip()
         result = request(args.state_dir, 'personalize', path=args.path, secret=secret)

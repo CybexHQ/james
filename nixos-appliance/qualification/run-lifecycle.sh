@@ -236,6 +236,7 @@ python3 -B "$repository_root/nixos-appliance/qualification/blueprint-catalog.py"
 
 package_delivery="$(jq -er '.installer_iso_template_v3.package_delivery // "embedded"' "$manifest")"
 package_transport_url=""
+installer_iso_transport_url=""
 case "$package_delivery" in
   embedded) ;;
   system-closure-v1)
@@ -255,9 +256,11 @@ case "$package_delivery" in
         echo 'error: isolated artifact transport does not support fault injection' >&2
         exit 1
       }
-      package_transport_url="$(python3 -B "$repository_root/nixos-appliance/qualification/isolated_manage_rpc.py" \
-        --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" closure-url \
+      installer_transports="$(python3 -B "$repository_root/nixos-appliance/qualification/isolated_manage_rpc.py" \
+        --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" installer-transports \
         --manifest-sha256 "$(sha256sum "$manifest" | awk '{print $1}')")"
+      package_transport_url="$(jq -er .package_transport_url <<<"$installer_transports")"
+      installer_iso_transport_url="$(jq -er .installer_iso_transport_url <<<"$installer_transports")"
     else
     mapfile -t bridge_addresses < <(
       ip -4 -o address show dev "$bridge" scope global \
@@ -328,6 +331,10 @@ else
       then .qualification_candidate.appliance_release_v1 = $manifest.appliance_release_v1
       else .
       end' "$manifest")"
+fi
+if [[ -n "$installer_iso_transport_url" ]]; then
+  create_body="$(jq -c --arg url "$installer_iso_transport_url" \
+    '.qualification_candidate.installer_iso_transport_url = $url' <<<"$create_body")"
 fi
 api POST /v1/james/provisioning-sessions "$create_body" > "$create_response"
 session_id="$(jq -er '.session.id' "$create_response")"

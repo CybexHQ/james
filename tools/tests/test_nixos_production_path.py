@@ -142,13 +142,14 @@ class ProductionTests(unittest.TestCase):
         owner.verify.return_value = {
             'selected_release': 'predecessor',
             'releases': {'predecessor': {'manifest_sha256': 'a' * 64}},
-            'artifact_transports': {'releases': {'predecessor': {'package_transport_url': url}}},
+            'artifact_transports': {'releases': {'predecessor': {'package_transport_url': url, 'installer_iso_transport_url': url + '.iso'}}},
         }
         server = object.__new__(rpc.Server)
         server.owner = owner
-        self.assertEqual(server.dispatch({'operation': 'closure_url', 'manifest_sha256': 'a' * 64}), url)
+        self.assertEqual(server.dispatch({'operation': 'installer_transports', 'manifest_sha256': 'a' * 64}),
+                         {'package_transport_url': url, 'installer_iso_transport_url': url + '.iso'})
         with self.assertRaises(ValueError):
-            server.dispatch({'operation': 'closure_url', 'manifest_sha256': 'b' * 64})
+            server.dispatch({'operation': 'installer_transports', 'manifest_sha256': 'b' * 64})
         self.assertEqual(owner.verify.call_count, 2)
 
     @unittest.skipUnless(os.geteuid() == 0, 'root-private RPC transport uses real peer credentials')
