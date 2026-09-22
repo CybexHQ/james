@@ -748,7 +748,11 @@ ssh_host="$(python3 -B "$repository_root/nixos-appliance/qualification/fixture_a
 ssh_options=(-o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=10
   -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work_dir/known-hosts"
   -i "$work_dir/operator-key" -o "CertificateFile=$work_dir/operator-key-cert.pub")
-ssh "${ssh_options[@]}" "cybex-support@$ssh_host" 'test "$(id -un)" = cybex-support'
+# The identity command is expanded by the remote shell.
+# shellcheck disable=SC2016
+python3 -B "$repository_root/nixos-appliance/qualification/ssh_certificate.py" \
+  --valid-before "$valid_before" -- \
+  ssh "${ssh_options[@]}" "cybex-support@$ssh_host" 'test "$(id -un)" = cybex-support'
 if ssh "${ssh_options[@]}" "root@$ssh_host" true > "$work_dir/root-login.log" 2>&1; then
   echo 'error: direct root login was accepted' >&2; exit 1
 fi

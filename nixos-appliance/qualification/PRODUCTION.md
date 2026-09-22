@@ -73,6 +73,11 @@ their seeded current revisions. The fixture uses Secure Boot-capable OVMF with
 unenrolled keys, so enforcement is explicitly disabled. SSH selects the observed
 interface by the owned MAC and private subnet; an unset desired service URL is
 not a guest address.
+Fresh isolated guests can lag the issuer clock by a few seconds without public
+NTP. The positive SSH check polls actual certificate acceptance for at most ten
+seconds, bounded by certificate expiry, with at most one retry after three
+seconds to avoid OpenSSH authentication penalties; other failures stop immediately. The
+certificate interval and root/password rejection checks remain unchanged.
 Source-free delivery, real appliance install,
 upgrade/rollback, managed workstation reboots, and exact compliance remain gates.
 
