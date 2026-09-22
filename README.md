@@ -75,6 +75,9 @@ graph in an isolated store. Deterministic NixOS composition outputs and their
 qualified tool providers are admitted by strict fingerprints, while an
 unrecognized source-producing derivation remains blocked and is reported in
 bounded `source_build_candidates` diagnostics.
+The reviewed Standard and Dock composition includes both fresh UTC defaults
+and the existing Europe/Amsterdam timezone profile; neither needs permission
+to compile packages from source.
 
 Runtime integrity maintenance rechecks retained bundles every 12 hours and
 renews the active runtime's reported verification time only after a successful

@@ -3887,6 +3887,18 @@ const PINNED_HYPRLAND_ETC_EXECUTABLE_FINGERPRINT: &str =
 // the second one preserves executable store paths, so changing a tool provider
 // cannot ride on the store-normalized hash.
 const PINNED_DESKTOP_NIXOS_GENERATOR_FINGERPRINTS: &[(&str, &str)] = &[
+    // Fresh Standard and Dock profiles use UTC. Compared with the reviewed
+    // production profiles below, only the localtime symlink target changes
+    // from /etc/zoneinfo/Europe/Amsterdam to /etc/zoneinfo/UTC. These pairs were
+    // verified from the isolated production fixture's exact 74cc63f dry runs.
+    (
+        "8ab46afba4132cbc117c20dbac203827b5fc641f9170c92042b18bea3bcc6f0a",
+        "c83d7470c3dd65729f566e8b916f1df97ff7e5221e418ec13c49f14bc1b11bf5",
+    ),
+    (
+        "37f1fc20feb24f3e130674bdb8af39bea002bd752ddcfbfd115d8191f8e09d9a",
+        "52a39916c23945f0fcbcbdb06c7fcab8052ca0cca67b84fb8fc67622e30adbdf",
+    ),
     // Current production Standard service links and regional /etc assembly.
     (
         "3f991350e271b53be1a4a0058680bb701ac51546055254bbcb0e110548fd43e8",
@@ -7784,6 +7796,51 @@ sleep 5
                 &"0".repeat(64),
                 executable,
             ));
+        }
+    }
+
+    #[test]
+    fn source_policy_accepts_fresh_utc_profiles_without_relaxing_assembly() {
+        for fixture in [
+            include_str!("../tests/fixtures/source-policy/production-standard-generators.json"),
+            include_str!("../tests/fixtures/source-policy/production-dock-generators.json"),
+        ] {
+            let derivations: BTreeMap<String, Value> = serde_json::from_str(fixture).unwrap();
+            let (path, mut drv) = derivations
+                .into_iter()
+                .find(|(_, drv)| drv["env"]["name"] == "etc")
+                .unwrap();
+            let original = drv["env"]["buildCommand"].as_str().unwrap();
+            assert!(original.contains("/etc/zoneinfo/Europe/Amsterdam localtime direct-symlink"));
+            let utc = original.replace(
+                "/etc/zoneinfo/Europe/Amsterdam localtime direct-symlink",
+                "/etc/zoneinfo/UTC localtime direct-symlink",
+            );
+            drv["env"]["buildCommand"] = json!(utc);
+            assert!(
+                derivation_is_exempt_from_source_policy_with_verifier(
+                    &path,
+                    Some(&drv),
+                    &synthetic_pinned_source
+                ),
+                "fresh UTC profile rejected: {path}"
+            );
+            for invalid in [
+                format!("{utc}\ngcc source.c -o $out/payload\n"),
+                utc.replace(
+                    "wy0mh9ah0alglg3ab5djg3jv6f0garyc-nixos-init",
+                    "ffffffffffffffffffffffffffffffff-nixos-init",
+                ),
+                utc.replace("/etc/zoneinfo/UTC", "/etc/zoneinfo/$(gcc source.c)"),
+            ] {
+                assert_ne!(invalid, utc);
+                drv["env"]["buildCommand"] = json!(invalid);
+                assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                    &path,
+                    Some(&drv),
+                    &synthetic_pinned_source
+                ));
+            }
         }
     }
 
