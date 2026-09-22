@@ -115,10 +115,10 @@ class Workstation:
         qmp = d / 'qmp.sock'
         try:
             self.tap = SCOPE['tap'](self.state, self.scope['manage_origin'], self.bridge, 'workstation', True)
-            self.process = subprocess.Popen(['qemu-system-x86_64', '-enable-kvm', '-machine', 'q35',
+            self.process = subprocess.Popen(['qemu-system-x86_64', '-enable-kvm', '-machine', 'q35,smm=on', '-global', 'driver=cfi.pflash01,property=secure,value=on',
                 '-cpu', 'host', '-smp', '4', '-m', '8192',
                 '-uuid', self.hardware['uuid'],
-                '-drive', 'if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd',
+                '-drive', 'if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd',
                 '-drive', f'if=pflash,format=raw,unit=1,file={d}/OVMF_VARS.fd',
                 '-drive', f'if=none,id=system,format=raw,file={d}/workstation.raw,cache=none',
                 '-device', 'virtio-blk-pci,drive=system,serial=' + self.hardware['serial'] + ',bootindex=2',

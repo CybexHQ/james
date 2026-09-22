@@ -126,7 +126,9 @@ class Owner:
                 or not isinstance(guard['guard_id'], str) or not guard['guard_id']):
             raise ValueError('network adapter receipt does not bind the exact fixture')
         proxy = guard['proxy_url']
-        if context['egress_hosts']:
+        if context['egress_hosts'] and proxy is None:
+            inputs.egress.hosts(context['egress_hosts'])
+        elif context['egress_hosts']:
             url = urlsplit(proxy or '')
             gateway = str(ipaddress.ip_network(context['backend_subnet'])[1])
             if (url.scheme != 'http' or url.hostname != gateway or not url.port or url.path
@@ -357,14 +359,16 @@ class Owner:
     def start_tls_proxy(self, receipt):
         if self.tls_proxy is not None:
             raise ValueError('refusing to replace an active TLS forwarder')
-        self.tls_proxy = tls_forwarding.Proxy(receipt['peer_ipv4'], self.tls_address(receipt))
+        self.tls_proxy = tls_forwarding.Proxy(receipt['peer_ipv4'], self.tls_address(receipt),
+            hostname=urlsplit(receipt['manage_origin']).hostname, upstream_hosts=receipt['context']['egress_hosts'])
 
     def client(self, receipt):
         def guarded():
             self.guard(receipt)
             if self.tls_proxy is None:
                 raise ValueError('TLS access requires the retained fixture owner')
-            return self.tls_proxy.verify(receipt['peer_ipv4'], self.tls_address(receipt))
+            return self.tls_proxy.verify(receipt['peer_ipv4'], self.tls_address(receipt),
+                hostname=urlsplit(receipt['manage_origin']).hostname, upstream_hosts=receipt['context']['egress_hosts'])
         return transport.Transport(receipt, guarded)
 
     def wait_health(self, receipt):

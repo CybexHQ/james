@@ -4,6 +4,9 @@ Only RFC1918 fixture interfaces are matched. No flush, NAT, global policy, or
 pre-existing host chain is changed. Drops in this table cannot be overridden by
 an accept in Docker/Incus chains; their drops may still prevent connectivity.
 """
+import importlib.util
+from pathlib import Path
+
 import hashlib
 import ipaddress
 import json
@@ -11,14 +14,19 @@ import re
 import uuid
 from urllib.parse import urlsplit
 
+_spec = importlib.util.spec_from_file_location('fixture_tls_client_hello', Path(__file__).with_name('tls_client_hello.py'))
+egress = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(egress)
+
 FIELDS = {'owner', 'bridge', 'subnet', 'manage_origin', 'peer_ipv4', 'network_id',
           'backend_subnet', 'egress_hosts'}
 SCHEMA = 'cybex.james.isolated-manage-network.v1'
 
 
 def validate(c):
-    if not isinstance(c, dict) or set(c) != FIELDS or c['egress_hosts'] != []:
-        raise ValueError('adapter requires an exact offline context with no egress hosts')
+    if not isinstance(c, dict) or set(c) != FIELDS:
+        raise ValueError('adapter requires an exact private fixture context')
+    egress.hosts(c['egress_hosts'])
     if str(uuid.UUID(c['owner'])) != c['owner'] or not re.fullmatch(r'jnq[0-9a-f]{10}', c['bridge']):
         raise ValueError('invalid fixture owner or bridge')
     if not re.fullmatch(r'[0-9a-f]{64}', c['network_id']):
@@ -47,7 +55,8 @@ def names(c):
 def dns_config(c):
     validate(c)
     return ('# cybex qualification owner ' + c['owner'] + '\nno-resolv\nno-hosts\nlocal=/#/\n'
-            + 'host-record=' + urlsplit(c['manage_origin']).hostname + ',' + c['peer_ipv4'] + '\n')
+            + ''.join('host-record=' + host + ',' + c['peer_ipv4'] + '\n'
+                      for host in (urlsplit(c['manage_origin']).hostname, *c['egress_hosts'])))
 
 
 def match(left, right, op='=='):

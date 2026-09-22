@@ -54,6 +54,24 @@ class ProductionTests(unittest.TestCase):
                 probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 probe.bind(proxy.address)
 
+    def test_ssh_address_uses_observed_owned_mac_not_empty_desired_url(self):
+        helper = load('fixture_address')
+        scope = {'subnet': '10.99.16.1/24'}
+        interface = {'address': '02:00:00:00:00:01', 'addr_info': [
+            {'family': 'inet', 'scope': 'global', 'local': '10.99.16.2'}]}
+        node = {'public_base_url': '', 'appliance_network': {'interfaces': [interface]}}
+        self.assertEqual(helper.address(node, scope, interface['address']), '10.99.16.2')
+        with self.assertRaises(ValueError):
+            helper.address(node, scope, '02:00:00:00:00:02')
+        for host in ('8.8.8.8', '10.99.16.1', '10.99.16.0', '10.99.16.255'):
+            interface['addr_info'][0]['local'] = host
+            with self.subTest(host=host), self.assertRaises(ValueError):
+                helper.address(node, scope, interface['address'])
+        interface['addr_info'][0]['local'] = '10.99.16.2'
+        interface['addr_info'].append(dict(interface['addr_info'][0], local='10.99.16.3'))
+        with self.assertRaises(ValueError):
+            helper.address(node, scope, interface['address'])
+
     def test_staging_copies_bytes_and_rejects_symlinks(self):
         fixture = load('production_fixture')
         with tempfile.TemporaryDirectory() as temporary:

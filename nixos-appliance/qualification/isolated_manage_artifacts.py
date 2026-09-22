@@ -35,6 +35,7 @@ def sibling(name):
 
 server = sibling('verified_artifact_server')
 release_verifier = sibling('release_predecessor')
+egress = sibling('tls_client_hello')
 SCHEMA = 'cybex.james.isolated-manage-artifacts.v1'
 URL_SCHEMA = 'cybex.james.isolated-manage-artifact-urls.v1'
 ROLES = ('predecessor', 'candidate')
@@ -89,10 +90,10 @@ def normalize_scope(value):
             or backend.version != 4 or backend.prefixlen != 28 or not _rfc1918(backend.network_address)
             or backend.overlaps(guest.network)
             or not isinstance(value['network_id'], str) or not NETWORK_ID.fullmatch(value['network_id'])
-            or value['egress_hosts'] != []
             or origin.scheme != 'https' or origin.netloc != origin.hostname or not origin.hostname
             or origin.path or origin.query or origin.fragment or origin.username or origin.password):
-        raise ValueError('artifact coordinator scope is not an exact offline fixture')
+        raise ValueError('artifact coordinator scope is not an exact private fixture')
+    egress.hosts(value['egress_hosts'])
     return dict(value)
 
 

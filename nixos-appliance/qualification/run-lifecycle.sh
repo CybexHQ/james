@@ -378,7 +378,7 @@ disk="$work_dir/appliance.raw"
 truncate -s 160G "$disk"
 preapproval_digest="$(python3 -B "$repository_root/nixos-appliance/qualification/disk-fingerprint.py" "$disk")"
 vars_template="${CYBEX_JAMES_OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
-code="${CYBEX_JAMES_OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
+code="${CYBEX_JAMES_OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.secboot.fd}"
 test -f "$vars_template" && test -f "$code"
 cp -- "$vars_template" "$work_dir/OVMF_VARS.fd"
 
@@ -386,7 +386,7 @@ start_qemu() {
   tap_name="$(python3 -B "$repository_root/nixos-appliance/qualification/development-scope.py" tap-create \
     --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" --manage-origin "$manage_origin" --bridge "$bridge" --role appliance)"
   qemu-system-x86_64 \
-    -enable-kvm -machine q35 -cpu host -smp 4 -m "$memory_mib" -uuid "$appliance_uuid" \
+    -enable-kvm -machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on -cpu host -smp 4 -m "$memory_mib" -uuid "$appliance_uuid" \
     -drive "if=pflash,format=raw,unit=0,readonly=on,file=$code" \
     -drive "if=pflash,format=raw,unit=1,file=$work_dir/OVMF_VARS.fd" \
     -drive "if=none,id=system,format=raw,file=$disk,cache=none" \
@@ -742,16 +742,9 @@ then
 fi
 # Target only the new fixture address on the owned bridge. A compromised
 # report cannot redirect this authenticated test to an existing appliance.
-ssh_host="$(python3 - "$node" "$CYBEX_JAMES_QUALIFICATION_STATE/scope.json" <<'PYSSH'
-import ipaddress,json,sys,urllib.parse
-node=json.load(open(sys.argv[1])); scope=json.load(open(sys.argv[2]))
-host=urllib.parse.urlsplit(node['public_base_url']).hostname
-address=ipaddress.ip_address(host)
-if address.version != 4 or address not in ipaddress.ip_interface(scope['subnet']).network:
-    raise SystemExit('SSH target is outside the disposable bridge')
-print(address)
-PYSSH
-)"
+ssh_host="$(python3 -B "$repository_root/nixos-appliance/qualification/fixture_address.py" \
+  --node "$node" --scope "$CYBEX_JAMES_QUALIFICATION_STATE/scope.json" --mac "$appliance_mac")"
+
 ssh_options=(-o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=10
   -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work_dir/known-hosts"
   -i "$work_dir/operator-key" -o "CertificateFile=$work_dir/operator-key-cert.pub")

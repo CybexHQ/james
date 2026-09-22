@@ -13,6 +13,10 @@ import stat
 import subprocess
 from urllib.parse import urlsplit
 
+_spec = importlib.util.spec_from_file_location('fixture_tls_client_hello', Path(__file__).with_name('tls_client_hello.py'))
+egress = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(egress)
+
 SCHEMA = 'cybex.james.isolated-manage-config.v2'
 SOURCE = 'https://github.com/CybexHQ/development'
 PRODUCTION = Path('/home/john/Code/Cybex/manage')
@@ -106,8 +110,7 @@ def validate(value):
                        for private in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))):
         raise ValueError('fixture backend must be an explicit private IPv4 /28')
     hosts = value['egress_hosts']
-    if hosts != []:
-        raise ValueError('offline fixture cannot admit external egress hosts')
+    egress.hosts(hosts)
     raw_key(value['release_public_key'])
     if value['initial_release'] not in {'candidate', 'predecessor'}:
         raise ValueError('initial fixture release must be explicit')

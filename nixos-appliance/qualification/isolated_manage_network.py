@@ -1,11 +1,13 @@
-"""Offline-only adapter for isolated_manage.Owner; no executable/automatic entry.
+"""Private-network adapter for isolated_manage.Owner; no executable entry.
 
 Integration prerequisites: Docker.create must pass --dns <peer_ipv4> explicitly
 (and verify HostConfig.Dns); stop all owned VMs before cleanup. Docker's
 127.0.0.11 resolver otherwise forwards on the HOST, which bridge firewall rules
 cannot confine. Public artifact URLs deliberately fail offline; the Manage
 downloader bypasses environment proxies. Do not solve that integration gap by
-opening egress or weakening artifact/TLS verification.
+opening direct egress or weakening artifact/TLS verification. Explicit reviewed
+upstream names resolve to the retained private TLS router, never public DNS in
+the guest. The firewall stays identical to the offline policy.
 
 Call command_plan(context) for review without privileges or host operations.
 prepare installs one atomic nft transaction then pins DNS on the exact owned
@@ -387,11 +389,14 @@ class Adapter:
     def probe_dns(self, c, prefix, source):
         host = urlsplit(c['manage_origin']).hostname
         base = [*prefix, 'dig', '-b', source]
-        answer = self.run(base + ['@' + c['peer_ipv4'], host, 'A', '+short',
-                                  '+time=1', '+tries=1']).decode().splitlines()
+        for host in (host, *c['egress_hosts']):
+            answer = self.run(base + ['@' + c['peer_ipv4'], host, 'A', '+short',
+                                      '+time=1', '+tries=1']).decode().splitlines()
+            if answer != [c['peer_ipv4']]:
+                raise ValueError('live DNS does not enforce the pinned TLS routing peer')
         blocked = self.run(base + ['@' + c['peer_ipv4'], c['owner'] + '.invalid', 'A',
                                    '+comments', '+time=1', '+tries=1']).decode()
-        if answer != [c['peer_ipv4']] or 'status: NXDOMAIN,' not in blocked:
+        if 'status: NXDOMAIN,' not in blocked:
             raise ValueError('live DNS does not enforce the pinned offline origin')
 
     def attach_dns_route(self, context, identity):

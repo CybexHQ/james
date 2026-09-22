@@ -149,10 +149,10 @@ class Fixture:
         d = self.directory
         try:
             self.tap = SCOPE['tap'](self.state, self.scope['manage_origin'], self.scope['bridge'], 'appliance', True)
-            self.process = subprocess.Popen(['qemu-system-x86_64', '-enable-kvm', '-machine', 'q35',
+            self.process = subprocess.Popen(['qemu-system-x86_64', '-enable-kvm', '-machine', 'q35,smm=on', '-global', 'driver=cfi.pflash01,property=secure,value=on',
                 '-cpu', 'host', '-smp', '4', '-m', os.environ.get('CYBEX_JAMES_QUALIFICATION_MEMORY_MIB', '18432'),
                 '-uuid', self.hardware['uuid'],
-                '-drive', 'if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd',
+                '-drive', 'if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd',
                 '-drive', f'if=pflash,format=raw,unit=1,file={d}/OVMF_VARS.fd',
                 '-drive', f'if=none,id=system,format=raw,file={d}/appliance.raw,cache=none',
                 '-device', 'virtio-scsi-pci,id=scsi0', '-device', 'scsi-hd,drive=system,serial=' + self.hardware['serial'],

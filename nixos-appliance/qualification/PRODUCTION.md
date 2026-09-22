@@ -32,8 +32,11 @@ Both qualification jobs use `production-release-qualification`. Configure:
 The template retains the existing v2 configuration schema. It pins the database
 and TLS image digests, names the canonical development source checkout, supplies
 an unused disjoint private /28 backend subnet, and references a dedicated TLS
-certificate/key and provisioning seed alongside the template. It permits no
-external egress hosts. The certificate must validate normally for the exact
+certificate/key and provisioning seed alongside the template. It permits either
+no upstream downloads or the exact reviewed host set
+`api.github.com`, `cache.nixos.org`, `codeload.github.com`, and `github.com`.
+Full workstation qualification needs that set for pinned nixpkgs and signed
+binary-cache dependencies. The certificate must validate normally for the exact
 artifact origin and the signer must appear in both signed ISO descriptors.
 Template image/source fields are replaced with the exact verified candidate
 revision and image IDs by `prepare-fixture-config.py` before fixture startup.
@@ -51,7 +54,13 @@ verified before any TAP is admitted. Internal Docker containers receive only a
 host route to the private DNS peer, never a default route. A retained TCP
 forwarder connects the private host TLS listener to the exact owned TLS container;
 Docker internal networks do not expose published ports. TLS remains end to end
-between the caller and that container, and cleanup closes every forwarding socket. Changing a hostname allowlist alone cannot
+between management callers and that container. For the reviewed upstream set,
+DNS still points only at the private peer. The retained forwarder parses a bounded
+TLS ClientHello and routes approved SNI names to public IPv4 addresses on port 443;
+it rejects unknown names and any nonpublic DNS answer. TLS and normal upstream
+certificate validation remain end to end. Management SNI always selects the owned
+container and never public DNS. Firewall rules do not open direct guest egress.
+Cleanup closes every forwarding socket. Changing a hostname allowlist alone cannot
 turn a development run into production qualification.
 
 The fixture builds its Manage images from the candidate's committed development
@@ -60,7 +69,11 @@ harness with its separately pinned compatibility projection. Cold qualification
 uses only the independently downloaded candidate, with no warm predecessor cache.
 The fresh fixture completes Default Policy sign-in setup with an ephemeral local
 account and creates a separate Tiling/Deno profile; Standard and Dock retain
-their seeded current revisions. Source-free delivery, real appliance install,
+their seeded current revisions. The fixture uses Secure Boot-capable OVMF with
+unenrolled keys, so enforcement is explicitly disabled. SSH selects the observed
+interface by the owned MAC and private subnet; an unset desired service URL is
+not a guest address.
+Source-free delivery, real appliance install,
 upgrade/rollback, managed workstation reboots, and exact compliance remain gates.
 
 Production evidence includes `cybex.james.isolated-qualification.v1`, the artifact
