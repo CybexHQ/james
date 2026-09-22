@@ -102,3 +102,8 @@ credentials and must not be uploaded. After successful qualification, remove the
 owned temporary image-build checkout/configuration and unused build images through
 the corresponding maintenance operation. Persistent production databases, services,
 trust configuration and installed devices are outside fixture cleanup.
+
+Isolated production qualification stages authenticated workstation runtime bundles privately.
+Warm installation requires the exact selected runtime and all three built-in
+profiles to deliver successfully; it does not claim prepublication runtime absence.
+Independent cold appliance and workstation qualification remains mandatory after staging.

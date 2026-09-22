@@ -210,8 +210,10 @@ def main():
                 command += ['--retain-fixture', state / 'fixture']
             if phase in {'update', 'rollback'}:
                 (state / 'predecessor-identity.json').write_bytes(predecessor.canonical(previous))
-                command += ['--predecessor-identity', state / 'predecessor-identity.json', '--prepublication-candidate']
-            elif phase == 'cold':
+                command += ['--predecessor-identity', state / 'predecessor-identity.json']
+            # Isolated fixtures stage authenticated runtime bundles before public
+            # publication, so require real delivery against the selected manifest.
+            if args.isolated_manage_config or phase == 'cold':
                 command += ['--require-candidate-runtime']
             else:
                 command += ['--prepublication-candidate']

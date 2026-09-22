@@ -57,10 +57,11 @@ def validate_lifecycle(manifest, manifest_sha256, evidence, source, phase):
             or not re.fullmatch(r'[1-9][0-9]*', str(evidence.get('system_generation', ''))) 
             or not re.fullmatch(r'dev_[0-9a-f]{32}', evidence.get('device_id', ''))):
         raise ValueError('Appliance evidence does not qualify the exact fresh candidate')
-    if (any(evidence.get(k) is not cold for k in DELIVERY_FLAGS)
-            or evidence.get('candidate_runtime_required') is not cold
-            or evidence.get('workstation_runtime_prepublication_deferred') is not (not cold)
-            or evidence.get('builtin_blueprints_prepublication_deferred') is not (not cold)):
+    delivered = cold or evidence.get('candidate_runtime_required') is True
+    if (any(evidence.get(k) is not delivered for k in DELIVERY_FLAGS)
+            or evidence.get('candidate_runtime_required') is not delivered
+            or evidence.get('workstation_runtime_prepublication_deferred') is not (not delivered)
+            or evidence.get('builtin_blueprints_prepublication_deferred') is not (not delivered)):
         raise ValueError('Delivery evidence does not match its acceptance phase')
     catalog = evidence.get('qualified_blueprints', {})
     blueprints = catalog.get('blueprints', [])

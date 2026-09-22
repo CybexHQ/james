@@ -78,6 +78,16 @@ class AcceptanceTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 self.validate(pre | {field: True}, 'prepublication')
 
+    def test_prepublication_accepts_complete_exact_runtime_delivery(self):
+        self.validate(self.cold, 'prepublication')
+        for field in acceptance.DELIVERY_FLAGS + ('candidate_runtime_required',):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.validate(self.cold | {field: False}, 'prepublication')
+        for field in ('workstation_runtime_prepublication_deferred',
+                      'builtin_blueprints_prepublication_deferred'):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.validate(self.cold | {field: True}, 'prepublication')
+
     def test_cold_requires_each_appliance_and_source_free_delivery_proof(self):
         self.validate(self.cold)
         for field in acceptance.LIFECYCLE_FLAGS + acceptance.DELIVERY_FLAGS:
