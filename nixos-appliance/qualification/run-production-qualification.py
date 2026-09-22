@@ -153,10 +153,24 @@ def main():
             or stat.S_IMODE(info.st_mode) != 0o700):
         raise ValueError('Qualification state root must be a root-owned 0700 directory')
     args.candidate_dir = args.candidate_dir.resolve(strict=True)
-    args.evidence_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if args.evidence_dir.is_symlink():
-        raise ValueError('Evidence directory cannot be a symlink')
-    args.evidence_dir.chmod(0o700)
+    signal.signal(signal.SIGTERM, interrupted)
+    # A retry must never consume or replace acceptance evidence from another run.
+    try:
+        args.evidence_dir.mkdir(parents=True, mode=0o700)
+    except FileExistsError:
+        raise ValueError('Qualification evidence directory already exists; use a new run/attempt directory') from None
+    try:
+        qualify(args)
+    finally:
+        # A failed/canceled sudo invocation must not strand a root-owned 0700
+        # directory in RUNNER_TEMP. Private files stay private; directory ownership
+        # lets the runner remove them without publishing partial acceptance evidence.
+        if 'SUDO_UID' in os.environ and 'SUDO_GID' in os.environ:
+            os.chown(args.evidence_dir, int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID']),
+                     follow_symlinks=False)
+
+
+def qualify(args):
     manifest = verify_candidate(args.candidate_dir, args.trusted_public_key, args.manage_origin)
     candidate_manifest = args.candidate_dir / predecessor.MANIFEST
     if not args.published_cold:
@@ -173,7 +187,6 @@ def main():
         phases = ['update', 'rollback', 'fresh']
     else:
         phases = ['cold']
-    signal.signal(signal.SIGTERM, interrupted)
     for phase in phases:
         state = args.state_root / (args.run + '-' + phase)
         scope_args = argparse.Namespace(run=state.name, state_dir=state, subnet=args.subnet, manage_origin=args.manage_origin,
@@ -262,8 +275,6 @@ def main():
                 for fixture in (state / 'fixture', state / 'workstation'):
                     if fixture.exists() and not fixture.is_symlink():
                         shutil.rmtree(fixture)
-    if 'SUDO_UID' in os.environ and 'SUDO_GID' in os.environ:
-        os.chown(args.evidence_dir, int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID']))
     # Only bounded acceptance documents are made readable to the artifact runner.
     for path in args.evidence_dir.glob('cybex-james-*.json'):
         path.chmod(0o644)

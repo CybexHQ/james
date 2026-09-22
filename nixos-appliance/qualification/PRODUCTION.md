@@ -95,6 +95,17 @@ historical evidence. A failed NixOS run retains its own exact run/attempt and
 candidate identities. Never infer qualification from a completed build or relabel
 development evidence as production evidence.
 
+Warm and cold jobs keep acceptance documents in separate evidence directories
+named with both the GitHub run ID and attempt. The runner requires a new directory
+and rejects an existing path before starting qualification; retries never overwrite
+or reuse earlier acceptance evidence. On success, failure, or cancellation, the
+sudo runner returns directory ownership to the invoking user so normal temporary
+directory cleanup can remove it. Partial files remain private and are not uploaded.
+If an older run left the shared `cybex-james-evidence` or
+`cybex-james-cold-evidence` directory owned by root, retain any needed diagnostics
+and remove only that confirmed inactive output through local maintenance. New
+attempts use distinct paths and do not depend on deleting historical evidence.
+
 Cleanup stops only owned children and containers, verifies exact network/TAP
 ownership, removes disposable database state, and retains bounded evidence. Failed
 fixture configuration directories are retained for diagnosis; they contain private

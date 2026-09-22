@@ -735,7 +735,7 @@ jobs:
             --state-root "$CYBEX_JAMES_QUALIFICATION_STATE_ROOT" \
             --candidate-dir "$GITHUB_WORKSPACE/dist" \
             --predecessor-dir "$RUNNER_TEMP/cybex-james-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/predecessor" \
-            --evidence-dir "$RUNNER_TEMP/cybex-james-evidence" \
+            --evidence-dir "$RUNNER_TEMP/cybex-james-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
 
       - name: Upload bounded qualification evidence
@@ -744,11 +744,11 @@ jobs:
         with:
           name: cybex-james-qualified-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/cybex-james-evidence/cybex-james-nixos-qualification.json
-            ${{ runner.temp }}/cybex-james-evidence/cybex-james-nixos-update-qualification.json
-            ${{ runner.temp }}/cybex-james-evidence/cybex-james-qualified-predecessor.json
-            ${{ runner.temp }}/cybex-james-evidence/cybex-james-qualified-predecessor-release.json
-            ${{ runner.temp }}/cybex-james-evidence/cybex-james-nixos-rollback-qualification.json
+            ${{ runner.temp }}/cybex-james-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-nixos-qualification.json
+            ${{ runner.temp }}/cybex-james-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-nixos-update-qualification.json
+            ${{ runner.temp }}/cybex-james-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-qualified-predecessor.json
+            ${{ runner.temp }}/cybex-james-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-qualified-predecessor-release.json
+            ${{ runner.temp }}/cybex-james-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-nixos-rollback-qualification.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
@@ -1321,12 +1321,12 @@ jobs:
             --subnet "$CYBEX_JAMES_QUALIFICATION_SUBNET" \
             --state-root "$CYBEX_JAMES_QUALIFICATION_STATE_ROOT" \
             --candidate-dir "$GITHUB_WORKSPACE/dist" \
-            --evidence-dir "$RUNNER_TEMP/cybex-james-cold-evidence" \
+            --evidence-dir "$RUNNER_TEMP/cybex-james-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --trusted-public-key "$TRUSTED_KEY" --published-cold
           python3 -B nixos-appliance/qualification/release_acceptance.py \
             --phase cold --manifest dist/cybex-james-release.json --source "$GITHUB_SHA" \
-            --evidence "$RUNNER_TEMP/cybex-james-cold-evidence/cybex-james-published-cold-qualification.json" \
-            --workstation "$RUNNER_TEMP/cybex-james-cold-evidence/cybex-james-published-workstation-qualification.json"
+            --evidence "$RUNNER_TEMP/cybex-james-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cybex-james-published-cold-qualification.json" \
+            --workstation "$RUNNER_TEMP/cybex-james-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cybex-james-published-workstation-qualification.json"
 
       - name: Retain published cold-install qualification evidence
         id: cold-evidence
@@ -1334,8 +1334,8 @@ jobs:
         with:
           name: cybex-james-published-cold-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/cybex-james-cold-evidence/cybex-james-published-cold-qualification.json
-            ${{ runner.temp }}/cybex-james-cold-evidence/cybex-james-published-workstation-qualification.json
+            ${{ runner.temp }}/cybex-james-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-published-cold-qualification.json
+            ${{ runner.temp }}/cybex-james-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-published-workstation-qualification.json
           if-no-files-found: error
           retention-days: 90
 

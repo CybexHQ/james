@@ -81,6 +81,56 @@ class ProductionQualificationWorkflowTests(unittest.TestCase):
                 self.assertEqual('--published-cold' in arguments, job == 'release_cold_qualify')
                 self.assertEqual('--predecessor-dir' in arguments, job == 'release_qualify')
 
+    def test_evidence_paths_isolate_runs_and_attempts_and_match_uploads(self):
+        for job, name, prefix in (
+            ('release_qualify', 'Qualify fresh installation, real upgrade and automatic rollback', 'cybex-james-evidence'),
+            ('release_cold_qualify', 'Require exact published bytes and cold runtime convergence', 'cybex-james-cold-evidence'),
+        ):
+            script = step_script(job, name)
+            start = script.index('sudo -n python3 -B nixos-appliance/qualification/run-production-qualification.py')
+            command = []
+            for line in script[start:].splitlines():
+                command.append(line)
+                if not line.endswith('\\'):
+                    break
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                sudo = root / 'sudo'
+                sudo.write_text('#!/usr/bin/env python3\nimport json,sys\n'
+                    'from pathlib import Path\n'
+                    'args=sys.argv[4:]\n'
+                    'evidence=Path(args[args.index("--evidence-dir")+1])\n'
+                    'evidence.mkdir(mode=0o700)\n'
+                    '(evidence/"receipt.json").write_text("completed")\n'
+                    'print(json.dumps(str(evidence)))\n')
+                sudo.chmod(0o755)
+                paths = []
+                for run_id, attempt in (('42', '1'), ('42', '2'), ('43', '1')):
+                    environment = {**self.environment(), 'PATH': temporary + os.pathsep + os.environ['PATH'],
+                        'GITHUB_RUN_ID': run_id, 'GITHUB_RUN_ATTEMPT': attempt, 'GITHUB_WORKSPACE': '/workspace',
+                        'RUNNER_TEMP': temporary, 'CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY': 'test-key',
+                        'TRUSTED_KEY': 'test-key', 'fixture_directory': '/private fixture'}
+                    result = subprocess.run(['bash', '-c', '\n'.join(command)], env=environment,
+                                            text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    path = Path(json.loads(result.stdout))
+                    self.assertEqual(path, root / f'{prefix}-{run_id}-{attempt}')
+                    paths.append(path)
+                    uploads = [line.strip() for line in workflow_job(job).splitlines()
+                               if '${{ runner.temp }}/' + prefix in line]
+                    self.assertTrue(uploads)
+                    for upload in uploads:
+                        resolved = upload.replace('${{ runner.temp }}', temporary).replace(
+                            '${{ github.run_id }}', run_id).replace('${{ github.run_attempt }}', attempt)
+                        self.assertEqual(Path(resolved).parent, path)
+                self.assertEqual(len(set(paths)), 3)
+                self.assertTrue(all((path / 'receipt.json').read_text() == 'completed' for path in paths))
+            if job == 'release_cold_qualify':
+                acceptance = script.split('qualification/release_acceptance.py', 1)[1]
+                expected = '$RUNNER_TEMP/' + prefix + '-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/'
+                self.assertIn('--evidence "' + expected, acceptance)
+                self.assertIn('--workstation "' + expected, acceptance)
+
     def test_protected_nixos_chain_preserves_production_and_immutable_approval_gates(self):
         for job in ('release_publish', 'release_promote'):
             script = step_script(job, 'Require production-bound artifacts for publication')

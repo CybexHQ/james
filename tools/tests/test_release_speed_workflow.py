@@ -125,7 +125,7 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
 
     def test_acceptance_and_timing_artifacts_are_separate_and_exact(self):
         warm_names = re.findall(
-            r'\$\{\{ runner\.temp \}\}/cybex-james-evidence/(cybex-james-[a-z0-9-]+\.json)',
+            r'\$\{\{ runner\.temp \}\}/cybex-james-evidence-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/(cybex-james-[a-z0-9-]+\.json)',
             self.warm)
         self.assertEqual(set(warm_names), {
             'cybex-james-nixos-qualification.json',
@@ -149,7 +149,7 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
         self.assertNotIn('release_speed.py cache', self.cold)
         self.assertNotIn('PREDECESSOR_CACHE_ROOT', self.cold)
         cold_names = re.findall(
-            r'\$\{\{ runner\.temp \}\}/cybex-james-cold-evidence/(cybex-james-[a-z0-9-]+\.json)',
+            r'\$\{\{ runner\.temp \}\}/cybex-james-cold-evidence-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/(cybex-james-[a-z0-9-]+\.json)',
             self.cold)
         self.assertEqual(set(cold_names), {
             'cybex-james-published-cold-qualification.json',
