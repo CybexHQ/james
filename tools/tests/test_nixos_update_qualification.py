@@ -92,6 +92,7 @@ class Run:
         self.schedule = {'revision': 0, 'supported': True, 'run_now_attempt_id': None,
             'schedule': {'timezone': 'UTC', 'weekdays': [1], 'start': '00:00', 'duration_minutes': 240}}
         self.nics = []
+        self.nic_times = []
         self.admission_mutation = lambda a: a
         self.node_mutation = lambda n: n
         self.stale = False
@@ -100,7 +101,7 @@ class Run:
         self.fixture.process.poll.return_value = None
         self.fixture.wait_ready = lambda api: deepcopy(self.before)
         self.fixture.monitor.events = self.qmp_events
-        self.fixture.monitor.call = lambda cmd, args: self.nics.append((cmd, args))
+        self.fixture.monitor.call = lambda cmd, args: (self.nics.append((cmd, args)), self.nic_times.append(self.clock.t))
         self.evidence = {'schema': 'cybex.james.nixos-appliance-qualification.v1', 'ok': True,
             'qualified_manifest_sha256': hashlib.sha256(self.previous_body).hexdigest(),
             'release_version': self.previous['version'], 'base_os': 'nixos', 'secure_boot': False,
@@ -145,8 +146,12 @@ class Run:
                 'expires_at': body['expires_at'], 'node': {'device_id': DEVICE}})
         if path.endswith('/qualification-updates'):
             return preflight(self.current)
-        if self.api_error and self.clock.t >= 2: raise OSError('private response must not be logged')
-        if self.clock.t < (214 if self.rollback else 3):
+        if self.api_error and self.clock.t >= 4: raise OSError('private response must not be logged')
+        if self.rollback and 3 <= self.clock.t < 214:
+            self.current = node(self.candidate, '11', self.clock.now())
+            self.current.update(update_status='health_checking', update_attempt_id=ATTEMPT,
+                update_stage='booted_candidate')
+        elif self.clock.t < (214 if self.rollback else 3):
             self.current = deepcopy(self.before)
             self.current.update(update_status='restarting', update_attempt_id=ATTEMPT, update_stage='reboot_pending')
         else:
@@ -218,6 +223,7 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(result['candidate_system_generation'], '11')
         self.assertEqual(result['final_stage'], 'boot_fallback')
         self.assertEqual(run.nics, [('set_link', {'name': 'nic0', 'up': False}), ('set_link', {'name': 'nic0', 'up': True})])
+        self.assertGreaterEqual(run.nic_times[0], 3)  # A fresh candidate boot report precedes the fault.
 
     def test_rollback_waits_for_fresh_healthy_restored_report(self):
         run = Run(True)
@@ -249,11 +255,11 @@ class TransitionTests(unittest.TestCase):
 
     def test_no_reset_host_reset_and_early_fallback_are_rejected(self):
         for rollback, events, message in [(False, [], 'reset evidence'), (False, [(1, False)], 'not initiated'),
-                                          (True, [(1, True), (2, True)], 'health deadline')]:
+                                          (True, [(1, True), (2, True)], 'candidate boot report')]:
             with self.subTest(events=events), tempfile.TemporaryDirectory() as temporary:
                 run = Run(rollback); run.events = events
                 with self.assertRaisesRegex(ValueError, message): run.execute(Path(temporary) / 'result.json')
-                if rollback: self.assertEqual(run.nics[-1][1]['up'], True)
+                if rollback: self.assertEqual(run.nics, [])
 
     def test_exact_candidate_fields_and_identity_cannot_be_substituted(self):
         mutations = [lambda n: n.update(system_generation='12'), lambda n: n.update(system_toplevel='/nix/store/wrong'),

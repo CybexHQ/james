@@ -232,6 +232,7 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
         raise
     deadline = clock() + timeout
     first_reset = fallback_reset = None
+    candidate_reported = False
     reset_reports_after = None
     fresh_health = set()
     observations = []
@@ -248,11 +249,10 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
                 if first_reset is None:
                     first_reset = clock()
                     reset_reports_after = now()
-                    if rollback:
-                        fixture.monitor.call('set_link', {'name': 'nic0', 'up': False})
-                        nic_down = True
                     print('Observed appliance candidate reboot', flush=True)
                 elif rollback and fallback_reset is None:
+                    if not candidate_reported:
+                        raise ValueError('Fallback reboot lacked a fresh candidate boot report')
                     if clock() - first_reset < 180:
                         raise ValueError('Fallback reboot preceded the candidate health deadline')
                     fixture.monitor.call('set_link', {'name': 'nic0', 'up': True})
@@ -271,6 +271,16 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
             if node.get('update_attempt_id') != attempt:
                 sleep(1)
                 continue
+            if (rollback and first_reset is not None and not candidate_reported
+                    and seen > max(seen_before, started, reset_reports_after)
+                    and node.get('update_status') == 'health_checking'
+                    and node.get('update_stage') == 'booted_candidate'
+                    and node.get('appliance_release') == candidate['version']
+                    and node.get('system_toplevel') == candidate['appliance_release_v1']['system_toplevel']):
+                candidate_reported = True
+                fixture.monitor.call('set_link', {'name': 'nic0', 'up': False})
+                nic_down = True
+                print('Observed fresh candidate boot report; disconnected owned NIC', flush=True)
             observation = {k: node.get(k) for k in ('update_status', 'update_stage', 'system_generation', 'appliance_release')}
             if not observations or observations[-1] != observation:
                 if len(observations) >= 256:
