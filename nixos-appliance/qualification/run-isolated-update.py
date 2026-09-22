@@ -97,6 +97,20 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError, release_predecessor.release.ReleaseError):
+    except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError, release_predecessor.release.ReleaseError) as error:
         # API response bodies and private file contents never enter public output.
-        raise SystemExit('Isolated NixOS transition qualification failed; no acceptance evidence was written') from None
+        message = str(error)
+        safe = (message.startswith('Terminal package identity differs: ') and
+                message.split(': ', 1)[1] in {'attempt_id', 'target_release', 'status', 'stage',
+                    'source_revision', 'system_closure_sha256', 'system_toplevel',
+                    'resulting_system_generation'}) or message in {
+                'Terminal candidate generation did not advance',
+                'Terminal update projection differs', 'Terminal rollback reason differs',
+                'Terminal success contains a rollback reason',
+                'Terminal permanent identity differs',
+                'Appliance report differs from the healthy exact NixOS closure',
+                'Qualification preflight differs from the exact predecessor',
+                'Permanent device incarnation changed during the transition'}
+        detail = ': ' + message if safe else ''
+        raise SystemExit('Isolated NixOS transition qualification failed' + detail +
+                         '; no acceptance evidence was written') from None

@@ -219,6 +219,21 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(result['final_stage'], 'boot_fallback')
         self.assertEqual(run.nics, [('set_link', {'name': 'nic0', 'up': False}), ('set_link', {'name': 'nic0', 'up': True})])
 
+    def test_rollback_waits_for_fresh_healthy_restored_report(self):
+        run = Run(True)
+        reports = 0
+        def settle(value):
+            nonlocal reports
+            reports += 1
+            if reports <= 2:
+                value['appliance_local_health']['status'] = 'recovering'
+            return value
+        run.node_mutation = settle
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run.execute(Path(temporary) / 'result.json')
+        self.assertEqual(result['final_status'], 'rolled_back')
+        self.assertGreaterEqual(reports, 3)
+
     def test_stale_reports_cannot_satisfy_repeated_fresh_health(self):
         run = Run(); run.stale = True
         with tempfile.TemporaryDirectory() as temporary:

@@ -145,14 +145,20 @@ def verify_terminal(before, node, attempt, candidate, previous, rollback):
     expected = {'attempt_id': attempt, 'target_release': candidate['version'], 'status': status, 'stage': stage,
         'source_revision': descriptor['source_revision'], 'system_closure_sha256': descriptor['system_closure']['sha256'],
         'system_toplevel': descriptor['system_toplevel'], 'resulting_system_generation': result_generation}
-    if (int(candidate_generation) <= int(source_generation)
-            or any(package.get(k) != v for k, v in expected.items())
-            or node.get('update_status') != status or node.get('update_stage') != stage
-            or node.get('update_attempt_id') != attempt or node.get('update_target_version') != candidate['version']
-            or (rollback and package.get('rollback_reason') != 'local_health_failed')
-            or (not rollback and package.get('rollback_reason') not in (None, ''))
-            or identity(before) != identity(node)):
-        raise ValueError('Terminal report does not prove the exact automatic transition and preserved identity')
+    if int(candidate_generation) <= int(source_generation):
+        raise ValueError('Terminal candidate generation did not advance')
+    for key, value in expected.items():
+        if package.get(key) != value:
+            raise ValueError('Terminal package identity differs: ' + key)
+    if (node.get('update_status') != status or node.get('update_stage') != stage
+            or node.get('update_attempt_id') != attempt or node.get('update_target_version') != candidate['version']):
+        raise ValueError('Terminal update projection differs')
+    if (rollback and package.get('rollback_reason') != 'local_health_failed'):
+        raise ValueError('Terminal rollback reason differs')
+    if not rollback and package.get('rollback_reason') not in (None, ''):
+        raise ValueError('Terminal success contains a rollback reason')
+    if identity(before) != identity(node):
+        raise ValueError('Terminal permanent identity differs')
     verify_projection(node, (previous if rollback else candidate)['appliance_release_v1'], result_generation)
     return candidate_generation
 
@@ -280,6 +286,13 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
             if first_reset is None or (rollback and fallback_reset is None):
                 raise ValueError('Terminal report lacks appliance-emitted reset evidence')
             if seen <= max(seen_before, started, reset_reports_after):
+                sleep(1)
+                continue
+            # The first accepted rollback report may arrive before the restored
+            # appliance's network and local health projections settle. Require a
+            # later fresh, healthy report; never relax the exact identity checks.
+            if rollback and (node.get('network_fallback_active') is not False
+                    or node.get('appliance_local_health', {}).get('status') != 'healthy'):
                 sleep(1)
                 continue
             candidate_generation = verify_terminal(before, node, attempt, candidate, previous, rollback)

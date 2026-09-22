@@ -133,3 +133,9 @@ perform its own reboot, and report the exact transition and healthy identity.
 Artifact listeners allow address reuse after teardown so sequential fixtures can
 bind their fixed ports while old connections finish TIME_WAIT. Live listener
 sharing remains disabled; every phase verifies its own process and artifact receipt.
+
+After automatic rollback, the first accepted terminal report can precede a fresh
+healthy network projection. Qualification waits for a later accepted report with
+healthy local state, then checks the exact candidate generation, rollback reason,
+predecessor closure and permanent device identity. A failed proof reports only a
+fixed check name; private API values stay out of public logs.
