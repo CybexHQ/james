@@ -213,6 +213,19 @@ def resolve(repository, candidate, trusted_key, directory, authorization=None, r
                     authority_public_key=authority)
 
 
+def stage_media(directory, manifest, source=None):
+    for artifact, digest in ((manifest['appliance_release_v1']['system_closure'], 'sha256'),
+                             (manifest['installer_iso_template_v3'], 'template_sha256'),
+                             (manifest['workstation_netboot'], 'sha256')):
+        maximum = release.INSTALLER_ISO_MAX_BYTES if digest == 'template_sha256' else 4 * 1024**3
+        name = urlsplit(artifact['url']).path.rsplit('/', 1)[-1]
+        target = directory / name
+        if source and (source / name).exists() and not target.exists():
+            check_file(source / name, artifact[digest], artifact['size_bytes'], maximum)
+            shutil.copyfile(source / name, target, follow_symlinks=False)
+        fetch(artifact['url'], target, artifact[digest], artifact['size_bytes'], maximum)
+
+
 def qualify(directory, candidate, trusted_key, source=None, expected_sha=None):
     if (source is None) != (expected_sha is None):
         raise ValueError('Qualification predecessor requires both directory and manifest digest')
@@ -232,14 +245,7 @@ def qualify(directory, candidate, trusted_key, source=None, expected_sha=None):
         raise ValueError('Ubuntu is reinstall-only; supply a separately signed NixOS qualification predecessor')
     advance(candidate, manifest['version'])
     descriptor, iso = manifest['appliance_release_v1'], manifest['installer_iso_template_v3']
-    for artifact, digest in ((descriptor['system_closure'], 'sha256'), (iso, 'template_sha256')):
-        maximum = release.INSTALLER_ISO_MAX_BYTES if digest == 'template_sha256' else 4 * 1024**3
-        name = urlsplit(artifact['url']).path.rsplit('/', 1)[-1]
-        target = directory / name
-        if source and (source / name).exists() and not target.exists():
-            check_file(source / name, artifact[digest], artifact['size_bytes'], maximum)
-            shutil.copyfile(source / name, target, follow_symlinks=False)
-        fetch(artifact['url'], target, artifact[digest], artifact['size_bytes'], maximum)
+    stage_media(directory, manifest, source)
     closure = directory / release.appliance_v3.archive_name(manifest['version'])
     tree = release.system_closure.verify_archive(closure, descriptor, trusted_key, release)
     release._verify_nixos_source_identity(tree, manifest['workstation_netboot'])

@@ -1,5 +1,6 @@
 """Recovery admission against the exact public, signed historical descriptors."""
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -76,6 +77,26 @@ class RecoveryTests(unittest.TestCase):
         previous["assets"].append({"name": P.MANIFEST})
         with self.assertRaises(ValueError):
             P.latest([previous], "v0.2.2")
+
+    def test_upgrade_fixture_stages_and_authenticates_workstation_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, destination = root / 'source', root / 'destination'
+            source.mkdir()
+            destination.mkdir()
+            def artifact(name, field='sha256'):
+                body = ('signed ' + name).encode()
+                (source / name).write_bytes(body)
+                return {'url': 'https://github.com/CybexHQ/james/releases/download/v0.2.12/' + name,
+                        field: hashlib.sha256(body).hexdigest(), 'size_bytes': len(body)}
+            manifest = {'appliance_release_v1': {'system_closure': artifact('closure.tar.zst')},
+                        'installer_iso_template_v3': artifact('template.iso', 'template_sha256'),
+                        'workstation_netboot': artifact('workstation.tar.zst')}
+            P.stage_media(destination, manifest, source)
+            self.assertEqual((destination / 'workstation.tar.zst').read_bytes(), b'signed workstation.tar.zst')
+            (destination / 'workstation.tar.zst').write_bytes(b'tampered')
+            with self.assertRaisesRegex(ValueError, 'signed size or digest'):
+                P.stage_media(destination, manifest, source)
 
     def test_cached_bytes_do_not_bypass_digest_verification(self):
         with tempfile.TemporaryDirectory() as temporary:
