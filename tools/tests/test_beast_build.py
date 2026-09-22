@@ -29,13 +29,29 @@ class BuildIsolationTests(unittest.TestCase):
         self.assertIn('CYBEX_JAMES_BUILD_MANAGE_ORIGIN=https://manage.cybex.net', args)
 
 
+    def test_origin_admission_is_exact_for_https_and_ssh(self):
+        for repository in ('james', 'development'):
+            for base in ('https://github.com/CybexHQ/', 'git@github.com:CybexHQ/',
+                         'ssh://git@github.com/CybexHQ/'):
+                for suffix in ('', '.git'):
+                    with self.subTest(base=base, repository=repository, suffix=suffix):
+                        self.assertEqual(builder.canonical_origin(base + repository + suffix),
+                                         'https://github.com/CybexHQ/' + repository)
+        for origin in ('git@github.com:CybexHQ/manage.git',
+                       'https://github.com/CybexHQ/development/extra',
+                       'https://github.com.evil/CybexHQ/development',
+                       'ssh://git@github.com:2222/CybexHQ/development',
+                       'https://token@github.com/CybexHQ/development'):
+            with self.subTest(origin=origin), self.assertRaises(ValueError):
+                builder.canonical_origin(origin)
+
     def test_isolated_checkout_retains_exact_revision_and_authorized_origin(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, target = root / 'source', root / 'target'
             subprocess.run(['git', 'init', '-q', str(source)], check=True)
             subprocess.run(['git', '-C', str(source), 'remote', 'add', 'origin',
-                            'https://github.com/CybexHQ/development'], check=True)
+                            'git@github.com:CybexHQ/development.git'], check=True)
             (source / 'input').write_text('committed public input')
             subprocess.run(['git', '-C', str(source), 'add', 'input'], check=True)
             subprocess.run(['git', '-C', str(source), '-c', 'user.name=Fixture',

@@ -26,11 +26,21 @@ def run(*args, **kwargs):
     return subprocess.run([str(v) for v in args], check=True, **kwargs)
 
 
+def canonical_origin(origin):
+    # actions/checkout uses SSH for the private Manage deploy key. Copy only the
+    # canonical public repository identity, never its SSH configuration or key.
+    for repository in ('james', 'development'):
+        canonical = 'https://github.com/CybexHQ/' + repository
+        if origin.removesuffix('.git') in (canonical, 'git@github.com:CybexHQ/' + repository,
+                                          'ssh://git@github.com/CybexHQ/' + repository):
+            return canonical
+    raise ValueError('The isolated NixOS build requires James and development source origins')
+
+
 def checkout(source, destination):
     revision = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
     origin = subprocess.check_output(['git', '-C', str(source), 'remote', 'get-url', 'origin'], text=True).strip()
-    if origin.removesuffix('.git') not in ('https://github.com/CybexHQ/james', 'https://github.com/CybexHQ/development'):
-        raise ValueError('The isolated NixOS build requires James and development source origins')
+    origin = canonical_origin(origin)
     run('git', 'init', '-q', destination)
     run('git', '-C', destination, 'remote', 'add', 'origin', origin)
     run('git', '-C', destination, 'fetch', '-q', '--depth=1', source, revision)
