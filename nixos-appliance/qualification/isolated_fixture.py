@@ -156,8 +156,9 @@ class Fixture:
                 '-drive', f'if=pflash,format=raw,unit=1,file={d}/OVMF_VARS.fd',
                 '-drive', f'if=none,id=system,format=raw,file={d}/appliance.raw,cache=none',
                 '-device', 'virtio-scsi-pci,id=scsi0', '-device', 'scsi-hd,drive=system,serial=' + self.hardware['serial'],
-                '-device', 'i6300esb', '-watchdog-action', 'reset',
                 '-netdev', 'tap,id=net0,ifname=' + self.tap + ',script=no,downscript=no', '-device', 'virtio-net-pci,netdev=net0,id=nic0,mac=' + self.hardware['mac'],
+                # Match installation PCI enumeration: NIC before watchdog.
+                '-device', 'i6300esb', '-watchdog-action', 'reset',
                 '-display', 'none', '-serial', f'file:{d}/update-serial.log', '-qmp', f'unix:{qmp},server=on,wait=off'],
                 start_new_session=True)
             for _ in range(100):

@@ -196,9 +196,12 @@ class NixosQualificationTests(unittest.TestCase):
             instance.process, instance.monitor, instance.tap = None, None, None
             tap = Mock(return_value='jnqtesta')
             with patch.dict(fixture.SCOPE, {'tap': tap}), \
-                    patch.object(fixture.subprocess, 'Popen', side_effect=OSError('spawn failed')):
+                    patch.object(fixture.subprocess, 'Popen', side_effect=OSError('spawn failed')) as spawn:
                 with self.assertRaises(OSError):
                     instance.__enter__()
+            args = spawn.call_args.args[0]
+            devices = [args[i + 1].split(',')[0] for i, arg in enumerate(args) if arg == '-device']
+            self.assertEqual(devices, ['virtio-scsi-pci', 'scsi-hd', 'virtio-net-pci', 'i6300esb'])
             self.assertEqual(tap.call_count, 2)
             self.assertFalse(tap.call_args.args[-1])
 
