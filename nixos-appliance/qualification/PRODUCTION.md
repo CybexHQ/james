@@ -129,3 +129,7 @@ This creates the signed policy required by the NixOS updater; the install plan's
 unsigned schedule projection alone does not authorize updates. Existing signed
 policies are preserved. Qualification still requires the guest to verify policy,
 perform its own reboot, and report the exact transition and healthy identity.
+
+Artifact listeners allow address reuse after teardown so sequential fixtures can
+bind their fixed ports while old connections finish TIME_WAIT. Live listener
+sharing remains disabled; every phase verifies its own process and artifact receipt.

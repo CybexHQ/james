@@ -217,7 +217,10 @@ def publish_receipt(path, receipt, *, anchor=Path('/')):
 class ArtifactServer(ThreadingHTTPServer):
     daemon_threads = False
     request_queue_size = MAX_WORKERS
-    allow_reuse_address = False
+    # Consecutive isolated phases use the same fixed endpoint. Reclaim closed
+    # connections in TIME_WAIT while retaining exclusive ownership of live ports.
+    allow_reuse_address = True
+    allow_reuse_port = False
 
     def __init__(self, config_path, *, _test_uid=None, _test_anchor=None, _test_loopback=False):
         self.sources = []

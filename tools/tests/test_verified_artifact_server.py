@@ -73,6 +73,32 @@ class ArtifactServerTests(unittest.TestCase):
             self.assertFalse(self.thread.is_alive())
         self.temporary.cleanup()
 
+    def test_sequential_phases_rebind_after_response_but_cannot_share_live_listener(self):
+        self.start()
+        port = self.server.server_port
+        # Keep the client open until the HTTP/1.0 server closes first, leaving
+        # the fixed fixture endpoint in TIME_WAIT after teardown.
+        connection = socket.create_connection(('127.0.0.1', port), timeout=2)
+        try:
+            connection.sendall(b'GET /bundle.tar.zst HTTP/1.0\r\n\r\n')
+            response = b''
+            while chunk := connection.recv(65536):
+                response += chunk
+            self.assertTrue(response.endswith(self.body))
+        finally:
+            connection.close()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self.server = None
+        self.value['port'] = port
+        self.write_config()
+        self.start()
+        self.assertEqual(self.request()[2], self.body)
+        with self.assertRaises(OSError):
+            other = self.create()
+            other.server_close()
+
     def test_multiple_exact_artifacts_are_independent_but_readiness_checks_all(self):
         second = self.root / 'second.iso'
         second.write_bytes(b'second public artifact')
