@@ -174,6 +174,22 @@ def write_evidence(output, evidence):
         temporary.unlink(missing_ok=True)
 
 
+def initialize_schedule(api, prefix):
+    """Sign the installed fixture window; the NixOS updater rejects unsigned defaults."""
+    path = prefix + '/update-schedule'
+    current = api(path)
+    if current.get('supported') is not True:
+        raise ValueError('Fixture does not support signed maintenance policy')
+    if current['revision'] != 0:
+        return  # Preserve an explicitly configured policy, including closed windows.
+    if current.get('run_now_attempt_id') is not None:
+        raise ValueError('Unsigned fixture policy unexpectedly contains an immediate update')
+    saved = api(path, {'expected_revision': 0, 'schedule': current['schedule']})
+    if (saved.get('revision') != 1 or saved.get('schedule') != current['schedule']
+            or saved.get('run_now_attempt_id') is not None):
+        raise ValueError('Fixture maintenance policy was not saved exactly')
+
+
 def run(api, fixture, candidate, candidate_body, previous, previous_body, evidence,
         evidence_digest, transport_url, output, source, rollback=False, *, clock=time.monotonic,
         sleep=time.sleep, now=lambda: datetime.datetime.now(UTC), timeout=3600,
@@ -196,6 +212,8 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
             'release_manifest_sha256': hashlib.sha256(candidate_body).hexdigest(), 'package_transport_url': transport_url}}
         if admission:
             admission.prepare(request)
+        else:
+            initialize_schedule(api, prefix)
         started = now()
         if admission:
             admission.mark_queue_started()

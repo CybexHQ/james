@@ -89,6 +89,8 @@ class Run:
         self.rollback = rollback
         self.events = [(1, True)] + ([(212, True)] if rollback else [])
         self.calls = []
+        self.schedule = {'revision': 0, 'supported': True, 'run_now_attempt_id': None,
+            'schedule': {'timezone': 'UTC', 'weekdays': [1], 'start': '00:00', 'duration_minutes': 240}}
         self.nics = []
         self.admission_mutation = lambda a: a
         self.node_mutation = lambda n: n
@@ -129,6 +131,11 @@ class Run:
 
     def api(self, path, body=None):
         self.calls.append((path, body))
+        if path.endswith('/update-schedule'):
+            if body:
+                assert body['expected_revision'] == self.schedule['revision']
+                self.schedule = {**self.schedule, 'revision': self.schedule['revision'] + 1, 'schedule': body['schedule']}
+            return deepcopy(self.schedule)
         if body:
             self.request = body
             return self.admission_mutation({'attempt_id': ATTEMPT, 'request_id': body['request_id'],
@@ -156,6 +163,27 @@ class TransitionTests(unittest.TestCase):
     def setUp(self):
         # Acceptance deliberately imports predecessor on demand as well.
         self.enterContext(patch.dict(sys.modules, IMPORTS))
+
+    def test_transition_signs_initial_window_before_admitting_update(self):
+        run = Run()
+        with tempfile.TemporaryDirectory() as temporary:
+            run.execute(Path(temporary) / 'result.json')
+        writes = [(path, body) for path, body in run.calls if body]
+        self.assertTrue(writes[0][0].endswith('/update-schedule'))
+        self.assertEqual(writes[0][1], {'expected_revision': 0, 'schedule': run.schedule['schedule']})
+        self.assertTrue(writes[1][0].endswith('/qualification-updates'))
+
+    def test_initialization_preserves_existing_policy_and_rejects_unsupported_or_changed_receipt(self):
+        api = Mock(return_value={'revision': 4, 'supported': True})
+        T.initialize_schedule(api, '/node')
+        api.assert_called_once_with('/node/update-schedule')
+        with self.assertRaises(ValueError):
+            T.initialize_schedule(Mock(return_value={'supported': False}), '/node')
+        initial = Run().schedule
+        for changed in ({'revision': 2}, {'schedule': {}}, {'run_now_attempt_id': ATTEMPT}):
+            api = Mock(side_effect=[initial, {**initial, 'revision': 1, **changed}])
+            with self.assertRaises(ValueError):
+                T.initialize_schedule(api, '/node')
 
     def test_dhcp_identity_preserves_unset_desired_url(self):
         value = node(manifest('0.2.2', 'a'), '1', datetime.datetime.now(T.UTC))

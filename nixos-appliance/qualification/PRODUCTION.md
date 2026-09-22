@@ -122,3 +122,10 @@ Independent cold appliance and workstation qualification remains mandatory after
 Upgrade and rollback qualification use the retained verified guest artifact listener
 on port18082, bound to the exact selected candidate manifest. They do not start
 an additional download listener outside the isolated fixture network policy.
+
+Before upgrade and rollback admission, the harness saves the fixture's initial
+maintenance window through the authenticated schedule API with revision zero.
+This creates the signed policy required by the NixOS updater; the install plan's
+unsigned schedule projection alone does not authorize updates. Existing signed
+policies are preserved. Qualification still requires the guest to verify policy,
+perform its own reboot, and report the exact transition and healthy identity.
