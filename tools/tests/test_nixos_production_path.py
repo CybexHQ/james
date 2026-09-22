@@ -25,6 +25,17 @@ def load(name):
 
 
 class ProductionTests(unittest.TestCase):
+    def test_signed_appliance_cache_requires_exact_workstation_agent(self):
+        build = runpy.run_path(str(HELPERS.parent / 'build.py'))
+        agent = Path('/nix/store/' + 'a' * 32 + '-cybex-agent-0.1.0')
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary)
+            manifest = cache / 'manifest.json'
+            manifest.write_text(json.dumps({'store_paths': [{'path': str(agent)}]}))
+            build['require_workstation_agent_cache'](cache, agent)
+            with self.assertRaisesRegex(ValueError, 'exact workstation agent'):
+                build['require_workstation_agent_cache'](cache, Path(str(agent) + '-other'))
+
     def test_tls_forwarder_preserves_bytes_and_closes_owned_connections(self):
         forwarding = load('isolated_manage_tls_proxy')
         class Echo(socketserver.BaseRequestHandler):

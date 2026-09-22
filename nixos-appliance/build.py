@@ -98,6 +98,13 @@ def inspect_template(iso, package, args, work):
     return offset
 
 
+def require_workstation_agent_cache(cache, agent):
+    manifest = json.loads((cache / 'manifest.json').read_bytes())
+    paths = {row['path'] for row in manifest['store_paths']}
+    if str(agent) not in paths:
+        raise ValueError('signed appliance cache omits the exact workstation agent output')
+
+
 def build(args):
     manage = Path(args.manage_source_dir).absolute()
     clean_checkout(REPO, args.source_revision, 'james')
@@ -154,6 +161,7 @@ def build(args):
             publish(metadata_file, output / (name + '.json'))
         else:
             cache, metadata = nix('unsignedCache'), nix('buildMetadata')
+            require_workstation_agent_cache(cache, nix('workstationAgent'))
             if args.unsigned_output_dir:
                 # Ordinary files survive transfer into an isolated signing job.
                 shutil.copytree(cache, output / 'cache')

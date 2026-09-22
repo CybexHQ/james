@@ -2,6 +2,9 @@
 {
   imports = [ ./module.nix ];
   services.cybex-james = { enable = true; inherit appliance; };
+  # Keep the exact workstation agent as a cache seed without starting its
+  # service on James. The signed system closure exports only reachable paths.
+  system.extraDependencies = [ appliance.workstationAgent ];
   networking.hostName = "cybex-james";
   system.stateVersion = "26.05";
   boot.loader.systemd-boot.enable = true;

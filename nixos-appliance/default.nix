@@ -22,8 +22,15 @@ let
     python3 ${./metadata.py} source $out/${manageSourceRevision}.tar ${manageSourceRevision} $out/${manageSourceRevision}.json
     chmod 0444 $out/*
   '';
+  # The offline production fixture builds the workstation target from this
+  # exact Manage revision. Seed its agent output in the signed appliance cache
+  # so the target build never needs to fetch Cargo crates from the Internet.
+  workstationAgent = import (builtins.toPath manageRepo + "/deploy/nixos/cybex-agent-package.nix") {
+    inherit pkgs;
+    repoRoot = builtins.toPath manageRepo;
+  };
   common = {
-    inherit package sourceArchive migrations sourceRevision manageSourceRevision manageOrigin sourceDateEpoch releasePublicKey;
+    inherit package sourceArchive migrations workstationAgent sourceRevision manageSourceRevision manageOrigin sourceDateEpoch releasePublicKey;
     sourceArchiveFile = archiveInput;
     provisioningPublicKeys = publicKeys;
     nixpkgsRevision = pin.revision;
@@ -77,7 +84,7 @@ assert builtins.match "[0-9a-f]{40}" manageSourceRevision != null;
 assert builtins.length publicKeys >= 1 && builtins.length publicKeys <= 8;
 assert publicKeys == lib.sort builtins.lessThan (lib.unique publicKeys);
 {
-  inherit package unsignedCache buildMetadata;
+  inherit package unsignedCache buildMetadata workstationAgent;
   system = installed.config.system.build.toplevel;
   iso = live.config.system.build.isoImage;
   inherit (installed) config;
