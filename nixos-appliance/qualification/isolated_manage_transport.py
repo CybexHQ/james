@@ -83,20 +83,31 @@ class Transport:
             raw.close()
             raise
 
-    def request(self, path, body=None, token=None):
+    def request_bytes(self, path, body=None, token=None, headers=None):
         if (not isinstance(path, str) or not path.startswith('/v1/') or '\\' in path
                 or any(ord(c) < 33 or ord(c) > 126 for c in path) or '#' in path):
             raise ValueError('isolated Manage API path is invalid')
         connection = self.connection()
         try:
+            extra = headers
             headers = {'Host': self.hostname, 'Content-Type': 'application/json', 'Connection': 'close'}
             if token is not None:
                 if not isinstance(token, str) or not token or any(ord(c) < 33 or ord(c) > 126 for c in token):
                     raise ValueError('invalid isolated fixture session')
                 headers['Authorization'] = 'Bearer ' + token
+            if extra:
+                if set(extra) != {'X-Cybex-James-Provisioning-Secret'} or any(
+                        not isinstance(v, str) or not v or any(ord(c) < 33 or ord(c) > 126 for c in v)
+                        for v in extra.values()):
+                    raise ValueError('invalid isolated personalization header')
+                headers.update(extra)
             connection.request('GET' if body is None else 'POST', path,
                                body=None if body is None else json.dumps(body).encode(), headers=headers)
             data = self.read(connection)
-            return json.loads(data) if data else None
+            return data
         finally:
             connection.close()
+
+    def request(self, path, body=None, token=None):
+        data = self.request_bytes(path, body, token)
+        return json.loads(data) if data else None

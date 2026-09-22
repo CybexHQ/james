@@ -235,7 +235,7 @@ class Tests(unittest.TestCase):
     def test_unknown_or_nonoffline_context_rejected_without_commands(self):
         for replacement in ({'egress_hosts': ['github.com']}, {'unknown': True},
                             {'peer_ipv4': '8.8.8.8'}, {'backend_subnet': '10.99.16.0/28'},
-                            {'network_id': 'short'}, {'bridge': 'br0'}, {'manage_origin': 'https://public.example.org'},
+                            {'network_id': 'short'}, {'bridge': 'br0'}, {'manage_origin': 'http://public.example.org'},
                             {'manage_origin': 'https://dev.example.test:443'}):
             h = Host()
             with self.subTest(replacement=replacement), self.assertRaises(ValueError):

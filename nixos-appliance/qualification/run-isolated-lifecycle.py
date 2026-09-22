@@ -36,7 +36,7 @@ def main():
     origin = isolation['manage_origin']
     api = API(state)
     catalog = json.loads(subprocess.check_output([sys.executable, "-B", str(Path(__file__).with_name("blueprint-catalog.py")),
-                "--manage-origin", origin, "--token-file", str(state / "session")]))
+                "--manage-origin", origin, "--token-file", str(state / "session"), "--state-dir", str(state)]))
     manifest = json.loads(args.manifest.read_bytes())
     version = manifest["version"]
     template = args.manifest.parent / f"cybex-james-appliance-template-{version}-x86_64-linux.iso"

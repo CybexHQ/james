@@ -25,9 +25,9 @@ def validate(c):
         raise ValueError('full Docker network identity required')
     origin = urlsplit(c['manage_origin'])
     host = origin.hostname or ''
-    if (c['manage_origin'] != 'https://' + host or not (host.startswith('dev.') or host.endswith('.test'))
+    if (c['manage_origin'] != 'https://' + host or '.' not in host
             or len(host) > 253 or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', s) for s in host.split('.'))):
-        raise ValueError('canonical development origin required')
+        raise ValueError('canonical exact fixture origin required')
     guest, backend = ipaddress.ip_interface(c['subnet']), ipaddress.ip_network(c['backend_subnet'])
     private = [ipaddress.ip_network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')]
     if (guest.version != 4 or backend.version != 4 or guest.network.prefixlen != 24

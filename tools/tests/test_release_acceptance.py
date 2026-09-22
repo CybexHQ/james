@@ -11,7 +11,7 @@ import unittest
 from unittest import mock
 import zipfile
 
-HELPERS = Path(__file__).resolve().parents[2] / 'ubuntu-appliance/qualification'
+HELPERS = Path(__file__).resolve().parents[2] / 'nixos-appliance/qualification'
 sys.path.insert(0, str(HELPERS))
 import release_acceptance as acceptance
 import workstation_lifecycle
@@ -26,17 +26,22 @@ class AcceptanceTests(unittest.TestCase):
         self.source = 'a' * 40
         self.digest = 'b' * 64
         self.manifest = {'version': '0.2.3',
-            'appliance_release_v1': {'source_revision': self.source, 'ubuntu_snapshot_id': '20260918T000000Z'},
-            'installer_iso_template_v2': {'template_sha256': 'c' * 64},
+            'appliance_release_v1': {'schema': 'cybex.james.appliance-release.v3',
+                'source_revision': self.source, 'manage_source_revision': 'e' * 40,
+                'system_closure': {'sha256': 'f' * 64}, 'system_toplevel': '/nix/store/exact-system',
+                'nixpkgs_revision': '9' * 40},
+            'installer_iso_template_v3': {'template_sha256': 'c' * 64, 'manage_origin': 'https://manage.cybex.net'},
             'workstation_netboot': {'runtime_version': '1.0.67', 'sha256': 'd' * 64,
                 'manage_source_revision': 'e' * 40, 'components': {
                     name: {'sha256': str(i) * 64, 'size_bytes': 10}
                     for i, name in enumerate(('bzImage', 'initrd', 'nix-store.squashfs'), 1)}}}
         self.cold = {k: True for k in acceptance.LIFECYCLE_FLAGS + acceptance.DELIVERY_FLAGS}
-        self.cold.update(schema='cybex.james.ubuntu-appliance-qualification.v1',
+        self.cold.update(schema='cybex.james.nixos-appliance-qualification.v1',
             final_state='ready', qualification_kind='candidate', qualified_manifest_sha256=self.digest,
-            harness_revision=self.source, release_version='0.2.3', ubuntu_snapshot_id='20260918T000000Z',
-            template_sha256='c' * 64, root_generation='0', device_id='dev_' + '1' * 32,
+            harness_revision=self.source, release_version='0.2.3', base_os='nixos', system_closure_sha256='f' * 64, system_toplevel='/nix/store/exact-system',
+            nixpkgs_revision='9' * 40, manage_source_revision='e' * 40, secure_boot=False,
+            ssh_login_verified=True, ssh_root_rejected=True, ssh_password_rejected=True,
+            template_sha256='c' * 64, system_generation='1', device_id='dev_' + '1' * 32,
             candidate_runtime_required=True, workstation_runtime_prepublication_deferred=False,
             builtin_blueprints_prepublication_deferred=False,
             qualified_blueprints={'schema': 'cybex.james.qualification-blueprints.v1', 'blueprints': [
@@ -52,6 +57,12 @@ class AcceptanceTests(unittest.TestCase):
                 'configuration_status': 'compliant', 'managed_reboot_completed': True,
                 'identity_preserved': True, 'boot_id_before': 'before', 'boot_id_after': 'after',
                 'system': '/nix/store/exact-system'} for profile in ('taskbar', 'dock', 'tiling')])
+
+        scope = {'schema': 'cybex.james.isolated-qualification.v1',
+                 'manage_origin': 'https://manage.cybex.net', 'manage_revision': 'e' * 40,
+                 'owner': '01234567-89ab-cdef-0123-456789abcdef', 'live_production_access': False}
+        self.cold['qualification_scope'] = scope
+        self.workstation['qualification_scope'] = scope
 
     def validate(self, value, phase='cold'):
         acceptance.validate_lifecycle(self.manifest, self.digest, value, self.source, phase)
@@ -73,7 +84,7 @@ class AcceptanceTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 self.validate(self.cold | {field: False})
         for field, value in [('harness_revision', 'f' * 40), ('qualified_manifest_sha256', 'f' * 64),
-                             ('root_generation', '1'), ('candidate_runtime_required', False),
+                             ('system_generation', '0'), ('candidate_runtime_required', False),
                              ('release_version', '0.2.1-dev.29')]:
             with self.subTest(field=field), self.assertRaises(ValueError):
                 self.validate(self.cold | {field: value})
@@ -175,7 +186,7 @@ class AcceptanceTests(unittest.TestCase):
                         'event': 'push', 'path': '.github/workflows/release.yml'},
                 'commits/' + tag: {'sha': self.source},
                 'actions/runs/42/jobs?per_page=100': {'jobs': [{'name':
-                    'Verify published release from a cold production fixture', 'conclusion': 'success'}]},
+                    'Verify published NixOS release in an isolated fixture', 'conclusion': 'success'}]},
                 'actions/artifacts/77': dict(expired=False, size_in_bytes=len(archive),
                     workflow_run={'id': 42, 'head_sha': self.source},
                     name='cybex-james-published-cold-42', digest='sha256:' + action_digest),

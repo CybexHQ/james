@@ -97,7 +97,7 @@ class NixosQualificationTests(unittest.TestCase):
                              ('network', 'list', '--format=json'))
 
     def test_bridge_verification_uses_incus_json_api_and_checks_ownership(self):
-        scope = {'manage_origin': 'https://dev.example.com', 'bridge': 'jnqtest',
+        scope = {'schema': S.SCHEMA, 'manage_origin': 'https://dev.example.com', 'bridge': 'jnqtest',
                  'owner': 'owned-run', 'subnet': '10.246.217.1/24'}
         network = {'name': scope['bridge'], 'type': 'bridge', 'managed': True,
                    'config': {'user.cybex.nixos-qualification': scope['owner'],

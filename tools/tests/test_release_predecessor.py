@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
-SPEC = importlib.util.spec_from_file_location("release_predecessor", ROOT / "ubuntu-appliance/qualification/release_predecessor.py")
+SPEC = importlib.util.spec_from_file_location("release_predecessor", ROOT / "nixos-appliance/qualification/release_predecessor.py")
 P = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(P)
 FIXTURES = ROOT / "tools/tests/fixtures/recovery"
@@ -21,25 +21,29 @@ class RecoveryTests(unittest.TestCase):
         self.key = self.anchor["public_key"]
         self.version = self.anchor["successor_version"]
 
-    def test_signed_adoption_is_exactly_scoped(self):
-        self.assertEqual(P.authorization(self.authorization, self.key, self.version, "CybexHQ/james"), self.anchor)
-        for version, repository, key in [("99.0.0", "CybexHQ/james", self.key),
-                                          (self.version, "other/james", self.key),
-                                          (self.version, "CybexHQ/james", self.anchor["published"]["public_key"])]:
-            with self.assertRaises(ValueError):
-                P.authorization(self.authorization, key, version, repository)
-
-    def test_recovery_or_old_authority_cannot_be_substituted(self):
+    def authority(self, path, key, version, repository):
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "authorization.json"
-            for section, field, replacement in [("recovery", "manifest_sha256", "0" * 64),
-                                                 ("published", "public_key", self.key),
-                                                 ("published", "github_release_id", 1)]:
-                value = copy.deepcopy(self.anchor)
-                value[section][field] = replacement
-                path.write_bytes(P.canonical(value))
-                with self.assertRaises(P.release.ReleaseError):
-                    P.authorization(path, self.key, self.version, "CybexHQ/james")
+            directory = Path(temporary)
+            (directory / P.MANIFEST).write_bytes((FIXTURES / 'github-manifest.json').read_bytes())
+            (directory / P.COMPATIBILITY).write_bytes((FIXTURES / 'github-compatibility.json').read_bytes())
+            previous = self.anchor['published'] | {'id': self.anchor['published']['github_release_id']}
+            return P.historical_authority(path, key, previous, directory, version, repository)
+
+    def test_historical_authority_is_scoped_and_signed(self):
+        self.assertEqual(self.authority(self.authorization, self.key, self.version, 'CybexHQ/james'),
+                         self.anchor['published']['public_key'])
+        for version, repository, key in [('99.0.0', 'CybexHQ/james', self.key),
+                                         (self.version, 'other/james', self.key),
+                                         (self.version, 'CybexHQ/james', self.anchor['published']['public_key'])]:
+            with self.assertRaises(ValueError):
+                self.authority(self.authorization, key, version, repository)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'authorization.json'
+            bad = copy.deepcopy(self.anchor)
+            bad['published']['manifest_sha256'] = '0' * 64
+            path.write_bytes(P.canonical(bad))
+            with self.assertRaises(P.release.ReleaseError):
+                self.authority(path, self.key, self.version, 'CybexHQ/james')
 
     def test_both_original_descriptor_pairs_authenticate_under_their_own_keys(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -56,7 +60,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_missing_publication_cannot_be_treated_as_first_release(self):
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(P, "github", return_value=[]):
-            with self.assertRaisesRegex(ValueError, "first release"):
+            with self.assertRaisesRegex(ValueError, "first-release"):
                 P.resolve("CybexHQ/james", self.version, self.key, Path(temporary), self.authorization)
 
     def test_latest_selection_ignores_drafts_and_rejects_ambiguous_assets(self):
@@ -77,8 +81,8 @@ class RecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "cached"
             path.write_bytes(b"changed")
-            with self.assertRaisesRegex(ValueError, "digest changed"):
-                P.fetch("https://manage.cybex.net/retained", path, "0" * 64)
+            with self.assertRaisesRegex(ValueError, "signed size or digest"):
+                P.fetch("https://github.com/CybexHQ/james/releases/download/v0.2.1/retained", path, "0" * 64)
 
 
 if __name__ == "__main__":

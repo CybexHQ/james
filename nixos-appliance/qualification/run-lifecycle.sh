@@ -168,6 +168,13 @@ trap 'exit 130' INT TERM
 
 api() {
   local method="$1" path="$2" body="${3:-}"
+  if [[ -S "$CYBEX_JAMES_QUALIFICATION_STATE/manage.sock" ]]; then
+    local rpc_args=(--state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" api --path "$path")
+    if [[ -n "$body" ]]; then rpc_args+=(--body "$body"); fi
+    python3 -B "$repository_root/nixos-appliance/qualification/isolated_manage_rpc.py" "${rpc_args[@]}"
+    return
+  fi
+  PYTHONPATH="$repository_root/nixos-appliance/qualification" python3 -B -c 'import sys; from isolated_fixture import SCOPE; SCOPE["development_origin"](sys.argv[1])' "$manage_origin"
   local response="$work_dir/api-response.json"
   local attempt=1 max_attempts=1 status http_code
   local curl_args=(-4 --fail --silent --show-error --proto '=https' --tlsv1.2
@@ -223,7 +230,7 @@ check_delivery_policy
 # read-only admission runs in Manage readiness. Never reset built-ins to v1.
 blueprints="$work_dir/blueprints.json"
 python3 -B "$repository_root/nixos-appliance/qualification/blueprint-catalog.py" \
-  --manage-origin "$manage_origin" --token-file "$token_file" \
+  --manage-origin "$manage_origin" --token-file "$token_file" --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" \
   --tiling-blueprint "${CYBEX_JAMES_QUALIFICATION_TILING_BLUEPRINT:-qualification_tiling}" \
   > "$blueprints"
 
@@ -327,10 +334,15 @@ personalization_path="$(jq -er '.personalization_path' "$create_response")"
 
 headers="$work_dir/download.headers"
 envelope="$work_dir/personalization-envelope.bin"
+if [[ -S "$CYBEX_JAMES_QUALIFICATION_STATE/manage.sock" ]]; then
+  printf '%s\n' "$media_secret" | python3 -B "$repository_root/nixos-appliance/qualification/isolated_manage_rpc.py" \
+    --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" personalize --path "$personalization_path" --output "$envelope"
+else
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
   --header "Authorization: Bearer $token" \
   --header "X-Cybex-James-Provisioning-Secret: $media_secret" \
   --dump-header "$headers" --output "$envelope" "$manage_origin$personalization_path"
+fi
 test "$(stat -c '%s' "$envelope")" -eq 8192
 cp --reflink=auto -- "$template" "$personalized"
 chmod 0600 "$personalized"
@@ -426,6 +438,10 @@ approve_body="$(jq -cn \
   '{session_revision:$revision,inventory_sha256:$inventory,display_name:$display_name,target_disk_id:$disk,network:{mode:"dhcp",interface_id:$interface,address_cidr:null,gateway:null,dns_servers:[]},maintenance_window:{timezone:"UTC",weekday:$weekday,start:$start,duration_minutes:240},management_cidrs:[$cidr]}')"
 printf '%s\n' "$approve_body" > "$work_dir/initial-approval.json"
 api POST "/v1/james/provisioning-sessions/$session_id/approve" "$approve_body" > "$work_dir/initial-approved.json"
+if [[ -S "$CYBEX_JAMES_QUALIFICATION_STATE/manage.sock" ]]; then
+  python3 -B "$repository_root/nixos-appliance/qualification/isolated_manage_rpc.py" \
+    --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" allow-device --session-id "$session_id"
+fi
 if [[ -n "${CYBEX_JAMES_QUALIFICATION_ALLOW_DEVICE_HELPER:-}" ]]; then
   "$CYBEX_JAMES_QUALIFICATION_ALLOW_DEVICE_HELPER" \
     --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" --session-id "$session_id"
@@ -738,7 +754,7 @@ rm -f -- "$work_dir/operator-key" "$work_dir/operator-key.pub" \
 # Fail closed if policy, authoring or a released revision moved during this run.
 check_delivery_policy
 python3 -B "$repository_root/nixos-appliance/qualification/blueprint-catalog.py" \
-  --manage-origin "$manage_origin" --token-file "$token_file" \
+  --manage-origin "$manage_origin" --token-file "$token_file" --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" \
   --tiling-blueprint "${CYBEX_JAMES_QUALIFICATION_TILING_BLUEPRINT:-qualification_tiling}" \
   --baseline "$blueprints" >/dev/null
 

@@ -9,7 +9,7 @@ import threading
 import json
 import unittest
 
-HELPERS = Path(__file__).resolve().parents[2] / 'ubuntu-appliance/qualification'
+HELPERS = Path(__file__).resolve().parents[2] / 'nixos-appliance/qualification'
 
 
 def load(name):
@@ -21,7 +21,6 @@ def load(name):
 
 
 fixture = load('isolated_fixture')
-rollback = load('rollback_lifecycle')
 workstation = load('workstation_lifecycle')
 
 
@@ -48,30 +47,7 @@ class QualificationTests(unittest.TestCase):
             thread.join()
             server.close()
 
-    def test_roll_back_rejects_replaced_identity_and_false_terminal_receipts(self):
-        before = {'device_id': 'device', 'hostname': 'fixture', 'public_base_url': 'http://10.62.57.2',
-            'cache_public_key_fingerprint': 'a' * 64, 'cache_base_url': 'http://10.62.57.2/cache',
-            'appliance_release': '0.2.1-dev.29', 'ubuntu_snapshot_id': '20260901T000000Z',
-            'appliance_network': {'managed_interface_id': 'nic0', 'interfaces': [{'ifname': 'enp1s0', 'address': '52:54:00:c7:be:01'}]}}
-        after = copy.deepcopy(before) | {'update_status': 'rolled_back', 'update_attempt_id': 'attempt',
-            'update_target_version': '0.2.2', 'root_generation': '0', 'appliance_secure_boot': True,
-            'network_fallback_active': False, 'appliance_local_health': {'status': 'healthy'},
-            'appliance_package_update': {'status': 'rolled_back', 'attempt_id': 'attempt', 'target_release': '0.2.2',
-                'resulting_root_generation': '0', 'rollback_reason': 'candidate_boot_failed'}}
-        rollback.verify_rollback(before, after, 'attempt', '0.2.2')
-        for field, invalid in [('device_id', 'other'), ('root_generation', '1'),
-                               ('update_attempt_id', 'other'), ('appliance_release', '0.2.2'),
-                               ('appliance_secure_boot', False), ('network_fallback_active', True)]:
-            with self.subTest(field=field), self.assertRaises(ValueError):
-                rollback.verify_rollback(before, after | {field: invalid}, 'attempt', '0.2.2')
 
-    def test_runtime_rollback_evidence_rejects_unconverged_runtime(self):
-        descriptor = dict(compatibility_epoch=1, runtime_version='1.0.61', bundle_sha256='a' * 64,
-                          architecture='x86_64-linux', manage_source_revision='b' * 40)
-        self.assertEqual(rollback.runtime_identity({'state': 'ready', 'active': descriptor, 'desired': descriptor}), descriptor)
-        with self.assertRaises(ValueError):
-            rollback.runtime_identity({'state': 'ready', 'active': descriptor,
-                                       'desired': descriptor | {'bundle_sha256': 'c' * 64}})
 
     def test_workstation_acceptance_requires_booted_exact_runtime_and_fresh_compliance(self):
         descriptor = {'runtime_version': '1.0.67', 'manage_source_revision': 'b' * 40,

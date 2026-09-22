@@ -54,10 +54,11 @@ continue to identify that exact GitHub artifact, now containing the receipt.
 Consumers authenticate the receipt ZIP against GitHub's digest and workflow
 metadata, then verify every local file before copying it. Existing signature,
 source, predecessor, installation, upgrade, rollback and immutable-publication
-gates remain mandatory. Qualification uses the explicitly selected development
-Manage API and newly owned Incus bridges, TAPs and disposable QEMU disks. It
+gates remain mandatory. Production qualification uses a fresh, confined Manage fixture with pinned TLS
+transport and newly owned Incus bridges, TAPs and disposable QEMU disks. See
+[the production contract](../../nixos-appliance/qualification/PRODUCTION.md). It
 never adopts an existing VM or reads a production database. An ownership receipt
-binds each run to its exact development origin, bridge and subnet. Cleanup
+binds each run to its exact artifact origin, bridge and subnet. Cleanup
 verifies that receipt before removing owned resources.
 Cold qualification never reads the candidate store: it downloads each published
 payload from GitHub and verifies the complete receipt inventory before booting.
@@ -157,47 +158,30 @@ Provision these prerequisites independently before enabling the protected jobs.
 After modifying runner configuration, restart its confirmed user unit,
 `cybex-james-runner.service`, only when it is idle.
 
-Configure the following **variables** in
-`james-nixos-development-qualification`. File values are absolute host paths,
-not credentials embedded in Actions variables. Both prepublication and cold
-jobs pass every value as an explicit argument through `sudo -n`; they do not
-depend on sudo retaining the runner environment.
+Production jobs use `production-release-qualification` and the root-private
+isolated Manage configuration described in
+[`PRODUCTION.md`](../../nixos-appliance/qualification/PRODUCTION.md). Configure
+its exact production origin, fixture template, private state root and disjoint
+subnet. The runner builds the candidate's committed Manage source into disposable
+images and retains the verified Owner for every API and personalization request.
+It does not use an external production session or a development admission helper.
 
-| Variable suffix after `CYBEX_JAMES_QUALIFICATION_` | Required value |
-| --- | --- |
-| `MANAGE_ORIGIN` | Canonical HTTPS development origin, equal to the candidate and predecessor ISO descriptors; a `dev.` hostname or `.test` hostname. |
-| `TOKEN_FILE` | Root-owned ordinary single-link file, no group/other permissions, containing a current session for that development API. Never a production session. |
-| `SUBNET` | Unused private IPv4 bridge address with `/24` prefix, such as `192.168.246.1/24`; must not overlap Incus networks or host routes. Jobs share a concurrency group and reuse it only after verified cleanup. |
-| `STATE_ROOT` | Dedicated root-owned mode-0700 directory for receipts, private sessions and disposable fixtures. Each phase creates a fresh child; failed runs require owned-resource inspection before cleanup. |
-| `ALLOW_DEVICE_HELPER` | Root-owned, protected executable that admits only the session identified by `--state-dir` and `--session-id`, after verifying its development ownership receipt. It must never authorize devices against production. |
-| `MANAGE_CHECKOUT` | Exact development checkout used by the admission helper to validate qualification inputs and deployed source. This is not the production checkout. |
-
-The optional `CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT` belongs to the
-same protected qualification environment. It authorizes only runner-private warm
-transport storage; it grants no subnet, VM, device-admission, signing, publication
-or promotion authority. If it is absent, the original resolver remains active.
-
-The current Manage checkout and deployed harness identity are separate from
-the exact candidate/predecessor source ancestors encoded in each fixture's
-inputs. Device admission must retain those distinct identities; substituting a
-current revision for a signed predecessor invalidates the qualification.
-
-The initial V3 qualification also requires
+The initial V3 qualification requires
 `CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR` and
-`CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256` when published
-ancestry is still Ubuntu. Supply a separately signed older NixOS release for
-the same development origin. Ubuntu ancestry is retained as history and never
-used as a NixOS upgrade fixture. Neither this documentation nor the workflow
-provisions a credential, admission helper, development service, or predecessor.
+`CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256`: a separately signed
+older NixOS release bound to the production origin. Ubuntu ancestry remains
+historical evidence and cannot supply the upgrade fixture. Development-bound
+NixOS artifacts cannot be relabeled for this purpose.
 
-Digital Brain's producer verifier and the coordinated-approval workflow now
-select `nixos-appliance/qualification/promote-production-release.py`. Historical
-tagged workflows and Ubuntu helpers remain available until the migration's
-Phase 4 removal gate passes. Digital Brain/environment setup must provide the
-new protected environment, its six explicit variables, development admission
-helper and source-bound inputs before qualification can run. Its production
-release lifecycle must treat the production-origin isolation gap as a blocker,
-not an available release, and must not reuse development evidence for promotion.
+The optional `CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT` authorizes only
+runner-private warm transport storage. It grants no VM, signing, publication or
+promotion authority. Cold verification independently downloads published bytes.
+
+Digital Brain and the coordinated approval workflow select
+`nixos-appliance/qualification/promote-production-release.py`. Ubuntu helpers
+have been removed from current source; historical tagged workflows are unchanged.
+Signed appliance and workstation evidence must bind the same isolated fixture,
+exact production origin and reviewed Manage revision before promotion.
 
 Historical successful workflow measurements remain exactly 9,911 and 11,500
 seconds. The 3,600-second target, live timing, operator/media/resource readiness,

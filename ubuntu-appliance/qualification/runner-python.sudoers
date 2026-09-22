@@ -1,7 +1,0 @@
-# Existing immutable workflows invoke this exact root-owned qualification entry
-# without -B. Keep Python bytecode out of the runner's unprivileged checkout.
-# Only bounded public receipts use the command's 022 umask; private state uses
-# explicit 0700 directories and 0600 files, and lifecycle shells set umask 077.
-Cmnd_Alias CYBEX_JAMES_QUALIFY = /usr/bin/python3 ubuntu-appliance/qualification/run-production-qualification.py *, /usr/bin/python3 -B ubuntu-appliance/qualification/run-production-qualification.py *
-Defaults!CYBEX_JAMES_QUALIFY env_keep += "PYTHONDONTWRITEBYTECODE"
-Defaults!CYBEX_JAMES_QUALIFY umask=0022, umask_override

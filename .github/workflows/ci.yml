@@ -50,16 +50,12 @@ jobs:
       - name: Bash syntax
         shell: bash
         run: |
-          mapfile -t appliance_helpers < <(rg -l '^#!.*(bash|/sh)$' ubuntu-appliance/rootfs/usr/lib/cybex-james | sort)
-          bash -n ubuntu-appliance/*.sh ubuntu-appliance/qualification/*.sh "${appliance_helpers[@]}" ubuntu-appliance/rootfs/etc/grub.d/09_cybex_generations
           mapfile -t nixos_helpers < <(rg -l '^#!.*(bash|/sh)$' nixos-appliance | sort)
           for helper in "${nixos_helpers[@]}"; do bash -n "$helper"; done
 
       - name: Shellcheck
         shell: bash
         run: |
-          mapfile -t appliance_helpers < <(rg -l '^#!.*(bash|/sh)$' ubuntu-appliance/rootfs/usr/lib/cybex-james | sort)
-          shellcheck ubuntu-appliance/*.sh ubuntu-appliance/qualification/*.sh "${appliance_helpers[@]}" ubuntu-appliance/rootfs/etc/grub.d/09_cybex_generations
           mapfile -t nixos_helpers < <(rg -l '^#!.*(bash|/sh)$' nixos-appliance | sort)
           if ((${#nixos_helpers[@]})); then shellcheck "${nixos_helpers[@]}"; fi
 

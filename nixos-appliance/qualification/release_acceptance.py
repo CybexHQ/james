@@ -17,7 +17,22 @@ DELIVERY_FLAGS = (
 )
 
 
+def validate_scope(manifest, evidence):
+    origin = manifest.get('installer_iso_template_v3', {}).get('manage_origin')
+    if origin == 'https://manage.cybex.net':
+        import uuid
+        scope = evidence.get('qualification_scope', {})
+        if (set(scope) != {'schema', 'manage_origin', 'manage_revision', 'owner', 'live_production_access'}
+                or scope['schema'] != 'cybex.james.isolated-qualification.v1'
+                or scope['manage_origin'] != origin
+                or scope['manage_revision'] != manifest['appliance_release_v1']['manage_source_revision']
+                or scope['live_production_access'] is not False
+                or str(uuid.UUID(scope['owner'])) != scope['owner']):
+            raise ValueError('Production artifacts require exact-origin isolated qualification evidence')
+
+
 def validate_lifecycle(manifest, manifest_sha256, evidence, source, phase):
+    validate_scope(manifest, evidence)
     if phase not in {'prepublication', 'cold'}:
         raise ValueError('Unknown acceptance phase')
     cold = phase == 'cold'
@@ -58,6 +73,9 @@ def validate_lifecycle(manifest, manifest_sha256, evidence, source, phase):
 
 
 def validate_workstation(manifest, cold, evidence):
+    validate_scope(manifest, evidence)
+    if evidence.get('qualification_scope') != cold.get('qualification_scope'):
+        raise ValueError('Workstation and appliance qualification used different fixtures')
     descriptor = manifest['workstation_netboot']
     # The installed runtime records the signed release-independent component
     # identity, using the same canonical vocabulary as the workstation harness.

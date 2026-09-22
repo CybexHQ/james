@@ -11,14 +11,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def load(name):
-    spec = importlib.util.spec_from_file_location(name, ROOT / 'ubuntu-appliance/qualification' / (name + '.py'))
+    spec = importlib.util.spec_from_file_location(name, ROOT / 'nixos-appliance/qualification' / (name + '.py'))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
 catalog = load('blueprint-catalog')
-predecessor = load('published-predecessor')
 
 
 class CatalogTests(unittest.TestCase):
@@ -76,18 +75,6 @@ class CatalogTests(unittest.TestCase):
         config['expected_state_json']['checks'][0]['expected']['desktop_profile'] = 'taskbar'
         with self.assertRaises(ValueError):
             self.check()
-
-    def test_historical_manifest_must_match_authenticated_identity(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'manifest.json'
-            path.write_text(json.dumps({'version': '1.0.0', 'appliance_release_v1': {'ubuntu_snapshot_id': '20260805T000000Z'}}))
-            identity = {'release_manifest_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
-                        'release_id': '1.0.0', 'ubuntu_snapshot_id': '20260805T000000Z'}
-            predecessor.match_manifest(identity, path)
-            for field in identity:
-                with self.assertRaises(ValueError):
-                    predecessor.match_manifest({**identity, field: 'wrong'}, path)
-
 
 if __name__ == '__main__':
     unittest.main()

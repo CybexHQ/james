@@ -560,9 +560,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: release_build
     runs-on: [self-hosted, linux, x64, cybex-james-lab]
-    environment: james-nixos-development-qualification
+    environment: production-release-qualification
     concurrency:
-      group: james-nixos-development-qualification
+      group: james-nixos-production-qualification
       cancel-in-progress: false
     outputs:
       artifact_id: ${{ steps.upload-qualification.outputs.artifact-id }}
@@ -572,11 +572,9 @@ jobs:
       actions: read
     env:
       CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN }}
-      CYBEX_JAMES_QUALIFICATION_TOKEN_FILE: ${{ vars.CYBEX_JAMES_QUALIFICATION_TOKEN_FILE }}
       CYBEX_JAMES_QUALIFICATION_SUBNET: ${{ vars.CYBEX_JAMES_QUALIFICATION_SUBNET }}
+      CYBEX_JAMES_QUALIFICATION_CONFIG: ${{ vars.CYBEX_JAMES_QUALIFICATION_CONFIG }}
       CYBEX_JAMES_QUALIFICATION_STATE_ROOT: ${{ vars.CYBEX_JAMES_QUALIFICATION_STATE_ROOT }}
-      CYBEX_JAMES_QUALIFICATION_ALLOW_DEVICE_HELPER: ${{ vars.CYBEX_JAMES_QUALIFICATION_ALLOW_DEVICE_HELPER }}
-      CYBEX_JAMES_QUALIFICATION_MANAGE_CHECKOUT: ${{ vars.CYBEX_JAMES_QUALIFICATION_MANAGE_CHECKOUT }}
       CYBEX_JAMES_RELEASE_VERSION: ${{ needs.release_build.outputs.version }}
       CYBEX_JAMES_RELEASE_ARTIFACT_ID: ${{ needs.release_build.outputs.artifact_id }}
       CYBEX_JAMES_WORKSTATION_BUNDLE_NAME: ${{ needs.release_build.outputs.workstation_bundle_name }}
@@ -598,26 +596,22 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Require explicit development qualification scope
+      - name: Require isolated NixOS production qualification
         shell: bash
         run: |
           set -Eeuo pipefail
-          for name in MANAGE_ORIGIN TOKEN_FILE SUBNET STATE_ROOT ALLOW_DEVICE_HELPER MANAGE_CHECKOUT; do
+          for name in CONFIG SUBNET STATE_ROOT; do
             input="CYBEX_JAMES_QUALIFICATION_$name"
-            : "${!input:?configure the protected development qualification environment}"
+            : "${!input:?configure the protected production qualification environment}"
           done
-          # No origin rewriting: both signed releases and the session must use
-          # this development service. Production-bound candidates stop here.
-          python3 -B -c 'import runpy,sys; runpy.run_path("nixos-appliance/qualification/development-scope.py")["development_origin"](sys.argv[1])' \
-            "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN"
-          if [ "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" != "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN" ]; then
-            echo '::error::The immutable candidate origin differs from the development qualification origin. Production candidates require a separately approved isolated qualification contract.'
-            exit 1
-          fi
-          for name in TOKEN_FILE STATE_ROOT ALLOW_DEVICE_HELPER MANAGE_CHECKOUT; do
-            input="CYBEX_JAMES_QUALIFICATION_$name"
-            [[ "${!input}" = /* ]]
-          done
+          test "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" = https://manage.cybex.net
+          test "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN" = "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN"
+          [[ "$CYBEX_JAMES_QUALIFICATION_CONFIG" = /* ]]
+          [[ "$CYBEX_JAMES_QUALIFICATION_STATE_ROOT" = /* ]]
+          # The runner validates pinned fixture images, dedicated credentials and
+          # private TLS transport before creating any appliance or workstation.
+          sudo -n python3 -B -c 'import sys,json; sys.path.insert(0,"nixos-appliance/qualification"); import isolated_manage_config as c; c.validate(json.loads(c.read_file(sys.argv[1])))' \
+            "$CYBEX_JAMES_QUALIFICATION_CONFIG"
 
       - name: Download build-once candidate by immutable artifact ID
         env:
@@ -727,14 +721,18 @@ jobs:
         timeout-minutes: 240
         run: |
           set -Eeuo pipefail
+          fixture_directory="$CYBEX_JAMES_QUALIFICATION_STATE_ROOT/config-warm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          sudo -n python3 -B nixos-appliance/qualification/prepare-fixture-config.py \
+            --template "$CYBEX_JAMES_QUALIFICATION_CONFIG" \
+            --candidate-dir "$GITHUB_WORKSPACE/dist" \
+            --predecessor-dir "$RUNNER_TEMP/cybex-james-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/predecessor" \
+            --directory "$fixture_directory"
           sudo -n python3 -B nixos-appliance/qualification/run-production-qualification.py \
             --run "release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --manage-origin "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN" \
-            --token-file "$CYBEX_JAMES_QUALIFICATION_TOKEN_FILE" \
+            --isolated-manage-config "$fixture_directory/config.json" \
             --subnet "$CYBEX_JAMES_QUALIFICATION_SUBNET" \
             --state-root "$CYBEX_JAMES_QUALIFICATION_STATE_ROOT" \
-            --allow-device-helper "$CYBEX_JAMES_QUALIFICATION_ALLOW_DEVICE_HELPER" \
-            --manage-checkout "$CYBEX_JAMES_QUALIFICATION_MANAGE_CHECKOUT" \
             --candidate-dir "$GITHUB_WORKSPACE/dist" \
             --predecessor-dir "$RUNNER_TEMP/cybex-james-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/predecessor" \
             --evidence-dir "$RUNNER_TEMP/cybex-james-evidence" \
@@ -754,6 +752,12 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
+
+      - name: Remove completed private fixture configuration
+        if: success()
+        run: |
+          sudo -n python3 -B nixos-appliance/qualification/cleanup-fixture-config.py \
+            --directory "$CYBEX_JAMES_QUALIFICATION_STATE_ROOT/config-warm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 
       - name: Remove disposable workspace payloads
         if: always()
@@ -1233,12 +1237,12 @@ jobs:
 
 
   release_cold_qualify:
-    name: Verify published release on a cold development fixture
+    name: Verify published NixOS release in an isolated fixture
     needs: [release_build, release_publish]
     runs-on: [self-hosted, linux, x64, cybex-james-lab]
-    environment: james-nixos-development-qualification
+    environment: production-release-qualification
     concurrency:
-      group: james-nixos-development-qualification
+      group: james-nixos-production-qualification
       cancel-in-progress: false
     permissions:
       contents: read
@@ -1249,11 +1253,9 @@ jobs:
     env:
       CYBEX_JAMES_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
       CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN }}
-      CYBEX_JAMES_QUALIFICATION_TOKEN_FILE: ${{ vars.CYBEX_JAMES_QUALIFICATION_TOKEN_FILE }}
       CYBEX_JAMES_QUALIFICATION_SUBNET: ${{ vars.CYBEX_JAMES_QUALIFICATION_SUBNET }}
+      CYBEX_JAMES_QUALIFICATION_CONFIG: ${{ vars.CYBEX_JAMES_QUALIFICATION_CONFIG }}
       CYBEX_JAMES_QUALIFICATION_STATE_ROOT: ${{ vars.CYBEX_JAMES_QUALIFICATION_STATE_ROOT }}
-      CYBEX_JAMES_QUALIFICATION_ALLOW_DEVICE_HELPER: ${{ vars.CYBEX_JAMES_QUALIFICATION_ALLOW_DEVICE_HELPER }}
-      CYBEX_JAMES_QUALIFICATION_MANAGE_CHECKOUT: ${{ vars.CYBEX_JAMES_QUALIFICATION_MANAGE_CHECKOUT }}
     steps:
       - name: Checkout exact published source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -1261,26 +1263,22 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Require explicit development qualification scope
+      - name: Require isolated NixOS production qualification
         shell: bash
         run: |
           set -Eeuo pipefail
-          for name in MANAGE_ORIGIN TOKEN_FILE SUBNET STATE_ROOT ALLOW_DEVICE_HELPER MANAGE_CHECKOUT; do
+          for name in CONFIG SUBNET STATE_ROOT; do
             input="CYBEX_JAMES_QUALIFICATION_$name"
-            : "${!input:?configure the protected development qualification environment}"
+            : "${!input:?configure the protected production qualification environment}"
           done
-          # No origin rewriting: both signed releases and the session must use
-          # this development service. Production-bound candidates stop here.
-          python3 -B -c 'import runpy,sys; runpy.run_path("nixos-appliance/qualification/development-scope.py")["development_origin"](sys.argv[1])' \
-            "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN"
-          if [ "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" != "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN" ]; then
-            echo '::error::The immutable candidate origin differs from the development qualification origin. Production candidates require a separately approved isolated qualification contract.'
-            exit 1
-          fi
-          for name in TOKEN_FILE STATE_ROOT ALLOW_DEVICE_HELPER MANAGE_CHECKOUT; do
-            input="CYBEX_JAMES_QUALIFICATION_$name"
-            [[ "${!input}" = /* ]]
-          done
+          test "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" = https://manage.cybex.net
+          test "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN" = "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN"
+          [[ "$CYBEX_JAMES_QUALIFICATION_CONFIG" = /* ]]
+          [[ "$CYBEX_JAMES_QUALIFICATION_STATE_ROOT" = /* ]]
+          # The runner validates pinned fixture images, dedicated credentials and
+          # private TLS transport before creating any appliance or workstation.
+          sudo -n python3 -B -c 'import sys,json; sys.path.insert(0,"nixos-appliance/qualification"); import isolated_manage_config as c; c.validate(json.loads(c.read_file(sys.argv[1])))' \
+            "$CYBEX_JAMES_QUALIFICATION_CONFIG"
 
       - name: Download the bounded candidate receipt
         env:
@@ -1311,14 +1309,17 @@ jobs:
             --output "$published"
           cmp dist/cybex-james-release.json "$published"
           test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq '.immutable')" = true
+          fixture_directory="$CYBEX_JAMES_QUALIFICATION_STATE_ROOT/config-cold-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          sudo -n python3 -B nixos-appliance/qualification/prepare-fixture-config.py \
+            --template "$CYBEX_JAMES_QUALIFICATION_CONFIG" \
+            --candidate-dir "$GITHUB_WORKSPACE/dist" \
+            --directory "$fixture_directory"
           sudo -n python3 -B nixos-appliance/qualification/run-production-qualification.py \
             --run "published-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --manage-origin "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN" \
-            --token-file "$CYBEX_JAMES_QUALIFICATION_TOKEN_FILE" \
+            --isolated-manage-config "$fixture_directory/config.json" \
             --subnet "$CYBEX_JAMES_QUALIFICATION_SUBNET" \
             --state-root "$CYBEX_JAMES_QUALIFICATION_STATE_ROOT" \
-            --allow-device-helper "$CYBEX_JAMES_QUALIFICATION_ALLOW_DEVICE_HELPER" \
-            --manage-checkout "$CYBEX_JAMES_QUALIFICATION_MANAGE_CHECKOUT" \
             --candidate-dir "$GITHUB_WORKSPACE/dist" \
             --evidence-dir "$RUNNER_TEMP/cybex-james-cold-evidence" \
             --trusted-public-key "$TRUSTED_KEY" --published-cold
@@ -1337,6 +1338,12 @@ jobs:
             ${{ runner.temp }}/cybex-james-cold-evidence/cybex-james-published-workstation-qualification.json
           if-no-files-found: error
           retention-days: 90
+
+      - name: Remove completed private fixture configuration
+        if: success()
+        run: |
+          sudo -n python3 -B nixos-appliance/qualification/cleanup-fixture-config.py \
+            --directory "$CYBEX_JAMES_QUALIFICATION_STATE_ROOT/config-cold-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 
       - name: Remove disposable workspace payloads
         if: always()

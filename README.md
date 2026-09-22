@@ -142,8 +142,8 @@ netboot keep their existing management contracts. Firmware Secure Boot is
 informational; it is not an update or network admission rule.
 
 Ubuntu V1/V2 appliances require a human reinstall from the current ISO. There
-is no Ubuntu-to-NixOS update. The Ubuntu source remains during this branch's
-qualification so behavioral parity can be checked before removal.
+is no Ubuntu-to-NixOS update. Ubuntu builders and appliance runtime scripts
+have been removed; historical signed descriptors remain readable for ancestry.
 
 ## Release format
 
@@ -208,24 +208,6 @@ turning an unfinished attempt into success. Retention preserves current plus
 two preceding known-good generations. The old Ubuntu snapshot cutoff and
 root-service immediate-update override are not NixOS policy inputs.
 
-### Historical Ubuntu scheduling
+## Production releases
 
-The additive `appliance_update_schedule_v1` capability accepts a signed maintenance
-policy from Manage. Root independently verifies its installation identity and
-signature, rejects replayed/conflicting revisions, and atomically stores the
-accepted policy in `control/update-schedule.json`. A root timer reconciles saved
-settings even when no update is queued; the updater also reconciles before checking
-timing. Neither command opens the running agent's SQLite database.
-
-A signed schedule takes precedence over the legacy service scheduling mode.
-All seven weekdays selects every night; local IANA time-zone rules handle DST
-and windows crossing midnight. A signed **Update now** exception names one exact
-attempt, release and package digest. It changes timing only: active builds,
-signed package verification, update compatibility and recovery safeguards remain.
-The agent reports the root-accepted revision in `local_health.update_schedule`.
-Saving the recurring schedule clears an outstanding manual exception. Once an
-installation has started, its existing completion/rollback lifecycle owns recovery.
-
-The scheduling capability is advertised only after Manage returns
-`update_schedule_supported: true`. Missing support on an older server omits
-that capability while preserving ordinary reports and the existing updater.
+Only NixOS James V3 is built and released. See [production qualification](nixos-appliance/qualification/PRODUCTION.md) for isolated exact-origin verification and the separate production approval step. Ubuntu appliance execution support has been removed; historical signed releases remain ancestry evidence, and existing Ubuntu appliances require reinstallation.

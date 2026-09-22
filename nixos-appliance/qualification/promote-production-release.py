@@ -71,7 +71,7 @@ def main():
             or api('commits/' + args.tag)['sha'] != args.source):
         raise ValueError('Acceptance must belong to the exact unchanged tagged workflow')
     jobs = api(f'actions/runs/{args.run}/jobs?per_page=100')['jobs']
-    cold_jobs = [j for j in jobs if j['name'] == 'Verify published release from a cold production fixture']
+    cold_jobs = [j for j in jobs if j['name'] == 'Verify published NixOS release in an isolated fixture']
     if len(cold_jobs) != 1 or cold_jobs[0]['conclusion'] != 'success':
         raise ValueError('Cold qualification job has not passed')
     metadata = api(f'actions/artifacts/{args.artifact_id}')

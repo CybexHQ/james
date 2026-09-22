@@ -3,9 +3,12 @@
 
 The filename preserves the workflow interface. This runner never reads a
 production database, adopts a lab VM, or infers permission from a release URL.
-Explicit development origin, credentials and network scope are mandatory.
+Development runs require explicit credentials and scope. Production-bound artifacts
+require the retained isolated Manage owner; live production is never a target.
 """
 import argparse
+import contextlib
+import tempfile
 import hashlib
 import ipaddress
 import json
@@ -118,6 +121,7 @@ def main():
     parser.add_argument('--evidence-dir', type=Path, required=True)
     parser.add_argument('--trusted-public-key', required=True)
     parser.add_argument('--published-cold', action='store_true')
+    parser.add_argument('--isolated-manage-config', type=Path)
     parser.add_argument('--manage-origin', default=os.environ.get('CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN'))
     parser.add_argument('--token-file', type=Path, default=os.environ.get('CYBEX_JAMES_QUALIFICATION_TOKEN_FILE'))
     parser.add_argument('--subnet', default=os.environ.get('CYBEX_JAMES_QUALIFICATION_SUBNET'))
@@ -126,9 +130,18 @@ def main():
     parser.add_argument('--manage-checkout', type=Path, default=os.environ.get('CYBEX_JAMES_QUALIFICATION_MANAGE_CHECKOUT'))
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,22}', args.run)
-            or not all((args.manage_origin, args.token_file, args.subnet, args.state_root))):
+            or not all((args.manage_origin, args.subnet, args.state_root))
+            or not (args.token_file or args.isolated_manage_config)):
         raise ValueError('Root, bounded run ID and explicit development origin/session/subnet/state-root are required')
-    SCOPE['development_origin'](args.manage_origin)
+    if args.isolated_manage_config:
+        import isolated_manage_config
+        config, _ = isolated_manage_config.load(args.isolated_manage_config)
+        if args.manage_origin != 'https://manage.cybex.net' or config['manage_origin'] != args.manage_origin:
+            raise ValueError('Production qualification config must bind the exact artifact origin')
+        if args.token_file or args.allow_device_helper:
+            raise ValueError('Isolated qualification cannot accept an external session or device helper')
+    else:
+        SCOPE['development_origin'](args.manage_origin)
     if args.allow_device_helper and args.manage_checkout is None:
         raise ValueError('Device admission requires the explicit reviewed development Manage checkout')
     if args.manage_checkout:
@@ -163,12 +176,22 @@ def main():
     signal.signal(signal.SIGTERM, interrupted)
     for phase in phases:
         state = args.state_root / (args.run + '-' + phase)
-        scope_args = argparse.Namespace(run=state.name, state_dir=state, subnet=args.subnet, manage_origin=args.manage_origin)
+        scope_args = argparse.Namespace(run=state.name, state_dir=state, subnet=args.subnet, manage_origin=args.manage_origin,
+                                        isolated_manage=bool(args.isolated_manage_config))
         SCOPE['prepare'](scope_args)
         scope = SCOPE['read_scope'](state)
         successful = False
+        resources = contextlib.ExitStack()
+        owner = None
         try:
-            copy_private(args.token_file, state / 'session')
+            if args.isolated_manage_config:
+                from production_fixture import fixture, stage_artifacts
+                staged = Path(resources.enter_context(tempfile.TemporaryDirectory(prefix='jnq-inputs-', dir=args.state_root)))
+                candidate_dir = stage_artifacts(args.candidate_dir, staged / 'candidate')
+                predecessor_dir = stage_artifacts(args.predecessor_dir, staged / 'predecessor') if not args.published_cold else candidate_dir
+                owner = resources.enter_context(fixture(state, args.isolated_manage_config, candidate_dir, predecessor_dir, phase))
+            else:
+                copy_private(args.token_file, state / 'session')
             environment = dict(os.environ)
             if args.allow_device_helper:
                 helper_info = args.allow_device_helper.lstat()
@@ -194,6 +217,8 @@ def main():
                 command += ['--prepublication-candidate']
             execute(*command, env=environment)
             if phase in {'update', 'rollback'}:
+                if owner:
+                    owner.select_release('candidate')
                 command = [sys.executable, '-B', HELPERS / 'run-isolated-update.py', '--state-dir', state,
                     '--fixture', state / 'fixture', '--predecessor-evidence', fresh,
                     '--predecessor-manifest', selected, '--candidate-manifest', candidate_manifest,
@@ -205,6 +230,19 @@ def main():
                 execute(sys.executable, '-B', HELPERS / 'run-isolated-workstation.py', '--state-dir', state,
                     '--fixture', state / 'fixture', '--james-evidence', fresh, '--manifest', candidate_manifest,
                     '--output', args.evidence_dir / 'cybex-james-published-workstation-qualification.json', env=environment)
+            if owner:
+                receipt = owner.verify()
+                scope_proof = {'schema': 'cybex.james.isolated-qualification.v1',
+                               'manage_origin': receipt['manage_origin'],
+                               'manage_revision': receipt['source_revision'],
+                               'owner': receipt['owner'], 'live_production_access': False}
+                evidence_paths = [fresh]
+                if phase == 'cold':
+                    evidence_paths.append(args.evidence_dir / 'cybex-james-published-workstation-qualification.json')
+                for evidence_path in evidence_paths:
+                    document = predecessor.checked_json(evidence_path)[0]
+                    document['qualification_scope'] = scope_proof
+                    evidence_path.write_bytes(predecessor.canonical(document))
             successful = True
         finally:
             try:
@@ -213,6 +251,7 @@ def main():
                     execute(args.allow_device_helper, '--cleanup', '--state-dir', state,
                             '--session-id', owned['session_id'])
             finally:
+                resources.close()
                 (state / 'session').unlink(missing_ok=True)
                 # Cleanup verifies the exact bridge receipt and refuses live clients.
                 execute(sys.executable, '-B', HELPERS / 'development-scope.py', 'cleanup', '--state-dir', state,
@@ -226,7 +265,7 @@ def main():
     # Only bounded acceptance documents are made readable to the artifact runner.
     for path in args.evidence_dir.glob('cybex-james-*.json'):
         path.chmod(0o644)
-    print('Requested development qualification phases passed; owned VM disks and networks cleaned')
+    print('Requested NixOS qualification phases passed; owned VM disks and networks cleaned')
 
 
 if __name__ == '__main__':

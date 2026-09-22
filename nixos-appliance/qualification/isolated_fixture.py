@@ -27,7 +27,11 @@ def private_state(path):
 class API:
     def __init__(self, state):
         private_state(state)
-        self.origin = SCOPE['read_scope'](state)['manage_origin']
+        scope = SCOPE['read_scope'](state)
+        self.origin = scope['manage_origin']
+        self.isolated_state = state if scope['schema'] == SCOPE['ISOLATED_SCHEMA'] else None
+        if self.isolated_state is not None:
+            return
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, *args, **kwargs):
                 raise ValueError('Private credential-bearing redirect refused')
@@ -41,6 +45,9 @@ class API:
     def __call__(self, path, body=None):
         if not path.startswith('/v1/') or path.startswith('//'):
             raise ValueError('Qualification API path is invalid')
+        if self.isolated_state is not None:
+            from isolated_manage_rpc import request
+            return request(self.isolated_state, 'api', path=path, body=body)
         request = urllib.request.Request(self.origin + path,
             headers={'Authorization': 'Bearer ' + self.token, 'Content-Type': 'application/json',
                      'User-Agent': 'cybex-dev-qualification/1'},

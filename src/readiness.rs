@@ -22,8 +22,7 @@ const MAX_BOOT_CHECK_BYTES: usize = 64 * 1024;
 const TFTP_ROOT: &str = "/var/cache/cybex-james/tftp";
 const IPXE_AUTOEXEC_FILENAME: &str = "autoexec.ipxe";
 const IPXE_AUTOEXEC_PACKAGE_PATH: &str = "/usr/share/cybex-james/autoexec.ipxe";
-const IPXE_AUTOEXEC_BODY: &[u8] =
-    include_bytes!("../ubuntu-appliance/rootfs/usr/share/cybex-james/autoexec.ipxe");
+const IPXE_AUTOEXEC_BODY: &[u8] = include_bytes!("../assets/autoexec.ipxe");
 const READINESS_TIMEOUT: Duration = Duration::from_secs(3);
 const READINESS_POSITIVE_CACHE_TTL: Duration = Duration::from_secs(20);
 // Degraded health remains rate-limited because each uncached check reads and

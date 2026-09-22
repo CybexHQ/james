@@ -116,8 +116,8 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
             self.assertEqual(arguments[arguments.index('--mode') + 1], 'github-warm')
 
     def test_current_serial_runner_and_lane_contract_are_unchanged(self):
-        self.assertIn('group: james-nixos-development-qualification', self.warm)
-        self.assertIn('environment: james-nixos-development-qualification', self.warm)
+        self.assertIn('group: james-nixos-production-qualification', self.warm)
+        self.assertIn('environment: production-release-qualification', self.warm)
         self.assertEqual(self.warm.count('run-production-qualification.py'), 1)
         self.assertNotIn('release_speed.py run', self.warm)
         self.assertNotIn('strategy:', self.warm)
@@ -158,8 +158,8 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
 
     def test_protected_chain_and_cold_name_remain_fail_closed(self):
         self.assertIn('needs: [release_build, release_qualify]', job(self.body, 'release_publish', 'release_cold_qualify'))
-        self.assertIn('name: Verify published release on a cold development fixture', self.cold)
-        self.assertIn('environment: james-nixos-development-qualification', self.cold)
+        self.assertIn('name: Verify published NixOS release in an isolated fixture', self.cold)
+        self.assertIn('environment: production-release-qualification', self.cold)
         promotion = job(self.body, 'release_promote')
         self.assertIn('needs: [release_build, release_cold_qualify]', promotion)
         self.assertIn('environment: production-release', promotion)

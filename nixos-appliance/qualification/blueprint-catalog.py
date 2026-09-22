@@ -66,22 +66,32 @@ def main():
     parser.add_argument('--token-file', type=Path, required=True)
     parser.add_argument('--tiling-blueprint', default='qualification_tiling')
     parser.add_argument('--baseline', type=Path)
+    parser.add_argument('--state-dir', type=Path)
     args = parser.parse_args()
     origin = args.manage_origin
     parsed = urllib.parse.urlsplit(origin)
     if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or
             parsed.password or parsed.path or parsed.query or parsed.fragment):
         raise ValueError('Qualification requires a canonical HTTPS origin')
-    token = args.token_file.read_text().strip()
-    if not token or '\n' in token or '\r' in token:
-        raise ValueError('Invalid private qualification session')
-    client = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    if args.state_dir:
+        from isolated_fixture import API
+        api = API(args.state_dir)
+        if api.origin != origin:
+            raise ValueError('Blueprint origin differs from its owned fixture')
+        get = api
+    else:
+        from isolated_fixture import SCOPE
+        SCOPE['development_origin'](origin)
+        token = args.token_file.read_text().strip()
+        if not token or '\n' in token or '\r' in token:
+            raise ValueError('Invalid private qualification session')
+        client = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
-    def get(path):
-        request = urllib.request.Request(origin + path, headers={'Authorization': 'Bearer ' + token,
-                                                                  'User-Agent': 'cybex-dev-qualification/1'})
-        return HTTP['request_json'](client, request, timeout=10,
-                                    max_bytes=2 * 1024 * 1024)
+        def get(path):
+            request = urllib.request.Request(origin + path, headers={'Authorization': 'Bearer ' + token,
+                                                                      'User-Agent': 'cybex-dev-qualification/1'})
+            return HTTP['request_json'](client, request, timeout=10,
+                                        max_bytes=2 * 1024 * 1024)
 
     rows = []
     while True:

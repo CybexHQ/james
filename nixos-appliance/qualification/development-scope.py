@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 import uuid
 
 SCHEMA = "cybex.james.nixos-development-scope.v1"
+ISOLATED_SCHEMA = "cybex.james.nixos-isolated-scope.v1"
 FIELDS = {"schema", "run", "manage_origin", "bridge", "subnet", "owner"}
 FORWARD = runpy.run_path(str(Path(__file__).with_name('development_forward.py')))
 COMMAND_ENV = {
@@ -44,6 +45,25 @@ def development_origin(value):
             or not (url.hostname.startswith("dev.") or url.hostname.endswith(".test"))):
         raise ValueError("qualification requires an explicit canonical HTTPS development origin")
     return value
+
+
+def scope_origin(value, schema):
+    if schema == ISOLATED_SCHEMA:
+        from isolated_manage_config import origin
+        origin(value)
+        return value
+    return development_origin(value)
+
+
+def verify_isolation(path, scope):
+    from isolated_manage_config import read_file
+    from isolated_manage_network import Adapter
+    receipt = json.loads(read_file(path / "manage.json"))
+    context = receipt.get("context", {})
+    if (receipt.get("owner") != scope["owner"] or receipt.get("status") != "ready"
+            or any(context.get(key) != scope[key] for key in ("owner", "bridge", "subnet", "manage_origin"))
+            or Adapter().verify(context, receipt.get("guard")) is not True):
+        raise ValueError("exact-origin fixture confinement is not ready")
 
 
 def incus(*args):
@@ -72,18 +92,18 @@ def read_scope(path):
     finally:
         os.close(fd)
     value = json.loads(body)
-    if (not isinstance(value, dict) or set(value) != FIELDS or value["schema"] != SCHEMA
+    if (not isinstance(value, dict) or set(value) != FIELDS or value["schema"] not in {SCHEMA, ISOLATED_SCHEMA}
             or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", value["run"])
             or value["bridge"] != "jnq" + hashlib.sha256(value["run"].encode()).hexdigest()[:10]
             or str(uuid.UUID(value["owner"])) != value["owner"]):
         raise ValueError("qualification ownership receipt does not match the run")
-    development_origin(value["manage_origin"])
+    scope_origin(value["manage_origin"], value["schema"])
     return value
 
 
 def bound_scope(path, origin, bridge):
-    development_origin(origin)
     scope = read_scope(path)
+    scope_origin(origin, scope["schema"])
     if (scope["manage_origin"], scope["bridge"]) != (origin, bridge):
         raise ValueError("qualification origin or network differs from its owned run")
     return scope
@@ -98,18 +118,21 @@ def owned_network(scope, network):
             and config.get("ipv4.nat") == "true" and config.get("ipv6.address") == "none")
 
 
-def verify(path, origin, bridge, *, require_forwarding=True):
+def verify(path, origin, bridge, *, require_forwarding=True, require_isolation=True):
     scope = bound_scope(path, origin, bridge)
     network = json.loads(incus("query", "/1.0/networks/" + bridge))
     if not owned_network(scope, network):
         raise ValueError("qualification bridge no longer matches its ownership receipt")
     if require_forwarding:
         FORWARD['verify'](path, scope)
+    if require_isolation and scope['schema'] == ISOLATED_SCHEMA:
+        verify_isolation(path, scope)
     return scope, network
 
 
 def prepare(args):
-    development_origin(args.manage_origin)
+    schema = ISOLATED_SCHEMA if getattr(args, "isolated_manage", False) else SCHEMA
+    scope_origin(args.manage_origin, schema)
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", args.run):
         raise ValueError("qualification run identity is invalid")
     subnet = ipaddress.ip_interface(args.subnet)
@@ -129,7 +152,7 @@ def prepare(args):
         if route.get("dst") not in {None, "default"} and subnet.network.overlaps(ipaddress.ip_network(route["dst"], strict=False)):
             raise ValueError("qualification subnet overlaps an existing host route")
     args.state_dir.mkdir(mode=0o700)
-    scope = {"schema": SCHEMA, "run": args.run, "manage_origin": args.manage_origin,
+    scope = {"schema": schema, "run": args.run, "manage_origin": args.manage_origin,
              "bridge": bridge, "subnet": str(subnet), "owner": str(uuid.uuid4())}
     fd = os.open(args.state_dir / "scope.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
@@ -146,9 +169,9 @@ def prepare(args):
     try:
         incus("network", "create", bridge, "--type=bridge", "ipv4.address=" + str(subnet),
               "ipv4.nat=true", "ipv6.address=none", "user.cybex.nixos-qualification=" + scope["owner"])
-        verify(args.state_dir, args.manage_origin, bridge, require_forwarding=False)
+        verify(args.state_dir, args.manage_origin, bridge, require_forwarding=False, require_isolation=False)
         FORWARD['prepare'](args.state_dir, scope)
-        verify(args.state_dir, args.manage_origin, bridge)
+        verify(args.state_dir, args.manage_origin, bridge, require_isolation=False)
     except BaseException as error:
         # A failed RPC may have created either family of forwarding rules or
         # the network. The durable receipts are sufficient to clean each exact
@@ -187,7 +210,7 @@ def cleanup(path, origin, bridge):
 
 
 def tap(path, origin, bridge, role, create):
-    scope, _ = verify(path, origin, bridge)
+    scope, _ = verify(path, origin, bridge, require_isolation=create)
     if role not in {'appliance', 'workstation'}:
         raise ValueError('unknown disposable network role')
     name = bridge + ('a' if role == 'appliance' else 'w')
@@ -225,6 +248,8 @@ def main():
     parser.add_argument("--bridge")
     parser.add_argument("--run")
     parser.add_argument("--subnet")
+    parser.add_argument("--isolated-manage", action="store_true",
+                        help="Require an owned, confined Manage fixture before guest admission")
     parser.add_argument("--role", choices=("appliance", "workstation"))
     args = parser.parse_args()
     if args.action == "prepare":
@@ -238,7 +263,8 @@ def main():
         cleanup(args.state_dir, args.manage_origin, args.bridge)
         print("Removed the exact owned qualification resources; evidence retained")
         return
-    scope, network = verify(args.state_dir, args.manage_origin, args.bridge)
+    scope, network = verify(args.state_dir, args.manage_origin, args.bridge,
+                            require_isolation=args.action != "tap-delete")
     if args.action == 'hardware':
         print(json.dumps(hardware_identity(scope, args.role), sort_keys=True))
         return

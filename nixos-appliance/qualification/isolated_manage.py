@@ -59,7 +59,7 @@ class Owner:
         inputs.ordinary_path(self.state)
         module = runpy.run_path(str(Path(__file__).with_name('development-scope.py')))
         value = module['read_scope'](self.state)
-        module['verify'](self.state, value['manage_origin'], value['bridge'])
+        module['verify'](self.state, value['manage_origin'], value['bridge'], require_isolation=False)
         return value
 
     @contextlib.contextmanager

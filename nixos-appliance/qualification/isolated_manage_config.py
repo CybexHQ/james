@@ -203,7 +203,11 @@ def signed_releases(config, secrets, candidate_dir, predecessor_dir, *, verifier
                         'version': manifest['version'], 'manifest_url': asset['release_manifest']['url'],
                         'compatibility_sha256': asset['compatibility_sha256'],
                         'transport_filenames': artifacts}
-        if manifest['appliance_release_v1']['manage_source_revision'] != config['manage_revision']:
+        if role == 'candidate' and manifest['appliance_release_v1']['manage_source_revision'] != config['manage_revision']:
             raise ValueError('release Manage provenance differs from the reviewed fixture image')
-    predecessor.advance(result['candidate']['version'], result['predecessor']['version'])
+    if result['candidate']['manifest_sha256'] == result['predecessor']['manifest_sha256']:
+        if config['initial_release'] != 'candidate':
+            raise ValueError('a cold-only fixture must initially select the candidate')
+    else:
+        predecessor.advance(result['candidate']['version'], result['predecessor']['version'])
     return result

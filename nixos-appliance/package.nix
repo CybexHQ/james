@@ -6,7 +6,7 @@ let
     filter = path: type:
       let relative = pkgs.lib.removePrefix (toString repo + "/") (toString path);
           top = builtins.head (pkgs.lib.splitString "/" relative);
-          handoff = "ubuntu-appliance/rootfs/usr/share/cybex-james/autoexec.ipxe";
+          handoff = "assets/autoexec.ipxe";
       in builtins.elem top [ "Cargo.toml" "Cargo.lock" "build.rs" "src" "migrations" "protocol" "release" "assets" ]
         || relative == handoff || (type == "directory" && pkgs.lib.hasPrefix (relative + "/") handoff);
   };

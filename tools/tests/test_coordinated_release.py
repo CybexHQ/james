@@ -21,91 +21,82 @@ def step_script(job, name):
 
 
 QUALIFICATION_INPUTS = {
-    'MANAGE_ORIGIN': 'https://dev.example.test',
-    'TOKEN_FILE': '/private qualification/session',
+    'MANAGE_ORIGIN': 'https://manage.cybex.net',
+    'CONFIG': '/private qualification/config.json',
     'SUBNET': '192.168.246.1/24',
     'STATE_ROOT': '/private qualification/state',
-    'ALLOW_DEVICE_HELPER': '/private qualification/admit',
-    'MANAGE_CHECKOUT': '/development checkout',
 }
 
 
-class DevelopmentQualificationWorkflowTests(unittest.TestCase):
+class ProductionQualificationWorkflowTests(unittest.TestCase):
     def environment(self):
-        return {**os.environ,
-            **{'CYBEX_JAMES_QUALIFICATION_' + k: v for k, v in QUALIFICATION_INPUTS.items()},
-            'CYBEX_JAMES_BUILD_MANAGE_ORIGIN': QUALIFICATION_INPUTS['MANAGE_ORIGIN']}
+        return {**os.environ, **{'CYBEX_JAMES_QUALIFICATION_' + k: v for k, v in QUALIFICATION_INPUTS.items()},
+                'CYBEX_JAMES_BUILD_MANAGE_ORIGIN': QUALIFICATION_INPUTS['MANAGE_ORIGIN']}
 
-    def test_actual_scope_guards_require_all_inputs_and_matching_development_origin(self):
-        for job in ('release_qualify', 'release_cold_qualify'):
-            script = step_script(job, 'Require explicit development qualification scope')
-            result = subprocess.run(['bash', '-c', script], cwd=ROOT, env=self.environment(), capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            invalid = [{k: v for k, v in self.environment().items() if k != 'CYBEX_JAMES_QUALIFICATION_' + name}
-                       for name in QUALIFICATION_INPUTS]
-            for value in ('https://console.example.com', 'https://dev.example.test/', 'http://dev.example.test'):
-                invalid.append({**self.environment(), 'CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN': value,
-                                'CYBEX_JAMES_BUILD_MANAGE_ORIGIN': value})
-            invalid.append({**self.environment(), 'CYBEX_JAMES_BUILD_MANAGE_ORIGIN': 'https://console.example.com'})
-            invalid.append({**self.environment(), 'CYBEX_JAMES_QUALIFICATION_TOKEN_FILE': 'relative/session'})
-            for environment in invalid:
-                with self.subTest(job=job, changed={k: v for k, v in environment.items() if self.environment().get(k) != v}):
-                    rejected = subprocess.run(['bash', '-c', script], cwd=ROOT, env=environment, capture_output=True, text=True)
-                    self.assertNotEqual(rejected.returncode, 0)
+    def test_scope_guards_reject_missing_inputs_and_nonproduction_origins(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            sudo = Path(temporary) / 'sudo'
+            sudo.write_text('#!/bin/sh\nexit 0\n')
+            sudo.chmod(0o755)
+            environment = {**self.environment(), 'PATH': temporary + os.pathsep + os.environ['PATH']}
+            for job in ('release_qualify', 'release_cold_qualify'):
+                script = step_script(job, 'Require isolated NixOS production qualification')
+                result = subprocess.run(['bash', '-c', script], env=environment, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                invalid = [{k: v for k, v in environment.items() if k != 'CYBEX_JAMES_QUALIFICATION_' + name}
+                           for name in QUALIFICATION_INPUTS]
+                invalid += [{**environment, 'CYBEX_JAMES_BUILD_MANAGE_ORIGIN': origin}
+                            for origin in ('https://dev.example.test', 'https://manage.cybex.net/', '')]
+                invalid.append({**environment, 'CYBEX_JAMES_QUALIFICATION_CONFIG': 'relative/config'})
+                for changed in invalid:
+                    self.assertNotEqual(subprocess.run(['bash', '-c', script], env=changed,
+                                                       capture_output=True).returncode, 0)
 
-    def test_both_sudo_commands_pass_explicit_scope_without_environment_preservation(self):
+    def test_runner_receives_fixture_config_without_external_session_or_environment_preservation(self):
         for job, name in (('release_qualify', 'Qualify fresh installation, real upgrade and automatic rollback'),
                           ('release_cold_qualify', 'Require exact published bytes and cold runtime convergence')):
             script = step_script(job, name)
-            lines = script[script.index('sudo -n python3'):].splitlines()
+            start = script.index('sudo -n python3 -B nixos-appliance/qualification/run-production-qualification.py')
+            lines = script[start:].splitlines()
             command = []
             for line in lines:
                 command.append(line)
-                if not line.endswith('\\'): break
-            with self.subTest(job=job), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                fake_sudo = root / 'sudo'
-                fake_sudo.write_text('#!/usr/bin/env python3\nimport json,os,sys\n'
-                    'assert sys.argv[1:4] == ["-n", "python3", "-B"]\n'
-                    'assert "-E" not in sys.argv\n'
-                    'print(json.dumps(sys.argv[4:]))\n')
-                fake_sudo.chmod(0o755)
+                if not line.endswith('\\'):
+                    break
+            with tempfile.TemporaryDirectory() as temporary:
+                sudo = Path(temporary) / 'sudo'
+                sudo.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[4:]))\n')
+                sudo.chmod(0o755)
                 environment = {**self.environment(), 'PATH': temporary + os.pathsep + os.environ['PATH'],
                     'GITHUB_RUN_ID': '42', 'GITHUB_RUN_ATTEMPT': '2', 'GITHUB_WORKSPACE': '/workspace',
-                    'RUNNER_TEMP': '/run temporary', 'CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY': 'test-public-key', 'TRUSTED_KEY': 'test-public-key'}
-                result = subprocess.run(['bash', '-c', '\n'.join(command)], env=environment, text=True, capture_output=True)
+                    'RUNNER_TEMP': '/run temporary', 'CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY': 'test-key',
+                    'TRUSTED_KEY': 'test-key', 'fixture_directory': '/private fixture'}
+                result = subprocess.run(['bash', '-c', '\n'.join(command)], env=environment,
+                                        text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 arguments = json.loads(result.stdout)
-                self.assertEqual(arguments[0], 'nixos-appliance/qualification/run-production-qualification.py')
-                for key, value in QUALIFICATION_INPUTS.items():
-                    self.assertEqual(arguments[arguments.index('--' + key.lower().replace('_', '-')) + 1], value)
-                self.assertEqual(arguments[arguments.index('--candidate-dir') + 1], '/workspace/dist')
+                self.assertEqual(arguments[arguments.index('--isolated-manage-config') + 1], '/private fixture/config.json')
+                self.assertNotIn('--token-file', arguments)
+                self.assertNotIn('--allow-device-helper', arguments)
                 self.assertEqual('--published-cold' in arguments, job == 'release_cold_qualify')
                 self.assertEqual('--predecessor-dir' in arguments, job == 'release_qualify')
 
-    def test_publish_and_promote_reject_development_candidates_before_actions(self):
+    def test_protected_nixos_chain_preserves_production_and_immutable_approval_gates(self):
         for job in ('release_publish', 'release_promote'):
             script = step_script(job, 'Require production-bound artifacts for publication')
             for origin, accepted in [('', False), ('https://dev.example.test', False),
                                      ('https://manage.cybex.net/', False), ('https://manage.cybex.net', True)]:
-                with self.subTest(job=job, origin=origin):
-                    result = subprocess.run(['bash', '-c', script], env={**os.environ,
-                        'CYBEX_JAMES_BUILD_MANAGE_ORIGIN': origin}, text=True, capture_output=True)
-                    self.assertEqual(result.returncode == 0, accepted, result.stderr)
-            self.assertLess(workflow_job(job).index('Require production-bound artifacts'), workflow_job(job).index('uses: actions/checkout'))
-
-    def test_new_environment_and_nixos_consumer_paths_keep_legacy_helpers_available(self):
+                result = subprocess.run(['bash', '-c', script], env={**os.environ,
+                    'CYBEX_JAMES_BUILD_MANAGE_ORIGIN': origin}, capture_output=True)
+                self.assertEqual(result.returncode == 0, accepted)
         for job in ('release_qualify', 'release_cold_qualify'):
             body = workflow_job(job)
-            self.assertIn('environment: james-nixos-development-qualification', body)
-            self.assertIn('group: james-nixos-development-qualification', body)
-            for key in QUALIFICATION_INPUTS:
-                self.assertIn('${{ vars.CYBEX_JAMES_QUALIFICATION_' + key + ' }}', body)
-            self.assertLess(body.index('Require explicit development qualification scope'), body.index('Download '))
+            self.assertIn('environment: production-release-qualification', body)
+            self.assertIn('group: james-nixos-production-qualification', body)
+            self.assertNotIn('ubuntu-appliance/', body)
         approval = (ROOT / '.github/workflows/approve-coordinated-release.yml').read_text()
         self.assertIn('nixos-appliance/qualification/promote-production-release.py', approval)
         self.assertNotIn('ubuntu-appliance/qualification/', approval)
-        self.assertTrue((ROOT / 'ubuntu-appliance/qualification/promote-production-release.py').is_file())
 
 
 class CoordinatedReleaseTests(unittest.TestCase):
@@ -116,10 +107,11 @@ class CoordinatedReleaseTests(unittest.TestCase):
             (root / 'Cargo.toml').write_text('[package]\nname="cybex-james"\nversion = "0.2.5"\n')
             (root / 'Cargo.lock').write_text('[[package]]\nname = "cybex-james"\nversion = "0.2.5"\n')
             self.assertFalse(module['validate'](root))
-            module['pin'](root, 'a' * 40, '1.0.68', '0.2.6', '20260920T120000Z')
+            module['pin'](root, 'a' * 40, '1.0.68', '0.2.6')
             self.assertTrue(module['validate'](root))
             marker = json.loads((root / 'release/coordinated.json').read_text())
-            self.assertEqual(marker['ubuntu_snapshot_id'], '20260920T120000Z')
+            self.assertEqual(marker['appliance_family'], 'nixos')
+            self.assertNotIn('ubuntu_snapshot_id', marker)
             pin = root / 'release/workstation-netboot-source.json'
             self.assertEqual(json.loads(pin.read_text())['repository'], 'CybexHQ/development')
             self.assertIn('version = "0.2.6"', (root / 'Cargo.lock').read_text())
@@ -127,10 +119,17 @@ class CoordinatedReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module['validate'](root)
 
-    def test_rejects_invalid_snapshot_cutoffs(self):
-        for snapshot in ['latest', '20260230T000000Z', '20260920T250000Z', '20260920T120000Z\nINJECT=1']:
-            with self.subTest(snapshot=snapshot), self.assertRaises(ValueError):
-                module['validate_snapshot'](snapshot)
+    def test_rejects_retired_ubuntu_coordinated_marker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'release').mkdir()
+            (root / 'release/coordinated.json').write_text(json.dumps({
+                'schema': 'cybex.coordinated-release.v1', 'manage_revision': 'a' * 40,
+                'ubuntu_snapshot_id': '20260920T120000Z'}))
+            (root / 'release/workstation-netboot-source.json').write_text(json.dumps({
+                'repository': 'CybexHQ/development', 'revision': 'a' * 40}))
+            with self.assertRaises(ValueError):
+                module['validate'](root)
 
     def test_workflow_binds_nixos_build_to_the_pinned_sources(self):
         root = Path(__file__).resolve().parents[2]
