@@ -107,3 +107,7 @@ Isolated production qualification stages authenticated workstation runtime bundl
 Warm installation requires the exact selected runtime and all three built-in
 profiles to deliver successfully; it does not claim prepublication runtime absence.
 Independent cold appliance and workstation qualification remains mandatory after staging.
+
+Upgrade and rollback qualification use the retained verified guest artifact listener
+on port18082, bound to the exact selected candidate manifest. They do not start
+an additional download listener outside the isolated fixture network policy.

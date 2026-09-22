@@ -28,7 +28,9 @@ def module(name, filename):
 P = module('transition_nixos_predecessor', 'release_predecessor.py')
 A = module('transition_nixos_acceptance', 'release_acceptance.py')
 F = module('transition_nixos_fixture', 'isolated_fixture.py')
-IMPORTS = {'release_predecessor': P, 'release_acceptance': A, 'isolated_fixture': F}
+RPC = module('transition_nixos_rpc', 'isolated_manage_rpc.py')
+IMPORTS = {'release_predecessor': P, 'release_acceptance': A, 'isolated_fixture': F,
+           'isolated_manage_rpc': RPC}
 with patch.dict(sys.modules, IMPORTS):
     T = module('transition_nixos_lifecycle', 'transition_lifecycle.py')
     with patch.dict(sys.modules, {'transition_lifecycle': T}):
@@ -271,6 +273,21 @@ class TransitionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'scope denied'):
                 R.execute(types.SimpleNamespace(state_dir=Path('/not-a-scope')))
             for mutation in (api, fixture, server, read): mutation.assert_not_called()
+
+    def test_isolated_upgrade_uses_manifest_bound_verified_listener(self):
+        url = 'http://192.168.123.1:18082/candidate.tar.zst'
+        with patch.object(R, 'fixture_request', return_value={'package_transport_url': url}) as rpc:
+            self.assertEqual(R.isolated_transport(Path('/private'), '192.168.123.1', 'a' * 64,
+                                                 'candidate.tar.zst'), url)
+            rpc.assert_called_once_with(Path('/private'), 'installer_transports', manifest_sha256='a' * 64)
+        for wrong in (url.replace('18082', '23456'), url.replace('192.168.123.1', '127.0.0.1'),
+                      url.replace('candidate.tar.zst', 'other.tar.zst')):
+            with patch.object(R, 'fixture_request', return_value={'package_transport_url': wrong}), \
+                    self.assertRaises(ValueError):
+                R.isolated_transport(Path('/private'), '192.168.123.1', 'a' * 64, 'candidate.tar.zst')
+        with patch.object(R, 'fixture_request', side_effect=ValueError('manifest differs')), \
+                self.assertRaisesRegex(ValueError, 'manifest differs'):
+            R.isolated_transport(Path('/private'), '192.168.123.1', 'a' * 64, 'candidate.tar.zst')
 
     def test_runner_stops_owned_server_and_fixture_on_transition_failure(self):
         run = Run()

@@ -16,6 +16,15 @@ import uuid
 from isolated_fixture import API, Fixture, HELPERS, SCOPE, private_state, stop
 import release_predecessor
 import transition_lifecycle
+from isolated_manage_rpc import request as fixture_request
+
+
+def isolated_transport(state, bind, manifest_digest, filename):
+    transports = fixture_request(state, 'installer_transports', manifest_sha256=manifest_digest)
+    transport = transports['package_transport_url']
+    if transport != f'http://{bind}:18082/{filename}':
+        raise ValueError('Candidate closure transport differs from the owned verified guest listener')
+    return transport
 
 
 def execute(args):
@@ -50,18 +59,21 @@ def execute(args):
     port_file = state / ('closure-' + uuid.uuid4().hex + '.port')
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        server = subprocess.Popen([sys.executable, str(HELPERS / 'serve-system-closure.py'),
-            '--bind', str(bind), '--file', str(package.resolve()), '--port-file', str(port_file)], start_new_session=True)
-        for _ in range(100):
-            if port_file.exists():
-                break
-            if server.poll() is not None:
-                raise ValueError('Owned system closure server exited')
-            time.sleep(.1)
-        port = int(port_file.read_text().strip())
-        if not 1 <= port <= 65535:
-            raise ValueError('Owned system closure server returned an invalid port')
-        transport = f'http://{bind}:{port}/{filename}'
+        if scope.get('schema') == SCOPE['ISOLATED_SCHEMA']:
+            transport = isolated_transport(state, bind, hashlib.sha256(candidate_body).hexdigest(), filename)
+        else:
+            server = subprocess.Popen([sys.executable, str(HELPERS / 'serve-system-closure.py'),
+                '--bind', str(bind), '--file', str(package.resolve()), '--port-file', str(port_file)], start_new_session=True)
+            for _ in range(100):
+                if port_file.exists():
+                    break
+                if server.poll() is not None:
+                    raise ValueError('Owned system closure server exited')
+                time.sleep(.1)
+            port = int(port_file.read_text().strip())
+            if not 1 <= port <= 65535:
+                raise ValueError('Owned system closure server returned an invalid port')
+            transport = f'http://{bind}:{port}/{filename}'
         with fixture:
             return transition_lifecycle.run(api, fixture, candidate, candidate_body, previous, previous_body,
                 evidence, hashlib.sha256(evidence_body).hexdigest(), transport, args.output, source, args.rollback,
