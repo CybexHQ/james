@@ -120,7 +120,9 @@ def network_namespace_identity(pid):
 def _socket_rows(pid, owned):
     rows = []
     for protocol, name in (('tcp', 'tcp'), ('udp', 'udp'), ('tcp6', 'tcp6'), ('udp6', 'udp6')):
-        content = _read_proc(f'/proc/{pid}/net/{name}').decode().splitlines()
+        # These tables describe the entire network namespace, not just dnsmasq.
+        # Busy hosts exceed the small bound used for per-process stat/argv data.
+        content = _read_proc(f'/proc/{pid}/net/{name}', 8 * 1024**2).decode().splitlines()
         for line in content[1:]:
             fields = line.split()
             if len(fields) < 10 or fields[9] not in owned:

@@ -215,6 +215,22 @@ class Tests(unittest.TestCase):
                     self.assertEqual(network._read_proc('/proc/test/net/tcp', maximum), expected)
                 close.assert_called_once_with(12)
 
+    def test_dns_socket_filter_handles_busy_host_namespace(self):
+        header = b'header\n'
+        foreign = b'0: 0100007F:0035 00000000:0000 0A 0:0 0:0 0 0 0 999\n'
+        owned = b'1: 0100007F:0035 00000000:0000 0A 0:0 0:0 0 0 0 123\n'
+        with tempfile.TemporaryDirectory() as temporary:
+            table = Path(temporary) / 'table'
+            table.write_bytes(header + foreign * 3000 + owned)
+            original_open = os.open
+            with patch.object(network.os, 'open', side_effect=lambda path, flags: original_open(table, flags)):
+                result = network._socket_rows(42, {'123'})
+                self.assertEqual(len(result), 4)
+                self.assertIn(('tcp', '127.0.0.1', 53, '0A'), result)
+                table.write_bytes(b'x' * (8 * 1024**2 + 1))
+                with self.assertRaisesRegex(ValueError, 'exceeds bound'):
+                    network._socket_rows(42, {'123'})
+
     def test_incus_accepts_root_socket_activation_and_rejects_foreign_peers(self):
         for pid, uid, allowed in ((1, 0, True), (123, 0, True), (0, 0, False), (123, 1000, False)):
             with self.subTest(pid=pid, uid=uid):

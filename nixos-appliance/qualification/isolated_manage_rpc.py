@@ -17,6 +17,7 @@ import stat
 import struct
 import sys
 import threading
+import traceback
 
 LIMIT = 24 * 1024**2
 
@@ -71,7 +72,9 @@ class Server:
                     result = {'ok': True, 'value': value}
                 except Exception as error:
                     # Request contents include signed media secrets; never echo them.
-                    print('Isolated fixture RPC failed: ' + type(error).__name__, file=sys.stderr)
+                    frames = traceback.extract_tb(error.__traceback__)
+                    locations = ' -> '.join(f'{Path(frame.filename).name}:{frame.lineno}' for frame in frames)
+                    print('Isolated fixture RPC failed: ' + type(error).__name__ + ' at ' + locations, file=sys.stderr)
                     result = {'ok': False, 'value': None}
                 data = (json.dumps(result) + '\n').encode()
                 if len(data) > LIMIT:
