@@ -47,6 +47,17 @@ def checkout(source, destination):
     run('git', '-C', destination, 'checkout', '-q', '--detach', 'FETCH_HEAD')
 
 
+def copy_disposable_tree(source, destination):
+    shutil.copytree(source, destination)
+    # Nix exports directories as 0555. The new runner-owned copy must be
+    # removable by its owner; public file contents remain unchanged.
+    for directory, children, _files in os.walk(destination, followlinks=False):
+        path = Path(directory)
+        if path.is_symlink() or any((path / child).is_symlink() for child in children):
+            raise ValueError('Disposable build output cannot contain directory symlinks')
+        path.chmod(path.stat().st_mode | 0o700)
+
+
 def command(image, name, source, scratch, output, state, environment):
     args = ['docker', 'run', '--rm', '--name', name, '--init',
             '--user', f'{os.getuid()}:{os.getgid()}', '--cap-drop=ALL',
@@ -108,7 +119,7 @@ def main():
                 shutil.copytree(scratch / 'cybex-workstation-netboot-tree', runner_temp / 'cybex-workstation-netboot-tree')
                 # This tree contains unsigned public cache bytes only. The release
                 # key is consumed by pack-system-closure.py after the sandbox exits.
-                shutil.copytree(scratch / 'cybex-james-unsigned-closure', runner_temp / 'cybex-james-unsigned-closure')
+                copy_disposable_tree(scratch / 'cybex-james-unsigned-closure', runner_temp / 'cybex-james-unsigned-closure')
                 (runner_temp / 'cybex-james-bootstrap').chmod(0o700)
                 (runner_temp / 'cybex-james-builder-image').write_text(image + '\n')
             finally:

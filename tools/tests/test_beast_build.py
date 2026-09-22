@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import shutil
 import subprocess
 import tempfile
 
@@ -28,6 +29,25 @@ class BuildIsolationTests(unittest.TestCase):
         self.assertIn('type=bind,src=/dedicated/nix,dst=/nix', args)
         self.assertIn('CYBEX_JAMES_BUILD_MANAGE_ORIGIN=https://manage.cybex.net', args)
 
+
+    def test_readonly_nix_tree_copy_is_disposable_without_changing_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, destination = root / 'source', root / 'copy'
+            (source / 'cache').mkdir(parents=True)
+            (source / 'cache' / 'input').write_bytes(b'public cache bytes')
+            (source / 'cache').chmod(0o555)
+            source.chmod(0o555)
+            try:
+                builder.copy_disposable_tree(source, destination)
+                self.assertEqual((destination / 'cache' / 'input').read_bytes(), b'public cache bytes')
+                self.assertEqual((source / 'cache').stat().st_mode & 0o777, 0o555)
+                self.assertEqual((destination / 'cache').stat().st_mode & 0o700, 0o700)
+                shutil.rmtree(destination)
+                self.assertFalse(destination.exists())
+            finally:
+                source.chmod(0o700)
+                (source / 'cache').chmod(0o700)
 
     def test_origin_admission_is_exact_for_https_and_ssh(self):
         for repository in ('james', 'development'):
