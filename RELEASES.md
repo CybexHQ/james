@@ -90,6 +90,24 @@ publication is Ubuntu. Never relabel Ubuntu or fake a same-version update.
 The qualified predecessor receipt binds the separately retained predecessor
 manifest by `manifest_sha256`.
 
+Warm predecessor transport may use `release/beast/release_speed.py cache` when
+published ancestry, an explicit signed NixOS predecessor pair and a private
+cache root are all configured. The wrapper re-resolves published ancestry,
+compares it with `cybex-james-build-predecessor.json`, authenticates the signed
+metadata, and runs the existing complete predecessor verifier on every hit and
+miss. It caches immutable transport bytes only. It never caches a successful
+installation, VM disk, database, personalized ISO, session, acceptance receipt
+or cold-download result. Cache outputs are independent read-only copies; the
+publication gate still resolves ancestry again.
+
+When any cache prerequisite is absent, the workflow retains the existing
+authenticated predecessor resolver. Cold qualification never consults this
+cache: it independently downloads the published assets and checks them against
+the sealed candidate receipt before booting. The separate `cache` command
+supports only the network-enabled `--mode github-warm`; `cache --mode
+candidate-only` remains unsupported. There is no supported offline/no-fetch
+cache execution mode.
+
 The `nixos-appliance/qualification/` harness requires explicit development
 origin, private token file, root-owned state root and a new isolated subnet.
 It creates its own bridge, TAPs and disposable QEMU disks; it refuses existing
@@ -123,3 +141,51 @@ isolated deployment supports the exact signed production origin. The current
 runner accepts development origins only, and publish/promotion reject development
 artifacts. Representative physical hardware checks remain separately required;
 development receipts cannot be reused as production acceptance.
+
+The current release-speed wrapper can conservatively admit and time a complete
+serial warm or cold runner invocation, but its `run` command requires separately
+approved root-private candidate, predecessor, profile, lease, disk, evidence and
+timing storage. The protected runner does not yet provide that staging adapter,
+so the workflow intentionally continues to invoke the existing lifecycle runner
+directly. It does not enable phase concurrency, predecessor-fixture reuse or
+neutral cold preparation. Cache timing, when available, is uploaded separately
+as the allowlisted `timing.json`, named by workflow run and attempt; private child
+logs are never uploaded. The five warm and two cold acceptance members remain
+separate success-gated artifacts.
+
+For a warm phase, `run --candidate-only` means prepublication execution without
+a tag, publication or promotion. It remains subject to the normal exact-source,
+private-path, signed-media and resource admission and may fetch through the
+existing authenticated transport. `run --offline-artifacts` remains refused,
+including in candidate-only mode. Cold candidate-only is also refused because it
+cannot establish independently downloaded published proof.
+
+The wrapper removes only `SUDO_UID` and `SUDO_GID` from the qualification child
+environment. All other inherited entries, including existing authentication
+transport, are preserved; the exception prevents the child from transferring
+the evidence tree away from root before mandatory acceptance completes. A future
+workflow adapter must stage private inputs and explicitly export only accepted
+mandatory receipts plus the allowlisted timing sidecar. It must not export raw
+diagnostic globs or weaken private ancestor checks.
+
+Disk headroom is measured on the actual `--state-root` filesystem, including the
+reservation and 100 GiB safety headroom used for fixture allocation. The profile's
+private `disk_root` remains a required compatibility field, but it is not the
+free-space authority. Resource-profile admission does not itself authorize a VM,
+network, session or device allocation.
+
+Warm execution still performs two independent predecessor installations: one
+for update and one for rollback, followed by a fresh candidate installation.
+The 18 GiB appliance guest default preserves the 16 GiB usable-memory admission.
+Acceptance requires positive Nix generation identities, a whole sparse-disk
+fingerprint before approval, runtime absence for prepublication candidate and
+predecessor installs, and a real short-lived recovery SSH login with root and
+password rejection. The current cold runner uses the selected shared development
+service; it is not evidence of a new private empty database. A future migration
+owner facade must preserve these distinctions.
+
+The historical measured successful workflows remain exactly 9,911 and 11,500
+seconds. The release-speed target of 3,600 seconds or less remains unverified.
+There is no current-NixOS live baseline; protected environment, operator, media,
+network and resource prerequisites and the N1-N7 owner work remain unverified.
+Helper unit-test duration is not release timing.
