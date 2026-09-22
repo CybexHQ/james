@@ -58,7 +58,6 @@ const CAPABILITY_WORKSTATION_ROOTFS_MULTICAST_V1: &str = crate::netboot_multicas
 const CAPABILITY_JAMES_BOOT_GRANT_V1: &str = "james_boot_grant_v1";
 const CAPABILITY_WAKE_ON_LAN_V1: &str = crate::wake_on_lan::CAPABILITY;
 const CAPABILITY_APPLIANCE_UPDATE_V1: &str = crate::appliance::APPLIANCE_UPDATE_CAPABILITY;
-const CAPABILITY_APPLIANCE_UPDATE_V2: &str = crate::appliance::APPLIANCE_UPDATE_CAPABILITY_V2;
 const CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1: &str =
     crate::appliance::APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_CAPABILITY;
 const CYBEX_COMPONENT_PROTOCOL_VERSION: u32 = 4;
@@ -958,7 +957,10 @@ fn store_update_schedule(policy: Option<Value>, supported: bool) -> Result<()> {
             supported,
         )
     } else {
-        crate::appliance::update_schedule::store(policy.map(serde_json::from_value).transpose()?)
+        if policy.is_some() {
+            bail!("appliance update policy requires NixOS James");
+        }
+        Ok(())
     }
 }
 
@@ -2500,6 +2502,18 @@ async fn signed_request_for_config(
 }
 
 fn james_capabilities(config: &AppConfig, peer_supports_scheduling: bool) -> Vec<&'static str> {
+    james_capabilities_for_mode(
+        config,
+        peer_supports_scheduling,
+        crate::appliance::nixos::is_nixos(),
+    )
+}
+
+fn james_capabilities_for_mode(
+    config: &AppConfig,
+    peer_supports_scheduling: bool,
+    nixos: bool,
+) -> Vec<&'static str> {
     let mut capabilities = vec![
         CAPABILITY_BOOT_V1,
         CAPABILITY_BUILDER_V1,
@@ -2515,15 +2529,13 @@ fn james_capabilities(config: &AppConfig, peer_supports_scheduling: bool) -> Vec
         CAPABILITY_WAKE_ON_LAN_V1,
     ];
     capabilities.push(crate::pxe_discovery::CAPABILITY);
-    capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V1);
-    capabilities.push(if crate::appliance::nixos::is_nixos() {
-        crate::appliance::nixos::CAPABILITY
-    } else {
-        CAPABILITY_APPLIANCE_UPDATE_V2
-    });
-    capabilities.push(CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1);
-    if peer_supports_scheduling {
-        capabilities.push(crate::appliance::schedule::CAPABILITY);
+    if nixos {
+        capabilities.push(CAPABILITY_APPLIANCE_UPDATE_V1);
+        capabilities.push(crate::appliance::nixos::CAPABILITY);
+        capabilities.push(CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1);
+        if peer_supports_scheduling {
+            capabilities.push(crate::appliance::schedule::CAPABILITY);
+        }
     }
     if crate::netboot_multicast::binary_available(config) {
         capabilities.push(CAPABILITY_WORKSTATION_ROOTFS_MULTICAST_V1);
@@ -3157,9 +3169,9 @@ fn normalize_managed_settings_for_mode(
     managed_appliance: bool,
 ) -> Result<NormalizedManagedSettings> {
     // The appliance itself owns this address: DHCP renewals and acknowledged
-    // Netplan changes can make a centrally remembered URL stale. Management
+    // systemd-networkd changes can make a centrally remembered URL stale. Management
     // still owns the remaining boot policy, while the reconciled local origin
-    // is authoritative on the managed Ubuntu appliance.
+    // is authoritative on the managed NixOS appliance.
     let public_base_url = if managed_appliance || settings.public_base_url.trim().is_empty() {
         config.public_base_url().to_string()
     } else {
@@ -4446,7 +4458,7 @@ mod tests {
     fn james_capabilities_report_build_and_cache() {
         let config = AppConfig::default();
         assert_eq!(
-            james_capabilities(&config, true),
+            james_capabilities_for_mode(&config, true, false),
             vec![
                 "boot_v1",
                 "builder_v1",
@@ -4460,11 +4472,7 @@ mod tests {
                 "workstation_netboot_transport_v1",
                 "james_boot_grant_v1",
                 "wake_on_lan_v1",
-                "pxe_proxy_v1",
-                "appliance_update_v1",
-                "appliance_update_v2",
-                "appliance_update_qualification_transport_v1",
-                "appliance_update_schedule_v1"
+                "pxe_proxy_v1"
             ]
         );
     }
@@ -4475,14 +4483,14 @@ mod tests {
         let newer: AgentJamesConfigResponse =
             serde_json::from_value(json!({"update_schedule_supported":true})).unwrap();
         let config = AppConfig::default();
-        let legacy = james_capabilities(&config, older.update_schedule_supported);
-        let modern = james_capabilities(&config, newer.update_schedule_supported);
-        assert!(!legacy.contains(&crate::appliance::update_schedule::CAPABILITY));
-        assert!(modern.contains(&crate::appliance::update_schedule::CAPABILITY));
+        let legacy = james_capabilities_for_mode(&config, older.update_schedule_supported, true);
+        let modern = james_capabilities_for_mode(&config, newer.update_schedule_supported, true);
+        assert!(!legacy.contains(&crate::appliance::schedule::CAPABILITY));
+        assert!(modern.contains(&crate::appliance::schedule::CAPABILITY));
         assert_eq!(
             modern
                 .into_iter()
-                .filter(|cap| *cap != crate::appliance::update_schedule::CAPABILITY)
+                .filter(|cap| *cap != crate::appliance::schedule::CAPABILITY)
                 .collect::<Vec<_>>(),
             legacy
         );

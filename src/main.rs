@@ -34,6 +34,9 @@ async fn main() -> anyhow::Result<()> {
         command,
         Command::ApplyApplianceUpdateSchedule | Command::CheckApplianceUpdateSchedule
     ) {
+        if !cybex_james::appliance::is_managed_ubuntu() {
+            anyhow::bail!("Ubuntu James scheduling has been retired; use the NixOS update policy");
+        }
         if effective_uid() != 0 {
             anyhow::bail!("appliance update policy must run as root");
         }

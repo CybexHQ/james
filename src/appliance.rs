@@ -223,13 +223,13 @@ pub struct ApplianceReport {
 }
 
 pub fn is_managed_appliance() -> bool {
-    nixos::is_nixos() || is_managed_ubuntu()
+    nixos::is_nixos()
 }
 
 pub fn is_managed_ubuntu() -> bool {
-    !nixos::is_nixos()
-        && Path::new(RELEASE_PATH).is_file()
-        && Path::new(INSTALLED_STATE_PATH).is_file()
+    // Historical descriptor verification remains available, but current binaries
+    // must never resume the retired Ubuntu appliance runtime.
+    false
 }
 
 pub fn queue_update_request(update: ManagedApplianceUpdate) -> bool {
@@ -342,6 +342,9 @@ pub fn verify_and_extract_candidate_update() -> Result<PathBuf> {
 }
 
 fn verify_and_extract_stored_update_with_mode(candidate_boot: bool) -> Result<PathBuf> {
+    if !is_managed_ubuntu() {
+        bail!("Ubuntu James runtime support has been retired; reinstall with NixOS")
+    }
     let request_body = read_bounded_snapshot_text(
         Path::new(UPDATE_REQUEST_PATH),
         256 * 1024,
@@ -1959,6 +1962,19 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
+
+    #[test]
+    fn retired_ubuntu_runtime_cannot_materialize_an_update() {
+        assert!(!is_managed_ubuntu());
+        for candidate_boot in [false, true] {
+            let error = verify_and_extract_stored_update_with_mode(candidate_boot).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("Ubuntu James runtime support has been retired")
+            );
+        }
+    }
 
     fn signed_release_fixture() -> (SignedApplianceRelease, SigningKey) {
         let key = SigningKey::from_bytes(&[7; 32]);
