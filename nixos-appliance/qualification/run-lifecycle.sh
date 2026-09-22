@@ -250,6 +250,15 @@ case "$package_delivery" in
     test "$(sha256sum "$package_snapshot" | awk '{print $1}')" = \
       "$(jq -er '.appliance_release_v1.system_closure.sha256' "$manifest")"
 
+    if [[ -S "$CYBEX_JAMES_QUALIFICATION_STATE/manage.sock" ]]; then
+      [[ "$induce_preflight_retry" = false ]] || {
+        echo 'error: isolated artifact transport does not support fault injection' >&2
+        exit 1
+      }
+      package_transport_url="$(python3 -B "$repository_root/nixos-appliance/qualification/isolated_manage_rpc.py" \
+        --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" closure-url \
+        --manifest-sha256 "$(sha256sum "$manifest" | awk '{print $1}')")"
+    else
     mapfile -t bridge_addresses < <(
       ip -4 -o address show dev "$bridge" scope global \
         | awk '{sub(/\/.*/, "", $4); print $4}'
@@ -298,6 +307,7 @@ case "$package_delivery" in
     package_transport_url="http://$bridge_ipv4:$package_port/$package_filename"
     curl --fail --silent --show-error --proto '=http' --head \
       "$package_transport_url" >/dev/null
+    fi
     ;;
   *)
     echo "error: unsupported installer package delivery contract: $package_delivery" >&2
@@ -336,7 +346,7 @@ headers="$work_dir/download.headers"
 envelope="$work_dir/personalization-envelope.bin"
 if [[ -S "$CYBEX_JAMES_QUALIFICATION_STATE/manage.sock" ]]; then
   printf '%s\n' "$media_secret" | python3 -B "$repository_root/nixos-appliance/qualification/isolated_manage_rpc.py" \
-    --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" personalize --path "$personalization_path" --output "$envelope"
+    --state-dir "$CYBEX_JAMES_QUALIFICATION_STATE" personalize --path "$personalization_path" --output "$envelope" --headers-output "$headers"
 else
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
   --header "Authorization: Bearer $token" \

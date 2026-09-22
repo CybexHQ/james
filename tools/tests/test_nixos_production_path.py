@@ -1,4 +1,5 @@
 """Production qualification must stay on a private exact-origin NixOS fixture."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -29,7 +30,9 @@ class ProductionTests(unittest.TestCase):
         class Echo(socketserver.BaseRequestHandler):
             def handle(self):
                 self.request.sendall(self.request.recv(1024))
-        with socketserver.TCPServer(('127.0.0.2', 8443), Echo) as backend:
+        class Backend(socketserver.TCPServer):
+            allow_reuse_address = True
+        with Backend(('127.0.0.2', 8443), Echo) as backend:
             thread = threading.Thread(target=backend.serve_forever, daemon=True)
             thread.start()
             proxy = forwarding.Proxy('127.0.0.3', '127.0.0.2', _test_port=0)
@@ -48,6 +51,7 @@ class ProductionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 proxy.verify('127.0.0.3', '127.0.0.2')
             with socket.socket() as probe:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 probe.bind(proxy.address)
 
     def test_staging_copies_bytes_and_rejects_symlinks(self):
@@ -101,6 +105,51 @@ class ProductionTests(unittest.TestCase):
                 server.dispatch(invalid)
         self.assertEqual(owner.api.call_count, 1)
         owner.client.assert_not_called()
+
+    def test_rpc_personalization_preserves_and_checks_response_digest(self):
+        rpc = load('isolated_manage_rpc')
+        import base64
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            (state / 'session').write_text('fixture-token')
+            (state / 'session').chmod(0o600)
+            owner = Mock(state=state)
+            server = object.__new__(rpc.Server)
+            server.owner = owner
+            body = b'x' * 8192
+            digest = hashlib.sha256(body).hexdigest()
+            response_digest = digest
+            def respond(*args, **kwargs):
+                kwargs['response_headers']['x-cybex-james-envelope-sha256'] = response_digest
+                return body
+            owner.client.return_value.request_bytes.side_effect = respond
+            request = {'operation': 'personalize',
+                       'path': '/v1/james/provisioning-sessions/01234567-89ab-cdef-0123-456789abcdef/personalization-envelope',
+                       'secret': 'media-secret'}
+            with patch.object(sys, 'path', [str(HELPERS), *sys.path]), \
+                    patch('isolated_manage_config.read_file', return_value=b'fixture-token'):
+                result = server.dispatch(request)
+                self.assertEqual(base64.b64decode(result['body']), body)
+                self.assertEqual(result['envelope_sha256'], digest)
+                response_digest = '0' * 64
+                with self.assertRaisesRegex(ValueError, 'digest'):
+                    server.dispatch(request)
+
+    def test_rpc_closure_requires_selected_authenticated_manifest(self):
+        rpc = load('isolated_manage_rpc')
+        owner = Mock()
+        url = 'http://10.249.217.1:18082/closure.tar.zst'
+        owner.verify.return_value = {
+            'selected_release': 'predecessor',
+            'releases': {'predecessor': {'manifest_sha256': 'a' * 64}},
+            'artifact_transports': {'releases': {'predecessor': {'package_transport_url': url}}},
+        }
+        server = object.__new__(rpc.Server)
+        server.owner = owner
+        self.assertEqual(server.dispatch({'operation': 'closure_url', 'manifest_sha256': 'a' * 64}), url)
+        with self.assertRaises(ValueError):
+            server.dispatch({'operation': 'closure_url', 'manifest_sha256': 'b' * 64})
+        self.assertEqual(owner.verify.call_count, 2)
 
     @unittest.skipUnless(os.geteuid() == 0, 'root-private RPC transport uses real peer credentials')
     def test_rpc_roundtrip_uses_retained_owner_and_cleans_socket(self):

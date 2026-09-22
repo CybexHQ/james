@@ -43,13 +43,15 @@ class Transport:
         self.connector = connector
 
     @staticmethod
-    def read(connection):
+    def read(connection, response_headers=None):
         response = connection.getresponse()
         body = response.read(MAXIMUM + 1)
         if (len(body) > MAXIMUM or not 200 <= response.status < 300
                 or response.getheader('Location') is not None
                 or response.getheader('Content-Encoding') not in {None, 'identity'}):
             raise ValueError('isolated Manage refused response, redirect, or oversized body')
+        if response_headers is not None:
+            response_headers.update({key.lower(): value for key, value in response.getheaders()})
         return body
 
     def connection(self):
@@ -83,7 +85,7 @@ class Transport:
             raw.close()
             raise
 
-    def request_bytes(self, path, body=None, token=None, headers=None):
+    def request_bytes(self, path, body=None, token=None, headers=None, response_headers=None):
         if (not isinstance(path, str) or not path.startswith('/v1/') or '\\' in path
                 or any(ord(c) < 33 or ord(c) > 126 for c in path) or '#' in path):
             raise ValueError('isolated Manage API path is invalid')
@@ -103,7 +105,7 @@ class Transport:
                 headers.update(extra)
             connection.request('GET' if body is None else 'POST', path,
                                body=None if body is None else json.dumps(body).encode(), headers=headers)
-            data = self.read(connection)
+            data = self.read(connection, response_headers)
             return data
         finally:
             connection.close()
