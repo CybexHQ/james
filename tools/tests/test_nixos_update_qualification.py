@@ -155,6 +155,17 @@ class TransitionTests(unittest.TestCase):
         # Acceptance deliberately imports predecessor on demand as well.
         self.enterContext(patch.dict(sys.modules, IMPORTS))
 
+    def test_dhcp_identity_preserves_unset_desired_url(self):
+        value = node(manifest('0.2.2', 'a'), '1', datetime.datetime.now(T.UTC))
+        for desired in (None, ''):
+            before = T.identity(value | {'public_base_url': desired})
+            self.assertEqual(before['public_base_url'], desired)
+            self.assertNotEqual(before, T.identity(value))
+        with self.assertRaises(ValueError):
+            T.identity(value | {'cache_public_key_fingerprint': ''})
+        with self.assertRaises(ValueError):
+            T.identity(value | {'public_base_url': 42})
+
     def test_exact_commit_observes_guest_reset_and_three_distinct_accepted_reports(self):
         run = Run()
         with tempfile.TemporaryDirectory() as temporary:
