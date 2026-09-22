@@ -4,8 +4,8 @@ No command-line prepare path is provided until the runner supplies a reviewed
 network adapter. The adapter MUST establish DNS, guest and Docker host/egress
 firewall confinement and an allowlisted proxy, then verify the actual owned
 rules/processes on every verify(context, receipt) call. JSON assertions alone
-are not an implementation of this contract. All three methods are required:
-prepare(context), verify(context, receipt), cleanup(context, receipt).
+are not an implementation of this contract. Required methods are prepare(context),
+attach_dns_route(context, container_id), verify(context, receipt), and cleanup(context, receipt).
 """
 from __future__ import annotations
 
@@ -38,6 +38,7 @@ def sibling(name):
 inputs = sibling('isolated_manage_config')
 resources = sibling('isolated_manage_resources')
 transport = sibling('isolated_manage_transport')
+tls_forwarding = sibling('isolated_manage_tls_proxy')
 SCHEMA = 'cybex.james.isolated-manage.v2'
 GUARD_SCHEMA = 'cybex.james.isolated-manage-network.v1'
 ARTIFACT_URL_SCHEMA = 'cybex.james.isolated-manage-artifact-urls.v1'
@@ -50,7 +51,8 @@ class Owner:
         self.directory = self.state / 'manage'
         self.adapter, self.artifact_factory, self.run = adapter, artifact_factory, run
         self.artifacts = None
-        if adapter is None or any(not callable(getattr(adapter, method, None)) for method in ('prepare', 'verify', 'cleanup')):
+        self.tls_proxy = None
+        if adapter is None or any(not callable(getattr(adapter, method, None)) for method in ('prepare', 'attach_dns_route', 'verify', 'cleanup')):
             raise ValueError('a reviewed, verifying default-deny network adapter is required')
 
     def scope(self):
@@ -237,9 +239,12 @@ class Owner:
                            'compatibility_sha256': releases[role]['compatibility_sha256']}
                     for role in RELEASES
                 }
+                artifact_options = {}
+                if releases['candidate']['manifest_sha256'] == releases['predecessor']['manifest_sha256']:
+                    artifact_options['candidate_only'] = True
                 self.artifacts = self.artifact_factory(
                     self.state, dict(receipt['context']), coordinator_releases,
-                    config['release_public_key'])
+                    config['release_public_key'], **artifact_options)
                 receipt['artifact_status'] = 'preparing'
                 self.save(receipt)
                 prepared_urls = self.artifact_urls(
@@ -263,10 +268,12 @@ class Owner:
                     docker.call('container', 'start', spec['id'])
                     docker.verify_container(role, spec['id'], spec['image'], spec['uid'],
                                             receipt['context']['network_id'], spec['mounts'], dns=receipt['peer_ipv4'], peer=spec['peer'])
+                    self.adapter.attach_dns_route(receipt['context'], spec['id'])
                     docker.verify_network(receipt['context']['network_id'], receipt['context']['backend_subnet'],
                                           self.network_members(receipt))
                     if role == 'db':
                         self.wait_database(docker, spec['id'])
+                self.start_tls_proxy(receipt)
                 self.wait_health(receipt)
                 self.bootstrap(receipt)
                 receipt['status'] = 'ready'
@@ -290,7 +297,8 @@ class Owner:
                                         receipt['artifact_transports']['releases'][selected],
                                         database_password, ssh_ca, receipt['guard']['proxy_url'])
         values = {'app': (10001, app_env, 'exec /opt/cybex/bin/cybex\n'),
-                  'db': (999, {'PATH': '/usr/local/bin:/usr/bin:/bin', 'POSTGRES_USER': 'fixture',
+                  'db': (999, {'PATH': '/usr/lib/postgresql/17/bin:/usr/local/bin:/usr/bin:/bin',
+                               'LANG': 'C.UTF-8', 'POSTGRES_USER': 'fixture',
                                'POSTGRES_PASSWORD': database_password, 'POSTGRES_DB': 'fixture',
                                'PGDATA': '/var/lib/postgresql/data'},
                          'exec /usr/local/bin/docker-entrypoint.sh postgres\n'),
@@ -334,8 +342,30 @@ class Owner:
                     raise ValueError('fresh fixture database did not become ready') from None
                 time.sleep(1)
 
+    def tls_address(self, receipt):
+        spec = receipt['containers']['tls']
+        value = self.docker(receipt).verify_container('tls', spec['id'], spec['image'], spec['uid'],
+            receipt['context']['network_id'], spec['mounts'], dns=receipt['peer_ipv4'], peer=spec['peer'])
+        attached = list(value['NetworkSettings']['Networks'].values())
+        if len(attached) != 1 or not value['State']['Running']:
+            raise ValueError('TLS forwarding requires the exact running fixture container')
+        target = ipaddress.ip_address(attached[0]['IPAddress'])
+        if target not in ipaddress.ip_network(receipt['context']['backend_subnet']):
+            raise ValueError('TLS forwarding target escaped its owned backend')
+        return str(target)
+
+    def start_tls_proxy(self, receipt):
+        if self.tls_proxy is not None:
+            raise ValueError('refusing to replace an active TLS forwarder')
+        self.tls_proxy = tls_forwarding.Proxy(receipt['peer_ipv4'], self.tls_address(receipt))
+
     def client(self, receipt):
-        return transport.Transport(receipt, lambda: self.guard(receipt))
+        def guarded():
+            self.guard(receipt)
+            if self.tls_proxy is None:
+                raise ValueError('TLS access requires the retained fixture owner')
+            return self.tls_proxy.verify(receipt['peer_ipv4'], self.tls_address(receipt))
+        return transport.Transport(receipt, guarded)
 
     def wait_health(self, receipt):
         deadline = time.monotonic() + 120
@@ -424,11 +454,16 @@ class Owner:
                                         dns=receipt['peer_ipv4'], peer=app['peer'])
         if not value['State']['Running']:
             raise ValueError('reconfigured fixture app container is not running')
+        self.adapter.attach_dns_route(receipt['context'], app['id'])
         docker.verify_network(receipt['context']['network_id'], receipt['context']['backend_subnet'],
                               self.network_members(receipt, complete=True))
         self.guard(receipt)
         tls = receipt['containers']['tls']
+        self.tls_proxy.close()
+        self.tls_proxy = None
         docker.call('container', 'restart', tls['id'])
+        self.adapter.attach_dns_route(receipt['context'], tls['id'])
+        self.start_tls_proxy(receipt)
         value = docker.verify_container('tls', tls['id'], tls['image'], tls['uid'],
                                         receipt['context']['network_id'], tls['mounts'],
                                         dns=receipt['peer_ipv4'], peer=tls['peer'])
@@ -659,6 +694,9 @@ class Owner:
             if phase not in (None, 'artifacts', 'backend'):
                 raise ValueError('invalid fixture cleanup phase')
             if phase is None:
+                if self.tls_proxy is not None:
+                    self.tls_proxy.close()
+                    self.tls_proxy = None
                 if receipt.get('artifact_status') is not None and self.artifacts is None:
                     raise ValueError('cleanup requires the retained artifact coordinator instance')
                 for role in ('tls', 'app', 'db'):

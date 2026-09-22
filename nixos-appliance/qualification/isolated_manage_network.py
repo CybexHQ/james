@@ -65,7 +65,15 @@ def read_owned(path):
 def _read_proc(path, maximum=65536):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
-        value = os.read(fd, maximum + 1)
+        chunks = []
+        size = 0
+        while size <= maximum:
+            chunk = os.read(fd, maximum + 1 - size)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        value = b''.join(chunks)
         if len(value) > maximum:
             raise ValueError('DNS process metadata exceeds bound')
         return value
@@ -201,7 +209,9 @@ class IncusAPI:
         try:
             peer_pid, peer_uid, _ = struct.unpack('3i', connection.sock.getsockopt(
                 socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i')))
-            if peer_uid != 0 or peer_pid <= 1:
+            # Socket activation retains systemd's PID 1 peer credentials even
+            # after Incus inherits the listener. Root ownership remains required.
+            if peer_uid != 0 or peer_pid < 1:
                 raise ValueError('Incus control peer is not the root daemon')
             headers = {'Accept': 'application/json'}
             encoded = None
@@ -383,6 +393,36 @@ class Adapter:
                                    '+comments', '+time=1', '+tries=1']).decode()
         if answer != [c['peer_ipv4']] or 'status: NXDOMAIN,' not in blocked:
             raise ValueError('live DNS does not enforce the pinned offline origin')
+
+    def attach_dns_route(self, context, identity):
+        """Give one owned internal container a host route to the private DNS peer."""
+        c = dict(context)
+        _, backend, _, _ = self.networks(c)
+        self.check_table(c, self.table(c))
+        selected = [v for v in self.containers(c, backend) if v['Id'] == identity]
+        if len(selected) != 1 or selected[0].get('State', {}).get('Running') is not True:
+            raise ValueError('DNS route requires an exact running owned container')
+        container = selected[0]
+        pid = container['State']['Pid']
+        source = self.container_ipv4(c, container)
+        fd, namespace = self.namespace(pid)
+        try:
+            pinned = os.fstat(fd)
+            if (namespace.get('pid') != pid or self.current_namespace(pid) != namespace
+                    or (namespace['netns_dev'], namespace['netns_ino']) != (pinned.st_dev, pinned.st_ino)):
+                raise ValueError('container namespace changed before private DNS routing')
+            prefix = ['nsenter', '--net=' + f'/proc/{os.getpid()}/fd/{fd}', '--']
+            routes = json.loads(self.run(prefix + ['ip', '-j', '-4', 'route', 'show']))
+            if (len(routes) != 1 or routes[0].get('dst') != c['backend_subnet']
+                    or routes[0].get('dev') != 'eth0' or routes[0].get('scope') != 'link'
+                    or routes[0].get('prefsrc') != source or routes[0].get('gateway')):
+                raise ValueError('new internal container has unexpected routes')
+            gateway = str(ipaddress.ip_network(c['backend_subnet'])[1])
+            self.run(prefix + ['ip', 'route', 'add', c['peer_ipv4'] + '/32', 'via', gateway, 'dev', 'eth0'])
+            if self.current_namespace(pid) != namespace:
+                raise ValueError('container namespace changed during private DNS routing')
+        finally:
+            os.close(fd)
 
     def dns(self, c, network, containers):
         expected = rules.dns_config(c)

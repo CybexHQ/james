@@ -183,6 +183,7 @@ class Child:
 
 class Coordinator:
     def __init__(self, state_dir, scope, releases, trusted_public_key, *, verifier=release_verifier,
+                 candidate_only=False,
                  _test_uid=None, _test_endpoints=None, _test_loopback=False, _test_anchor=None):
         self.uid = 0 if _test_uid is None else _test_uid
         self.state = private_directory(state_dir, self.uid)
@@ -190,6 +191,9 @@ class Coordinator:
         self.receipt_path = self.directory / 'coordinator.json'
         self.scope = normalize_scope(scope)
         self.verifier = verifier
+        if type(candidate_only) is not bool:
+            raise ValueError('candidate-only staging must be explicit')
+        self.candidate_only = candidate_only
         self.trusted_public_key = trusted_public_key
         self.children = {}
         self.known_files, self.known_directories = {}, {}
@@ -417,7 +421,12 @@ finally: s.server_close()
         self._mkdir(self.directory)
         try:
             releases = {role: self._verify_release(role) for role in ROLES}
-            self.verifier.advance(releases['candidate']['version'], releases['predecessor']['version'])
+            if self.candidate_only:
+                if any(releases['candidate'][key] != releases['predecessor'][key]
+                       for key in ('version', 'manifest_sha256', 'compatibility_sha256')):
+                    raise ValueError('candidate-only staging requires identical authenticated inputs')
+            else:
+                self.verifier.advance(releases['candidate']['version'], releases['predecessor']['version'])
             layout = {
                 'predecessor-backend': [releases['predecessor']['specs']['manifest'],
                                         releases['predecessor']['specs']['iso']],

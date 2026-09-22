@@ -1,8 +1,36 @@
 """Prepare three real workstation profiles only inside a newly bootstrapped fixture."""
+import copy
+import secrets
+
+
+def complete_sign_in_setup(api):
+    policies = [row for row in api('/v1/policies')
+                if row.get('metadata_json', {}).get('internal_type') == 'default_policy']
+    if (len(policies) != 1 or policies[0]['current_revision_id'] is not None
+            or policies[0]['metadata_json'].get('setup_required') != 'local_account_profile'):
+        raise ValueError('fixture must begin with a fresh Default Policy setup state')
+    policy = policies[0]
+    profile = api('/v1/policies/local-account-profiles', {
+        'name': 'Qualification administrators', 'description': 'Disposable workstation sign-in.',
+        'scope_type': 'policy', 'policy_id': policy['id'], 'enabled': True,
+        'accounts': [{'username': 'qualification', 'display_name': 'Qualification',
+                      'password': secrets.token_urlsafe(48), 'admin': True, 'enabled': True}]})
+    detail = api('/v1/policies/' + policy['id'])
+    config = copy.deepcopy(detail['authoring_config_json'])
+    config.setdefault('settings', {}).setdefault('identity', {})['localprofile'] = {
+        'label': 'Local Account Profile', 'value': profile['id']}
+    published = api('/v1/policies/' + policy['id'] + '/publish', {
+        'expected_version': policy['version'], 'config': config,
+        'note': 'Complete disposable qualification workstation sign-in setup.',
+        'apply_directory_login_gnome_overview_profile': False, 'wifi_networks': []})
+    if (not published['policy']['current_revision_id']
+            or 'setup_required' in published['policy']['metadata_json']):
+        raise ValueError('fixture Default Policy setup did not complete')
 
 
 def prepare(owner):
     api = owner.api
+    complete_sign_in_setup(api)
     rows = api('/v1/blueprints?platform=nixos&limit=100&offset=0')['blueprints']
     if any(row['slug'] == 'qualification_tiling' for row in rows):
         raise ValueError('refusing to adopt an existing qualification Blueprint')

@@ -8,6 +8,9 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import Mock, patch
+import stat
+import struct
 
 PATH = Path(__file__).resolve().parents[2] / 'nixos-appliance/qualification/isolated_manage_network.py'
 spec = importlib.util.spec_from_file_location('network_adapter_tests', PATH)
@@ -169,6 +172,68 @@ class Host:
 
 
 class Tests(unittest.TestCase):
+    def test_private_dns_route_is_limited_to_owned_container_and_peer(self):
+        for foreign_route in (False, True):
+            with self.subTest(foreign_route=foreign_route):
+                host = Host()
+                host.adapter.prepare(host.c)
+                container = running_container(host.c)
+                host.containers.append(container)
+                host.backend['Containers'][container['Id']] = {}
+                run = host.adapter.run
+                added = []
+                def commands(args, **options):
+                    if args[0] == 'nsenter' and args[3:] == ['ip', '-j', '-4', 'route', 'show']:
+                        return json.dumps([{'dst': 'default' if foreign_route else host.c['backend_subnet'],
+                                            'dev': 'eth0', 'scope': 'link', 'prefsrc': '10.99.17.2'}]).encode()
+                    if args[0] == 'nsenter' and args[3:6] == ['ip', 'route', 'add']:
+                        added.append(args[3:])
+                        return b''
+                    return run(args, **options)
+                host.adapter.run = commands
+                if foreign_route:
+                    with self.assertRaisesRegex(ValueError, 'unexpected routes'):
+                        host.adapter.attach_dns_route(host.c, container['Id'])
+                    self.assertEqual(added, [])
+                else:
+                    host.adapter.attach_dns_route(host.c, container['Id'])
+                    self.assertEqual(added, [['ip', 'route', 'add', '10.99.16.1/32',
+                                             'via', '10.99.17.1', 'dev', 'eth0']])
+                with self.assertRaisesRegex(ValueError, 'exact running owned container'):
+                    host.adapter.attach_dns_route(host.c, 'f' * 64)
+
+    def test_proc_reads_consume_short_chunks_and_enforce_bound(self):
+        for chunks, maximum, expected in (([b'first', b'second', b''], 20, b'firstsecond'),
+                                         ([b'first', b'second'], 10, None)):
+            with self.subTest(maximum=maximum), patch.object(network.os, 'open', return_value=12), \
+                    patch.object(network.os, 'read', side_effect=chunks), \
+                    patch.object(network.os, 'close') as close:
+                if expected is None:
+                    with self.assertRaisesRegex(ValueError, 'exceeds bound'):
+                        network._read_proc('/proc/test/net/tcp', maximum)
+                else:
+                    self.assertEqual(network._read_proc('/proc/test/net/tcp', maximum), expected)
+                close.assert_called_once_with(12)
+
+    def test_incus_accepts_root_socket_activation_and_rejects_foreign_peers(self):
+        for pid, uid, allowed in ((1, 0, True), (123, 0, True), (0, 0, False), (123, 1000, False)):
+            with self.subTest(pid=pid, uid=uid):
+                connection = Mock()
+                connection.sock.getsockopt.return_value = struct.pack('3i', pid, uid, 0)
+                response = connection.getresponse.return_value
+                response.status = 200
+                response.read.return_value = b'{"type":"sync","status_code":200,"metadata":{}}'
+                with patch.object(network.os, 'lstat', return_value=Mock(st_mode=stat.S_IFSOCK | 0o660, st_uid=0)), \
+                        patch.object(network, '_UnixHTTPConnection', return_value=connection):
+                    if allowed:
+                        network.IncusAPI().get('fixture')
+                        connection.request.assert_called_once()
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'root daemon'):
+                            network.IncusAPI().get('fixture')
+                        connection.request.assert_not_called()
+                connection.close.assert_called_once()
+
     def test_plan_is_pure_scoped_and_has_no_global_flush_or_proxy(self):
         c = context()
         plan = network.command_plan(c)
@@ -492,7 +557,7 @@ class KernelTests(unittest.TestCase):
         bridges = [(self.c['bridge'], self.c['subnet']),
                    (backend, gateway + '/28'), ('jnq-art-ext', '192.0.2.1/24')]
         endpoints = [(peer, 18082), (gateway, 18081), (gateway, 18083),
-                     (peer, 18081), (gateway, 18082), (peer, 18084), (gateway, 18084)]
+                     (peer, 18081), (gateway, 18082), (peer, 18084), (gateway, 18084), (peer, 443)]
         try:
             call('ip', 'link', 'set', 'lo', 'up')
             for bridge, address in bridges:
@@ -531,7 +596,11 @@ class KernelTests(unittest.TestCase):
             for address, port in endpoints[:3]:
                 self.assertTrue(connect([], address, port))
                 self.assertFalse(connect(external, address, port))
-            for address, port in endpoints[3:]:
+            self.assertTrue(connect([], peer, 443))
+            self.assertTrue(connect(guest, peer, 443))
+            self.assertFalse(connect(external, peer, 443))
+            self.assertFalse(connect(container, peer, 443))
+            for address, port in endpoints[3:-1]:
                 self.assertFalse(connect([], address, port))
             for address, port in [(gateway, 18081), (gateway, 18083), (peer, 18081), (peer, 18084)]:
                 self.assertFalse(connect(guest, address, port))

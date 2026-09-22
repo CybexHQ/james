@@ -86,7 +86,7 @@ def ruleset(c):
     # Self-checks use the same bound address on both ends of the local route.
     # These exact TCP tuples precede source-spoof drops; no other loopback
     # traffic with fixture addresses acquires an exception.
-    for address, port in artifact_endpoints:
+    for address, port in (*artifact_endpoints, (peer, 443)):
         for chain, direction in (('input', 'iifname'), ('output', 'oifname')):
             local = [meta(direction, 'lo'), payload('ip', 'saddr', address),
                      payload('ip', 'daddr', address)]

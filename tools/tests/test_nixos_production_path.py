@@ -7,6 +7,9 @@ import runpy
 import sys
 import tempfile
 import unittest
+import socket
+import socketserver
+import threading
 from unittest.mock import Mock, patch
 
 HELPERS = Path(__file__).resolve().parents[2] / 'nixos-appliance/qualification'
@@ -21,6 +24,32 @@ def load(name):
 
 
 class ProductionTests(unittest.TestCase):
+    def test_tls_forwarder_preserves_bytes_and_closes_owned_connections(self):
+        forwarding = load('isolated_manage_tls_proxy')
+        class Echo(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.request.sendall(self.request.recv(1024))
+        with socketserver.TCPServer(('127.0.0.2', 8443), Echo) as backend:
+            thread = threading.Thread(target=backend.serve_forever, daemon=True)
+            thread.start()
+            proxy = forwarding.Proxy('127.0.0.3', '127.0.0.2', _test_port=0)
+            try:
+                with socket.create_connection(proxy.address, timeout=2) as client:
+                    payload = b'\x16\x03\x03opaque TLS bytes'
+                    client.sendall(payload)
+                    self.assertEqual(client.recv(1024), payload)
+                self.assertTrue(proxy.verify('127.0.0.3', '127.0.0.2'))
+                with self.assertRaises(ValueError):
+                    proxy.verify('127.0.0.3', '127.0.0.4')
+            finally:
+                proxy.close()
+                backend.shutdown()
+                thread.join()
+            with self.assertRaises(ValueError):
+                proxy.verify('127.0.0.3', '127.0.0.2')
+            with socket.socket() as probe:
+                probe.bind(proxy.address)
+
     def test_staging_copies_bytes_and_rejects_symlinks(self):
         fixture = load('production_fixture')
         with tempfile.TemporaryDirectory() as temporary:

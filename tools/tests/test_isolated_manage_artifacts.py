@@ -127,9 +127,9 @@ class CoordinatorTests(unittest.TestCase):
         self.verifier = FakeVerifier(self.values)
         self.coordinator = None
 
-    def create(self, *, endpoints=None, releases=None, coordinator=A.Coordinator):
+    def create(self, *, endpoints=None, releases=None, coordinator=A.Coordinator, candidate_only=False):
         return coordinator(self.state, self.scope, releases or self.releases, 'trusted-key',
-                           verifier=self.verifier, _test_uid=os.geteuid(),
+                           verifier=self.verifier, candidate_only=candidate_only, _test_uid=os.geteuid(),
                            _test_endpoints=endpoints or self.endpoints, _test_loopback=True,
                            _test_anchor=self.root)
 
@@ -146,6 +146,22 @@ class CoordinatorTests(unittest.TestCase):
                         os.close(child.pidfd)
                         child.pidfd = None
         self.temporary.cleanup()
+
+    def test_cold_staging_uses_only_the_authenticated_candidate(self):
+        releases = {role: self.releases['candidate'] for role in A.ROLES}
+        self.coordinator = self.create(releases=releases, candidate_only=True)
+        urls = self.coordinator.prepare(self.scope)
+        self.assertEqual(self.coordinator.receipt['releases']['candidate'],
+                         self.coordinator.receipt['releases']['predecessor'])
+        self.assertEqual(urls['releases']['candidate']['package_transport_url'],
+                         urls['releases']['predecessor']['package_transport_url'])
+        self.assertEqual(self.verifier.advanced, [])
+        self.assertEqual({path for path, _ in self.verifier.verified}, {self.root / 'candidate'})
+
+    def test_cold_staging_refuses_distinct_releases(self):
+        self.coordinator = self.create(candidate_only=True)
+        with self.assertRaisesRegex(ValueError, 'identical authenticated inputs'):
+            self.coordinator.prepare(self.scope)
 
     def test_three_immutable_listeners_return_only_verified_transport_urls(self):
         self.coordinator = self.create()

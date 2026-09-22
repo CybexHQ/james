@@ -47,14 +47,19 @@ explicit private IP, verifies the normal hostname/certificate chain and exact
 certificate fingerprint, and reads a fixture-specific challenge on the same
 connection before sending credentials. It never resolves the public origin or
 follows credential-bearing redirects. Guest DNS and default-deny confinement are
-verified before any TAP is admitted. Changing a hostname allowlist alone cannot
+verified before any TAP is admitted. Internal Docker containers receive only a
+host route to the private DNS peer, never a default route. A retained TCP
+forwarder connects the private host TLS listener to the exact owned TLS container;
+Docker internal networks do not expose published ports. TLS remains end to end
+between the caller and that container, and cleanup closes every forwarding socket. Changing a hostname allowlist alone cannot
 turn a development run into production qualification.
 
 The fixture builds its Manage images from the candidate's committed development
 revision. The older NixOS appliance is exercised against that current Manage
 harness with its separately pinned compatibility projection. Cold qualification
 uses only the independently downloaded candidate, with no warm predecessor cache.
-The fresh fixture creates a separate Tiling/Deno profile; Standard and Dock retain
+The fresh fixture completes Default Policy sign-in setup with an ephemeral local
+account and creates a separate Tiling/Deno profile; Standard and Dock retain
 their seeded current revisions. Source-free delivery, real appliance install,
 upgrade/rollback, managed workstation reboots, and exact compliance remain gates.
 

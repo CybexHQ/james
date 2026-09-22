@@ -612,6 +612,8 @@ class GuardTests(unittest.TestCase):
         self.owner.verify_artifacts = mock.Mock(return_value={})
         self.owner.replace_app_environment = mock.Mock()
         self.owner.wait_health = mock.Mock()
+        proxy = self.owner.tls_proxy = mock.Mock()
+        self.owner.start_tls_proxy = mock.Mock()
         client = mock.Mock()
         device = 'dev_' + '1' * 32
         client.request.return_value = {'node': {'device_id': device}}
@@ -632,6 +634,8 @@ class GuardTests(unittest.TestCase):
         docker.verify_network.assert_called_once_with(
             'network-id', '10.99.17.0/28', ['db-id', 'new-app-id', 'tls-id'])
         self.owner.replace_app_environment.assert_called_once_with(saved, device)
+        proxy.close.assert_called_once()
+        self.owner.start_tls_proxy.assert_called_once_with(saved)
 
     def test_allow_device_failure_keeps_durable_label_cleanup_intent(self):
         saved = {'status': 'ready', 'organization_id': str(uuid.uuid4()), 'allowed_device_id': None,
@@ -759,7 +763,8 @@ class GuardTests(unittest.TestCase):
                 'schema': owner_module.GUARD_SCHEMA, **context, 'guard_id': 'exact-rules', 'proxy_url': None}
             self.adapter.verify.return_value = True
             owner.wait_database = mock.Mock()
-            owner.wait_health = mock.Mock()
+            owner.start_tls_proxy = mock.Mock(side_effect=lambda _: events.append('tls-forwarding'))
+            owner.wait_health = mock.Mock(side_effect=lambda _: events.append('health'))
             owner.bootstrap = mock.Mock()
             def materialize(current, *_args):
                 current['containers'] = {
@@ -778,6 +783,8 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(result['status'], 'ready')
             self.assertLess(events.index('guard'), events.index('listeners-prepare'))
             self.assertLess(events.index('listeners-verify'), events.index('create-db'))
+            self.assertLess(events.index('create-tls'), events.index('tls-forwarding'))
+            self.assertLess(events.index('tls-forwarding'), events.index('health'))
             factory.assert_called_once()
 
 
