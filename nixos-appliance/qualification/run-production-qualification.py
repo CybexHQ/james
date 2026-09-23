@@ -22,7 +22,9 @@ import subprocess
 import sys
 
 import release_predecessor as predecessor
-from isolated_fixture import SCOPE
+from isolated_fixture import API, SCOPE
+from owned_manage_cleanup import (retry_retire_owned, save_cleanup_receipt,
+                                  session_receipt, write_teardown_receipt)
 
 HELPERS = Path(__file__).resolve().parent
 
@@ -260,17 +262,14 @@ def qualify(args):
                     evidence_path.write_bytes(predecessor.canonical(document))
             successful = True
         finally:
-            try:
-                if args.allow_device_helper and (state / 'qualification-allowlist.json').exists():
-                    owned = predecessor.checked_json(state / 'lifecycle-session.json')[0]
-                    execute(args.allow_device_helper, '--cleanup', '--state-dir', state,
-                            '--session-id', owned['session_id'])
-            finally:
-                resources.close()
-                (state / 'session').unlink(missing_ok=True)
-                # Cleanup verifies the exact bridge receipt and refuses live clients.
-                execute(sys.executable, '-B', HELPERS / 'development-scope.py', 'cleanup', '--state-dir', state,
-                        '--manage-origin', args.manage_origin, '--bridge', scope['bridge'])
+            if args.isolated_manage_config:
+                release_phase(resources, state, args.manage_origin, scope['bridge'])
+            else:
+                try:
+                    resources.close()
+                finally:
+                    cleanup_phase(state, scope, args.manage_origin, args.allow_device_helper,
+                                  manifest['version'] if phase in {'fresh', 'cold'} else previous['release_id'])
             if successful:
                 for fixture in (state / 'fixture', state / 'workstation'):
                     if fixture.exists() and not fixture.is_symlink():
@@ -279,6 +278,42 @@ def qualify(args):
     for path in args.evidence_dir.glob('cybex-james-*.json'):
         path.chmod(0o644)
     print('Requested NixOS qualification phases passed; owned VM disks and networks cleaned')
+
+
+def release_phase(resources, state, origin, bridge):
+    try:
+        resources.close()
+    finally:
+        (state / 'session').unlink(missing_ok=True)
+        # Exact gate recovery and bridge cleanup must still run if the retained
+        # Owner has already failed or gone away during its own cleanup.
+        execute(sys.executable, '-B', HELPERS / 'development-scope.py', 'cleanup', '--state-dir', state,
+                '--manage-origin', origin, '--bridge', bridge)
+
+
+def cleanup_phase(state, scope, origin, allow_device_helper, version):
+    """Retire only proven external-development identities after owned VM teardown."""
+    has_receipt = (state / 'lifecycle-session.json').exists()
+    complete = False
+    try:
+        try:
+            if allow_device_helper and (state / 'qualification-allowlist.json').exists():
+                execute(allow_device_helper, '--cleanup', '--state-dir', state,
+                        '--session-id', session_receipt(state))
+            api = API(state) if has_receipt else None
+        finally:
+            if has_receipt:
+                write_teardown_receipt(state, scope, version)
+            execute(sys.executable, '-B', HELPERS / 'development-scope.py', 'cleanup', '--state-dir', state,
+                    '--manage-origin', origin, '--bridge', scope['bridge'])
+        if api is not None:
+            receipt = retry_retire_owned(state, scope, version, api)
+            save_cleanup_receipt(state, receipt)
+        complete = True
+    finally:
+        # A failed API call retains private auth for the guarded retry command.
+        if complete or not has_receipt:
+            (state / 'session').unlink(missing_ok=True)
 
 
 if __name__ == '__main__':

@@ -393,8 +393,8 @@ start_qemu() {
     -device virtio-scsi-pci,id=scsi0 -device "scsi-hd,drive=system,serial=$appliance_serial" \
     -drive "if=none,id=installer,media=cdrom,readonly=on,format=raw,file=$personalized" \
     -device ide-cd,drive=installer \
-    -netdev "tap,id=net0,ifname=$tap_name,script=no,downscript=no" -device "virtio-net-pci,netdev=net0,mac=$appliance_mac" \
-    -device i6300esb -watchdog-action reset \
+    -netdev "tap,id=net0,ifname=$tap_name,script=no,downscript=no" -device "virtio-net-pci,netdev=net0,id=nic0,mac=$appliance_mac,bus=pcie.0,addr=0x3" \
+    -device i6300esb,bus=pcie.0,addr=0x4 -watchdog-action reset \
     -boot "once=d,menu=off" -display none -serial "file:$work_dir/serial.log" \
     -qmp "unix:$work_dir/qmp.sock,server=on,wait=off" &
   qemu_pid=$!

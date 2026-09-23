@@ -22,6 +22,7 @@ SCHEMA = "cybex.james.nixos-development-scope.v1"
 ISOLATED_SCHEMA = "cybex.james.nixos-isolated-scope.v1"
 FIELDS = {"schema", "run", "manage_origin", "bridge", "subnet", "owner"}
 FORWARD = runpy.run_path(str(Path(__file__).with_name('development_forward.py')))
+GATE = runpy.run_path(str(Path(__file__).with_name('rollback_transport_gate.py')))
 COMMAND_ENV = {
     'LC_ALL': 'C',
     'PATH': '/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
@@ -194,6 +195,7 @@ def cleanup(path, origin, bridge):
     # missing or foreign replacement bridge must not strand those rules, and
     # name equality alone never authorizes deletion of the replacement.
     if not matches or not owned_network(scope, matches[0]):
+        GATE['recover'](path, scope)
         FORWARD['cleanup'](path, scope)
         return
     network = matches[0]
@@ -205,6 +207,7 @@ def cleanup(path, origin, bridge):
                                               text=True, env=COMMAND_ENV))
     if links:
         raise ValueError('qualification network still has attached host interfaces')
+    GATE['recover'](path, scope)
     FORWARD['cleanup'](path, scope)
     incus('network', 'delete', bridge)
 

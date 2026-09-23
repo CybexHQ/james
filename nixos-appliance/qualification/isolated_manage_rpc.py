@@ -91,6 +91,14 @@ class Server:
         operation = value.get('operation')
         if operation == 'api' and set(value) == {'operation', 'path', 'body'}:
             return self.owner.api(value['path'], value['body'])
+        if operation == 'rollback_gate_target' and set(value) == {'operation'}:
+            # Only the retained owner can authenticate the private receipt,
+            # confinement, TLS listener, and live Manage health. The child
+            # receives no credential or public DNS-derived destination.
+            receipt = self.owner.verify()
+            return {'owner': receipt['owner'], 'bridge': receipt['context']['bridge'],
+                    'origin': receipt['manage_origin'], 'peer_ipv4': receipt['peer_ipv4'],
+                    'certificate_sha256': receipt['certificate_sha256']}
         if operation == 'installer_transports' and set(value) == {'operation', 'manifest_sha256'}:
             receipt = self.owner.verify()
             selected = receipt['selected_release']

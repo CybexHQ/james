@@ -29,8 +29,9 @@ P = module('transition_nixos_predecessor', 'release_predecessor.py')
 A = module('transition_nixos_acceptance', 'release_acceptance.py')
 F = module('transition_nixos_fixture', 'isolated_fixture.py')
 RPC = module('transition_nixos_rpc', 'isolated_manage_rpc.py')
+G = module('transition_nixos_gate', 'rollback_transport_gate.py')
 IMPORTS = {'release_predecessor': P, 'release_acceptance': A, 'isolated_fixture': F,
-           'isolated_manage_rpc': RPC}
+           'isolated_manage_rpc': RPC, 'rollback_transport_gate': G}
 with patch.dict(sys.modules, IMPORTS):
     T = module('transition_nixos_lifecycle', 'transition_lifecycle.py')
     with patch.dict(sys.modules, {'transition_lifecycle': T}):
@@ -93,6 +94,10 @@ class Run:
             'schedule': {'timezone': 'UTC', 'weekdays': [1], 'start': '00:00', 'duration_minutes': 240}}
         self.nics = []
         self.nic_times = []
+        self.gate = Mock()
+        self.gate.counters.return_value = {'first': 1, 'retained': 3, 'finished': 1,
+                                           'blocked': 2, 'blocked_other': 0}
+        self.candidate_contact = False
         self.admission_mutation = lambda a: a
         self.node_mutation = lambda n: n
         self.stale = False
@@ -113,8 +118,10 @@ class Run:
     def qmp_events(self):
         events = []
         while self.events and self.events[0][0] <= self.clock.t:
-            _, guest = self.events.pop(0)
-            events.append({'event': 'RESET', 'data': {'guest': guest, 'reason': 'guest-reset' if guest else 'host-qmp-system-reset'}})
+            at, guest = self.events.pop(0)
+            stamp = self.clock.now() - datetime.timedelta(seconds=self.clock.t - at)
+            events.append({'event': 'RESET', 'data': {'guest': guest, 'reason': 'guest-reset' if guest else 'host-qmp-system-reset'},
+                           'timestamp': {'seconds': int(stamp.timestamp()), 'microseconds': 0}})
         return events
 
     def terminal(self):
@@ -147,7 +154,7 @@ class Run:
         if path.endswith('/qualification-updates'):
             return preflight(self.current)
         if self.api_error and self.clock.t >= 4: raise OSError('private response must not be logged')
-        if self.rollback and 3 <= self.clock.t < 214:
+        if self.rollback and self.candidate_contact and 3 <= self.clock.t < 214:
             self.current = node(self.candidate, '11', self.clock.now())
             self.current.update(update_status='health_checking', update_attempt_id=ATTEMPT,
                 update_stage='booted_candidate')
@@ -159,9 +166,13 @@ class Run:
         return {'node': self.current}
 
     def execute(self, output, timeout=225):
-        return T.run(self.api, self.fixture, self.candidate, self.candidate_body, self.previous,
-            self.previous_body, self.evidence, 'a' * 64, 'http://192.0.2.1:12345/closure.tar.zst', output, SOURCE,
-            self.rollback, clock=self.clock, sleep=self.clock.sleep, now=self.clock.now, timeout=timeout)
+        with patch.object(T.rollback_transport_gate, 'Gate', return_value=self.gate) as gate_class:
+            result = T.run(self.api, self.fixture, self.candidate, self.candidate_body, self.previous,
+                self.previous_body, self.evidence, 'a' * 64, 'http://192.0.2.1:12345/closure.tar.zst', output, SOURCE,
+                self.rollback, clock=self.clock, sleep=self.clock.sleep, now=self.clock.now, timeout=timeout)
+            if self.rollback: gate_class.assert_called_once_with(self.fixture, self.before)
+            else: gate_class.assert_not_called()
+            return result
 
 
 class TransitionTests(unittest.TestCase):
@@ -214,7 +225,7 @@ class TransitionTests(unittest.TestCase):
             self.assertEqual(run.nics, [])
             self.assertEqual(run.request['expected']['system_generation'], '7')
 
-    def test_rollback_cuts_only_owned_nic_and_restores_exact_source_after_guest_fallback(self):
+    def test_rollback_gates_candidate_transport_until_guest_fallback(self):
         run = Run(True)
         with tempfile.TemporaryDirectory() as temporary:
             result = run.execute(Path(temporary) / 'result.json')
@@ -222,8 +233,11 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(result['resulting_system_generation'], '7')
         self.assertEqual(result['candidate_system_generation'], '11')
         self.assertEqual(result['final_stage'], 'boot_fallback')
-        self.assertEqual(run.nics, [('set_link', {'name': 'nic0', 'up': False}), ('set_link', {'name': 'nic0', 'up': True})])
-        self.assertGreaterEqual(run.nic_times[0], 3)  # A fresh candidate boot report precedes the fault.
+        self.assertEqual(run.nics, [])
+        self.assertEqual(result['transport_gate'], run.gate.counters.return_value)
+        self.assertEqual(result['gate_install_latency_seconds'], 0)
+        run.gate.install.assert_called_once_with()
+        run.gate.remove.assert_called()
 
     def test_rollback_waits_for_fresh_healthy_restored_report(self):
         run = Run(True)
@@ -255,7 +269,7 @@ class TransitionTests(unittest.TestCase):
 
     def test_no_reset_host_reset_and_early_fallback_are_rejected(self):
         for rollback, events, message in [(False, [], 'reset evidence'), (False, [(1, False)], 'not initiated'),
-                                          (True, [(1, True), (2, True)], 'candidate boot report')]:
+                                          (True, [(1, True), (2, True)], 'health deadline')]:
             with self.subTest(events=events), tempfile.TemporaryDirectory() as temporary:
                 run = Run(rollback); run.events = events
                 with self.assertRaisesRegex(ValueError, message): run.execute(Path(temporary) / 'result.json')
@@ -281,12 +295,32 @@ class TransitionTests(unittest.TestCase):
                 run = Run(True); run.node_mutation = lambda n: (mutation(n), n)[1]
                 with self.assertRaises(ValueError): run.execute(Path(temporary) / 'result.json')
 
-    def test_api_failure_and_timeout_restore_disconnected_nic(self):
+    def test_api_failure_and_timeout_remove_transport_gate(self):
         for failure in (True, False):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
                 run = Run(True); run.api_error = failure; run.events = [(1, True)]
                 with self.assertRaises((OSError, ValueError)): run.execute(Path(temporary) / 'result.json', timeout=5)
-                self.assertEqual(run.nics[-1], ('set_link', {'name': 'nic0', 'up': True}))
+                run.gate.remove.assert_called_once_with()
+
+    def test_candidate_contact_and_missing_guard_flow_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Run(True); run.candidate_contact = True
+            with self.assertRaisesRegex(ValueError, 'Candidate agent contact'):
+                run.execute(Path(temporary) / 'result.json')
+            run.gate.remove.assert_called_once_with()
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Run(True); run.gate.counters.return_value['finished'] = 0
+            with self.assertRaisesRegex(ValueError, 'completed guard flow'):
+                run.execute(Path(temporary) / 'result.json')
+            run.gate.remove.assert_called_once_with()
+
+    def test_gate_install_must_follow_timestamped_reset_within_ten_seconds(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Run(True)
+            run.gate.install.side_effect = lambda: run.clock.sleep(11)
+            with self.assertRaisesRegex(ValueError, 'installation window'):
+                run.execute(Path(temporary) / 'result.json')
+            run.gate.remove.assert_called_once_with()
 
     def test_exact_preflight_and_admission_are_required_before_waiting_for_reset(self):
         run = Run()

@@ -45,11 +45,16 @@ class NixosQualificationTests(unittest.TestCase):
 
     def test_cleanup_removes_receipted_forwarding_when_bridge_is_absent(self):
         scope = self.scope()
-        cleanup = Mock()
+        steps = []
+        cleanup = Mock(side_effect=lambda *_: steps.append('forward'))
+        recover = Mock(side_effect=lambda *_: steps.append('gate'))
         with patch.object(S, 'read_scope', return_value=scope), \
                 patch.object(S, 'incus', return_value='[]') as incus, \
+                patch.dict(S.GATE, {'recover': recover}), \
                 patch.dict(S.FORWARD, {'cleanup': cleanup}):
             S.cleanup(Path('/private'), scope['manage_origin'], scope['bridge'])
+        self.assertEqual(steps, ['gate', 'forward'])
+        recover.assert_called_once_with(Path('/private'), scope)
         cleanup.assert_called_once_with(Path('/private'), scope)
         incus.assert_called_once_with('network', 'list', '--format=json')
 
@@ -59,6 +64,7 @@ class NixosQualificationTests(unittest.TestCase):
         cleanup = Mock()
         with patch.object(S, 'read_scope', return_value=scope), \
                 patch.object(S, 'incus', return_value=json.dumps([replacement])) as incus, \
+                patch.dict(S.GATE, {'recover': Mock()}), \
                 patch.dict(S.FORWARD, {'cleanup': cleanup}):
             S.cleanup(Path('/private'), scope['manage_origin'], scope['bridge'])
         cleanup.assert_called_once_with(Path('/private'), scope)
@@ -71,6 +77,7 @@ class NixosQualificationTests(unittest.TestCase):
         cleanup = Mock()
         with patch.object(S, 'read_scope', return_value=scope), \
                 patch.object(S, 'incus', return_value=json.dumps([network])), \
+                patch.dict(S.GATE, {'recover': Mock()}), \
                 patch.dict(S.FORWARD, {'cleanup': cleanup}), \
                 self.assertRaisesRegex(ValueError, 'attached instances'):
             S.cleanup(Path('/private'), scope['manage_origin'], scope['bridge'])
@@ -87,6 +94,7 @@ class NixosQualificationTests(unittest.TestCase):
             with patch.object(S, 'incus', incus), \
                     patch.object(S, 'verify', return_value=({}, {})), \
                     patch.object(S.subprocess, 'check_output', return_value='[]'), \
+                    patch.dict(S.GATE, {'recover': Mock()}), \
                     patch.dict(S.FORWARD, {'prepare': prepare, 'cleanup': cleanup}), \
                     self.assertRaisesRegex(ValueError, 'induced forwarding failure'):
                 S.prepare(args)
@@ -184,6 +192,21 @@ class NixosQualificationTests(unittest.TestCase):
         child.terminate.assert_called_once()
         child.wait.assert_called_with(timeout=45)
         child.kill.assert_not_called()
+
+    def test_scope_cleanup_survives_retained_owner_cleanup_failure(self):
+        fixture = module('nixos_fixture_cleanup_failure', HELPERS / 'isolated_fixture.py')
+        with patch.dict(sys.modules, {'release_predecessor': P, 'isolated_fixture': fixture}):
+            runner = module('nixos_runner_cleanup_failure', HELPERS / 'run-production-qualification.py')
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            (state / 'session').write_text('private fixture session')
+            resources = Mock()
+            resources.close.side_effect = ValueError('retained owner stopped')
+            with patch.object(runner, 'execute') as execute, \
+                 self.assertRaisesRegex(ValueError, 'retained owner stopped'):
+                runner.release_phase(resources, state, 'https://manage.cybex.net', 'jnq0123456789')
+            self.assertFalse((state / 'session').exists())
+            self.assertEqual(execute.call_args.args[2:4], (runner.HELPERS / 'development-scope.py', 'cleanup'))
 
     def test_qemu_spawn_failure_releases_the_owned_tap(self):
         fixture = module('nixos_fixture_spawn', HELPERS / 'isolated_fixture.py')

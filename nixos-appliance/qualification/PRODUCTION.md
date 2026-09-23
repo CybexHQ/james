@@ -113,6 +113,13 @@ credentials and must not be uploaded. After successful qualification, remove the
 owned temporary image-build checkout/configuration and unused build images through
 the corresponding maintenance operation. Persistent production databases, services,
 trust configuration and installed devices are outside fixture cleanup.
+For the separate external development path, the runner removes its VM and owned
+bridge, then uses the retained private session only to revoke the exact
+qualification provisioning session or decommission its proven temporary James
+device. It records a durable teardown intent before bridge deletion and retains
+the credential on a failed API call for the guarded `owned_manage_cleanup.py retry`
+operation. The isolated production fixture keeps its separate Owner cleanup;
+this external path never acts on a production identity.
 
 Isolated production qualification stages authenticated workstation runtime bundles privately.
 Warm installation requires the exact selected runtime and all three built-in
@@ -129,6 +136,18 @@ This creates the signed policy required by the NixOS updater; the install plan's
 unsigned schedule projection alone does not authorize updates. Existing signed
 policies are preserved. Qualification still requires the guest to verify policy,
 perform its own reboot, and report the exact transition and healthy identity.
+
+Rollback qualification installs an exact-owner transport gate at the appliance's
+QMP candidate reset, within ten seconds of that event. The gate uses the retained
+Owner's freshly verified private Manage peer and certificate identity; it does
+not resolve the public production name. The first HTTPS connection completes so
+the boot network guard can finish, while later Manage connections are denied
+until the appliance's automatic fallback reset. The harness requires firewall
+counters proving the completed first flow and later denial, and rejects any
+accepted candidate agent report. It removes the receipted gate before restoring
+source-boot connectivity. Scope cleanup can recover that exact table even if the
+retained Owner has stopped. The external development scope uses its own bounded
+development-origin resolution and the same owned-table recovery path.
 
 Artifact listeners allow address reuse after teardown so sequential fixtures can
 bind their fixed ports while old connections finish TIME_WAIT. Live listener

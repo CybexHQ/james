@@ -181,6 +181,24 @@ class ProductionTests(unittest.TestCase):
             server.dispatch({'operation': 'installer_transports', 'manifest_sha256': 'b' * 64})
         self.assertEqual(owner.verify.call_count, 2)
 
+    def test_rollback_gate_target_comes_from_live_authenticated_owner(self):
+        rpc = load('isolated_manage_rpc')
+        owner = Mock()
+        owner.verify.return_value = {
+            'owner': '01234567-89ab-4def-8123-456789abcdef',
+            'context': {'bridge': 'jnq0123456789'},
+            'manage_origin': 'https://manage.cybex.net',
+            'peer_ipv4': '10.249.217.1', 'certificate_sha256': 'a' * 64,
+        }
+        server = object.__new__(rpc.Server); server.owner = owner
+        self.assertEqual(server.dispatch({'operation': 'rollback_gate_target'}), {
+            'owner': owner.verify.return_value['owner'], 'bridge': 'jnq0123456789',
+            'origin': 'https://manage.cybex.net', 'peer_ipv4': '10.249.217.1',
+            'certificate_sha256': 'a' * 64})
+        owner.verify.assert_called_once_with()
+        with self.assertRaises(ValueError):
+            server.dispatch({'operation': 'rollback_gate_target', 'peer_ipv4': '1.2.3.4'})
+
     @unittest.skipUnless(os.geteuid() == 0, 'root-private RPC transport uses real peer credentials')
     def test_rpc_roundtrip_uses_retained_owner_and_cleans_socket(self):
         rpc = load('isolated_manage_rpc')
