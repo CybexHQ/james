@@ -42,6 +42,8 @@ def session_receipt(state):
 
 
 def write_teardown_receipt(state, scope, version):
+    if SCOPE['read_scope'](state) != scope or not isinstance(version, str) or not version:
+        raise ValueError('Manage teardown intent differs from the owned run')
     receipt = {'schema': TEARDOWN_SCHEMA, 'scope': scope, 'version': version,
                'session_id': session_receipt(state)}
     path = state / 'manage-teardown.json'
@@ -56,6 +58,11 @@ def write_teardown_receipt(state, scope, version):
             os.fsync(stream.fileno())
         temporary.chmod(0o600)
         os.replace(temporary, path)
+        directory = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         temporary.unlink(missing_ok=True)
 
