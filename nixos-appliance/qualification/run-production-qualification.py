@@ -19,7 +19,8 @@ import subprocess
 import sys
 
 import release_predecessor as predecessor
-from isolated_fixture import SCOPE
+from isolated_fixture import API, SCOPE
+from owned_manage_cleanup import retire_owned, session_receipt
 
 HELPERS = Path(__file__).resolve().parent
 
@@ -126,6 +127,27 @@ def lifecycle_mode_arguments(phase, state, previous):
     return ['--prepublication-candidate']
 
 
+def cleanup_phase(state, scope, origin, allow_device_helper, version):
+    """Drop admitted work and network before retiring the exact Manage identity."""
+    has_receipt = (state / 'lifecycle-session.json').exists()
+    try:
+        try:
+            if allow_device_helper and (state / 'qualification-allowlist.json').exists():
+                execute(allow_device_helper, '--cleanup', '--state-dir', state,
+                        '--session-id', session_receipt(state))
+            api = API(state) if has_receipt else None
+        finally:
+            # This refuses live clients and removes only the receipted network.
+            execute(sys.executable, '-B', HELPERS / 'development-scope.py', 'cleanup', '--state-dir', state,
+                    '--manage-origin', origin, '--bridge', scope['bridge'])
+        if api is not None:
+            receipt = retire_owned(state, scope, version, api)
+            (state / 'manage-cleanup.json').write_bytes(predecessor.canonical(receipt))
+            (state / 'manage-cleanup.json').chmod(0o600)
+    finally:
+        (state / 'session').unlink(missing_ok=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument('--run', required=True)
@@ -218,16 +240,8 @@ def main():
                     '--output', args.evidence_dir / 'cybex-james-published-workstation-qualification.json', env=environment)
             successful = True
         finally:
-            try:
-                if args.allow_device_helper and (state / 'qualification-allowlist.json').exists():
-                    owned = predecessor.checked_json(state / 'lifecycle-session.json')[0]
-                    execute(args.allow_device_helper, '--cleanup', '--state-dir', state,
-                            '--session-id', owned['session_id'])
-            finally:
-                (state / 'session').unlink(missing_ok=True)
-                # Cleanup verifies the exact bridge receipt and refuses live clients.
-                execute(sys.executable, '-B', HELPERS / 'development-scope.py', 'cleanup', '--state-dir', state,
-                        '--manage-origin', args.manage_origin, '--bridge', scope['bridge'])
+            cleanup_phase(state, scope, args.manage_origin, args.allow_device_helper,
+                          manifest['version'] if phase in {'fresh', 'cold'} else previous['release_id'])
             if successful:
                 for fixture in (state / 'fixture', state / 'workstation'):
                     if fixture.exists() and not fixture.is_symlink():
