@@ -70,7 +70,10 @@ def verify_candidate(directory, public_key, origin):
     source = subprocess.check_output(['git', '-C', str(HELPERS), 'rev-parse', 'HEAD'], text=True).strip()
     if descriptor['source_revision'] != source:
         raise ValueError('Candidate must bind the exact qualification checkout')
-    if subprocess.check_output(['git', '-C', str(HELPERS), 'status', '--porcelain'], text=True).strip():
+    # Root must not rewrite the unprivileged source owner's Git index. Admission
+    # rechecks this same checkout as that owner before approving a device.
+    if subprocess.check_output(['git', '-C', str(HELPERS), 'status', '--porcelain'],
+                               text=True, env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'}).strip():
         raise ValueError('Qualification checkout must be clean and committed')
     for artifact, field in ((descriptor['system_closure'], 'sha256'), (iso, 'template_sha256'),
                             (manifest['workstation_netboot'], 'sha256')):
@@ -116,8 +119,8 @@ def lifecycle_mode_arguments(phase, state, previous):
             raise ValueError('Published predecessor identity is required')
         identity = state / 'predecessor-identity.json'
         identity.write_bytes(predecessor.canonical(previous))
-        # The published predecessor must prove its selected runtime before the update.
-        return ['--predecessor-identity', identity]
+        # The published predecessor must prove its exact signed runtime before the update.
+        return ['--predecessor-identity', identity, '--require-candidate-runtime']
     if phase == 'cold':
         return ['--require-candidate-runtime']
     return ['--prepublication-candidate']

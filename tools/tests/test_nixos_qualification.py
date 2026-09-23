@@ -195,7 +195,8 @@ class NixosQualificationTests(unittest.TestCase):
             state = Path(temporary)
             for phase in ('update', 'rollback'):
                 args = runner.lifecycle_mode_arguments(phase, state, previous)
-                self.assertEqual(args, ['--predecessor-identity', state / 'predecessor-identity.json'])
+                self.assertEqual(args, ['--predecessor-identity', state / 'predecessor-identity.json',
+                                        '--require-candidate-runtime'])
                 self.assertNotIn('--prepublication-candidate', args)
                 self.assertEqual(args[1].read_bytes(), P.canonical(previous))
             self.assertEqual(runner.lifecycle_mode_arguments('fresh', state, None),
