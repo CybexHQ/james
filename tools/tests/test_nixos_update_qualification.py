@@ -155,6 +155,39 @@ class TransitionTests(unittest.TestCase):
         # Acceptance deliberately imports predecessor on demand as well.
         self.enterContext(patch.dict(sys.modules, IMPORTS))
 
+    def test_optional_public_url_is_preserved_through_transition(self):
+        for public_url in (None, ''):
+            with self.subTest(public_url=public_url), tempfile.TemporaryDirectory() as temporary:
+                run = Run()
+                run.before['public_base_url'] = public_url
+                run.current = run.before
+                run.node_mutation = lambda value: {**value, 'public_base_url': public_url}
+                result = run.execute(Path(temporary) / 'result.json')
+                self.assertEqual(result['final_status'], 'succeeded')
+                self.assertEqual(T.identity(run.before)['public_base_url'], public_url)
+
+    def test_public_url_type_and_required_identity_are_strict(self):
+        before = Run().before
+        for invalid in (False, 3, [], {}):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'public URL'):
+                T.identity({**before, 'public_base_url': invalid})
+        for field in ('device_id', 'hostname', 'cache_public_key_fingerprint', 'cache_base_url'):
+            for invalid in (None, ''):
+                with self.subTest(field=field, invalid=invalid), self.assertRaisesRegex(ValueError, 'incomplete'):
+                    T.identity({**before, field: invalid})
+        with self.assertRaises(KeyError):
+            T.identity({key: value for key, value in before.items() if key != 'public_base_url'})
+
+    def test_optional_public_url_change_does_not_preserve_identity(self):
+        for initial, changed in ((None, ''), ('', None), ('', 'http://192.0.2.2:8080')):
+            with self.subTest(initial=initial, changed=changed), tempfile.TemporaryDirectory() as temporary:
+                run = Run()
+                run.before['public_base_url'] = initial
+                run.current = run.before
+                run.node_mutation = lambda value: {**value, 'public_base_url': changed}
+                with self.assertRaisesRegex(ValueError, 'preserved identity'):
+                    run.execute(Path(temporary) / 'result.json')
+
     def test_exact_commit_observes_guest_reset_and_three_distinct_accepted_reports(self):
         run = Run()
         with tempfile.TemporaryDirectory() as temporary:

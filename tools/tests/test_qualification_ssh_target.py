@@ -23,6 +23,9 @@ NODE = {
 class QualificationSshTargetTests(unittest.TestCase):
     def test_uses_reported_global_address_on_exact_fixture_mac(self):
         self.assertEqual(TARGET(NODE, SCOPE, MAC), '10.246.218.62')
+        without_public_url = copy.deepcopy(NODE)
+        without_public_url['public_base_url'] = None
+        self.assertEqual(TARGET(without_public_url, SCOPE, MAC), '10.246.218.62')
         with_public_url = copy.deepcopy(NODE)
         with_public_url['public_base_url'] = 'https://10.246.218.62:8443'
         self.assertEqual(TARGET(with_public_url, SCOPE, MAC), '10.246.218.62')
@@ -41,6 +44,10 @@ class QualificationSshTargetTests(unittest.TestCase):
             inconsistent[field] = 'http://10.246.218.63/cache'
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'differs'):
                 TARGET(inconsistent, SCOPE, MAC)
+        malformed = copy.deepcopy(NODE)
+        malformed['public_base_url'] = False
+        with self.assertRaisesRegex(ValueError, 'URL or absent'):
+            TARGET(malformed, SCOPE, MAC)
 
     def test_rejects_ambiguous_fixture_addresses(self):
         ambiguous = copy.deepcopy(NODE)

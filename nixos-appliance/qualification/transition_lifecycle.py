@@ -53,10 +53,14 @@ def canonical_uuid(value):
 
 
 def identity(node):
-    fields = ('device_id', 'hostname', 'public_base_url', 'cache_public_key_fingerprint', 'cache_base_url')
+    fields = ('device_id', 'hostname', 'cache_public_key_fingerprint', 'cache_base_url')
     result = {k: node[k] for k in fields}
     if any(not isinstance(v, str) or not v for v in result.values()):
         raise ValueError('Appliance permanent identity projection is incomplete')
+    public_base_url = node['public_base_url']
+    if public_base_url is not None and not isinstance(public_base_url, str):
+        raise ValueError('Appliance public URL projection is invalid')
+    result['public_base_url'] = public_base_url
     network = node['appliance_network']
     result['managed_interface_id'] = network.get('managed_interface_id')
     result['macs'] = sorted(v['address'].lower() for v in network['interfaces'] if v['ifname'] != 'lo')
