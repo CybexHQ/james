@@ -709,16 +709,8 @@ then
 fi
 # Target only the new fixture address on the owned bridge. A compromised
 # report cannot redirect this authenticated test to an existing appliance.
-ssh_host="$(python3 - "$node" "$CYBEX_JAMES_QUALIFICATION_STATE/scope.json" <<'PYSSH'
-import ipaddress,json,sys,urllib.parse
-node=json.load(open(sys.argv[1])); scope=json.load(open(sys.argv[2]))
-host=urllib.parse.urlsplit(node['public_base_url']).hostname
-address=ipaddress.ip_address(host)
-if address.version != 4 or address not in ipaddress.ip_interface(scope['subnet']).network:
-    raise SystemExit('SSH target is outside the disposable bridge')
-print(address)
-PYSSH
-)"
+ssh_host="$(python3 -B "$repository_root/nixos-appliance/qualification/ssh-target.py" \
+  "$node" "$CYBEX_JAMES_QUALIFICATION_STATE/scope.json" "$appliance_mac")"
 ssh_options=(-o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=10
   -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work_dir/known-hosts"
   -i "$work_dir/operator-key" -o "CertificateFile=$work_dir/operator-key-cert.pub")
