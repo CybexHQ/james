@@ -143,7 +143,7 @@ class OwnedManageCleanupTests(unittest.TestCase):
                 patch.object(R, 'retry_retire_owned', side_effect=lambda *args: events.append('manage') or
                              {'session_id': self.session_id, 'action': 'revoked'}):
             R.cleanup_phase(self.state, self.scope, self.scope['manage_origin'], None, self.version)
-        self.assertEqual(events, ['network', 'receipt', 'manage'])
+        self.assertEqual(events, ['receipt', 'network', 'manage'])
         make_api.assert_called_once_with(self.state)
         self.assertFalse((self.state / 'session').exists())
         self.assertEqual(json.loads((self.state / 'manage-cleanup.json').read_text())['action'], 'revoked')
@@ -158,6 +158,7 @@ class OwnedManageCleanupTests(unittest.TestCase):
                 R.cleanup_phase(self.state, self.scope, self.scope['manage_origin'], None, self.version)
             retire.assert_not_called()
         self.assertTrue((self.state / 'session').exists())
+        self.assertTrue((self.state / 'manage-teardown.json').exists())
 
     def test_admission_cleanup_precedes_network_and_its_failure_still_cleans_network(self):
         (self.state / 'session').write_text('private token')
@@ -178,6 +179,37 @@ class OwnedManageCleanupTests(unittest.TestCase):
         make_api.assert_not_called()
         retire.assert_not_called()
         self.assertTrue((self.state / 'session').exists())
+
+    def test_interruption_after_network_teardown_has_durable_retry_intent(self):
+        token = self.state / 'session'
+        token.write_text('private token')
+        token.chmod(0o600)
+        events = []
+
+        def network_cleanup(*_args, **_kwargs):
+            self.assertTrue((self.state / 'manage-teardown.json').exists())
+            events.append('network_removed')
+            raise KeyboardInterrupt('interrupted immediately after network cleanup')
+
+        with patch.object(R, 'API', return_value=object()), \
+                patch.object(R, 'execute', side_effect=network_cleanup), \
+                patch.object(R, 'retry_retire_owned') as retire:
+            with self.assertRaises(KeyboardInterrupt):
+                R.cleanup_phase(self.state, self.scope, self.scope['manage_origin'], None,
+                                self.version)
+        self.assertEqual(events, ['network_removed'])
+        retire.assert_not_called()
+        self.assertTrue(token.exists())
+        with patch.dict(C.SCOPE, {'incus': Mock(return_value='[]')}):
+            post = C.PostTeardownAPI(self.state)
+        self.assertEqual((post.scope, post.version, post.token),
+                         (self.scope, self.version, 'private token'))
+        api = self.api()
+        api.scope, api.version = post.scope, post.version
+        with patch.object(C, 'PostTeardownAPI', return_value=api):
+            result = C.retry_after_teardown(self.state)
+        self.assertEqual(result['action'], 'decommissioned')
+        self.assertFalse(token.exists())
 
     def test_confirmation_timeout_retries_without_second_decommission(self):
         api = self.api()

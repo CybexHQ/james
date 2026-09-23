@@ -139,11 +139,13 @@ def cleanup_phase(state, scope, origin, allow_device_helper, version):
                         '--session-id', session_receipt(state))
             api = API(state) if has_receipt else None
         finally:
+            if has_receipt:
+                # Durable intent precedes bridge deletion, including interrupted teardown.
+                write_teardown_receipt(state, scope, version)
             # This refuses live clients and removes only the receipted network.
             execute(sys.executable, '-B', HELPERS / 'development-scope.py', 'cleanup', '--state-dir', state,
                     '--manage-origin', origin, '--bridge', scope['bridge'])
         if api is not None:
-            write_teardown_receipt(state, scope, version)
             receipt = retry_retire_owned(state, scope, version, api)
             save_cleanup_receipt(state, receipt)
         complete = True
