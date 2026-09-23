@@ -1,5 +1,6 @@
 """The qualification runner retires only its proven, stopped Manage fixture."""
 from copy import deepcopy
+import errno
 import importlib.util
 import json
 from pathlib import Path
@@ -138,10 +139,11 @@ class OwnedManageCleanupTests(unittest.TestCase):
         events = []
         with patch.object(R, 'API', return_value=object()) as make_api, \
                 patch.object(R, 'execute', side_effect=lambda *args, **kwargs: events.append('network')), \
-                patch.object(R, 'retire_owned', side_effect=lambda *args: events.append('manage') or
+                patch.object(R, 'write_teardown_receipt', side_effect=lambda *args: events.append('receipt')), \
+                patch.object(R, 'retry_retire_owned', side_effect=lambda *args: events.append('manage') or
                              {'session_id': self.session_id, 'action': 'revoked'}):
             R.cleanup_phase(self.state, self.scope, self.scope['manage_origin'], None, self.version)
-        self.assertEqual(events, ['network', 'manage'])
+        self.assertEqual(events, ['network', 'receipt', 'manage'])
         make_api.assert_called_once_with(self.state)
         self.assertFalse((self.state / 'session').exists())
         self.assertEqual(json.loads((self.state / 'manage-cleanup.json').read_text())['action'], 'revoked')
@@ -151,11 +153,11 @@ class OwnedManageCleanupTests(unittest.TestCase):
         (self.state / 'session').write_text('private token')
         with patch.object(R, 'API', return_value=object()), \
                 patch.object(R, 'execute', side_effect=RuntimeError('network busy')), \
-                patch.object(R, 'retire_owned') as retire:
+                patch.object(R, 'retry_retire_owned') as retire:
             with self.assertRaisesRegex(RuntimeError, 'network busy'):
                 R.cleanup_phase(self.state, self.scope, self.scope['manage_origin'], None, self.version)
             retire.assert_not_called()
-        self.assertFalse((self.state / 'session').exists())
+        self.assertTrue((self.state / 'session').exists())
 
     def test_admission_cleanup_precedes_network_and_its_failure_still_cleans_network(self):
         (self.state / 'session').write_text('private token')
@@ -168,14 +170,114 @@ class OwnedManageCleanupTests(unittest.TestCase):
                 raise RuntimeError('admission cleanup failed')
 
         with patch.object(R, 'execute', side_effect=execute), patch.object(R, 'API') as make_api, \
-                patch.object(R, 'retire_owned') as retire:
+                patch.object(R, 'retry_retire_owned') as retire:
             with self.assertRaisesRegex(RuntimeError, 'admission cleanup failed'):
                 R.cleanup_phase(self.state, self.scope, self.scope['manage_origin'],
                                 Path('/owned/allow-helper'), self.version)
         self.assertEqual(events, ['admission', 'network'])
         make_api.assert_not_called()
         retire.assert_not_called()
+        self.assertTrue((self.state / 'session').exists())
+
+    def test_confirmation_timeout_retries_without_second_decommission(self):
+        api = self.api()
+        original = api.side_effect
+        failures = 0
+
+        def response(path, body=None):
+            nonlocal failures
+            if original.decommissioned and path == '/v1/james/provisioning-sessions/' + self.session_id and failures == 0:
+                failures += 1
+                raise OSError(errno.ETIMEDOUT, 'confirmation timed out')
+            return original(path, body)
+
+        api.side_effect = response
+        result = C.retry_retire_owned(self.state, self.scope, self.version, api)
+        self.assertEqual(result['action'], 'already_terminal')
+        self.assertEqual(sum('/decommission' in c.args[0] for c in api.call_args_list), 1)
+
+    def test_failed_api_preserves_token_then_guarded_retry_finishes(self):
+        (self.state / 'session').write_text('private token')
+        with patch.object(R, 'API', return_value=object()), \
+                patch.object(R, 'execute'), \
+                patch.object(R, 'write_teardown_receipt') as write_receipt, \
+                patch.object(R, 'retry_retire_owned', side_effect=OSError(errno.ETIMEDOUT, 'offline')):
+            with self.assertRaises(OSError):
+                R.cleanup_phase(self.state, self.scope, self.scope['manage_origin'], None, self.version)
+        write_receipt.assert_called_once()
+        self.assertTrue((self.state / 'session').exists())
+        self.assertFalse((self.state / 'manage-cleanup.json').exists())
+        api = self.api()
+        api.scope = self.scope
+        api.version = self.version
+        with patch.object(C, 'PostTeardownAPI', return_value=api):
+            receipt = C.retry_after_teardown(self.state)
+        self.assertEqual(receipt['action'], 'decommissioned')
         self.assertFalse((self.state / 'session').exists())
+        self.assertTrue((self.state / 'manage-cleanup.json').exists())
+
+    def test_post_teardown_api_requires_exact_receipt_and_absent_bridge(self):
+        token = self.state / 'session'
+        token.write_text('private token')
+        token.chmod(0o600)
+        C.write_teardown_receipt(self.state, self.scope, self.version)
+        with patch.dict(C.SCOPE, {'incus': Mock(return_value='[]')}):
+            api = C.PostTeardownAPI(self.state)
+            self.assertEqual((api.scope, api.version, api.token),
+                             (self.scope, self.version, 'private token'))
+        with patch.dict(C.SCOPE, {'incus': Mock(return_value=json.dumps([
+                {'name': self.scope['bridge']}]))}):
+            with self.assertRaisesRegex(ValueError, 'bridge still exists'):
+                C.PostTeardownAPI(self.state)
+        receipt = self.state / 'manage-teardown.json'
+        value = json.loads(receipt.read_text())
+        value['scope']['owner'] = 'foreign'
+        receipt.write_text(json.dumps(value))
+        with patch.dict(C.SCOPE, {'incus': Mock(return_value='[]')}):
+            with self.assertRaisesRegex(ValueError, 'differs from the owned run'):
+                C.PostTeardownAPI(self.state)
+
+    def test_decommission_accepted_but_confirmation_failed_is_retryable(self):
+        token = self.state / 'session'
+        token.write_text('private token')
+        token.chmod(0o600)
+        api = self.api()
+        ordinary_response = api.side_effect
+
+        def unavailable_confirmation(path, body=None):
+            if ordinary_response.decommissioned and path == '/v1/james/provisioning-sessions/' + self.session_id:
+                raise OSError(errno.ETIMEDOUT, 'confirmation unavailable')
+            return ordinary_response(path, body)
+
+        api.side_effect = unavailable_confirmation
+        with patch.object(R, 'API', return_value=api), patch.object(R, 'execute'):
+            with self.assertRaises(OSError):
+                R.cleanup_phase(self.state, self.scope, self.scope['manage_origin'], None, self.version)
+        self.assertTrue(token.exists())
+        self.assertTrue((self.state / 'manage-teardown.json').exists())
+        self.assertEqual(sum('/decommission' in c.args[0] for c in api.call_args_list), 1)
+        api.side_effect = ordinary_response
+        api.scope, api.version = self.scope, self.version
+        with patch.object(C, 'PostTeardownAPI', return_value=api):
+            result = C.retry_after_teardown(self.state)
+        self.assertEqual(result['action'], 'already_terminal')
+        self.assertFalse(token.exists())
+        self.assertEqual(sum('/decommission' in c.args[0] for c in api.call_args_list), 1)
+
+    def test_existing_exact_cleanup_receipt_allows_final_token_removal(self):
+        token = self.state / 'session'
+        token.write_text('private token')
+        token.chmod(0o600)
+        first = {'session_id': self.session_id, 'device_id': self.device_id,
+                 'action': 'decommissioned'}
+        C.save_cleanup_receipt(self.state, first)
+        api = self.api({**self.session, 'state': 'revoked'})
+        api.scope, api.version = self.scope, self.version
+        with patch.object(C, 'PostTeardownAPI', return_value=api):
+            result = C.retry_after_teardown(self.state)
+        self.assertEqual(result['action'], 'already_terminal')
+        self.assertEqual(json.loads((self.state / 'manage-cleanup.json').read_text()), first)
+        self.assertFalse(token.exists())
 
 
 if __name__ == '__main__':
