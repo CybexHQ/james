@@ -13,6 +13,7 @@ import uuid
 
 import release_acceptance
 import release_predecessor
+import rollback_transport_gate
 
 try:
     import schedule_admission
@@ -69,7 +70,7 @@ def identity(node):
     return result
 
 
-def verify_projection(node, descriptor, expected_generation):
+def verify_projection(node, descriptor, expected_generation, *, require_health=True):
     expected = {'appliance_release': descriptor['release_id'], 'appliance_base_os': 'nixos',
         'appliance_base_os_version': descriptor['base_os_version'], 'nixpkgs_revision': descriptor['nixpkgs_revision'],
         'system_toplevel': descriptor['system_toplevel'], 'system_generation': generation(expected_generation),
@@ -79,7 +80,7 @@ def verify_projection(node, descriptor, expected_generation):
     if (any(node.get(k) != v for k, v in expected.items())
             or node.get('appliance_secure_boot') is not False
             or node.get('network_fallback_active') is not False
-            or node.get('appliance_local_health', {}).get('status') != 'healthy'):
+            or (require_health and node.get('appliance_local_health', {}).get('status') != 'healthy')):
         raise ValueError('Appliance report differs from the healthy exact NixOS closure')
 
 
@@ -151,8 +152,9 @@ def verify_terminal(before, node, attempt, candidate, previous, rollback):
             or (not rollback and package.get('rollback_reason') not in (None, ''))
             or identity(before) != identity(node)):
         raise ValueError('Terminal report does not prove the exact automatic transition and preserved identity')
-    verify_projection(node, (previous if rollback else candidate)['appliance_release_v1'], result_generation)
-    return candidate_generation
+    verify_projection(node, (previous if rollback else candidate)['appliance_release_v1'],
+                      result_generation, require_health=False)
+    return candidate_generation if node.get('appliance_local_health', {}).get('status') == 'healthy' else None
 
 
 def write_evidence(output, evidence):
@@ -182,6 +184,7 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
     # A full accepted report is signed by the permanent device identity. Neither
     # heartbeats nor a cached local response advance james_reported_at.
     seen_before = timestamp(before['james_reported_at'])
+    gate = rollback_transport_gate.Gate(fixture, before) if rollback else None
     prefix = f'/v1/james/nodes/{fixture.device}'
     admission = (schedule_admission.AdmissionExercise(api, fixture.device, clock=clock,
         sleep=sleep, now=now, timeout=min(timeout, 300)) if exercise_admission else None)
@@ -209,7 +212,11 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
     reset_reports_after = None
     fresh_health = set()
     observations = []
-    nic_down = False
+    candidate_started_at = None
+    gate_counts = None
+    gate_install_latency_seconds = None
+    unhealthy_seen = None
+    failure_stage = 'admitted'
     try:
         while clock() < deadline:
             if fixture.process.poll() is not None:
@@ -223,14 +230,31 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
                     first_reset = clock()
                     reset_reports_after = now()
                     if rollback:
-                        fixture.monitor.call('set_link', {'name': 'nic0', 'up': False})
-                        nic_down = True
+                        stamp = event.get('timestamp', {})
+                        if not (isinstance(stamp, dict) and type(stamp.get('seconds')) is int
+                                and type(stamp.get('microseconds')) is int
+                                and 0 <= stamp['microseconds'] < 1000000):
+                            raise ValueError('Rollback reset lacks QMP event timestamp')
+                        event_at = datetime.datetime.fromtimestamp(
+                            stamp['seconds'] + stamp['microseconds'] / 1000000, UTC)
+                        candidate_started_at = event_at
+                        failure_stage = 'candidate_reset_seen'
+                        gate.install()
+                        gate_install_latency_seconds = (now() - event_at).total_seconds()
+                        if not 0 <= gate_install_latency_seconds <= 10:
+                            raise ValueError('Rollback gate missed the candidate reset installation window')
+                        failure_stage = 'candidate_gate_installed'
                     print('Observed appliance candidate reboot', flush=True)
                 elif rollback and fallback_reset is None:
                     if clock() - first_reset < 180:
                         raise ValueError('Fallback reboot preceded the candidate health deadline')
-                    fixture.monitor.call('set_link', {'name': 'nic0', 'up': True})
-                    nic_down = False
+                    gate_counts = gate.counters()
+                    if (gate_counts['first'] != 1 or gate_counts['retained'] < 2
+                            or gate_counts['finished'] < 1
+                            or gate_counts['blocked'] + gate_counts['blocked_other'] < 1):
+                        raise ValueError('Rollback gate did not prove completed guard flow and denied later contact')
+                    gate.remove()
+                    failure_stage = 'fallback_gate_removed'
                     fallback_reset = clock()
                     reset_reports_after = now()
                     print('Observed appliance automatic fallback reboot', flush=True)
@@ -240,6 +264,8 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
             seen = timestamp(node.get('james_reported_at'))
             if seen > now() + datetime.timedelta(seconds=30):
                 raise ValueError('Accepted report timestamp is unexpectedly in the future')
+            if rollback and first_reset is not None and fallback_reset is None and seen > candidate_started_at:
+                raise ValueError('Candidate agent contact was accepted despite rollback gate')
             # Old terminal outcomes from another attempt must neither fail nor
             # satisfy this run while the newly admitted request reaches James.
             if node.get('update_attempt_id') != attempt:
@@ -263,6 +289,13 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
                 sleep(1)
                 continue
             candidate_generation = verify_terminal(before, node, attempt, candidate, previous, rollback)
+            if candidate_generation is None:
+                unhealthy_seen = seen
+                sleep(1)
+                continue
+            if unhealthy_seen is not None and seen <= unhealthy_seen:
+                sleep(1)
+                continue
             fresh_health.add(seen)
             if not rollback and len(fresh_health) < 3:
                 sleep(1)
@@ -291,7 +324,9 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
             if rollback:
                 result.update(automatic_rollback=True, fallback_reboot_observed=True,
                     rollback_reason=node['appliance_package_update']['rollback_reason'],
-                    fault='isolated_candidate_nic_disconnected_until_automatic_fallback')
+                    fault='owned_candidate_manage_transport_gate_until_automatic_fallback',
+                    transport_gate=gate_counts,
+                    gate_install_latency_seconds=gate_install_latency_seconds)
             else:
                 result.update(fresh_health_successes=len(fresh_health), authenticated_manage_contact=True)
             if admission:
@@ -305,8 +340,12 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
             write_evidence(output, result)
             return result
         raise ValueError('Appliance transition qualification timed out')
+    except BaseException:
+        if rollback:
+            print('Rollback qualification failed at ' + failure_stage, flush=True)
+        raise
     finally:
-        if nic_down and fixture.process.poll() is None:
-            fixture.monitor.call('set_link', {'name': 'nic0', 'up': True})
+        if gate:
+            gate.remove()
         if admission:
             admission.cleanup(False)

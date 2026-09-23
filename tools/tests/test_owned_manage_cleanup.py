@@ -21,8 +21,10 @@ def load(name, filename):
     return module
 
 
-C = load('qualification_owned_manage_cleanup', 'owned_manage_cleanup.py')
-R = load('qualification_owned_manage_runner', 'run-production-qualification.py')
+FIXTURE = load('qualification_owned_manage_fixture', 'isolated_fixture.py')
+with patch.dict(sys.modules, {'isolated_fixture': FIXTURE}):
+    C = load('qualification_owned_manage_cleanup', 'owned_manage_cleanup.py')
+    R = load('qualification_owned_manage_runner', 'run-production-qualification.py')
 
 
 class OwnedManageCleanupTests(unittest.TestCase):

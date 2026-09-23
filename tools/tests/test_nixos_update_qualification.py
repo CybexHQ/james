@@ -28,7 +28,9 @@ def module(name, filename):
 P = module('transition_nixos_predecessor', 'release_predecessor.py')
 A = module('transition_nixos_acceptance', 'release_acceptance.py')
 F = module('transition_nixos_fixture', 'isolated_fixture.py')
-IMPORTS = {'release_predecessor': P, 'release_acceptance': A, 'isolated_fixture': F}
+G = module('transition_rollback_gate', 'rollback_transport_gate.py')
+IMPORTS = {'release_predecessor': P, 'release_acceptance': A, 'isolated_fixture': F,
+           'rollback_transport_gate': G}
 with patch.dict(sys.modules, IMPORTS):
     T = module('transition_nixos_lifecycle', 'transition_lifecycle.py')
     with patch.dict(sys.modules, {'transition_lifecycle': T}):
@@ -88,11 +90,13 @@ class Run:
         self.events = [(1, True)] + ([(212, True)] if rollback else [])
         self.calls = []
         self.nics = []
+        self.gate_events = []
         self.admission_mutation = lambda a: a
         self.node_mutation = lambda n: n
         self.stale = False
         self.api_error = False
         self.fixture = types.SimpleNamespace(device=DEVICE, process=Mock(), monitor=Mock())
+        self.fixture.gate_events = self.gate_events
         self.fixture.process.poll.return_value = None
         self.fixture.wait_ready = lambda api: deepcopy(self.before)
         self.fixture.monitor.events = self.qmp_events
@@ -109,7 +113,9 @@ class Run:
         events = []
         while self.events and self.events[0][0] <= self.clock.t:
             _, guest = self.events.pop(0)
-            events.append({'event': 'RESET', 'data': {'guest': guest, 'reason': 'guest-reset' if guest else 'host-qmp-system-reset'}})
+            instant = self.clock.now().timestamp()
+            events.append({'event': 'RESET', 'data': {'guest': guest, 'reason': 'guest-reset' if guest else 'host-qmp-system-reset'},
+                           'timestamp': {'seconds': int(instant), 'microseconds': 0}})
         return events
 
     def terminal(self):
@@ -154,6 +160,14 @@ class TransitionTests(unittest.TestCase):
     def setUp(self):
         # Acceptance deliberately imports predecessor on demand as well.
         self.enterContext(patch.dict(sys.modules, IMPORTS))
+        class FakeGate:
+            def __init__(self, fixture, _node): self.events = fixture.gate_events
+            def install(self): self.events.append('install')
+            def counters(self):
+                self.events.append('counters')
+                return {'first': 1, 'retained': 4, 'finished': 1, 'blocked': 1, 'blocked_other': 0}
+            def remove(self): self.events.append('remove')
+        self.enterContext(patch.object(T.rollback_transport_gate, 'Gate', FakeGate))
 
     def test_optional_public_url_is_preserved_through_transition(self):
         for public_url in (None, ''):
@@ -201,7 +215,7 @@ class TransitionTests(unittest.TestCase):
             self.assertEqual(run.nics, [])
             self.assertEqual(run.request['expected']['system_generation'], '7')
 
-    def test_rollback_cuts_only_owned_nic_and_restores_exact_source_after_guest_fallback(self):
+    def test_rollback_gates_manage_contact_and_restores_transport_at_fallback(self):
         run = Run(True)
         with tempfile.TemporaryDirectory() as temporary:
             result = run.execute(Path(temporary) / 'result.json')
@@ -209,7 +223,9 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(result['resulting_system_generation'], '7')
         self.assertEqual(result['candidate_system_generation'], '11')
         self.assertEqual(result['final_stage'], 'boot_fallback')
-        self.assertEqual(run.nics, [('set_link', {'name': 'nic0', 'up': False}), ('set_link', {'name': 'nic0', 'up': True})])
+        self.assertEqual(run.nics, [])
+        self.assertEqual(run.gate_events, ['install', 'counters', 'remove', 'remove'])
+        self.assertEqual(result['transport_gate']['finished'], 1)
 
     def test_stale_reports_cannot_satisfy_repeated_fresh_health(self):
         run = Run(); run.stale = True
@@ -230,7 +246,7 @@ class TransitionTests(unittest.TestCase):
             with self.subTest(events=events), tempfile.TemporaryDirectory() as temporary:
                 run = Run(rollback); run.events = events
                 with self.assertRaisesRegex(ValueError, message): run.execute(Path(temporary) / 'result.json')
-                if rollback: self.assertEqual(run.nics[-1][1]['up'], True)
+                if rollback: self.assertIn('remove', run.gate_events)
 
     def test_exact_candidate_fields_and_identity_cannot_be_substituted(self):
         mutations = [lambda n: n.update(system_generation='12'), lambda n: n.update(system_toplevel='/nix/store/wrong'),
@@ -252,12 +268,58 @@ class TransitionTests(unittest.TestCase):
                 run = Run(True); run.node_mutation = lambda n: (mutation(n), n)[1]
                 with self.assertRaises(ValueError): run.execute(Path(temporary) / 'result.json')
 
-    def test_api_failure_and_timeout_restore_disconnected_nic(self):
+    def test_rollback_waits_for_fresh_healthy_fallback_report(self):
+        run = Run(True)
+        def transient(value):
+            if run.clock.t < 216:
+                value['appliance_local_health'] = {'status': 'degraded', 'reason': 'inventory_stale'}
+            return value
+        run.node_mutation = transient
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run.execute(Path(temporary) / 'result.json')
+        self.assertEqual(result['final_status'], 'rolled_back')
+        self.assertGreaterEqual(run.clock.t, 216)
+
+    def test_persistently_degraded_fallback_cannot_pass(self):
+        run = Run(True)
+        run.node_mutation = lambda value: {**value, 'appliance_local_health': {'status': 'degraded'}}
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'result.json'
+            with self.assertRaisesRegex(ValueError, 'timed out'):
+                run.execute(output, timeout=220)
+            self.assertFalse(output.exists())
+
+    def test_api_failure_and_timeout_remove_owned_gate(self):
         for failure in (True, False):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
                 run = Run(True); run.api_error = failure; run.events = [(1, True)]
                 with self.assertRaises((OSError, ValueError)): run.execute(Path(temporary) / 'result.json', timeout=5)
-                self.assertEqual(run.nics[-1], ('set_link', {'name': 'nic0', 'up': True}))
+                self.assertEqual(run.gate_events[-1], 'remove')
+
+    def test_late_reset_observation_or_slow_install_rejects_and_cleans_gate(self):
+        for slow_install in (False, True):
+            with self.subTest(slow_install=slow_install), tempfile.TemporaryDirectory() as temporary:
+                run = Run(True)
+                if slow_install:
+                    class SlowGate:
+                        def __init__(self, fixture, _node): self.events = fixture.gate_events
+                        def install(self):
+                            self.events.append('install')
+                            run.clock.t += 11
+                        def remove(self): self.events.append('remove')
+                    context = patch.object(T.rollback_transport_gate, 'Gate', SlowGate)
+                else:
+                    original = run.qmp_events
+                    def delayed():
+                        events = original()
+                        for event in events:
+                            event['timestamp']['seconds'] -= 11
+                        return events
+                    run.fixture.monitor.events = delayed
+                    context = patch.object(T.rollback_transport_gate, 'Gate', T.rollback_transport_gate.Gate)
+                with context, self.assertRaisesRegex(ValueError, 'installation window'):
+                    run.execute(Path(temporary) / 'result.json')
+                self.assertEqual(run.gate_events[-1], 'remove')
 
     def test_exact_preflight_and_admission_are_required_before_waiting_for_reset(self):
         run = Run()

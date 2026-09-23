@@ -32,7 +32,7 @@ class NixosQualificationTests(unittest.TestCase):
     @staticmethod
     def scope():
         return {'schema': S.SCHEMA, 'run': 'cleanup-test',
-                'manage_origin': 'https://dev.example.com', 'bridge': 'jnqcleanup01',
+                'manage_origin': 'https://dev.example.com', 'bridge': 'jnq0123456789',
                 'owner': '01234567-89ab-4def-8123-456789abcdef',
                 'subnet': '10.246.217.1/24'}
 
@@ -46,10 +46,13 @@ class NixosQualificationTests(unittest.TestCase):
     def test_cleanup_removes_receipted_forwarding_when_bridge_is_absent(self):
         scope = self.scope()
         cleanup = Mock()
+        gate = Mock()
         with patch.object(S, 'read_scope', return_value=scope), \
                 patch.object(S, 'incus', return_value='[]') as incus, \
+                patch.dict(S.GATE, {'recover': gate}), \
                 patch.dict(S.FORWARD, {'cleanup': cleanup}):
             S.cleanup(Path('/private'), scope['manage_origin'], scope['bridge'])
+        gate.assert_called_once_with(Path('/private'), scope)
         cleanup.assert_called_once_with(Path('/private'), scope)
         incus.assert_called_once_with('network', 'list', '--format=json')
 
@@ -57,10 +60,13 @@ class NixosQualificationTests(unittest.TestCase):
         scope = self.scope()
         replacement = self.network(scope, '11111111-1111-4111-8111-111111111111')
         cleanup = Mock()
+        gate = Mock()
         with patch.object(S, 'read_scope', return_value=scope), \
                 patch.object(S, 'incus', return_value=json.dumps([replacement])) as incus, \
+                patch.dict(S.GATE, {'recover': gate}), \
                 patch.dict(S.FORWARD, {'cleanup': cleanup}):
             S.cleanup(Path('/private'), scope['manage_origin'], scope['bridge'])
+        gate.assert_called_once_with(Path('/private'), scope)
         cleanup.assert_called_once_with(Path('/private'), scope)
         incus.assert_called_once_with('network', 'list', '--format=json')
 
@@ -84,14 +90,17 @@ class NixosQualificationTests(unittest.TestCase):
             incus = Mock(side_effect=['[]', '', '[]'])
             prepare = Mock(side_effect=ValueError('induced forwarding failure'))
             cleanup = Mock()
+            gate = Mock()
             with patch.object(S, 'incus', incus), \
                     patch.object(S, 'verify', return_value=({}, {})), \
                     patch.object(S.subprocess, 'check_output', return_value='[]'), \
+                    patch.dict(S.GATE, {'recover': gate}), \
                     patch.dict(S.FORWARD, {'prepare': prepare, 'cleanup': cleanup}), \
                     self.assertRaisesRegex(ValueError, 'induced forwarding failure'):
                 S.prepare(args)
             actual_scope = S.read_scope(state)
             prepare.assert_called_once_with(state, actual_scope)
+            gate.assert_called_once_with(state, actual_scope)
             cleanup.assert_called_once_with(state, actual_scope)
             self.assertEqual(incus.call_args_list[-1].args,
                              ('network', 'list', '--format=json'))
