@@ -110,6 +110,19 @@ def write_release_inputs(state, selected, manage_checkout, origin):
     (state / 'release-inputs.json').chmod(0o600)
 
 
+def lifecycle_mode_arguments(phase, state, previous):
+    if phase in {'update', 'rollback'}:
+        if previous is None:
+            raise ValueError('Published predecessor identity is required')
+        identity = state / 'predecessor-identity.json'
+        identity.write_bytes(predecessor.canonical(previous))
+        # The published predecessor must prove its selected runtime before the update.
+        return ['--predecessor-identity', identity]
+    if phase == 'cold':
+        return ['--require-candidate-runtime']
+    return ['--prepublication-candidate']
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument('--run', required=True)
@@ -146,6 +159,7 @@ def main():
     args.evidence_dir.chmod(0o700)
     manifest = verify_candidate(args.candidate_dir, args.trusted_public_key, args.manage_origin)
     candidate_manifest = args.candidate_dir / predecessor.MANIFEST
+    previous = None
     if not args.published_cold:
         if args.predecessor_dir is None:
             raise ValueError('Every NixOS release needs a separate authenticated NixOS update predecessor')
@@ -185,13 +199,7 @@ def main():
                        '--manifest', selected, '--output', fresh]
             if phase in {'update', 'rollback', 'cold'}:
                 command += ['--retain-fixture', state / 'fixture']
-            if phase in {'update', 'rollback'}:
-                (state / 'predecessor-identity.json').write_bytes(predecessor.canonical(previous))
-                command += ['--predecessor-identity', state / 'predecessor-identity.json', '--prepublication-candidate']
-            elif phase == 'cold':
-                command += ['--require-candidate-runtime']
-            else:
-                command += ['--prepublication-candidate']
+            command += lifecycle_mode_arguments(phase, state, previous)
             execute(*command, env=environment)
             if phase in {'update', 'rollback'}:
                 command = [sys.executable, '-B', HELPERS / 'run-isolated-update.py', '--state-dir', state,

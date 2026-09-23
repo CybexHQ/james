@@ -185,6 +185,26 @@ class NixosQualificationTests(unittest.TestCase):
         child.wait.assert_called_with(timeout=45)
         child.kill.assert_not_called()
 
+    def test_published_predecessor_requires_runtime_while_unpublished_candidate_defers_it(self):
+        fixture = module('nixos_fixture_modes', HELPERS / 'isolated_fixture.py')
+        with patch.dict(sys.modules, {'release_predecessor': P, 'isolated_fixture': fixture}):
+            runner = module('nixos_runner_modes', HELPERS / 'run-production-qualification.py')
+        previous = {'schema': 'cybex.james.nixos-qualification-predecessor.v1',
+                    'manifest_sha256': 'a' * 64}
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            for phase in ('update', 'rollback'):
+                args = runner.lifecycle_mode_arguments(phase, state, previous)
+                self.assertEqual(args, ['--predecessor-identity', state / 'predecessor-identity.json'])
+                self.assertNotIn('--prepublication-candidate', args)
+                self.assertEqual(args[1].read_bytes(), P.canonical(previous))
+            self.assertEqual(runner.lifecycle_mode_arguments('fresh', state, None),
+                             ['--prepublication-candidate'])
+            self.assertEqual(runner.lifecycle_mode_arguments('cold', state, None),
+                             ['--require-candidate-runtime'])
+            with self.assertRaisesRegex(ValueError, 'predecessor identity'):
+                runner.lifecycle_mode_arguments('update', state, None)
+
     def test_qemu_spawn_failure_releases_the_owned_tap(self):
         fixture = module('nixos_fixture_spawn', HELPERS / 'isolated_fixture.py')
         with tempfile.TemporaryDirectory() as temporary:

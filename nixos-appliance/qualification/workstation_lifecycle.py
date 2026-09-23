@@ -2,6 +2,7 @@
 import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -109,7 +110,8 @@ class Workstation:
             raise ValueError('Disposable workstation needs 10 GiB additional available RAM')
         self.directory.mkdir(mode=0o700)
         d = self.directory
-        shutil.copyfile('/usr/share/OVMF/OVMF_VARS_4M.fd', d / 'OVMF_VARS.fd')
+        shutil.copyfile(os.environ.get('CYBEX_JAMES_OVMF_VARS',
+                        '/usr/share/OVMF/OVMF_VARS_4M.fd'), d / 'OVMF_VARS.fd')
         with (d / 'workstation.raw').open('xb') as disk:
             disk.truncate(80 * 1024**3)
         qmp = d / 'qmp.sock'
@@ -118,7 +120,8 @@ class Workstation:
             self.process = subprocess.Popen(['qemu-system-x86_64', '-enable-kvm', '-machine', 'q35',
                 '-cpu', 'host', '-smp', '4', '-m', '8192',
                 '-uuid', self.hardware['uuid'],
-                '-drive', 'if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd',
+                '-drive', 'if=pflash,format=raw,unit=0,readonly=on,file=' + os.environ.get(
+                    'CYBEX_JAMES_OVMF_CODE', '/usr/share/OVMF/OVMF_CODE_4M.fd'),
                 '-drive', f'if=pflash,format=raw,unit=1,file={d}/OVMF_VARS.fd',
                 '-drive', f'if=none,id=system,format=raw,file={d}/workstation.raw,cache=none',
                 '-device', 'virtio-blk-pci,drive=system,serial=' + self.hardware['serial'] + ',bootindex=2',
