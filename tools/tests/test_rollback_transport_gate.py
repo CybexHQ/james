@@ -52,18 +52,66 @@ class RollbackTransportGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'known owned scope'):
             G.target(fixture(Path('/private'), SCOPE | {'schema': 'unknown'}))
 
-    def test_install_reauthenticates_target_before_mutating_firewall(self):
+    def test_install_places_exact_gate_before_slow_owner_revalidation(self):
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary)
             selected = {'destinations': ['10.249.217.1']}
             with patch.object(G, 'target', return_value=selected) as target:
                 gate = G.Gate(fixture(state), node())
                 target.return_value = {'destinations': ['10.249.217.9']}
-                with patch.object(G, 'tables', side_effect=AssertionError('firewall touched')), \
-                     self.assertRaisesRegex(ValueError, 'target changed'):
+                scope_verify = Mock(return_value=(SCOPE, {}))
+                link = [{'ifname': gate.tap, 'ifalias': OWNER, 'master': SCOPE['bridge']}]
+                with patch.object(G, 'tables', return_value=set()), \
+                     patch.object(G.runpy, 'run_path', return_value={'verify': scope_verify}), \
+                     patch.object(G.subprocess, 'check_output', return_value=json.dumps(link)), \
+                     patch.object(G, 'command') as command:
                     gate.install()
-                self.assertFalse((state / G.RECEIPT).exists())
+                self.assertTrue((state / G.RECEIPT).exists())
+                command.assert_called_once_with('-f', '-', data=gate.script)
+                scope_verify.assert_called_once_with(state, SCOPE['manage_origin'], SCOPE['bridge'],
+                                                      require_forwarding=False, require_isolation=False)
+                with patch.object(G, 'tables', return_value={gate.table}), \
+                     self.assertRaisesRegex(ValueError, 'target changed'):
+                    gate.revalidate()
                 self.assertEqual(target.call_count, 2)
+
+    def test_install_rejects_changed_owned_bridge_before_writing_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            with patch.object(G, 'target', return_value={'destinations': ['10.249.217.1']}):
+                gate = G.Gate(fixture(state), node())
+            with patch.object(G, 'tables', return_value=set()), \
+                 patch.object(G.runpy, 'run_path', return_value={'verify': Mock(return_value=(SCOPE | {'owner': 'changed'}, {}))}), \
+                 patch.object(G, 'save_intent') as save, patch.object(G, 'command') as command, \
+                 self.assertRaisesRegex(ValueError, 'scope changed'):
+                gate.install()
+            save.assert_not_called()
+            command.assert_not_called()
+            self.assertFalse((state / G.RECEIPT).exists())
+
+    def test_revalidation_failure_removes_exact_owned_gate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary); state.chmod(0o700)
+            with patch.object(G, 'target', side_effect=[{'destinations': ['10.249.217.1']},
+                                                         {'destinations': ['10.249.217.9']}]):
+                gate = G.Gate(fixture(state), node())
+                present = set()
+                def command(*args, data=None):
+                    if args[:2] == ('-f', '-'):
+                        present.add(gate.table)
+                    elif args[:3] == ('delete', 'table', 'inet'):
+                        present.remove(gate.table)
+                link = [{'ifname': gate.tap, 'ifalias': OWNER, 'master': SCOPE['bridge']}]
+                with patch.object(G, 'tables', side_effect=lambda: set(present)), \
+                     patch.object(G.runpy, 'run_path', return_value={'verify': Mock(return_value=(SCOPE, {}))}), \
+                     patch.object(G.subprocess, 'check_output', return_value=json.dumps(link)), \
+                     patch.object(G, 'command', side_effect=command), patch.object(G, 'inspect'):
+                    gate.install()
+                    with self.assertRaisesRegex(ValueError, 'target changed'):
+                        gate.revalidate()
+                    gate.remove()
+                self.assertFalse(present)
+                self.assertFalse((state / G.RECEIPT).exists())
 
     def test_recover_deletes_only_exact_receipted_table(self):
         with tempfile.TemporaryDirectory() as temporary:

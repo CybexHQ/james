@@ -264,28 +264,47 @@ class Gate:
         self.path = Path(fixture.state)
         self.active = False
 
-    def install(self):
-        # The predecessor can run for minutes before its candidate reset. The
-        # retained owner and exact TLS destination must still be authenticated.
-        if target(self.fixture) != self.target:
-            raise ValueError('rollback target changed before candidate reset')
-        if self.table in tables():
-            raise ValueError('refusing to adopt existing rollback gate')
+    def verify_tap(self):
         links = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', 'dev', self.tap],
                                                    text=True, env=COMMAND_ENV))
         if (len(links) != 1 or links[0].get('ifname') != self.tap
                 or links[0].get('ifalias') != self.scope['owner']
                 or links[0].get('master') != self.scope['bridge']):
             raise ValueError('rollback gate TAP no longer belongs to this fixture')
+
+    def install(self):
+        # Gate construction authenticated the exact TLS peer. At reset, place
+        # its guest-specific rules within the bounded window; the full owner,
+        # TLS and confinement recheck follows immediately after placement.
+        if self.table in tables():
+            raise ValueError('refusing to adopt existing rollback gate')
+        scope_module = runpy.run_path(str(Path(__file__).with_name('development-scope.py')))
+        observed_scope, _ = scope_module['verify'](
+            self.path, self.scope['manage_origin'], self.scope['bridge'],
+            require_forwarding=False, require_isolation=False)
+        if observed_scope != self.scope:
+            raise ValueError('rollback scope changed before candidate reset')
+        self.verify_tap()
+        save_intent(self.path, intent(self.scope, self.tap, self.mac, self.guest,
+                                      self.destinations, self.script))
+        self.active = True
+        command('-f', '-', data=self.script)
+
+    def revalidate(self):
+        if not self.active or self.table not in tables():
+            raise ValueError('rollback gate is absent before full revalidation')
+        # The predecessor may have run for minutes since construction. Reject
+        # any changed owner, TLS destination, forwarding or isolation before
+        # accepting rollback evidence. The caller removes the gate on failure.
+        if target(self.fixture) != self.target:
+            raise ValueError('rollback target changed before candidate reset')
         scope_module = runpy.run_path(str(Path(__file__).with_name('development-scope.py')))
         observed_scope, _ = scope_module['verify'](
             self.path, self.scope['manage_origin'], self.scope['bridge'])
         if observed_scope != self.scope:
             raise ValueError('rollback scope changed before candidate reset')
-        save_intent(self.path, intent(self.scope, self.tap, self.mac, self.guest,
-                                      self.destinations, self.script))
-        self.active = True
-        command('-f', '-', data=self.script)
+        self.verify_tap()
+        inspect(self.table, read_intent(self.path, self.scope))
 
     def counters(self):
         if not self.active:

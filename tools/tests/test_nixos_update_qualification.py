@@ -1,8 +1,10 @@
 """Exercise NixOS transition qualification with deterministic API/QMP boundaries."""
 from copy import deepcopy
+from contextlib import redirect_stdout
 import datetime
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sys
@@ -237,6 +239,7 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(result['transport_gate'], run.gate.counters.return_value)
         self.assertEqual(result['gate_install_latency_seconds'], 0)
         run.gate.install.assert_called_once_with()
+        run.gate.revalidate.assert_called_once_with()
         run.gate.remove.assert_called()
 
     def test_rollback_waits_for_fresh_healthy_restored_report(self):
@@ -320,7 +323,43 @@ class TransitionTests(unittest.TestCase):
             run.gate.install.side_effect = lambda: run.clock.sleep(11)
             with self.assertRaisesRegex(ValueError, 'installation window'):
                 run.execute(Path(temporary) / 'result.json')
+            run.gate.revalidate.assert_not_called()
             run.gate.remove.assert_called_once_with()
+
+    def test_slow_full_revalidation_does_not_extend_gate_placement_window(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Run(True)
+            run.gate.revalidate.side_effect = lambda: run.clock.sleep(11)
+            result = run.execute(Path(temporary) / 'result.json')
+        self.assertEqual(result['gate_install_latency_seconds'], 0)
+        self.assertEqual(result['gate_stage_seconds'], {'install': 0, 'revalidate': 11})
+        run.gate.revalidate.assert_called_once_with()
+
+    def test_full_revalidation_failure_cleans_gate_and_reports_safe_stage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Run(True)
+            run.gate.revalidate.side_effect = ValueError('private fixture detail')
+            output = Path(temporary) / 'result.json'
+            diagnostics = io.StringIO()
+            with redirect_stdout(diagnostics), self.assertRaisesRegex(ValueError, 'private fixture detail'):
+                run.execute(output)
+            self.assertFalse(output.exists())
+        self.assertIn('"stage": "candidate_gate_revalidate"', diagnostics.getvalue())
+        self.assertIn('"error_type": "ValueError"', diagnostics.getvalue())
+        self.assertNotIn('private fixture detail', diagnostics.getvalue())
+        run.gate.remove.assert_called_once_with()
+
+    def test_gate_install_failure_reports_install_category_and_cleans(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Run(True)
+            run.gate.install.side_effect = ValueError('private install detail')
+            diagnostics = io.StringIO()
+            with redirect_stdout(diagnostics), self.assertRaisesRegex(ValueError, 'private install detail'):
+                run.execute(Path(temporary) / 'result.json')
+        self.assertIn('"stage": "candidate_gate_install"', diagnostics.getvalue())
+        self.assertNotIn('private install detail', diagnostics.getvalue())
+        run.gate.revalidate.assert_not_called()
+        run.gate.remove.assert_called_once_with()
 
     def test_exact_preflight_and_admission_are_required_before_waiting_for_reset(self):
         run = Run()

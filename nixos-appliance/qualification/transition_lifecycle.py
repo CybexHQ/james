@@ -240,6 +240,7 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
     candidate_started_at = None
     gate_counts = None
     gate_install_latency_seconds = None
+    gate_stage_seconds = {}
     failure_stage = 'admitted'
     try:
         while clock() < deadline:
@@ -261,21 +262,37 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
                             raise ValueError('Rollback reset lacks QMP event timestamp')
                         candidate_started_at = datetime.datetime.fromtimestamp(
                             stamp['seconds'] + stamp['microseconds'] / 1000000, UTC)
-                        failure_stage = 'candidate_reset_seen'
-                        gate.install()
+                        failure_stage = 'candidate_gate_install'
+                        stage_started = clock()
+                        try:
+                            gate.install()
+                        finally:
+                            gate_stage_seconds['install'] = round(clock() - stage_started, 3)
+                        # Capture the QMP-to-placement bound before any slow
+                        # Owner/TLS/isolation checks can consume the window.
                         gate_install_latency_seconds = (now() - candidate_started_at).total_seconds()
+                        failure_stage = 'candidate_gate_window'
                         if not 0 <= gate_install_latency_seconds <= 10:
                             raise ValueError('Rollback gate missed the candidate reset installation window')
+                        failure_stage = 'candidate_gate_revalidate'
+                        stage_started = clock()
+                        try:
+                            gate.revalidate()
+                        finally:
+                            gate_stage_seconds['revalidate'] = round(clock() - stage_started, 3)
                         failure_stage = 'candidate_gate_installed'
                     print('Observed appliance candidate reboot', flush=True)
                 elif rollback and fallback_reset is None:
+                    failure_stage = 'fallback_gate_deadline'
                     if clock() - first_reset < 180:
                         raise ValueError('Fallback reboot preceded the candidate health deadline')
+                    failure_stage = 'fallback_gate_counters'
                     gate_counts = gate.counters()
                     if (gate_counts['first'] != 1 or gate_counts['retained'] < 2
                             or gate_counts['finished'] < 1
                             or gate_counts['blocked'] + gate_counts['blocked_other'] < 1):
                         raise ValueError('Rollback gate did not prove completed guard flow and denied later contact')
+                    failure_stage = 'fallback_gate_remove'
                     gate.remove()
                     failure_stage = 'fallback_gate_removed'
                     fallback_reset = clock()
@@ -288,6 +305,7 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
             if seen > now() + datetime.timedelta(seconds=30):
                 raise ValueError('Accepted report timestamp is unexpectedly in the future')
             if rollback and first_reset is not None and fallback_reset is None and seen > candidate_started_at:
+                failure_stage = 'candidate_gate_contact'
                 raise ValueError('Candidate agent contact was accepted despite rollback gate')
             # Old terminal outcomes from another attempt must neither fail nor
             # satisfy this run while the newly admitted request reaches James.
@@ -349,7 +367,8 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
                     rollback_reason=node['appliance_package_update']['rollback_reason'],
                     fault='owned_candidate_manage_transport_gate_until_automatic_fallback',
                     transport_gate=gate_counts,
-                    gate_install_latency_seconds=gate_install_latency_seconds)
+                    gate_install_latency_seconds=gate_install_latency_seconds,
+                    gate_stage_seconds=gate_stage_seconds)
             else:
                 result.update(fresh_health_successes=len(fresh_health), authenticated_manage_contact=True)
             if admission:
@@ -363,9 +382,13 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
             write_evidence(output, result)
             return result
         raise ValueError('Appliance transition qualification timed out')
-    except BaseException:
+    except BaseException as error:
         if rollback:
-            print('Rollback qualification failed at ' + failure_stage, flush=True)
+            print('Rollback qualification gate diagnostic ' + json.dumps({
+                'schema': 'cybex.james.rollback-gate-diagnostic.v1',
+                'stage': failure_stage, 'error_type': type(error).__name__,
+                'install_latency_seconds': gate_install_latency_seconds,
+                'stage_seconds': gate_stage_seconds}, sort_keys=True), flush=True)
         raise
     finally:
         if gate:
