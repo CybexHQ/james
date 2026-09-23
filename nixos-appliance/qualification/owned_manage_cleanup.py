@@ -13,6 +13,12 @@ from isolated_fixture import API, HTTP, SCOPE
 TEARDOWN_SCHEMA = 'cybex.james.qualification-manage-teardown.v1'
 
 
+def require_external_development(scope):
+    if not isinstance(scope, dict) or scope.get('schema') != SCOPE['SCHEMA']:
+        raise ValueError('Manage identity cleanup requires an external development scope')
+    SCOPE['development_origin'](scope['manage_origin'])
+
+
 def private_json(path):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
@@ -42,6 +48,7 @@ def session_receipt(state):
 
 
 def write_teardown_receipt(state, scope, version):
+    require_external_development(scope)
     if SCOPE['read_scope'](state) != scope or not isinstance(version, str) or not version:
         raise ValueError('Manage teardown intent differs from the owned run')
     receipt = {'schema': TEARDOWN_SCHEMA, 'scope': scope, 'version': version,
@@ -69,6 +76,7 @@ def write_teardown_receipt(state, scope, version):
 
 def read_teardown_receipt(state):
     scope = SCOPE['read_scope'](state)
+    require_external_development(scope)
     receipt = private_json(state / 'manage-teardown.json')
     if (not isinstance(receipt, dict) or set(receipt) != {'schema', 'scope', 'version', 'session_id'}
             or receipt['schema'] != TEARDOWN_SCHEMA or receipt['scope'] != scope
@@ -175,6 +183,7 @@ def verify_fixture(state, scope, device_id):
 
 def retire_owned(state, scope, version, api):
     """Call the ordinary API only after the owned VM and network are gone."""
+    require_external_development(scope)
     if SCOPE['read_scope'](state) != scope:
         raise ValueError('qualification run ownership changed before Manage cleanup')
     session_id = session_receipt(state)

@@ -35,7 +35,7 @@ class OwnedManageCleanupTests(unittest.TestCase):
         self.device_id = 'dev_' + 'a' * 32
         self.mac = '02:01:02:03:04:05'
         self.version = '0.2.27-dev.4'
-        self.scope = {'run': 'owned-cold', 'owner': str(uuid.uuid4()),
+        self.scope = {'schema': C.SCOPE['SCHEMA'], 'run': 'owned-cold', 'owner': str(uuid.uuid4()),
                       'bridge': 'jnqowned', 'manage_origin': 'https://dev.example.com'}
         self.receipt = self.state / 'lifecycle-session.json'
         self.receipt.write_text(json.dumps({'session_id': self.session_id}))
@@ -79,6 +79,32 @@ class OwnedManageCleanupTests(unittest.TestCase):
 
         request.decommissioned = False
         return Mock(side_effect=request)
+
+    def test_standalone_retry_rejects_isolated_scope_before_credential_or_api(self):
+        token = self.state / 'session'
+        token.write_text('retained private credential')
+        token.chmod(0o600)
+        for scope in (self.scope | {'schema': C.SCOPE['ISOLATED_SCHEMA'],
+                                    'manage_origin': 'https://manage.cybex.net'},
+                      self.scope | {'manage_origin': 'https://manage.cybex.net'}):
+            with self.subTest(scope=scope), \
+                 patch.dict(C.SCOPE, {'read_scope': Mock(return_value=scope)}), \
+                 patch.object(C, 'private_json') as read, \
+                 patch.object(C.os, 'open', side_effect=AssertionError('credential read')) as open_file, \
+                 patch.dict(C.HTTP, {'request_json': Mock(side_effect=AssertionError('API used'))}) as http:
+                with self.assertRaises(ValueError):
+                    C.retry_after_teardown(self.state)
+                with self.assertRaises(ValueError):
+                    C.write_teardown_receipt(self.state, scope, self.version)
+                api = Mock()
+                with self.assertRaises(ValueError):
+                    C.retire_owned(self.state, scope, self.version, api)
+                read.assert_not_called()
+                open_file.assert_not_called()
+                http['request_json'].assert_not_called()
+                api.assert_not_called()
+            self.assertFalse((self.state / 'manage-teardown.json').exists())
+            self.assertEqual(token.read_text(), 'retained private credential')
 
     def test_owned_ready_device_decommissions_then_confirms_session_revoked(self):
         api = self.api()
