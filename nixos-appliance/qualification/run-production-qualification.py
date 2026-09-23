@@ -20,7 +20,8 @@ import sys
 
 import release_predecessor as predecessor
 from isolated_fixture import API, SCOPE
-from owned_manage_cleanup import retire_owned, session_receipt
+from owned_manage_cleanup import (retry_retire_owned, save_cleanup_receipt,
+                                  session_receipt, write_teardown_receipt)
 
 HELPERS = Path(__file__).resolve().parent
 
@@ -130,6 +131,7 @@ def lifecycle_mode_arguments(phase, state, previous):
 def cleanup_phase(state, scope, origin, allow_device_helper, version):
     """Drop admitted work and network before retiring the exact Manage identity."""
     has_receipt = (state / 'lifecycle-session.json').exists()
+    complete = False
     try:
         try:
             if allow_device_helper and (state / 'qualification-allowlist.json').exists():
@@ -141,11 +143,14 @@ def cleanup_phase(state, scope, origin, allow_device_helper, version):
             execute(sys.executable, '-B', HELPERS / 'development-scope.py', 'cleanup', '--state-dir', state,
                     '--manage-origin', origin, '--bridge', scope['bridge'])
         if api is not None:
-            receipt = retire_owned(state, scope, version, api)
-            (state / 'manage-cleanup.json').write_bytes(predecessor.canonical(receipt))
-            (state / 'manage-cleanup.json').chmod(0o600)
+            write_teardown_receipt(state, scope, version)
+            receipt = retry_retire_owned(state, scope, version, api)
+            save_cleanup_receipt(state, receipt)
+        complete = True
     finally:
-        (state / 'session').unlink(missing_ok=True)
+        # A failed API call needs this private credential for the guarded retry command.
+        if complete or not has_receipt:
+            (state / 'session').unlink(missing_ok=True)
 
 
 def main():
