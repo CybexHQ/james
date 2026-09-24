@@ -215,8 +215,9 @@ mod tests {
         let server = tokio::spawn(async move {
             for _ in 0..=MAX_REDIRECTS {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = [0_u8; 4096];
-                stream.read(&mut request).await.unwrap();
+                let mut request = [0_u8; b"GET /loop HTTP/1.1".len()];
+                stream.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"GET /loop HTTP/1.1");
                 stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: /loop\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
             }
         });
