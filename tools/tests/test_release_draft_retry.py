@@ -25,6 +25,7 @@ BODY = '\n'.join([
     'Cybex-Release-Workflow: https://github.com/CybexHQ/james/actions/runs/42',
     'Cybex-Candidate-Artifact-ID: 100',
     'Cybex-Candidate-Artifact-SHA256: ' + 'a' * 64,
+    'Cybex-Cold-Qualification: required',
 ])
 FAKE_GH = """#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -71,6 +72,32 @@ class DraftRetryTests(unittest.TestCase):
                     'CYBEX_JAMES_RELEASE_ARTIFACT_DIGEST': 'a' * 64,
                     'CYBEX_JAMES_WORKSTATION_BUNDLE_NAME': BUNDLE})
             return result, (root / 'deleted').exists()
+
+    def test_created_draft_body_matches_exact_retry_authority(self):
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        step = workflow.split('      - name: Create draft and attach exact assets\n', 1)[1]
+        step = step.split('\n      - name:', 1)[0]
+        script = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        script = script.split('\nrelease_assets=(', 1)[0]
+        script = 'gh() { printf "%s\\0" "$@" > "$TEST_CREATE_ARGV"; }\n' + script
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / 'create-argv'
+            result = subprocess.run(['bash', '-c', script], capture_output=True, text=True,
+                env={**os.environ, 'TEST_CREATE_ARGV': str(capture),
+                    'GITHUB_SERVER_URL': 'https://github.com',
+                    'GITHUB_REPOSITORY': 'CybexHQ/james', 'GITHUB_RUN_ID': '42',
+                    'GITHUB_REF_NAME': 'v0.2.2', 'GITHUB_SHA': REVISION,
+                    'CYBEX_JAMES_RELEASE_ARTIFACT_ID': '100',
+                    'CYBEX_JAMES_RELEASE_ARTIFACT_DIGEST': 'a' * 64})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            arguments = capture.read_bytes().decode().rstrip('\0').split('\0')
+            self.assertEqual(arguments[arguments.index('--notes') + 1], BODY)
+
+    def test_missing_cold_qualification_marker_prevents_deletion(self):
+        self.data['release']['body'] = BODY.rsplit('\n', 1)[0]
+        result, deleted = self.cleanup(self.data)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(deleted)
 
     def test_owned_complete_or_partial_draft_can_be_retried(self):
         for assets in (self.data['assets'], self.data['assets'][-1:], []):

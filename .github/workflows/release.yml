@@ -1017,10 +1017,11 @@ jobs:
           owner_run_marker="Cybex-Release-Workflow: $owner_run"
           owner_artifact_marker="Cybex-Candidate-Artifact-ID: $CYBEX_JAMES_RELEASE_ARTIFACT_ID"
           owner_digest_marker="Cybex-Candidate-Artifact-SHA256: $CYBEX_JAMES_RELEASE_ARTIFACT_DIGEST"
-          expected_body="$(printf '%s\n%s\n%s' \
+          expected_body="$(printf '%s\n%s\n%s\n%s' \
             "$owner_run_marker" \
             "$owner_artifact_marker" \
-            "$owner_digest_marker")"
+            "$owner_digest_marker" \
+            "Cybex-Cold-Qualification: required")"
           existing="$RUNNER_TEMP/cybex-james-existing-release.json"
           existing_pages="$RUNNER_TEMP/cybex-james-existing-releases.json"
           gh api --paginate --slurp \
@@ -1183,7 +1184,8 @@ jobs:
           test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')" = "true"
           # Resolve both signed authorities again under the publication lock.
           # A changed published release ancestry invalidates the run.
-          predecessor="$RUNNER_TEMP/cybex-james-publish-predecessor"
+          predecessor="$(mktemp -d "$RUNNER_TEMP/cybex-james-publish-predecessor-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.XXXXXXXX")"
+          trap 'rm -rf -- "$predecessor"' EXIT
           arguments=()
           if [ "$CYBEX_JAMES_HAS_PREDECESSOR" = true ]; then
             arguments+=(--expected-identity dist/cybex-james-build-predecessor.json)
