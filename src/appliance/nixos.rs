@@ -220,7 +220,7 @@ pub async fn download(
     let mut response = crate::release_transport::get(
         transport,
         allow_private,
-        false,
+        !allow_private,
         Duration::from_secs(4 * 60 * 60),
         None,
     )
@@ -888,9 +888,97 @@ pub async fn verify_database(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::release_v3::SystemClosure;
     use super::*;
+    use std::collections::BTreeMap;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
 
     const GIB: u64 = 1024 * 1024 * 1024;
+
+    fn closure_fixture(body: &[u8]) -> NixosRelease {
+        NixosRelease {
+            schema: release_v3::SCHEMA.into(),
+            release_id: "0.2.30".into(),
+            source_revision: "a".repeat(40),
+            base_os: "nixos".into(),
+            base_os_version: release_v3::NIXOS_VERSION.into(),
+            nixpkgs_revision: release_v3::pinned_nixpkgs_revision().into(),
+            manage_source_revision: "b".repeat(40),
+            system_toplevel: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system".into(),
+            system_closure: SystemClosure {
+                url: "https://github.com/CybexHQ/james/releases/download/v0.2.30/cybex-james-appliance-closure-0.2.30-x86_64-linux.tar.zst".into(),
+                sha256: hex::encode(Sha256::digest(body)),
+                size_bytes: body.len() as u64,
+            },
+            required_system_versions: BTreeMap::new(),
+            sqlite_migrations_sha256: "c".repeat(64),
+            minimum_protocol: 4,
+            minimum_state_schema: 3,
+            rollback_compatible: true,
+            release_notes: "https://github.com/CybexHQ/james/releases/tag/v0.2.30".into(),
+            signature: String::new(),
+        }
+    }
+
+    async fn one_response(listener: TcpListener, response: Vec<u8>) -> String {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let read = stream.read(&mut request).await.unwrap();
+        stream.write_all(&response).await.unwrap();
+        String::from_utf8_lossy(&request[..read]).into_owned()
+    }
+
+    #[tokio::test]
+    async fn private_closure_override_does_not_follow_or_accept_redirect() {
+        let root = std::env::temp_dir().join(format!("cybex-private-closure-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("closure.tar.zst");
+        let release = closure_fixture(b"expected signed bytes");
+        let redirect = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let transport = format!("http://{}/signed", redirect.local_addr().unwrap());
+        let response = b"HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/private\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
+        let redirect_task = tokio::spawn(one_response(redirect, response));
+        let error = download(&release, &transport, &path, true)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid closure HTTP response"));
+        assert!(
+            redirect_task
+                .await
+                .unwrap()
+                .starts_with("GET /signed HTTP/1.1")
+        );
+        assert!(!path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn closure_download_rejects_equal_length_tampered_bytes() {
+        let root = std::env::temp_dir().join(format!("cybex-closure-hash-{}", Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("closure.tar.zst");
+        let release = closure_fixture(b"expected");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let transport = format!("http://{}/signed", listener.local_addr().unwrap());
+        let server = tokio::spawn(one_response(
+            listener,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\ntampered".to_vec(),
+        ));
+        let error = download(&release, &transport, &path, true)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("closure signed size/hash mismatch")
+        );
+        server.await.unwrap();
+        assert!(!path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn bootctl_version_report_is_one_numeric_token() {

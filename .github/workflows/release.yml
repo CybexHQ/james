@@ -1265,6 +1265,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Install pinned Rust toolchain for public closure qualification
+        uses: dtolnay/rust-toolchain@8641a17e25bf5b40c118d48fe0f81e8655731839 # 1.85.0
+        with:
+          toolchain: 1.85.0
+
       - name: Require isolated NixOS production qualification
         shell: bash
         run: |
@@ -1296,6 +1301,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 tools/local-candidate.py published --receipt candidate-receipt/candidate.json
 
+      - name: Qualify signed public closure through the candidate downloader
+        shell: bash
+        timeout-minutes: 60
+        env:
+          TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
+        run: |
+          set -Eeuo pipefail
+          public_dir="$RUNNER_TEMP/cybex-james-public-closure-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 0700 "$public_dir"
+          public_closure_key="$public_dir/release-public-key"
+          trap 'rm -f -- "$public_closure_key"' EXIT
+          printf '%s\n' "$TRUSTED_KEY" > "$public_closure_key"
+          chmod 0600 "$public_closure_key"
+          CARGO_TARGET_DIR="$public_dir/target" cargo run --release --locked --bin cybex-james-qualify-public-closure -- \
+            --manifest dist/cybex-james-release.json \
+            --trusted-public-key "$public_closure_key" \
+            --source "$GITHUB_SHA" --tag "$GITHUB_REF_NAME" \
+            --output "$public_dir/cybex-james-public-closure-qualification.json"
+
       - name: Require exact published bytes and cold runtime convergence
         shell: bash
         timeout-minutes: 240
@@ -1325,9 +1349,12 @@ jobs:
             --candidate-dir "$GITHUB_WORKSPACE/dist" \
             --evidence-dir "$RUNNER_TEMP/cybex-james-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --trusted-public-key "$TRUSTED_KEY" --published-cold
+          mv -- "$RUNNER_TEMP/cybex-james-public-closure-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cybex-james-public-closure-qualification.json" \
+            "$RUNNER_TEMP/cybex-james-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cybex-james-public-closure-qualification.json"
           python3 -B nixos-appliance/qualification/release_acceptance.py \
             --phase cold --manifest dist/cybex-james-release.json --source "$GITHUB_SHA" \
             --evidence "$RUNNER_TEMP/cybex-james-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cybex-james-published-cold-qualification.json" \
+            --public-closure "$RUNNER_TEMP/cybex-james-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cybex-james-public-closure-qualification.json" \
             --workstation "$RUNNER_TEMP/cybex-james-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cybex-james-published-workstation-qualification.json"
 
       - name: Retain published cold-install qualification evidence
@@ -1338,6 +1365,7 @@ jobs:
           path: |
             ${{ runner.temp }}/cybex-james-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-published-cold-qualification.json
             ${{ runner.temp }}/cybex-james-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-published-workstation-qualification.json
+            ${{ runner.temp }}/cybex-james-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-public-closure-qualification.json
           if-no-files-found: error
           retention-days: 90
 
@@ -1351,6 +1379,7 @@ jobs:
         if: always()
         run: |
           rm -rf -- "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE/candidate-receipt" "$GITHUB_WORKSPACE/manage-source"
+          rm -rf -- "$RUNNER_TEMP/cybex-james-public-closure-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           rm -rf -- "$RUNNER_TEMP/cybex-james-unsigned-closure" "$RUNNER_TEMP/cybex-james-template" "$RUNNER_TEMP/cybex-workstation-netboot-tree"
           rm -rf -- "$RUNNER_TEMP/cybex-james-predecessor" "$RUNNER_TEMP/cybex-james-qualification-predecessor" "$RUNNER_TEMP/cybex-james-retained-manage-source"
 

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 import zipfile
@@ -63,6 +64,13 @@ class AcceptanceTests(unittest.TestCase):
                  'owner': '01234567-89ab-cdef-0123-456789abcdef', 'live_production_access': False}
         self.cold['qualification_scope'] = scope
         self.workstation['qualification_scope'] = scope
+        self.public_closure = dict(schema='cybex.james.public-closure-qualification.v1', ok=True,
+            source_revision=self.source, tag='v' + self.manifest['version'],
+            release_version=self.manifest['version'],
+            manifest_sha256=self.digest, closure_url='https://github.com/CybexHQ/james/closure',
+            closure_sha256='f' * 64, closure_size_bytes=123, archive_verified=True)
+        self.manifest['appliance_release_v1']['system_closure'].update(
+            url=self.public_closure['closure_url'], size_bytes=self.public_closure['closure_size_bytes'])
 
     def validate(self, value, phase='cold'):
         acceptance.validate_lifecycle(self.manifest, self.digest, value, self.source, phase)
@@ -106,6 +114,7 @@ class AcceptanceTests(unittest.TestCase):
                              ('source_builds_allowed', True), ('pxe_boot_observed', False)]:
             with self.subTest(field=field), self.assertRaises(ValueError):
                 acceptance.validate_workstation(self.manifest, self.cold, self.workstation | {field: value})
+
         for field, value in [('identity_preserved', False), ('managed_reboot_completed', False),
                              ('boot_id_after', 'before'), ('configuration_status', 'pending_reboot'),
                              ('revision_id', 'another-revision')]:
@@ -116,6 +125,42 @@ class AcceptanceTests(unittest.TestCase):
         duplicate = self.workstation | {'blueprints': [self.workstation['blueprints'][0]] * 3}
         with self.assertRaises(ValueError):
             acceptance.validate_workstation(self.manifest, self.cold, duplicate)
+
+    def test_public_closure_receipt_binds_exact_signed_url_bytes_and_source(self):
+        acceptance.validate_public_closure(self.manifest, self.digest, self.public_closure, self.source)
+        for field, value in [('manifest_sha256', '0' * 64), ('tag', 'v0.0.0'),
+                             ('closure_url', 'https://elsewhere.example/closure'),
+                             ('closure_sha256', '0' * 64), ('closure_size_bytes', 124),
+                             ('source_revision', '0' * 40), ('archive_verified', False)]:
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'Public closure'):
+                acceptance.validate_public_closure(self.manifest, self.digest,
+                    self.public_closure | {field: value}, self.source)
+
+    def test_production_cold_cli_requires_public_receipt_but_development_cold_remains_offline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path, cold_path, workstation_path, public_path = [root / name for name in
+                ('manifest.json', 'cold.json', 'workstation.json', 'public.json')]
+            cold_path.write_text(json.dumps(self.cold | {
+                'qualified_manifest_sha256': hashlib.sha256(json.dumps(self.manifest).encode()).hexdigest()}))
+            workstation_path.write_text(json.dumps(self.workstation))
+            manifest_path.write_text(json.dumps(self.manifest))
+            public_path.write_text(json.dumps(self.public_closure | {
+                'manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest()}))
+            command = ['acceptance', '--phase', 'cold', '--manifest', str(manifest_path),
+                       '--evidence', str(cold_path), '--workstation', str(workstation_path),
+                       '--source', self.source]
+            with mock.patch.object(sys, 'argv', command), self.assertRaisesRegex(ValueError, 'public closure'):
+                acceptance.main()
+            with mock.patch.object(sys, 'argv', command + ['--public-closure', str(public_path)]):
+                acceptance.main()
+            development = copy.deepcopy(self.manifest)
+            development['installer_iso_template_v3']['manage_origin'] = 'https://dev.cybex.net'
+            manifest_path.write_text(json.dumps(development))
+            cold_path.write_text(json.dumps(self.cold | {
+                'qualified_manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest()}))
+            with mock.patch.object(sys, 'argv', command):
+                acceptance.main()
 
     def test_archive_authentication_rejects_other_runs_digests_and_extra_files(self):
         def archive(extra=False):
@@ -131,6 +176,15 @@ class AcceptanceTests(unittest.TestCase):
         metadata = dict(expired=False, workflow_run={'id': 123, 'head_sha': self.source},
                         name='cybex-james-published-cold-123', digest=digest)
         self.assertEqual(set(promotion.artifact_evidence(body, metadata, digest, 123, self.source)), promotion.FILES)
+        missing = io.BytesIO()
+        with zipfile.ZipFile(missing, 'w') as package:
+            package.writestr('cybex-james-published-cold-qualification.json', '{}')
+            package.writestr('cybex-james-published-workstation-qualification.json', '{}')
+        missing_body = missing.getvalue()
+        missing_digest = 'sha256:' + hashlib.sha256(missing_body).hexdigest()
+        with self.assertRaisesRegex(ValueError, 'inventory'):
+            promotion.artifact_evidence(missing_body, metadata | {'digest': missing_digest},
+                                        missing_digest, 123, self.source)
         for change in [{'expired': True}, {'digest': 'sha256:' + '0' * 64},
                        {'workflow_run': {'id': 124, 'head_sha': self.source}}]:
             with self.subTest(change=change), self.assertRaises(ValueError):
@@ -173,6 +227,8 @@ class AcceptanceTests(unittest.TestCase):
         with zipfile.ZipFile(output, 'w') as package:
             package.writestr('cybex-james-published-cold-qualification.json', json.dumps(cold))
             package.writestr('cybex-james-published-workstation-qualification.json', json.dumps(self.workstation))
+            package.writestr('cybex-james-public-closure-qualification.json', json.dumps(
+                self.public_closure | {'manifest_sha256': hashlib.sha256(manifest_body).hexdigest()}))
         archive = output.getvalue()
         action_digest = hashlib.sha256(archive).hexdigest()
         candidate_digest = 'f' * 64

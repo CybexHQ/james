@@ -14,7 +14,8 @@ import release_acceptance as acceptance
 import release_predecessor as predecessor
 
 FILES = {'cybex-james-published-cold-qualification.json',
-         'cybex-james-published-workstation-qualification.json'}
+         'cybex-james-published-workstation-qualification.json',
+         'cybex-james-public-closure-qualification.json'}
 
 
 def canonical_artifact_digest(value):
@@ -36,7 +37,7 @@ def artifact_evidence(body, metadata, expected_digest, run, source):
             or 'sha256:' + hashlib.sha256(body).hexdigest() != expected_digest):
         raise ValueError('Cold acceptance artifact provenance or digest changed')
     with zipfile.ZipFile(io.BytesIO(body)) as archive:
-        if len(archive.namelist()) != 2 or set(archive.namelist()) != FILES:
+        if len(archive.namelist()) != len(FILES) or set(archive.namelist()) != FILES:
             raise ValueError('Cold acceptance archive inventory changed')
         if any(i.file_size > 1024 * 1024 for i in archive.infolist()):
             raise ValueError('Cold acceptance exceeded its evidence bound')
@@ -111,6 +112,8 @@ def main():
         cold = receipts['cybex-james-published-cold-qualification.json']
         acceptance.validate_lifecycle(manifest, predecessor.sha(directory / predecessor.MANIFEST),
                                       cold, args.source, 'cold')
+        acceptance.validate_public_closure(manifest, predecessor.sha(directory / predecessor.MANIFEST),
+                                           receipts['cybex-james-public-closure-qualification.json'], args.source)
         acceptance.validate_workstation(manifest, cold,
             receipts['cybex-james-published-workstation-qualification.json'])
         # Repeat predecessor admission under the same publication concurrency

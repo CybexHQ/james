@@ -78,12 +78,20 @@ GitHub first locks the assets as a prerelease with `latest=false`. The pending
 cold-qualification marker excludes this staged release from future predecessor
 resolution. Cold qualification must download the public runtime and prove that
 its active and desired hashes equal the signed candidate.
+The isolated Manage fixture stays offline and serves a private closure transport
+for the appliance lifecycle. A separate host-side cold check uses the exact
+signed public closure URL through James's production downloader, then verifies
+the complete signed archive. Its source-, manifest-, URL-, size-, and hash-bound
+receipt is required alongside appliance and workstation evidence for stable
+promotion. The host runner needs direct public HTTPS; proxy settings do not
+alter the downloader's DNS and redirect policy.
 The same private phase then boots an empty workstation through James PXE,
 installs Standard, applies Dock and Tiling, and requires a managed reboot and
 fresh exact compliant evidence for each. It checks the signed runtime descriptor,
 booted Nix generation and preserved workstation identity before canary selection.
 The separate stable-promotion job verifies the cold artifact ZIP digest and
-workflow/source provenance, rechecks every appliance and workstation receipt,
+workflow/source provenance, rechecks every appliance, workstation, and public
+closure receipt,
 and authenticates the predecessor again under the publication lock. The upload
 action returns bare SHA-256 hex while the REST API prefixes `sha256:`; promotion
 normalizes these two exact encodings before comparing the ZIP digest and metadata. Only then

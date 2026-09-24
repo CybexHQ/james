@@ -146,6 +146,8 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
         self.assertIn('needs: [release_build, release_publish]', self.cold)
         self.assertIn('tools/local-candidate.py published', self.cold)
         self.assertIn('cybex-james-published-manifest.json', self.cold)
+        self.assertIn('cargo run --release --locked --bin cybex-james-qualify-public-closure', self.cold)
+        self.assertIn('--public-closure "$RUNNER_TEMP/cybex-james-cold-evidence-', self.cold)
         self.assertNotIn('release_speed.py cache', self.cold)
         self.assertNotIn('PREDECESSOR_CACHE_ROOT', self.cold)
         cold_names = re.findall(
@@ -154,6 +156,7 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
         self.assertEqual(set(cold_names), {
             'cybex-james-published-cold-qualification.json',
             'cybex-james-published-workstation-qualification.json',
+            'cybex-james-public-closure-qualification.json',
         })
 
     def test_protected_chain_and_cold_name_remain_fail_closed(self):

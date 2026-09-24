@@ -109,6 +109,25 @@ def validate_workstation(manifest, cold, evidence):
             raise ValueError('A workstation profile lacks a real reboot and exact compliance')
 
 
+def validate_public_closure(manifest, manifest_sha256, evidence, source):
+    closure = manifest['appliance_release_v1']['system_closure']
+    if (set(evidence) != {'schema', 'ok', 'source_revision', 'tag', 'release_version',
+                         'manifest_sha256', 'closure_url', 'closure_sha256',
+                         'closure_size_bytes', 'archive_verified'}
+            or evidence['schema'] != 'cybex.james.public-closure-qualification.v1'
+            or evidence['ok'] is not True
+            or evidence['archive_verified'] is not True
+            or evidence['source_revision'] != source
+            or evidence['source_revision'] != manifest['appliance_release_v1']['source_revision']
+            or evidence['tag'] != 'v' + manifest['version']
+            or evidence['release_version'] != manifest['version']
+            or evidence['manifest_sha256'] != manifest_sha256
+            or evidence['closure_url'] != closure['url']
+            or evidence['closure_sha256'] != closure['sha256']
+            or evidence['closure_size_bytes'] != closure['size_bytes']):
+        raise ValueError('Public closure transport did not qualify the exact signed release')
+
+
 
 def validate_transition(manifest, digest, previous, previous_digest, evidence, source, phase):
     import release_predecessor
@@ -161,6 +180,7 @@ def main():
     parser.add_argument('--manifest', type=Path, required=True)
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--workstation', type=Path)
+    parser.add_argument('--public-closure', type=Path)
     parser.add_argument('--predecessor-manifest', type=Path)
     parser.add_argument('--source', required=True)
     args = parser.parse_args()
@@ -168,7 +188,7 @@ def main():
     manifest = json.loads(body)
     evidence = json.loads(args.evidence.read_bytes())
     if args.phase in {'update', 'rollback'}:
-        if args.predecessor_manifest is None or args.workstation is not None:
+        if args.predecessor_manifest is None or args.workstation is not None or args.public_closure is not None:
             raise ValueError('Update acceptance requires its exact predecessor manifest')
         previous_body = args.predecessor_manifest.read_bytes()
         validate_transition(manifest, hashlib.sha256(body).hexdigest(), json.loads(previous_body),
@@ -178,9 +198,15 @@ def main():
     validate_lifecycle(manifest, hashlib.sha256(body).hexdigest(), evidence, args.source, args.phase)
     if args.phase == 'cold':
         if args.workstation is None:
-            raise ValueError('Stable promotion requires real workstation acceptance')
+            raise ValueError('Stable promotion requires workstation acceptance')
         validate_workstation(manifest, evidence, json.loads(args.workstation.read_bytes()))
-    elif args.workstation is not None:
+        if manifest['installer_iso_template_v3']['manage_origin'] == 'https://manage.cybex.net' \
+                and args.public_closure is None:
+            raise ValueError('Production cold acceptance requires public closure qualification')
+        if args.public_closure is not None:
+            validate_public_closure(manifest, hashlib.sha256(body).hexdigest(),
+                                    json.loads(args.public_closure.read_bytes()), args.source)
+    elif args.workstation is not None or args.public_closure is not None:
         raise ValueError('Prepublication evidence cannot claim workstation acceptance')
     print('Exact ' + args.phase + ' acceptance verified')
 

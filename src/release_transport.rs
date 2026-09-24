@@ -152,6 +152,80 @@ fn development_private_ip(ip: IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    async fn one_response(listener: TcpListener, response: Vec<u8>) -> String {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let read = stream.read(&mut request).await.unwrap();
+        stream.write_all(&response).await.unwrap();
+        String::from_utf8_lossy(&request[..read]).into_owned()
+    }
+
+    #[tokio::test]
+    async fn redirects_fetch_the_target_without_forwarding_credentials() {
+        let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_url = format!("http://{}/artifact", target.local_addr().unwrap());
+        let target_task = tokio::spawn(one_response(
+            target,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nsigned".to_vec(),
+        ));
+        let redirect = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let start_url = format!("http://{}/signed", redirect.local_addr().unwrap());
+        let redirect_task = tokio::spawn(one_response(redirect, format!(
+            "HTTP/1.1 302 Found\r\nLocation: {target_url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ).into_bytes()));
+        let response = get(&start_url, true, true, Duration::from_secs(5), None)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.bytes().await.unwrap().as_ref(), b"signed");
+        for request in [redirect_task.await.unwrap(), target_task.await.unwrap()] {
+            let lower = request.to_ascii_lowercase();
+            assert!(!lower.contains("authorization:"));
+            assert!(!lower.contains("cookie:"));
+            assert!(!lower.contains("proxy-authorization:"));
+        }
+    }
+
+    #[tokio::test]
+    async fn public_policy_rejects_http_downgrade_and_private_redirect_hops() {
+        for value in [
+            "http://8.8.8.8/artifact",
+            "https://127.0.0.1/artifact",
+            "https://[::1]/artifact",
+            "https://169.254.169.254/artifact",
+        ] {
+            assert!(
+                client_for_url(Url::parse(value).unwrap(), false, Duration::from_secs(5))
+                    .await
+                    .is_err(),
+                "unsafe public redirect hop accepted: {value}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn redirect_chain_stops_at_the_five_hop_limit() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/loop", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for _ in 0..=MAX_REDIRECTS {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                stream.read(&mut request).await.unwrap();
+                stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: /loop\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            }
+        });
+        let error = get(&url, true, true, Duration::from_secs(5), None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("redirected too many times"));
+        server.await.unwrap();
+    }
 
     #[test]
     fn development_override_allows_only_public_private_or_loopback_addresses() {
