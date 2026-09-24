@@ -19,6 +19,8 @@ import sys
 import threading
 import traceback
 
+from isolated_manage_transport import ManageHTTPError, http_error_details
+
 LIMIT = 24 * 1024**2
 
 
@@ -27,6 +29,23 @@ def read(stream):
     if len(data) > LIMIT or not data.endswith(b'\n'):
         raise ValueError('isolated fixture RPC exceeded its bound')
     return json.loads(data)
+
+
+def failure_response(error):
+    result = {'ok': False, 'value': None}
+    details = http_error_details(error)
+    if details is not None:
+        result['http_error'] = details
+    return result
+
+
+def response_value(result):
+    if result.get('ok') is True:
+        return result['value']
+    details = result.get('http_error')
+    if isinstance(details, dict) and set(details) == {'status', 'classification'}:
+        raise ManageHTTPError(details['status'], details['classification'])
+    raise ValueError('isolated fixture operation failed; inspect private runner diagnostics')
 
 
 def request(state, operation, **arguments):
@@ -49,9 +68,7 @@ def request(state, operation, **arguments):
             raise ValueError('isolated fixture server is not root-owned')
         connection.sendall(data)
         result = read(connection.makefile('rb'))
-    if result.get('ok') is not True:
-        raise ValueError('isolated fixture operation failed; inspect private runner diagnostics')
-    return result['value']
+    return response_value(result)
 
 
 class Server:
@@ -74,8 +91,10 @@ class Server:
                     # Request contents include signed media secrets; never echo them.
                     frames = traceback.extract_tb(error.__traceback__)
                     locations = ' -> '.join(f'{Path(frame.filename).name}:{frame.lineno}' for frame in frames)
-                    print('Isolated fixture RPC failed: ' + type(error).__name__ + ' at ' + locations, file=sys.stderr)
-                    result = {'ok': False, 'value': None}
+                    result = failure_response(error)
+                    details = result.get('http_error')
+                    diagnostic = f" HTTP {details['status']} ({details['classification']})" if details else ''
+                    print('Isolated fixture RPC failed: ' + type(error).__name__ + diagnostic + ' at ' + locations, file=sys.stderr)
                 data = (json.dumps(result) + '\n').encode()
                 if len(data) > LIMIT:
                     data = b'{"ok":false,"value":null}\n'

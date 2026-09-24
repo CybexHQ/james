@@ -10,6 +10,7 @@ import json
 import unittest
 
 HELPERS = Path(__file__).resolve().parents[2] / 'nixos-appliance/qualification'
+sys.path.insert(0, str(HELPERS))
 
 
 def load(name):
@@ -88,7 +89,7 @@ class QualificationTests(unittest.TestCase):
             if body:
                 calls.append(body['command_type'])
                 return {'id': 'command'}
-            return {'commands': [{'id': 'command', 'status': 'completed' if completed else 'running'}]}
+            return {'commands': [{'id': 'command', 'status': 'completed' if completed else 'dispatched'}]}
 
         def wait_for(label, read, accept, timeout):
             nonlocal completed
@@ -98,7 +99,7 @@ class QualificationTests(unittest.TestCase):
             self.assertFalse(accept(after | {'facts_json': {'boot_id': 'old'}}))
             self.assertFalse(accept(after | {'last_seen_at': '2020-01-01T00:00:00Z'}))
             self.assertTrue(accept(after))
-            self.assertEqual(calls, ['reboot'])
+            self.assertEqual(calls, ['reboot', 'verify_blueprint'])
             return after
 
         result = workstation.managed_reboot(api, '/v1/devices/owned', before, wait_for, lambda: None)

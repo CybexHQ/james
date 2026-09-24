@@ -13,6 +13,43 @@ from urllib.parse import urlsplit
 MAXIMUM = 16 * 1024**2
 
 
+def http_error_details(error):
+    """Allow only fixed diagnostics across independently loaded helper modules."""
+    status = getattr(error, 'status', None)
+    classification = getattr(error, 'classification', None)
+    if (type(status) is not int or not 100 <= status <= 599
+            or classification not in ('http_error', 'configuration_command_busy', 'response_refused')
+            or (200 <= status < 300 and classification != 'response_refused')
+            or (classification == 'configuration_command_busy' and status != 409)):
+        return None
+    return {'status': status, 'classification': classification}
+
+
+class ManageHTTPError(ValueError):
+    """No response body, request path, credentials or arbitrary server text."""
+    def __init__(self, status, classification='http_error'):
+        self.status, self.classification = status, classification
+        if http_error_details(self) is None:
+            raise ValueError('invalid isolated Manage HTTP error')
+        super().__init__(f'isolated Manage HTTP {status} ({classification})')
+
+    @classmethod
+    def from_response(cls, status, body):
+        classification = 'http_error'
+        if status == 409 and len(body) <= 8192:
+            try:
+                value = json.loads(body)
+                message = value.get('error') if isinstance(value, dict) else None
+                # These are the two exact Manage configuration-slot rejections.
+                # Other conflicts (capabilities, assignment, release gates) stay fatal.
+                if isinstance(message, str) and (message == 'a configuration command is already active for this device'
+                        or re.fullmatch(r'configuration command [0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12} is already (?:pending|dispatched) for this device', message)):
+                    classification = 'configuration_command_busy'
+            except (ValueError, UnicodeError):
+                pass
+        return cls(status, classification)
+
+
 def endpoint(receipt):
     origin = urlsplit(receipt['manage_origin'])
     peer = ipaddress.ip_address(receipt['peer_ipv4'])
@@ -46,10 +83,12 @@ class Transport:
     def read(connection, response_headers=None):
         response = connection.getresponse()
         body = response.read(MAXIMUM + 1)
-        if (len(body) > MAXIMUM or not 200 <= response.status < 300
+        if (len(body) > MAXIMUM
                 or response.getheader('Location') is not None
                 or response.getheader('Content-Encoding') not in {None, 'identity'}):
-            raise ValueError('isolated Manage refused response, redirect, or oversized body')
+            raise ManageHTTPError(response.status, 'response_refused')
+        if not 200 <= response.status < 300:
+            raise ManageHTTPError.from_response(response.status, body)
         if response_headers is not None:
             response_headers.update({key.lower(): value for key, value in response.getheaders()})
         return body

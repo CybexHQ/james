@@ -9,6 +9,7 @@ import time
 import uuid
 
 from isolated_fixture import QMP, stop, private_state, SCOPE
+from isolated_manage_transport import http_error_details
 
 def now():
     return datetime.datetime.now(datetime.timezone.utc)
@@ -71,23 +72,49 @@ def require_workstation(device, descriptor, blueprint, previous=None, verified_a
         raise ValueError('Blueprint activation changed the installed workstation identity')
 
 
+def require_operation_progress(device):
+    operation = device.get('active_operation') or {}
+    if operation.get('status') == 'blocked':
+        raise ValueError('Private workstation operation is blocked: '
+                         + str(operation.get('reason_code') or operation.get('wait_code') or 'unknown'))
+
+
 def managed_reboot(api, prefix, before, wait_for, device):
     old_boot = before['facts_json']['boot_id']
     request_time = now()
     command = api(prefix + '/commands', {'command_type': 'reboot', 'payload': {}})
+    returned_boot = None
+    verification_after = None
 
     def returned(value):
+        nonlocal returned_boot, verification_after
+        require_operation_progress(value)
         commands = api(prefix + '/commands?limit=100&offset=0')['commands']
         completed = any(v['id'] == command['id'] and v['status'] == 'completed' for v in commands)
-        return (completed and fresh(value.get('last_seen_at'), request_time)
-                and value.get('facts_json', {}).get('boot_id') not in (None, old_boot))
+        boot = value.get('facts_json', {}).get('boot_id')
+        if not (completed and fresh(value.get('last_seen_at'), request_time) and boot not in (None, old_boot)):
+            return False
+        if returned_boot != boot:
+            returned_boot, verification_after = boot, now()
+        if any(v.get('command_type') in ('apply_blueprint', 'verify_blueprint')
+               and v['status'] in ('pending', 'dispatched') for v in commands):
+            return False
+        # Reuse only evidence received after we observed this returned boot.
+        # converge still checks exact runtime, Blueprint, generation and hashes.
+        if value.get('configuration_status') == 'compliant' and fresh(value.get('configuration_verified_at'), verification_after):
+            return True
+        # Inside the causal grace window no automatic probe may be queued.
+        # An active operation alone is therefore not a reason to wait forever.
+        try:
+            api(prefix + '/commands', {'command_type': 'verify_blueprint', 'payload': {}})
+        except ValueError as error:
+            if http_error_details(error) != {'status': 409, 'classification': 'configuration_command_busy'}:
+                raise
+            # The operation won the slot after our read; observe its work next.
+            return False
+        return True
 
-    result = wait_for('Managed workstation reboot', device, returned, 900)
-    # Heartbeats can arrive inside Manage's reboot grace period. Request the
-    # supported read-only probe rather than waiting for its hourly fallback.
-    # converge still requires fresh, exact compliance from the returned boot.
-    api(prefix + '/commands', {'command_type': 'verify_blueprint', 'payload': {}})
-    return result
+    return wait_for('Managed workstation reboot', device, returned, 900)
 
 
 class Workstation:
@@ -181,6 +208,10 @@ def run(api, state, james, manifest, catalog, output):
                     observation = {k: value.get(k) for k in ('device_kind', 'health_status',
                         'configuration_status', 'installer_target_preparation_state', 'active_command_type',
                         'active_command_status', 'active_command_progress') if k in value}
+                    operation = value.get('active_operation') or {}
+                    if operation:
+                        observation['operation'] = {k: operation.get(k) for k in (
+                            'status', 'phase', 'wait_code', 'reason_code', 'active_attempt_id')}
                     if observation and observation != last:
                         print(json.dumps({'phase': label, **observation}), flush=True)
                         last = observation
@@ -228,9 +259,7 @@ def run(api, state, james, manifest, catalog, output):
             reboot_requested = False
             def accepted(value):
                 nonlocal reboot_requested
-                operation = value.get('active_operation') or {}
-                if operation.get('state') == 'failed':
-                    raise ValueError('Private workstation operation failed: ' + str(operation.get('reason_code')))
+                require_operation_progress(value)
                 if value.get('configuration_status') == 'pending_reboot' and not reboot_requested:
                     # A new boot can arrive before its read-only attestation.
                     # Wait for that report instead of repeatedly rebooting it.
