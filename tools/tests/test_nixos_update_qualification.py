@@ -91,20 +91,23 @@ class Run:
         self.current = self.before
         self.rollback = rollback
         self.events = [(1, True)] + ([(212, True)] if rollback else [])
+        self.admitted_at = None
+        self.bootstrap_offset = 2
         self.calls = []
         self.schedule = {'revision': 0, 'supported': True, 'run_now_attempt_id': None,
             'schedule': {'timezone': 'UTC', 'weekdays': [1], 'start': '00:00', 'duration_minutes': 240}}
         self.nics = []
         self.nic_times = []
-        self.gate = Mock()
-        self.gate.counters.return_value = {'first': 1, 'retained': 3, 'finished': 1,
+        self.gate = Mock(spec=G.Gate)
+        self.gate.counters.return_value = {'bootstrap': 1, 'first': 1, 'retained': 3, 'finished': 1,
                                            'blocked': 2, 'blocked_other': 0}
+        self.gate.activated_at.side_effect = self.activated_at
         self.candidate_contact = False
         self.admission_mutation = lambda a: a
         self.node_mutation = lambda n: n
         self.stale = False
         self.api_error = False
-        self.fixture = types.SimpleNamespace(device=DEVICE, process=Mock(), monitor=Mock())
+        self.fixture = types.SimpleNamespace(device=DEVICE, process=Mock(), monitor=Mock(), stop=Mock())
         self.fixture.process.poll.return_value = None
         self.fixture.wait_ready = lambda api: deepcopy(self.before)
         self.fixture.monitor.events = self.qmp_events
@@ -117,13 +120,19 @@ class Run:
             'final_state': 'ready', 'identity_rotation': True, 'appliance_projection_healthy': True, 'device_id': DEVICE,
             'workstation_runtime_prepublication_deferred': True}
 
+    def activated_at(self):
+        if self.admitted_at is None or self.bootstrap_offset is None:
+            return None
+        at = self.admitted_at + self.bootstrap_offset
+        return self.clock.now() - datetime.timedelta(seconds=self.clock.t - at) if self.clock.t >= at else None
+
     def qmp_events(self):
         events = []
         while self.events and self.events[0][0] <= self.clock.t:
             at, guest = self.events.pop(0)
             stamp = self.clock.now() - datetime.timedelta(seconds=self.clock.t - at)
             events.append({'event': 'RESET', 'data': {'guest': guest, 'reason': 'guest-reset' if guest else 'host-qmp-system-reset'},
-                           'timestamp': {'seconds': int(stamp.timestamp()), 'microseconds': 0}})
+                           'timestamp': {'seconds': int(stamp.timestamp()), 'microseconds': stamp.microsecond}})
         return events
 
     def terminal(self):
@@ -148,6 +157,9 @@ class Run:
             return deepcopy(self.schedule)
         if body:
             self.request = body
+            if self.admitted_at is None:
+                self.admitted_at = self.clock.t
+                self.events = [(at + self.admitted_at, guest) for at, guest in self.events]
             return self.admission_mutation({'attempt_id': ATTEMPT, 'request_id': body['request_id'],
                 'release_version': self.candidate['version'], 'manifest_sha256': hashlib.sha256(self.candidate_body).hexdigest(),
                 'system_closure_sha256': self.candidate['appliance_release_v1']['system_closure']['sha256'],
@@ -155,12 +167,13 @@ class Run:
                 'expires_at': body['expires_at'], 'node': {'device_id': DEVICE}})
         if path.endswith('/qualification-updates'):
             return preflight(self.current)
-        if self.api_error and self.clock.t >= 4: raise OSError('private response must not be logged')
-        if self.rollback and self.candidate_contact and 3 <= self.clock.t < 214:
+        elapsed = self.clock.t - (self.admitted_at or 0)
+        if self.api_error and elapsed >= 4: raise OSError('private response must not be logged')
+        if self.rollback and self.candidate_contact and 3 <= elapsed < 214:
             self.current = node(self.candidate, '11', self.clock.now())
             self.current.update(update_status='health_checking', update_attempt_id=ATTEMPT,
                 update_stage='booted_candidate')
-        elif self.clock.t < (214 if self.rollback else 3):
+        elif elapsed < (214 if self.rollback else 3):
             self.current = deepcopy(self.before)
             self.current.update(update_status='restarting', update_attempt_id=ATTEMPT, update_stage='reboot_pending')
         else:
@@ -178,6 +191,173 @@ class Run:
 
 
 class TransitionTests(unittest.TestCase):
+    def test_rollback_gate_is_validated_and_inert_before_admission(self):
+        run = Run(True)
+        original = run.api
+        def api(path, body=None):
+            if body and path.endswith('/qualification-updates'):
+                run.gate.install.assert_called_once_with()
+                run.gate.revalidate.assert_called_once_with()
+                run.gate.assert_inert.assert_called_once_with()
+            return original(path, body)
+        run.api = api
+        with tempfile.TemporaryDirectory() as temporary:
+            run.execute(Path(temporary) / 'result.json')
+
+    def test_slow_qmp_observer_cannot_let_candidate_contact_precede_gate(self):
+        run = Run(True)
+        original = run.api
+        delayed = False
+        def api(path, body=None):
+            nonlocal delayed
+            if path.endswith(DEVICE) and not delayed:
+                delayed = True
+                run.clock.sleep(15)
+                # The guest booted and attempted its first report while the
+                # host's API call was blocked. Pre-arming must already deny it.
+                run.candidate_contact = not run.gate.install.called
+            return original(path, body)
+        run.api = api
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run.execute(Path(temporary) / 'result.json')
+        self.assertEqual(result['final_status'], 'rolled_back')
+        self.assertFalse(run.candidate_contact)
+
+    def test_late_exact_predecessor_report_is_not_candidate_contact(self):
+        run = Run(True)
+        original = run.api
+        def api(path, body=None):
+            result = original(path, body)
+            if path.endswith(DEVICE) and 3 <= run.clock.t < 214:
+                result['node']['james_reported_at'] = run.clock.now().isoformat()
+            return result
+        run.api = api
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run.execute(Path(temporary) / 'result.json')
+        self.assertEqual(result['final_status'], 'rolled_back')
+
+    def test_late_report_with_changed_generation_or_identity_is_rejected(self):
+        for key, value in (('system_generation', '11'), ('system_toplevel', '/nix/store/unexpected'),
+                           ('cache_public_key_fingerprint', '4' * 64)):
+            run = Run(True)
+            original = run.api
+            def api(path, body=None):
+                result = original(path, body)
+                if path.endswith(DEVICE) and run.clock.t >= 3:
+                    result['node'].update({key: value, 'james_reported_at': run.clock.now().isoformat()})
+                return result
+            run.api = api
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as temporary:
+                with self.assertRaisesRegex(ValueError, 'Candidate agent contact'):
+                    run.execute(Path(temporary) / 'result.json')
+
+    def test_candidate_report_cannot_hide_behind_an_old_server_timestamp(self):
+        run = Run(True); run.candidate_contact = True
+        original = run.api
+        def api(path, body=None):
+            result = original(path, body)
+            if path.endswith(DEVICE):
+                result['node']['james_reported_at'] = run.before['james_reported_at']
+            return result
+        run.api = api
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(ValueError, 'Candidate agent contact'):
+            run.execute(Path(temporary) / 'result.json')
+
+    def test_wall_clock_jump_cannot_replace_elapsed_candidate_health_deadline(self):
+        run = Run(True); run.events = [(1, True), (50, True)]
+        real_now = run.clock.now
+        run.clock.now = lambda: real_now() + datetime.timedelta(seconds=200 if run.clock.t >= 50 else 0)
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(ValueError, 'health deadline'):
+            run.execute(Path(temporary) / 'result.json')
+
+    def test_missing_and_predecessor_bootstrap_cannot_qualify(self):
+        for offset in (None, -1, .5):
+            run = Run(True); run.bootstrap_offset = offset
+            with self.subTest(offset=offset), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / 'result.json'
+                with self.assertRaisesRegex(ValueError, 'candidate.*(?:bootstrap|boot)'):
+                    run.execute(output)
+                self.assertFalse(output.exists())
+                run.gate.remove.assert_called_once_with()
+
+    def test_same_second_bootstrap_timestamp_is_rejected_without_rounding_forward(self):
+        run = Run(True); run.events = [(1.5, True), (212, True)]
+        # A packet received at 1.9 seconds is rendered by nft as second 1.
+        # Its real position after the 1.5-second reset cannot be proven from
+        # that representation, so it must not be rounded into valid evidence.
+        run.gate.activated_at.side_effect = lambda: (
+            run.clock.now().replace(second=1, microsecond=0) if run.clock.t >= 2 else None)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            with self.assertRaisesRegex(ValueError, 'outside the candidate boot'):
+                run.execute(directory / 'result.json')
+            diagnostic = json.loads((directory / 'cybex-james-nixos-rollback-failure.json').read_text())
+            self.assertLess(T.timestamp(diagnostic['bootstrap_at']), T.timestamp(diagnostic['candidate_reset_at']))
+
+    def test_inert_gate_failure_prevents_update_admission(self):
+        run = Run(True)
+        run.gate.assert_inert.side_effect = ValueError('rollback gate activated before update admission')
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(ValueError, 'before update admission'):
+            run.execute(Path(temporary) / 'result.json')
+        self.assertIsNone(run.admitted_at)
+        run.gate.remove.assert_called_once_with()
+
+    def test_failure_stops_guest_before_releasing_gate_and_stop_failure_holds_it(self):
+        for stop_fails in (False, True):
+            run = Run(True); run.candidate_contact = True
+            order = []
+            def stop():
+                order.append('stop')
+                if stop_fails:
+                    raise OSError('owned stop failed')
+            run.fixture.stop.side_effect = stop
+            run.gate.remove.side_effect = lambda: order.append('remove')
+            with self.subTest(stop_fails=stop_fails), tempfile.TemporaryDirectory() as temporary:
+                with self.assertRaises((ValueError, OSError)):
+                    run.execute(Path(temporary) / 'result.json')
+            self.assertEqual(order, ['stop'] if stop_fails else ['stop', 'remove'])
+
+    def test_recording_outages_cannot_skip_stop_or_release_gate_after_failed_stop(self):
+        for recorder in ('print', 'write_evidence', 'rollback_failure'):
+            for before_admission in (False, True):
+                for stop_fails in (False, True):
+                    run = Run(True); run.candidate_contact = True
+                    order = []
+                    if before_admission:
+                        run.gate.assert_inert.side_effect = ValueError('early bootstrap')
+                    def stop():
+                        order.append('stop')
+                        if stop_fails:
+                            raise OSError('owned stop failed')
+                    run.fixture.stop.side_effect = stop
+                    run.gate.remove.side_effect = lambda: order.append('remove')
+                    with self.subTest(recorder=recorder, before_admission=before_admission, stop_fails=stop_fails), \
+                            tempfile.TemporaryDirectory() as temporary, \
+                            patch.object(T, recorder, side_effect=BrokenPipeError('recording unavailable')):
+                        with self.assertRaises((ValueError, OSError)):
+                            run.execute(Path(temporary) / 'result.json')
+                        if recorder == 'print':
+                            self.assertTrue((Path(temporary) / 'cybex-james-nixos-rollback-failure.json').exists())
+                    self.assertEqual(order, ['stop'] if stop_fails else ['stop', 'remove'])
+
+    def test_failure_receipt_retains_safe_boundary_facts_without_raw_report(self):
+        run = Run(True); run.candidate_contact = True
+        run.before['credential'] = 'secret-must-not-appear'
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            with self.assertRaisesRegex(ValueError, 'Candidate agent contact'):
+                run.execute(directory / 'result.json')
+            receipt = directory / 'cybex-james-nixos-rollback-failure.json'
+            evidence = json.loads(receipt.read_text())
+            self.assertEqual(evidence['stage'], 'candidate_gate_contact')
+            self.assertEqual(evidence['reported_appliance_release'], '1.2.4')
+            self.assertTrue(evidence['reported_after_candidate_reset'])
+            self.assertTrue(evidence['gate_revalidated'])
+            self.assertEqual(evidence['transport_gate']['bootstrap'], 1)
+            self.assertIsNone(evidence['fallback_reset_at'])
+            self.assertNotIn('secret-must-not-appear', receipt.read_text())
+            self.assertEqual(receipt.stat().st_mode & 0o077, 0)
+
     def setUp(self):
         # Acceptance deliberately imports predecessor on demand as well.
         self.enterContext(patch.dict(sys.modules, IMPORTS))
@@ -237,7 +417,10 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(result['final_stage'], 'boot_fallback')
         self.assertEqual(run.nics, [])
         self.assertEqual(result['transport_gate'], run.gate.counters.return_value)
-        self.assertEqual(result['gate_install_latency_seconds'], 0)
+        self.assertTrue(result['gate_prearmed_before_admission'])
+        self.assertEqual(result['gate_arming'], 'candidate_dhcp_bootstrap')
+        self.assertEqual(T.timestamp(result['gate_activated_at']) - T.timestamp(result['candidate_reset_at']),
+                         datetime.timedelta(seconds=1))
         run.gate.install.assert_called_once_with()
         run.gate.revalidate.assert_called_once_with()
         run.gate.remove.assert_called()
@@ -317,21 +500,22 @@ class TransitionTests(unittest.TestCase):
                 run.execute(Path(temporary) / 'result.json')
             run.gate.remove.assert_called_once_with()
 
-    def test_gate_install_must_follow_timestamped_reset_within_ten_seconds(self):
+    def test_slow_gate_install_finishes_before_update_admission(self):
         with tempfile.TemporaryDirectory() as temporary:
             run = Run(True)
             run.gate.install.side_effect = lambda: run.clock.sleep(11)
-            with self.assertRaisesRegex(ValueError, 'installation window'):
-                run.execute(Path(temporary) / 'result.json')
-            run.gate.revalidate.assert_not_called()
-            run.gate.remove.assert_called_once_with()
+            result = run.execute(Path(temporary) / 'result.json')
+        self.assertEqual(run.admitted_at, 11)
+        self.assertTrue(result['gate_prearmed_before_admission'])
+        run.gate.revalidate.assert_called_once_with()
 
-    def test_slow_full_revalidation_does_not_extend_gate_placement_window(self):
+    def test_slow_full_revalidation_finishes_before_candidate_can_boot(self):
         with tempfile.TemporaryDirectory() as temporary:
             run = Run(True)
             run.gate.revalidate.side_effect = lambda: run.clock.sleep(11)
             result = run.execute(Path(temporary) / 'result.json')
-        self.assertEqual(result['gate_install_latency_seconds'], 0)
+        self.assertEqual(run.admitted_at, 11)
+        self.assertTrue(result['gate_prearmed_before_admission'])
         self.assertEqual(result['gate_stage_seconds'], {'install': 0, 'revalidate': 11})
         run.gate.revalidate.assert_called_once_with()
 

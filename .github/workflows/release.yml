@@ -738,6 +738,17 @@ jobs:
             --evidence-dir "$RUNNER_TEMP/cybex-james-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
 
+      - name: Retain bounded rollback failure diagnostic
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cybex-james-rollback-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/cybex-james-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-nixos-rollback-failure.json
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 30
+
       - name: Upload bounded qualification evidence
         id: upload-qualification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -1,9 +1,11 @@
-"""Disposable, exact-owner transport fault for the candidate rollback boot.
+"""Pre-arm an exact-owner fault before the candidate can acquire DHCP networking.
 
-The first HTTPS connection lets first-boot's network guard finish. Subsequent
-connections to the owned Manage endpoint fail, so boot-bound agent contact
-cannot make generation-commit healthy. The source boot has no gate.
+The predecessor keeps normal transport until its next zero-source DHCP request.
+That packet atomically activates the gate and records kernel reception time.
+The candidate's first HTTPS connection lets first-boot's network guard finish;
+later contact fails. DHCP retransmissions never reopen the consumed allowance.
 """
+import datetime
 import ipaddress
 import hashlib
 import runpy
@@ -19,7 +21,8 @@ import uuid
 
 NFT = '/usr/sbin/nft'
 RECEIPT = 'rollback-gate.json'
-COMMAND_ENV = {'LC_ALL': 'C', 'PATH': '/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'}
+COMMAND_ENV = {'LC_ALL': 'C', 'TZ': 'UTC', 'PATH': '/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'}
+COUNTERS = {'bootstrap', 'first', 'retained', 'finished', 'blocked', 'blocked_other'}
 
 
 def command(*args, data=None):
@@ -93,7 +96,10 @@ def specification(scope, tap, mac, guest, destinations):
     # original guest MAC on the routed bridge packet. The unique table and
     # owner marker cannot match any other fixture or host traffic.
     script = f'''table inet {table} {{
+  set activated {{ type ether_addr; flags dynamic; }}
+  map activated_at {{ typeof ether saddr : meta time; flags dynamic; }}
   set admitted {{ type ipv4_addr; flags dynamic; }}
+  counter bootstrap {{ }}
   counter first {{ }}
   counter retained {{ }}
   counter finished {{ }}
@@ -101,6 +107,8 @@ def specification(scope, tap, mac, guest, destinations):
   counter blocked_other {{ }}
   chain ingress {{
     type filter hook prerouting priority -150; policy accept;
+    {owned} ether saddr != @activated ip saddr 0.0.0.0 udp sport 68 udp dport 67 update @activated_at {{ ether saddr : meta time }} add @activated {{ ether saddr }} counter name bootstrap accept comment "{scope['owner']}"
+    {owned} ether saddr != @activated accept comment "{scope['owner']}"
     {match} ct mark 0x{mark:08x} tcp flags & fin == fin counter name finished accept comment "{scope['owner']}"
     {match} ct mark 0x{mark:08x} counter name retained accept comment "{scope['owner']}"
     {match} ip saddr @admitted counter name blocked drop comment "{scope['owner']}"
@@ -118,7 +126,7 @@ def tables():
 
 
 def intent(scope, tap, mac, guest, destinations, script):
-    return {'schema': 'cybex.james.rollback-transport-gate.v1', 'owner': scope['owner'],
+    return {'schema': 'cybex.james.rollback-transport-gate.v2', 'owner': scope['owner'],
             'bridge': scope['bridge'], 'table': name(scope),
             'tap': tap, 'mac': mac, 'guest': guest, 'destinations': destinations,
             'script_sha256': hashlib.sha256(script.encode()).hexdigest()}
@@ -150,7 +158,7 @@ def read_intent(path, scope):
         value = json.loads(os.read(fd, 4097))
     finally:
         os.close(fd)
-    if (value.get('schema') != 'cybex.james.rollback-transport-gate.v1'
+    if (value.get('schema') != 'cybex.james.rollback-transport-gate.v2'
             or value.get('owner') != scope['owner'] or value.get('bridge') != scope['bridge']
             or value.get('table') != name(scope)
             or not re.fullmatch(r'[0-9a-f]{64}', value.get('script_sha256', ''))):
@@ -178,7 +186,18 @@ def expected_rules(value):
     target = base + [match(payload('ip', 'daddr'), destinations[0] if len(destinations) == 1
                             else {'set': destinations}), match(payload('tcp', 'dport'), 443)]
     marked = target + [match({'ct': {'key': 'mark'}}, mark)]
-    return [marked + [match({'&': [payload('tcp', 'flags'), 'fin']}, 'fin'),
+    # nft canonicalizes adjacent comparisons of the same source MAC in the
+    # bootstrap rule with the set membership first.
+    bootstrap = [owned[0], match(payload('ether', 'saddr'), '@activated', '!='), owned[1],
+                 match(payload('ip', 'saddr'), '0.0.0.0'),
+                 match(payload('udp', 'sport'), 68), match(payload('udp', 'dport'), 67),
+                 {'map': {'op': 'update', 'elem': payload('ether', 'saddr'),
+                          'data': {'meta': {'key': 'time'}}, 'map': '@activated_at'}},
+                 {'set': {'op': 'add', 'elem': payload('ether', 'saddr'), 'set': '@activated'}},
+                 {'counter': 'bootstrap'}, {'accept': None}]
+    return [bootstrap,
+            owned + [match(payload('ether', 'saddr'), '@activated', '!='), {'accept': None}],
+            marked + [match({'&': [payload('tcp', 'flags'), 'fin']}, 'fin'),
                       {'counter': 'finished'}, {'accept': None}],
             marked + [{'counter': 'retained'}, {'accept': None}],
             target + [match(payload('ip', 'saddr'), '@admitted'),
@@ -194,8 +213,9 @@ def expected_rules(value):
 def inspect(table, value):
     rows = json.loads(command('-j', 'list', 'table', 'inet', table))['nftables']
     kinds = [next(iter(row)) for row in rows if 'metainfo' not in row]
-    if (len(kinds) != 13 or kinds.count('table') != 1 or kinds.count('chain') != 1
-            or kinds.count('set') != 1 or kinds.count('rule') != 5 or kinds.count('counter') != 5):
+    if (len(kinds) != 18 or kinds.count('table') != 1 or kinds.count('chain') != 1
+            or kinds.count('set') != 2 or kinds.count('map') != 1
+            or kinds.count('rule') != 7 or kinds.count('counter') != 6):
         raise ValueError('rollback gate live resources differ from owner specification')
     if any(body.get('family') != 'inet' or body.get('table', table) != table
            for row in rows for kind, body in row.items() if kind != 'metainfo'):
@@ -210,15 +230,40 @@ def inspect(table, value):
     if (chain.get('name') != 'ingress' or chain.get('hook') != 'prerouting'
             or chain.get('prio') != -150 or chain.get('policy') != 'accept'):
         raise ValueError('rollback gate hook changed')
-    dynamic = next(row['set'] for row in rows if 'set' in row)
+    dynamic = next(row['set'] for row in rows if 'set' in row and row['set']['name'] == 'admitted')
     if (dynamic.get('name') != 'admitted' or dynamic.get('type') != 'ipv4_addr'
             or dynamic.get('flags') != ['dynamic']
             or any(element != value['guest'] for element in dynamic.get('elem', []))):
         raise ValueError('rollback gate admission set changed')
+    activated = next(row['set'] for row in rows if 'set' in row and row['set']['name'] == 'activated')
+    activation = next(row['map'] for row in rows if 'map' in row)
+    if (activated.get('type') != 'ether_addr' or activated.get('flags') != ['dynamic']
+            or activated.get('elem', []) not in ([], [value['mac']])
+            or activation.get('name') != 'activated_at' or activation.get('map') != 'time'
+            or activation.get('type') != {'typeof': payload('ether', 'saddr')}
+            or activation.get('flags') != ['dynamic']):
+        raise ValueError('rollback gate bootstrap ownership changed')
+    elements = activation.get('elem', [])
+    if bool(elements) != bool(activated.get('elem')):
+        raise ValueError('rollback gate bootstrap timestamp is inconsistent')
+    if elements:
+        if (len(elements) != 1 or not isinstance(elements[0], list) or len(elements[0]) != 2
+                or elements[0][0] != value['mac']):
+            raise ValueError('rollback gate bootstrap timestamp owner changed')
+        activation_time(elements[0][1])
     counters = [row['counter']['name'] for row in rows if 'counter' in row]
-    if set(counters) != {'first', 'retained', 'finished', 'blocked', 'blocked_other'}:
+    if set(counters) != COUNTERS:
         raise ValueError('rollback gate counters changed')
     return rows
+
+
+def activation_time(value):
+    # nft JSON renders meta time to whole seconds even with --numeric-time.
+    # TZ=UTC makes this a conservative lower bound; never round it forward to
+    # turn an ambiguous same-second predecessor packet into candidate evidence.
+    if not isinstance(value, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}', value):
+        raise ValueError('rollback gate bootstrap timestamp is invalid')
+    return datetime.datetime.strptime(value, '%Y-%m-%d %H:%M:%S').replace(tzinfo=datetime.timezone.utc)
 
 
 def recover(path, scope):
@@ -254,9 +299,10 @@ class Gate:
                  if interface.get('address', '').lower() == mac
                  for info in interface.get('addr_info', [])
                  if info.get('family') == 'inet' and info.get('scope') == 'global'
+                 and info.get('dynamic') is True
                  and ipaddress.IPv4Address(info['local']) in network}
         if len(found) != 1:
-            raise ValueError('rollback gate requires one reported owned guest IPv4 address')
+            raise ValueError('rollback gate requires one reported owned DHCP IPv4 address')
         self.target = target(fixture)
         self.destinations = self.target['destinations']
         self.guest, self.mac = found.pop(), mac
@@ -273,9 +319,8 @@ class Gate:
             raise ValueError('rollback gate TAP no longer belongs to this fixture')
 
     def install(self):
-        # Gate construction authenticated the exact TLS peer. At reset, place
-        # its guest-specific rules within the bounded window; the full owner,
-        # TLS and confinement recheck follows immediately after placement.
+        # Place the inert gate before admission. Full owner/TLS verification
+        # must finish before the predecessor is allowed to start the update.
         if self.table in tables():
             raise ValueError('refusing to adopt existing rollback gate')
         scope_module = runpy.run_path(str(Path(__file__).with_name('development-scope.py')))
@@ -311,9 +356,20 @@ class Gate:
             raise ValueError('rollback gate is not installed')
         rows = inspect(self.table, read_intent(self.path, self.scope))
         observed = {row['counter']['name']: row['counter']['packets'] for row in rows if 'counter' in row}
-        if set(observed) != {'first', 'retained', 'finished', 'blocked', 'blocked_other'}:
+        if set(observed) != COUNTERS or any(type(v) is not int or v < 0 for v in observed.values()):
             raise ValueError('rollback gate counters differ from owner specification')
         return observed
+
+    def activated_at(self):
+        if not self.active:
+            raise ValueError('rollback gate is not installed')
+        rows = inspect(self.table, read_intent(self.path, self.scope))
+        elements = next(row['map'] for row in rows if 'map' in row).get('elem', [])
+        return activation_time(elements[0][1]) if elements else None
+
+    def assert_inert(self):
+        if self.activated_at() is not None or any(self.counters().values()):
+            raise ValueError('rollback gate activated before update admission')
 
     def remove(self):
         if self.active or (self.path / RECEIPT).exists():

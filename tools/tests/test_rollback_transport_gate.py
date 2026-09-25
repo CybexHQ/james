@@ -28,10 +28,40 @@ def fixture(state, scope=SCOPE):
 
 def node():
     return {'appliance_network': {'interfaces': [{'address': MAC, 'addr_info': [
-        {'family': 'inet', 'scope': 'global', 'local': '10.249.217.2'}]}]}}
+        {'family': 'inet', 'scope': 'global', 'dynamic': True, 'local': '10.249.217.2'}]}]}}
 
 
 class RollbackTransportGateTests(unittest.TestCase):
+    def test_static_or_unproven_address_is_rejected_before_target_lookup(self):
+        for dynamic in (None, False, 'true'):
+            report = node()
+            report['appliance_network']['interfaces'][0]['addr_info'][0]['dynamic'] = dynamic
+            with self.subTest(dynamic=dynamic), patch.object(G, 'target') as target, \
+                    self.assertRaisesRegex(ValueError, 'DHCP IPv4'):
+                G.Gate(fixture(Path('/private')), report)
+            target.assert_not_called()
+
+    def test_bootstrap_time_is_utc_and_invalid_or_fractional_values_fail_closed(self):
+        self.assertEqual(G.COMMAND_ENV['TZ'], 'UTC')
+        self.assertEqual(G.activation_time('2026-09-25 01:23:45').isoformat(), '2026-09-25T01:23:45+00:00')
+        for value in ('2026-09-25 01:23:45.9', '2026-09-25T01:23:45Z', 'secret', 1, None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                G.activation_time(value)
+
+    def test_inert_check_rejects_any_early_bootstrap_or_consumed_flow(self):
+        gate = object.__new__(G.Gate)
+        gate.activated_at = Mock(return_value=None)
+        gate.counters = Mock(return_value={name: 0 for name in G.COUNTERS})
+        gate.assert_inert()
+        for counter in G.COUNTERS:
+            gate.counters.return_value = {name: int(name == counter) for name in G.COUNTERS}
+            with self.subTest(counter=counter), self.assertRaisesRegex(ValueError, 'before update admission'):
+                gate.assert_inert()
+        gate.counters.return_value = {name: 0 for name in G.COUNTERS}
+        gate.activated_at.return_value = G.activation_time('2026-09-25 01:23:45')
+        with self.assertRaisesRegex(ValueError, 'before update admission'):
+            gate.assert_inert()
+
     def test_isolated_target_uses_only_authenticated_private_peer(self):
         rpc = Mock(return_value=TARGET)
         with patch.dict(sys.modules, {'isolated_manage_rpc': types.SimpleNamespace(request=rpc)}), \

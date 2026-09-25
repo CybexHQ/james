@@ -197,6 +197,64 @@ def initialize_schedule(api, prefix):
         raise ValueError('Fixture maintenance policy was not saved exactly')
 
 
+def reset_timestamp(event):
+    stamp = event.get('timestamp', {})
+    if not (isinstance(stamp, dict) and type(stamp.get('seconds')) is int
+            and type(stamp.get('microseconds')) is int and 0 <= stamp['microseconds'] < 1000000):
+        raise ValueError('Rollback reset lacks QMP event timestamp')
+    return datetime.datetime.fromtimestamp(stamp['seconds'], UTC) + datetime.timedelta(microseconds=stamp['microseconds'])
+
+
+def predecessor_report(before, node):
+    fields = ('appliance_release', 'system_generation', 'system_toplevel',
+              'system_closure_sha256', 'nixpkgs_revision')
+    # The public node API does not expose a report-bound boot ID or appliance
+    # lane timestamp. This classifies its stored system projection only; the
+    # kernel gate and both genuine guest resets prove the fault/recovery cycle.
+    return all(node.get(key) == before[key] for key in fields) and identity(node) == identity(before)
+
+
+def rollback_failure(output, stage, error, timings, gate, node, candidate_reset,
+                     fallback_reset, bootstrap, revalidated):
+    """Retain bounded public facts before fixture/API cleanup erases the cause."""
+    diagnostic = {'schema': 'cybex.james.rollback-gate-diagnostic.v2',
+        'stage': stage, 'error_type': type(error).__name__, 'stage_seconds': timings,
+        'candidate_reset_at': candidate_reset.isoformat() if candidate_reset else None,
+        'fallback_reset_at': fallback_reset.isoformat() if fallback_reset else None,
+        'bootstrap_at': bootstrap.isoformat() if bootstrap else None,
+        'gate_revalidated': revalidated, 'transport_gate': None}
+    for field, pattern in (('appliance_release', r'[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?'),
+                           ('system_generation', r'[1-9][0-9]*'),
+                           ('boot_id', r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')):
+        value = node.get(field) if isinstance(node, dict) else None
+        diagnostic['reported_' + field] = value if isinstance(value, str) and len(value) <= 128 and re.fullmatch(pattern, value) else None
+    try:
+        seen = timestamp(node.get('james_reported_at'))
+        diagnostic['reported_at'] = seen.isoformat()
+        diagnostic['reported_after_candidate_reset'] = candidate_reset is not None and seen > candidate_reset
+    except (AttributeError, ValueError, TypeError):
+        diagnostic['reported_at'] = None
+    try:
+        diagnostic['transport_gate'] = gate.counters()
+        activated = gate.activated_at()
+        diagnostic['bootstrap_at'] = activated.isoformat() if activated else None
+    except Exception as inspect_error:
+        diagnostic['gate_inspection_error_type'] = type(inspect_error).__name__
+    try:
+        path = output.with_name('cybex-james-nixos-rollback-failure.json')
+        write_evidence(path, diagnostic)
+        if os.geteuid() == 0 and 'SUDO_UID' in os.environ and 'SUDO_GID' in os.environ:
+            # The orchestrator hands the private parent directory back to the
+            # runner on failure. Hand back only this allowlisted public receipt,
+            # retaining mode 0600; other private fixture files remain inaccessible.
+            os.chown(path, int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID']), follow_symlinks=False)
+    except Exception as write_error:
+        diagnostic['receipt_write_error_type'] = type(write_error).__name__
+    # Console delivery is independent of the durable receipt. A closed Actions
+    # log pipe must neither prevent its write nor prevent guest containment.
+    print('Rollback qualification gate diagnostic ' + json.dumps(diagnostic, sort_keys=True), flush=True)
+
+
 def run(api, fixture, candidate, candidate_body, previous, previous_body, evidence,
         evidence_digest, transport_url, output, source, rollback=False, *, clock=time.monotonic,
         sleep=time.sleep, now=lambda: datetime.datetime.now(UTC), timeout=3600,
@@ -211,6 +269,11 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
     prefix = f'/v1/james/nodes/{fixture.device}'
     admission = (schedule_admission.AdmissionExercise(api, fixture.device, clock=clock,
         sleep=sleep, now=now, timeout=min(timeout, 300)) if exercise_admission else None)
+    gate_stage_seconds = {}
+    gate_revalidated = False
+    failure_stage = 'preflight'
+    node = before
+    candidate_started_at = fallback_started_at = gate_activated_at = None
     try:
         expected = verify_preflight(api(prefix + '/qualification-updates'), before,
             previous['appliance_release_v1'], evidence['system_generation'])
@@ -222,13 +285,37 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
             admission.prepare(request)
         else:
             initialize_schedule(api, prefix)
+        if gate:
+            failure_stage = 'candidate_gate_install'
+            stage_started = clock()
+            try:
+                gate.install()
+            finally:
+                gate_stage_seconds['install'] = round(clock() - stage_started, 3)
+            failure_stage = 'candidate_gate_revalidate'
+            stage_started = clock()
+            try:
+                gate.revalidate()
+            finally:
+                gate_stage_seconds['revalidate'] = round(clock() - stage_started, 3)
+            gate_revalidated = True
+            failure_stage = 'candidate_gate_inert'
+            gate.assert_inert()
         started = now()
         if admission:
             admission.mark_queue_started()
         attempt = verify_admission(api(prefix + '/qualification-updates', request), request, candidate, fixture.device)
         admission_evidence = (admission.activate(attempt, expected, candidate['version'],
             candidate['appliance_release_v1']['system_closure']['sha256'], started) if admission else None)
-    except BaseException:
+    except BaseException as error:
+        if gate:
+            try:
+                rollback_failure(output, failure_stage, error, gate_stage_seconds, gate, node,
+                                 None, None, None, gate_revalidated)
+            except BaseException:
+                pass  # Recording failure must never prevent the stop attempt.
+            fixture.stop()
+            gate.remove()
         if admission:
             admission.cleanup(False)
         raise
@@ -237,11 +324,9 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
     reset_reports_after = None
     fresh_health = set()
     observations = []
-    candidate_started_at = None
     gate_counts = None
-    gate_install_latency_seconds = None
-    gate_stage_seconds = {}
     failure_stage = 'admitted'
+    gate_cleanup = True
     try:
         while clock() < deadline:
             if fixture.process.poll() is not None:
@@ -255,40 +340,24 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
                     first_reset = clock()
                     reset_reports_after = now()
                     if rollback:
-                        stamp = event.get('timestamp', {})
-                        if not (isinstance(stamp, dict) and type(stamp.get('seconds')) is int
-                                and type(stamp.get('microseconds')) is int
-                                and 0 <= stamp['microseconds'] < 1000000):
-                            raise ValueError('Rollback reset lacks QMP event timestamp')
-                        candidate_started_at = datetime.datetime.fromtimestamp(
-                            stamp['seconds'] + stamp['microseconds'] / 1000000, UTC)
-                        failure_stage = 'candidate_gate_install'
-                        stage_started = clock()
-                        try:
-                            gate.install()
-                        finally:
-                            gate_stage_seconds['install'] = round(clock() - stage_started, 3)
-                        # Capture the QMP-to-placement bound before any slow
-                        # Owner/TLS/isolation checks can consume the window.
-                        gate_install_latency_seconds = (now() - candidate_started_at).total_seconds()
-                        failure_stage = 'candidate_gate_window'
-                        if not 0 <= gate_install_latency_seconds <= 10:
-                            raise ValueError('Rollback gate missed the candidate reset installation window')
-                        failure_stage = 'candidate_gate_revalidate'
-                        stage_started = clock()
-                        try:
-                            gate.revalidate()
-                        finally:
-                            gate_stage_seconds['revalidate'] = round(clock() - stage_started, 3)
-                        failure_stage = 'candidate_gate_installed'
+                        candidate_started_at = reset_timestamp(event)
+                        if not started <= candidate_started_at <= now():
+                            raise ValueError('Candidate reset timestamp is outside the admitted transition')
+                        failure_stage = 'candidate_gate_bootstrap'
                     print('Observed appliance candidate reboot', flush=True)
                 elif rollback and fallback_reset is None:
                     failure_stage = 'fallback_gate_deadline'
-                    if clock() - first_reset < 180:
+                    fallback_started_at = reset_timestamp(event)
+                    if ((fallback_started_at - candidate_started_at).total_seconds() < 180
+                            or clock() - first_reset < 180
+                            or fallback_started_at > now()):
                         raise ValueError('Fallback reboot preceded the candidate health deadline')
+                    gate_activated_at = gate.activated_at()
+                    if gate_activated_at is None or not candidate_started_at <= gate_activated_at < fallback_started_at:
+                        raise ValueError('Rollback gate lacks candidate-bound DHCP bootstrap evidence')
                     failure_stage = 'fallback_gate_counters'
                     gate_counts = gate.counters()
-                    if (gate_counts['first'] != 1 or gate_counts['retained'] < 2
+                    if (gate_counts['bootstrap'] != 1 or gate_counts['first'] != 1 or gate_counts['retained'] < 2
                             or gate_counts['finished'] < 1
                             or gate_counts['blocked'] + gate_counts['blocked_other'] < 1):
                         raise ValueError('Rollback gate did not prove completed guard flow and denied later contact')
@@ -300,13 +369,26 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
                     print('Observed appliance automatic fallback reboot', flush=True)
                 else:
                     raise ValueError('Unexpected additional appliance reboot')
+            if gate and fallback_reset is None:
+                failure_stage = 'candidate_gate_bootstrap'
+                gate_activated_at = gate.activated_at()
+                if gate_activated_at is not None:
+                    # Whole-second nft reception timestamps are lower bounds.
+                    # Ambiguous same-second or earlier source DHCP fails closed.
+                    if candidate_started_at is None or not candidate_started_at <= gate_activated_at <= now():
+                        raise ValueError('Rollback gate activated outside the candidate boot')
             node = api(prefix)['node']
             seen = timestamp(node.get('james_reported_at'))
             if seen > now() + datetime.timedelta(seconds=30):
                 raise ValueError('Accepted report timestamp is unexpectedly in the future')
-            if rollback and first_reset is not None and fallback_reset is None and seen > candidate_started_at:
-                failure_stage = 'candidate_gate_contact'
-                raise ValueError('Candidate agent contact was accepted despite rollback gate')
+            if rollback and fallback_reset is None:
+                # A predecessor report can finish at Manage after the reset.
+                # Its complete immutable system and permanent identity must
+                # still match; any candidate or unknown projection is fatal,
+                # even if its server receipt time is stale or clock-shifted.
+                if not predecessor_report(before, node):
+                    failure_stage = 'candidate_gate_contact'
+                    raise ValueError('Candidate agent contact was accepted despite rollback gate')
             # Old terminal outcomes from another attempt must neither fail nor
             # satisfy this run while the newly admitted request reaches James.
             if node.get('update_attempt_id') != attempt:
@@ -367,7 +449,11 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
                     rollback_reason=node['appliance_package_update']['rollback_reason'],
                     fault='owned_candidate_manage_transport_gate_until_automatic_fallback',
                     transport_gate=gate_counts,
-                    gate_install_latency_seconds=gate_install_latency_seconds,
+                    gate_prearmed_before_admission=True,
+                    gate_arming='candidate_dhcp_bootstrap',
+                    candidate_reset_at=candidate_started_at.isoformat(),
+                    fallback_reset_at=fallback_started_at.isoformat(),
+                    gate_activated_at=gate_activated_at.isoformat(),
                     gate_stage_seconds=gate_stage_seconds)
             else:
                 result.update(fresh_health_successes=len(fresh_health), authenticated_manage_contact=True)
@@ -384,14 +470,20 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
         raise ValueError('Appliance transition qualification timed out')
     except BaseException as error:
         if rollback:
-            print('Rollback qualification gate diagnostic ' + json.dumps({
-                'schema': 'cybex.james.rollback-gate-diagnostic.v1',
-                'stage': failure_stage, 'error_type': type(error).__name__,
-                'install_latency_seconds': gate_install_latency_seconds,
-                'stage_seconds': gate_stage_seconds}, sort_keys=True), flush=True)
+            # Never reopen candidate transport between a failed assertion and
+            # fixture teardown. If stopping fails, retain the exact owned gate
+            # for the outer fixture/scope cleanup instead of exposing a live VM.
+            gate_cleanup = False
+            try:
+                rollback_failure(output, failure_stage, error, gate_stage_seconds, gate, node,
+                                 candidate_started_at, fallback_started_at, gate_activated_at, gate_revalidated)
+            except BaseException:
+                pass  # Even a broken output pipe cannot skip containment.
+            fixture.stop()
+            gate_cleanup = True
         raise
     finally:
-        if gate:
+        if gate and gate_cleanup:
             gate.remove()
         if admission:
             admission.cleanup(False)

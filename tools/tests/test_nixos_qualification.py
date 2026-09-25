@@ -350,13 +350,23 @@ class NixosQualificationTests(unittest.TestCase):
     def test_rollback_requires_automatic_source_boot_and_reason(self):
         candidate, previous, evidence, source = self.transition()
         evidence.update(schema='cybex.james.nixos-appliance-rollback-qualification.v1',
-            automatic_rollback=True, fallback_reboot_observed=True, rollback_reason='health_deadline', fault='candidate_network',
+            automatic_rollback=True, fallback_reboot_observed=True, rollback_reason='local_health_failed',
+            fault='owned_candidate_manage_transport_gate_until_automatic_fallback',
+            gate_prearmed_before_admission=True, gate_arming='candidate_dhcp_bootstrap',
+            candidate_reset_at='2026-09-25T00:00:01+00:00', gate_activated_at='2026-09-25T00:00:05+00:00',
+            fallback_reset_at='2026-09-25T00:03:32+00:00',
+            transport_gate={'bootstrap': 1, 'first': 1, 'retained': 3, 'finished': 1, 'blocked': 2, 'blocked_other': 0},
             resulting_system_generation='1', resulting_system_toplevel=previous['appliance_release_v1']['system_toplevel'],
             final_status='rolled_back', final_stage='boot_fallback')
         with patch.dict(sys.modules, {'release_predecessor': P}):
             A.validate_transition(candidate, 'a' * 64, previous, 'b' * 64, evidence, source, 'rollback')
             for key, value in [('automatic_rollback', False), ('rollback_reason', ''), ('host_reset_used', True),
-                               ('resulting_system_generation', '2'), ('fallback_reboot_observed', False)]:
+                               ('resulting_system_generation', '2'), ('fallback_reboot_observed', False),
+                               ('gate_prearmed_before_admission', False), ('gate_arming', 'late_poll'),
+                               ('gate_activated_at', '2026-09-25T00:00:00+00:00'),
+                               ('fallback_reset_at', '2026-09-25T00:01:30+00:00'),
+                               ('transport_gate', {'bootstrap': 1, 'first': 1, 'retained': 3,
+                                                   'finished': 1, 'blocked': 0, 'blocked_other': 0})]:
                 with self.subTest(key=key), self.assertRaises(ValueError):
                     A.validate_transition(candidate, 'a' * 64, previous, 'b' * 64, {**evidence, key: value}, source, 'rollback')
 

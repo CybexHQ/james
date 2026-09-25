@@ -124,9 +124,10 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
         self.assertNotIn('matrix:', self.warm)
 
     def test_acceptance_and_timing_artifacts_are_separate_and_exact(self):
+        acceptance = self.warm[self.warm.index('      - name: Upload bounded qualification evidence'):]
         warm_names = re.findall(
             r'\$\{\{ runner\.temp \}\}/cybex-james-evidence-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/(cybex-james-[a-z0-9-]+\.json)',
-            self.warm)
+            acceptance)
         self.assertEqual(set(warm_names), {
             'cybex-james-nixos-qualification.json',
             'cybex-james-nixos-update-qualification.json',
@@ -141,6 +142,16 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
         self.assertNotIn('stdout.log', timing)
         self.assertNotIn('stderr.log', timing)
         self.assertNotIn('cybex-james-evidence', timing)
+
+    def test_failure_diagnostic_upload_is_always_exact_and_separate_from_acceptance(self):
+        diagnostic = self.warm.split('      - name: Retain bounded rollback failure diagnostic\n', 1)[1].split('\n      - name:', 1)[0]
+        self.assertIn('if: always()', diagnostic)
+        self.assertIn('if-no-files-found: ignore', diagnostic)
+        self.assertIn('cybex-james-rollback-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}', diagnostic)
+        self.assertEqual(diagnostic.count('path:'), 1)
+        self.assertEqual(diagnostic.count('cybex-james-nixos-rollback-failure.json'), 1)
+        self.assertNotIn('*', diagnostic)
+        self.assertNotIn('.log', diagnostic)
 
     def test_cold_still_downloads_published_bytes_without_warm_cache(self):
         self.assertIn('needs: [release_build, release_publish]', self.cold)

@@ -1,5 +1,6 @@
 """Validate the distinct appliance and cold-delivery release gates."""
 import argparse
+import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -168,11 +169,34 @@ def validate_transition(manifest, digest, previous, previous_digest, evidence, s
         raise ValueError('Transition did not reach the exact automatic terminal outcome')
     if rollback:
         if (evidence.get('automatic_rollback') is not True or evidence.get('fallback_reboot_observed') is not True
-                or not evidence.get('rollback_reason') or not evidence.get('fault')):
+                or evidence.get('rollback_reason') != 'local_health_failed'
+                or evidence.get('fault') != 'owned_candidate_manage_transport_gate_until_automatic_fallback'):
             raise ValueError('Rollback requires appliance-initiated recovery with a reason')
+        validate_rollback_gate(evidence)
     elif (evidence.get('fresh_health_successes', 0) < 3
             or evidence.get('authenticated_manage_contact') is not True):
         raise ValueError('Commit lacks repeated fresh health and permanent-identity contact')
+
+
+def validate_rollback_gate(evidence):
+    counters = evidence.get('transport_gate')
+    names = {'bootstrap', 'first', 'retained', 'finished', 'blocked', 'blocked_other'}
+    if (evidence.get('gate_prearmed_before_admission') is not True
+            or evidence.get('gate_arming') != 'candidate_dhcp_bootstrap'
+            or not isinstance(counters, dict) or set(counters) != names
+            or any(type(value) is not int or value < 0 for value in counters.values())
+            or counters['bootstrap'] != 1 or counters['first'] != 1
+            or counters['retained'] < 2 or counters['finished'] < 1
+            or counters['blocked'] + counters['blocked_other'] < 1):
+        raise ValueError('Rollback lacks a prearmed gate and denied candidate contact')
+    try:
+        reset, bootstrap, fallback = [datetime.datetime.fromisoformat(evidence[key]) for key in
+            ('candidate_reset_at', 'gate_activated_at', 'fallback_reset_at')]
+    except (KeyError, ValueError, TypeError):
+        raise ValueError('Rollback gate timestamps are incomplete') from None
+    if (any(value.tzinfo is None for value in (reset, bootstrap, fallback))
+            or not reset <= bootstrap < fallback or (fallback - reset).total_seconds() < 180):
+        raise ValueError('Rollback gate did not span the genuine candidate health deadline')
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

@@ -186,9 +186,13 @@ class Fixture:
         raise ValueError('Fixture failed to report healthy after boot')
 
     def __exit__(self, *args):
-        stop(self.process)
+        self.stop()
         if self.monitor:
             self.monitor.socket.close()
         if self.tap:
             SCOPE['tap'](self.state, self.scope['manage_origin'], self.scope['bridge'], 'appliance', False)
             self.tap = None
+
+    def stop(self):
+        """End this owned fixture before releasing a failed transport fault."""
+        stop(self.process)
