@@ -142,7 +142,7 @@ class NarReader:
         self.expect(b"type")
         kind = self.string()
         if source_output is not None and kind != b"regular":
-            self.fail("embedded Manage source store path must be a regular file")
+            self.fail("embedded Tiaris source store path must be a regular file")
         if kind == b"regular":
             field = self.string()
             if field == b"executable":
@@ -260,20 +260,20 @@ def verify_directory(root, descriptor, public_key, api, *, signed=True):
     except (ValueError, UnicodeDecodeError):
         fail("closure manifest is invalid JSON")
     contract.exact(manifest, MANIFEST_FIELDS, "system closure manifest")
-    if body != contract.canonical(manifest) + b"\n" or manifest["schema"] != "cybex.james.system-closure.v1":
+    if body != contract.canonical(manifest) + b"\n" or manifest["schema"] != "tiaris.nest.system-closure.v1":
         fail("system closure manifest is not canonical")
     for field in ("release_id", "base_os", "base_os_version", "source_revision", "manage_source_revision",
                   "nixpkgs_revision", "system_toplevel", "required_system_versions", "sqlite_migrations_sha256"):
         if manifest[field] != descriptor[field]:
             fail("system closure manifest disagrees with signed release identity")
     raw_key = api._trusted_public_key(public_key)
-    named_key = "cybex-james-appliance-1:" + base64.b64encode(raw_key).decode()
+    named_key = "tiaris-nest-appliance-1:" + base64.b64encode(raw_key).decode()
     if manifest["nix_signing_public_key"] != named_key:
         fail("closure NAR key is not the independently trusted release authority")
     cache_info = read_regular(root / "nix-cache-info", 4096, fail).decode("ascii")
     if cache_info not in ("StoreDir: /nix/store\n", "StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 40\n"):
         fail("closure cache must use the standard Nix store")
-    source = contract.exact(manifest["manage_source"], {"revision", "sha256", "size_bytes", "store_path"}, "closure Manage source")
+    source = contract.exact(manifest["manage_source"], {"revision", "sha256", "size_bytes", "store_path"}, "closure Tiaris source")
     if source["revision"] != descriptor["manage_source_revision"]:
         fail("closure embedded source revision disagrees")
     contract.hex_value(source["sha256"], 64, "embedded source hash")
@@ -306,7 +306,7 @@ def verify_directory(root, descriptor, public_key, api, *, signed=True):
             fail("closure NAR payload exceeds its bound")
         if signed:
             name_key, separator, signature = info["Sig"].partition(":")
-            if separator != ":" or name_key != "cybex-james-appliance-1":
+            if separator != ":" or name_key != "tiaris-nest-appliance-1":
                 fail("closure NAR signature authority is invalid")
             api._self_verify(api.ED25519_PUBLIC_DER_PREFIX + raw_key,
                              contract.base64_bytes(signature, 64, "NAR signature"), fingerprint(info))
@@ -314,13 +314,13 @@ def verify_directory(root, descriptor, public_key, api, *, signed=True):
         if file_hash(nar_path, fail) != (info["FileHash"], int(info["FileSize"])):
             fail("compressed closure NAR integrity mismatch")
         if path == source["store_path"]:
-            with tempfile.TemporaryDirectory(prefix="cybex-closure-source-") as source_dir:
+            with tempfile.TemporaryDirectory(prefix="tiaris-closure-source-") as source_dir:
                 source_file = Path(source_dir) / "source.tar"
                 with source_file.open("wb") as output:
                     actual_nar = hash_nar(nar_path, fail, source_output=output)
-                source_hash, source_size = api._inspect_artifact(source_file, "embedded Manage source", maximum_bytes=256 * 1024**2)
+                source_hash, source_size = api._inspect_artifact(source_file, "embedded Tiaris source", maximum_bytes=256 * 1024**2)
                 if (source_hash, source_size) != (source["sha256"], source["size_bytes"]):
-                    fail("embedded Manage source bytes disagree with their signed identity")
+                    fail("embedded Tiaris source bytes disagree with their signed identity")
                 api._verify_manage_source_git_archive(source_file, source["revision"])
         else:
             actual_nar = hash_nar(nar_path, fail)
@@ -341,7 +341,7 @@ def verify_directory(root, descriptor, public_key, api, *, signed=True):
         reachable.add(path)
         queue.extend(graph[path])
     if reachable != set(graph) or source["store_path"] not in graph:
-        fail("closure contains unreachable paths or omits its embedded Manage source")
+        fail("closure contains unreachable paths or omits its embedded Tiaris source")
     actual = set()
     for directory, names, files in os.walk(root, followlinks=False):
         for name in names:
@@ -468,7 +468,7 @@ def verify_archive(path, descriptor, public_key, api):
         if (digest.hexdigest(), size) != (descriptor["system_closure"]["sha256"], descriptor["system_closure"]["size_bytes"]):
             api._fail("NixOS closure does not match signed size/digest")
         os.lseek(fd, 0, os.SEEK_SET)
-        with tempfile.TemporaryDirectory(prefix="cybex-closure-verify-") as directory:
+        with tempfile.TemporaryDirectory(prefix="tiaris-closure-verify-") as directory:
             root = Path(directory)
             extract_ustar(Path(f"/proc/self/fd/{fd}"), root, api._fail, pass_fds=(fd,))
             manifest, _ = verify_directory(root, descriptor, public_key, api)

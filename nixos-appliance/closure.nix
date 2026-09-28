@@ -1,6 +1,6 @@
 { pkgs, toplevel, buildMetadata, sourceDateEpoch }:
 pkgs.stdenvNoCC.mkDerivation {
-  name = "cybex-james-unsigned-system-cache";
+  name = "tiaris-nest-unsigned-system-cache";
   __structuredAttrs = true;
   exportReferencesGraph.closure = [ toplevel ];
   nativeBuildInputs = [ pkgs.python3 pkgs.nix pkgs.zstd ];

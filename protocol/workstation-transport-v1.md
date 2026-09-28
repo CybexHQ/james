@@ -1,22 +1,22 @@
 # Workstation bundle fixture transport
 
-James advertises additive capability `workstation_netboot_transport_v1`.
+Nest advertises additive capability `workstation_netboot_transport_v1`.
 Protocol 4, runtime compatibility epoch 1, and the signed workstation descriptor
-remain unchanged. Manage may add optional `bundle_transport_url` to the unsigned
+remain unchanged. Tiaris may add optional `bundle_transport_url` to the unsigned
 `workstation_netboot` desired-state wrapper alongside `compatibility_epoch`,
 `reconcile_generation`, and `descriptor`. Omission or null uses the signed URL.
-Older James versions must never receive the override: Manage emits it only for
+Older Nest versions must never receive the override: Tiaris emits it only for
 explicitly allowlisted qualification devices advertising the capability.
 
 The override must be exactly
 `http://<RFC1918-IPv4-literal>:<explicit-port>/<signed-bundle-filename>`.
-Ports are canonical decimal 1–65535, including explicit port 80. James rejects
+Ports are canonical decimal 1–65535, including explicit port 80. Nest rejects
 loopback, IPv6, DNS names, public/special addresses, credentials, encoded paths,
 extra path segments, query strings, fragments, whitespace, and parser-normalized
 spellings. The filename must match the desired signed descriptor, not a latest
 release selected independently. HTTP requests disable proxies and redirects.
 
-James verifies the original descriptor with normal signature and HTTPS identity
+Nest verifies the original descriptor with normal signature and HTTPS identity
 policy before accepting the transport, even when the historical development
 `allow_private_release_urls` flag is enabled. The override does not authorize
 private source archives. Existing packaged-source verification, generation and

@@ -2,18 +2,18 @@
 { nixpkgs }:
 let
   configurations = import ./console-config.nix { inherit nixpkgs; };
-  daemon = configurations.installed.systemd.services.cybex-james;
+  daemon = configurations.installed.systemd.services.tiaris-nest;
 in import (nixpkgs + "/nixos/tests/make-test-python.nix") ({ pkgs, ... }: {
-  name = "cybex-james-daemon-network-report";
+  name = "tiaris-nest-daemon-network-report";
   nodes.machine = { ... }: {
     system.stateVersion = "26.05";
-    users.groups.cybex-james = {};
-    users.users.cybex-james = { isSystemUser = true; group = "cybex-james"; };
+    users.groups.tiaris-nest = {};
+    users.users.tiaris-nest = { isSystemUser = true; group = "tiaris-nest"; };
     systemd.services.network-report = {
       inherit (daemon) path;
       serviceConfig = {
         Type = "oneshot";
-        User = "cybex-james";
+        User = "tiaris-nest";
         NoNewPrivileges = true;
         CapabilityBoundingSet = "";
         RestrictAddressFamilies = daemon.serviceConfig.RestrictAddressFamilies;

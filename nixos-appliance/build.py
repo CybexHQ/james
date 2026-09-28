@@ -63,10 +63,10 @@ def extract(iso, path, destination):
 
 def inspect_template(iso, package, args, work):
     expected = {
-        '/cybex/release-public-key': (args.release_public_key + '\n').encode(),
-        '/cybex/provisioning-public-keys': ('\n'.join(args.provisioning_public_key) + '\n').encode(),
-        '/cybex/nixos-appliance': b'3\n',
-        '/CYBEX_PROVISIONING.BIN': bytes(8192),
+        '/tiaris/release-public-key': (args.release_public_key + '\n').encode(),
+        '/tiaris/provisioning-public-keys': ('\n'.join(args.provisioning_public_key) + '\n').encode(),
+        '/tiaris/nixos-appliance': b'3\n',
+        '/TIARIS_PROVISIONING.BIN': bytes(8192),
     }
     for index, (path, content) in enumerate(expected.items()):
         target = work / ('inspect-' + str(index))
@@ -74,18 +74,18 @@ def inspect_template(iso, package, args, work):
         if target.read_bytes() != content:
             raise ValueError('built ISO public trust or personalization input differs')
     bootstrap = work / 'embedded-bootstrap'
-    extract(iso, '/cybex/bootstrap/cybex-james-bootstrap', bootstrap)
-    if sha256(bootstrap) != sha256(package / 'bin/cybex-james-bootstrap'):
+    extract(iso, '/tiaris/bootstrap/tiaris-nest-bootstrap', bootstrap)
+    if sha256(bootstrap) != sha256(package / 'bin/tiaris-nest-bootstrap'):
         raise ValueError('ISO bootstrap differs from verified compiled package')
-    if run(package / 'bin/cybex-james-bootstrap', 'required-manage-origin') != args.expected_manage_origin:
-        raise ValueError('compiled bootstrap Manage origin differs')
+    if run(package / 'bin/tiaris-nest-bootstrap', 'required-manage-origin') != args.expected_manage_origin:
+        raise ValueError('compiled bootstrap Tiaris origin differs')
     grub = work / 'grub.cfg'
     extract(iso, '/EFI/BOOT/grub.cfg', grub)
     content = grub.read_text()
     entries = re.findall(r'^\s*menuentry\s+[\'"]([^\'"]+)[\'"]', content, re.MULTILINE)
-    if entries != ['Boot Cybex James Setup'] or re.search(r'^\s*submenu\s', content, re.MULTILINE):
+    if entries != ['Boot Tiaris Nest Setup'] or re.search(r'^\s*submenu\s', content, re.MULTILINE):
         raise ValueError('ISO must expose exactly one branded installer entry')
-    report = subprocess.run(['xorriso', '-indev', str(iso), '-find', '/CYBEX_PROVISIONING.BIN', '-exec', 'report_lba', '--'],
+    report = subprocess.run(['xorriso', '-indev', str(iso), '-find', '/TIARIS_PROVISIONING.BIN', '-exec', 'report_lba', '--'],
                             check=True, text=True, capture_output=True)
     rows = re.findall(r'File data lba:\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,', report.stdout + report.stderr)
     if len(rows) != 1 or int(rows[0][0]) != 0 or int(rows[0][2]) != 4 or int(rows[0][3]) != 8192:
@@ -107,9 +107,9 @@ def require_workstation_agent_cache(cache, agent):
 
 def build(args):
     manage = Path(args.manage_source_dir).absolute()
-    clean_checkout(REPO, args.source_revision, 'james')
+    clean_checkout(REPO, args.source_revision, 'nest')
     clean_checkout(manage, args.manage_source_revision, 'development')
-    run(sys.executable, REPO / 'tools/james-release.py', 'validate-manage-origin',
+    run(sys.executable, REPO / 'tools/nest-release.py', 'validate-manage-origin',
         '--expected-manage-origin', args.expected_manage_origin)
     public_key(args.release_public_key)
     keys = args.provisioning_public_key
@@ -122,7 +122,7 @@ def build(args):
     output.mkdir(parents=True, exist_ok=True)
     if output.is_symlink() or any(output.iterdir()):
         raise ValueError('output directory must be an ordinary empty directory')
-    with tempfile.TemporaryDirectory(prefix='.james-build-', dir=output.parent) as temporary:
+    with tempfile.TemporaryDirectory(prefix='.nest-build-', dir=output.parent) as temporary:
         work = Path(temporary)
         archive_dir = work / 'manage-source'
         archive = Path(run(REPO / 'nixos-appliance/build-manage-source-archive.sh',
@@ -147,14 +147,14 @@ def build(args):
                 raise ValueError('installer exceeds the GitHub per-asset publication limit')
             pin_revision = run('nix-instantiate', '--eval', '--strict', '--json', '--expr',
                                '(import ' + str(REPO / 'release/nixpkgs.nix') + ').revision')
-            metadata = dict(schema='cybex.james.installer-template-build.v3', version=version,
+            metadata = dict(schema='tiaris.nest.installer-template-build.v3', version=version,
                             architecture='x86_64-linux', base_os='nixos', base_os_version='26.05',
                             manage_origin=args.expected_manage_origin, package_delivery='system-closure-v1',
                             size_bytes=iso.stat().st_size, template_sha256=sha256(iso),
                             personalization_offset=offset, personalization_size=8192,
                             placeholder_sha256=hashlib.sha256(bytes(8192)).hexdigest(),
                             nixpkgs_revision=json.loads(pin_revision), provisioning_public_keys=keys)
-            name = 'cybex-james-appliance-template-' + version + '-x86_64-linux'
+            name = 'tiaris-nest-appliance-template-' + version + '-x86_64-linux'
             metadata_file = work / 'template.json'
             metadata_file.write_text(json.dumps(metadata, sort_keys=True, separators=(',', ':')) + '\n')
             publish(iso, output / (name + '.iso'))
@@ -167,7 +167,7 @@ def build(args):
                 shutil.copytree(cache, output / 'cache')
                 publish(metadata, output / 'build-metadata.json')
             else:
-                name = 'cybex-james-appliance-closure-' + version + '-x86_64-linux'
+                name = 'tiaris-nest-appliance-closure-' + version + '-x86_64-linux'
                 subprocess.run([sys.executable, str(REPO / 'tools/pack-system-closure.py'),
                                 '--cache', str(cache), '--build-metadata', str(metadata),
                                 '--private-key', args.private_key, '--output', str(output / (name + '.tar.zst')),

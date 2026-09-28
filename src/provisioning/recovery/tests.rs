@@ -14,17 +14,13 @@ use std::{
 };
 use uuid::Uuid;
 
-fn fixture() -> (
-    Value,
-    protocol::VerifiedEnvelope,
-    JamesProvisioningInventory,
-) {
+fn fixture() -> (Value, protocol::VerifiedEnvelope, NestProvisioningInventory) {
     let (mut plan, envelope, inventory, signing) = protocol::tests::signed_plan_fixture(
         protocol::INSTALL_PLAN_SCHEMA_V2,
-        "CYBEX-JAMES-INSTALL-PLAN-V2",
+        "TIARIS-NEST-INSTALL-PLAN-V2",
     );
     let release: Value = serde_json::from_str(include_str!(
-        "../../../protocol/fixtures/james-appliance-v3.json"
+        "../../../protocol/fixtures/nest-appliance-v3.json"
     ))
     .unwrap();
     plan["schema"] = protocol::INSTALL_PLAN_SCHEMA_V3.into();
@@ -37,7 +33,7 @@ fn fixture() -> (
     plan["issued_at"] = json!(chrono::Utc::now() - chrono::Duration::hours(2));
     plan["expires_at"] = json!(chrono::Utc::now() - chrono::Duration::minutes(100));
     (
-        protocol::tests::resign_plan(plan, "CYBEX-JAMES-INSTALL-PLAN-V3", &signing),
+        protocol::tests::resign_plan(plan, "TIARIS-NEST-INSTALL-PLAN-V3", &signing),
         protocol::VerifiedEnvelope {
             envelope,
             signing_key: signing.verifying_key(),
@@ -65,7 +61,7 @@ fn expired_retained_media_boots_completed_identity_without_network_or_closure() 
     inventory.ethernet_interfaces[0].gateway = None;
     let key = SigningKey::from_bytes(&[81; 32]);
     let mut durable = super::super::DurableProvisioningState {
-        schema: "cybex.james.provisioning-state.v1".into(),
+        schema: "tiaris.nest.provisioning-state.v1".into(),
         session_id: verified.envelope.session_id,
         plan: serde_json::from_value(plan).unwrap(),
         manage_origin: verified.envelope.manage_origin.clone(),

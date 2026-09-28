@@ -19,10 +19,10 @@ import release_speed_timing as timing
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPERS = ROOT / 'nixos-appliance/qualification'
-WARM = ('cybex-james-nixos-qualification.json', 'cybex-james-nixos-update-qualification.json',
-        'cybex-james-nixos-rollback-qualification.json', 'cybex-james-qualified-predecessor.json',
-        'cybex-james-qualified-predecessor-release.json')
-COLD = ('cybex-james-published-cold-qualification.json', 'cybex-james-published-workstation-qualification.json')
+WARM = ('tiaris-nest-nixos-qualification.json', 'tiaris-nest-nixos-update-qualification.json',
+        'tiaris-nest-nixos-rollback-qualification.json', 'tiaris-nest-qualified-predecessor.json',
+        'tiaris-nest-qualified-predecessor-release.json')
+COLD = ('tiaris-nest-published-cold-qualification.json', 'tiaris-nest-published-workstation-qualification.json')
 
 
 class Parser(argparse.ArgumentParser):
@@ -109,15 +109,15 @@ def delegate(args):
 
 def acceptance(args, stdout, stderr):
     required = WARM if args.phase == 'warm' else COLD
-    actual = {p.name for p in args.evidence_dir.glob('cybex-james-*.json')}
+    actual = {p.name for p in args.evidence_dir.glob('tiaris-nest-*.json')}
     if actual != set(required):
         raise ValueError('Incomplete or mixed output inventory')
     for name in required:
         io.load(args.evidence_dir / name)  # bounded, no links or duplicate members
-    if io.digest(io.read(args.candidate_dir / 'cybex-james-release.json')) != args.candidate_manifest_sha256:
+    if io.digest(io.read(args.candidate_dir / 'tiaris-nest-release.json')) != args.candidate_manifest_sha256:
         raise ValueError('Candidate changed during execution')
     base = [sys.executable, '-B', str(HELPERS / 'release_acceptance.py'), '--source', args.source,
-            '--manifest', str(args.candidate_dir / 'cybex-james-release.json')]
+            '--manifest', str(args.candidate_dir / 'tiaris-nest-release.json')]
     commands = []
     if args.phase == 'warm':
         p = cache.verifier()
@@ -127,7 +127,7 @@ def acceptance(args, stdout, stderr):
         snap = p.verify_pair_snapshot(args.predecessor_dir, args.trusted_public_key)
         if io.digest(snap['manifest_body']) != args.predecessor_manifest_sha256:
             raise ValueError('Predecessor input changed')
-        identity = p.identity(args.predecessor_dir, snap['manifest'], schema='cybex.james.nixos-qualification-predecessor.v1')
+        identity = p.identity(args.predecessor_dir, snap['manifest'], schema='tiaris.nest.nixos-qualification-predecessor.v1')
         if io.read(args.evidence_dir / WARM[3]) != p.canonical(identity):
             raise ValueError('Predecessor receipt changed')
         commands.append(base + ['--phase', 'prepublication', '--evidence', str(args.evidence_dir / WARM[0])])

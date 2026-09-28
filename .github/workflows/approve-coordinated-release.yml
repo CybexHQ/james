@@ -1,5 +1,5 @@
-name: Approve coordinated James release
-run-name: Approve James ${{ inputs.tag }} from run ${{ inputs.run }}
+name: Approve coordinated Nest release
+run-name: Approve Nest ${{ inputs.tag }} from run ${{ inputs.run }}
 on:
   workflow_dispatch:
     inputs:
@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production-release
     concurrency:
-      group: james-release-publish
+      group: nest-release-publish
       cancel-in-progress: false
     permissions:
       contents: write
@@ -43,7 +43,7 @@ jobs:
       - name: Promote only the approved, unchanged, cold-qualified artifacts
         env:
           GH_TOKEN: ${{ github.token }}
-          TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
+          TRUSTED_KEY: ${{ vars.TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY }}
           TAG: ${{ inputs.tag }}
           SOURCE: ${{ inputs.source }}
           RUN: ${{ inputs.run }}

@@ -43,7 +43,7 @@ pub async fn cache_file(
     Path(path): Path<String>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
-    // Egress accounting for the James report: 200/206 add their
+    // Egress accounting for the Nest report: 200/206 add their
     // Content-Length to the served totals, and a 404 for a well-formed
     // binary-cache member path counts as a miss. Garbage paths, unsatisfiable
     // ranges, and refused symlinks are never counted.

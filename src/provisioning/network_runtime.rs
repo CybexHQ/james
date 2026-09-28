@@ -27,13 +27,13 @@ pub struct NetworkRuntimeOptions {
 impl Default for NetworkRuntimeOptions {
     fn default() -> Self {
         Self {
-            config_path: PathBuf::from("/etc/cybex-james/config.toml"),
-            network_plan_path: PathBuf::from("/var/lib/cybex-james/control/netplan-approved.json"),
+            config_path: PathBuf::from("/etc/tiaris-nest/config.toml"),
+            network_plan_path: PathBuf::from("/var/lib/tiaris-nest/control/netplan-approved.json"),
             fallback_network_plan_path: PathBuf::from(
-                "/var/lib/cybex-james/control/netplan-dhcp-fallback.json",
+                "/var/lib/tiaris-nest/control/netplan-dhcp-fallback.json",
             ),
             fallback_marker_path: PathBuf::from(
-                "/var/lib/cybex-james/control/network-fallback-active",
+                "/var/lib/tiaris-nest/control/network-fallback-active",
             ),
             ip_binary: PathBuf::from("ip"),
             sys_class_net_root: PathBuf::from("/sys/class/net"),
@@ -135,7 +135,7 @@ pub fn reconcile_network_runtime(options: NetworkRuntimeOptions) -> Result<Netwo
     let plan: ApprovedNetplan = read_bounded_json(
         network_plan_path,
         MAX_NETWORK_PLAN_BYTES,
-        "active James network plan",
+        "active Nest network plan",
     )?;
     let network = approved_runtime_network(&plan)?;
     validate_interface_name(&network.interface_name)?;
@@ -176,13 +176,10 @@ pub fn reconcile_network_runtime(options: NetworkRuntimeOptions) -> Result<Netwo
     let selected = select_runtime_ipv4(network.mode, network.address_cidr.as_deref(), &addresses)?;
     let desired = format!("http://{selected}");
 
-    let mut config = read_bounded_regular_file(
-        &options.config_path,
-        MAX_CONFIG_BYTES,
-        "James configuration",
-    )?;
+    let mut config =
+        read_bounded_regular_file(&options.config_path, MAX_CONFIG_BYTES, "Nest configuration")?;
     let parsed = crate::config::AppConfig::from_toml_str(&config, &options.config_path)
-        .context("validate James configuration before network reconciliation")?;
+        .context("validate Nest configuration before network reconciliation")?;
     if parsed.public_base_url() == desired {
         parsed
             .validate_appliance_config()
@@ -191,7 +188,7 @@ pub fn reconcile_network_runtime(options: NetworkRuntimeOptions) -> Result<Netwo
     }
     config = replace_server_public_base_url(&config, &desired)?;
     crate::config::AppConfig::from_toml_str(&config, &options.config_path)
-        .context("validate reconciled James configuration")?
+        .context("validate reconciled Nest configuration")?
         .validate_appliance_config()
         .context("validate installed appliance configuration")?;
     atomic_replace_preserving_metadata(&options.config_path, config.as_bytes())?;
@@ -219,22 +216,22 @@ fn fallback_marker_applies(options: &NetworkRuntimeOptions) -> Result<bool> {
                 || metadata.uid() != 0
                 || metadata.mode() & 0o077 != 0
             {
-                bail!("James network fallback marker is not a trusted root-owned file")
+                bail!("Nest network fallback marker is not a trusted root-owned file")
             }
             let marker: NetworkFallbackMarker = read_bounded_json(
                 &options.fallback_marker_path,
                 256,
-                "James network fallback marker",
+                "Nest network fallback marker",
             )?;
             let approved = read_bounded_regular_file(
                 &options.network_plan_path,
                 MAX_NETWORK_PLAN_BYTES,
-                "approved James network plan",
+                "approved Nest network plan",
             )?;
             fallback_marker_matches_approved(&marker, approved.as_bytes())
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error).context("inspect James network fallback marker"),
+        Err(error) => Err(error).context("inspect Nest network fallback marker"),
     }
 }
 
@@ -242,14 +239,14 @@ fn fallback_marker_matches_approved(
     marker: &NetworkFallbackMarker,
     approved: &[u8],
 ) -> Result<bool> {
-    if marker.schema != "cybex.james.network-fallback.v1"
+    if marker.schema != "tiaris.nest.network-fallback.v1"
         || marker.approved_sha256.len() != 64
         || !marker
             .approved_sha256
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
     {
-        bail!("James network fallback marker is invalid")
+        bail!("Nest network fallback marker is invalid")
     }
     Ok(hex::encode(Sha256::digest(approved)) == marker.approved_sha256)
 }
@@ -264,18 +261,18 @@ fn network_plan_path_for_fallback(options: &NetworkRuntimeOptions, fallback_acti
 
 fn approved_runtime_network(plan: &ApprovedNetplan) -> Result<ApprovedRuntimeNetwork> {
     if plan.network.version != 2 || plan.network.renderer != "networkd" {
-        bail!("approved James network plan has an unsupported network shape")
+        bail!("approved Nest network plan has an unsupported network shape")
     }
     if plan.network.ethernets.len() != 1 {
-        bail!("approved James network plan must contain exactly one wired interface")
+        bail!("approved Nest network plan must contain exactly one wired interface")
     }
     let interface = plan
         .network
         .ethernets
-        .get("cybex-james")
-        .ok_or_else(|| anyhow!("approved James network plan omitted its managed interface"))?;
+        .get("tiaris-nest")
+        .ok_or_else(|| anyhow!("approved Nest network plan omitted its managed interface"))?;
     if interface.dhcp6 {
-        bail!("approved James network plan must keep DHCPv6 disabled")
+        bail!("approved Nest network plan must keep DHCPv6 disabled")
     }
     let (mode, address_cidr) = if interface.dhcp4 {
         if !interface.addresses.is_empty() {
@@ -385,7 +382,7 @@ fn replace_server_public_base_url(config: &str, desired: &str) -> Result<String>
         if in_server && trimmed.starts_with("public_base_url") {
             let key = trimmed.split('=').next().unwrap_or_default().trim();
             if key != "public_base_url" {
-                bail!("James server public URL declaration is malformed")
+                bail!("Nest server public URL declaration is malformed")
             }
             output.push_str(&replacement);
             if raw_line.ends_with('\n') {
@@ -397,7 +394,7 @@ fn replace_server_public_base_url(config: &str, desired: &str) -> Result<String>
         }
     }
     if replaced != 1 {
-        bail!("James configuration must contain one server public URL")
+        bail!("Nest configuration must contain one server public URL")
     }
     Ok(output)
 }
@@ -420,13 +417,13 @@ fn read_bounded_regular_file(path: &Path, limit: u64, label: &str) -> Result<Str
 }
 
 fn atomic_replace_preserving_metadata(path: &Path, body: &[u8]) -> Result<()> {
-    let metadata = fs::symlink_metadata(path).context("inspect James configuration metadata")?;
+    let metadata = fs::symlink_metadata(path).context("inspect Nest configuration metadata")?;
     if !metadata.file_type().is_file() {
-        bail!("James configuration must be a regular file")
+        bail!("Nest configuration must be a regular file")
     }
     let parent = path
         .parent()
-        .ok_or_else(|| anyhow!("James configuration has no parent directory"))?;
+        .ok_or_else(|| anyhow!("Nest configuration has no parent directory"))?;
     let temporary = parent.join(format!(
         ".network-runtime.{}.tmp",
         uuid::Uuid::new_v4().simple()
@@ -437,18 +434,18 @@ fn atomic_replace_preserving_metadata(path: &Path, body: &[u8]) -> Result<()> {
             .write(true)
             .mode(metadata.mode() & 0o7777)
             .open(&temporary)
-            .context("create temporary James configuration")?;
+            .context("create temporary Nest configuration")?;
         let owner_status = unsafe {
             use std::os::fd::AsRawFd;
             libc::fchown(file.as_raw_fd(), metadata.uid(), metadata.gid())
         };
         if owner_status != 0 {
-            return Err(std::io::Error::last_os_error()).context("preserve James config owner");
+            return Err(std::io::Error::last_os_error()).context("preserve Nest config owner");
         }
         file.set_permissions(fs::Permissions::from_mode(metadata.mode() & 0o7777))?;
         file.write_all(body)?;
         file.sync_all()?;
-        fs::rename(&temporary, path).context("activate reconciled James configuration")?;
+        fs::rename(&temporary, path).context("activate reconciled Nest configuration")?;
         File::open(parent)?.sync_all()?;
         Ok(())
     })();
@@ -540,7 +537,7 @@ mod tests {
                 "version": 2,
                 "renderer": "networkd",
                 "ethernets": {
-                    "cybex-james": {
+                    "tiaris-nest": {
                         "match": {"macaddress": "02:00:00:00:00:42"},
                         "set-name": "enp2s0",
                         "dhcp4": false,
@@ -579,7 +576,7 @@ mod tests {
         let old_approved = br#"{"network":{"version":2,"approved":"old"}}"#;
         let new_approved = br#"{"network":{"version":2,"approved":"new"}}"#;
         let marker = NetworkFallbackMarker {
-            schema: "cybex.james.network-fallback.v1".to_string(),
+            schema: "tiaris.nest.network-fallback.v1".to_string(),
             approved_sha256: hex::encode(Sha256::digest(old_approved)),
         };
 

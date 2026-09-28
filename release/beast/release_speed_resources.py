@@ -8,14 +8,14 @@ import shutil
 
 import release_speed_io as io
 
-HOST_LOCK = Path('/run/lock/cybex-james-production-qualification.lock')
+HOST_LOCK = Path('/run/lock/tiaris-nest-production-qualification.lock')
 GIB = 1024**3
 
 
 def profile(path, phase):
     value = io.load(path)
     fields = {'schema', 'memory_gib', 'disk_gib', 'cpus', 'subnet', 'lease_root', 'disk_root'}
-    if set(value) != fields or value['schema'] != 'cybex.james.serial-resources.v1':
+    if set(value) != fields or value['schema'] != 'tiaris.nest.serial-resources.v1':
         raise ValueError('Explicit resource profile required')
     minimum = (28, 240, 8) if phase == 'warm' else (38, 320, 12)
     for name, floor, ceiling in zip(('memory_gib', 'disk_gib', 'cpus'), minimum, (96, 4096, 24)):
@@ -64,7 +64,7 @@ def admission(value, identity, state_root):
             # disk_root remains a validated profile field for compatibility,
             # but its filesystem's free space cannot authorize these writes.
             check(value, availability(io.directory(state_root)))
-            io.write(marker, io.canonical({'schema': 'cybex.james.serial-lease.v1',
+            io.write(marker, io.canonical({'schema': 'tiaris.nest.serial-lease.v1',
                 'identity': identity, 'pid': os.getpid(), 'process_start': Path('/proc/self/stat').read_text().split(') ', 1)[1].split()[19]}))
             io.sync(root)
             try:

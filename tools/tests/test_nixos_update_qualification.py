@@ -48,17 +48,17 @@ ORIGIN = 'https://dev.example.test'
 
 def manifest(version, letter):
     return {'version': version, 'installer_iso_template_v3': {'manage_origin': ORIGIN},
-        'appliance_release_v1': {'schema': 'cybex.james.appliance-release.v3', 'release_id': version,
+        'appliance_release_v1': {'schema': 'tiaris.nest.appliance-release.v3', 'release_id': version,
         'base_os': 'nixos', 'base_os_version': '26.05', 'source_revision': SOURCE,
         'manage_source_revision': letter * 40, 'nixpkgs_revision': 'd' * 40,
-        'system_toplevel': '/nix/store/' + letter * 32 + '-nixos-system-james',
+        'system_toplevel': '/nix/store/' + letter * 32 + '-nixos-system-nest',
         'system_closure': {'sha256': letter * 64, 'size_bytes': 3,
             'url': f'https://releases.example.test/{version}.tar.zst'}, 'sqlite_migrations_sha256': 'b' * 64}}
 
 
 def node(release, generation, when):
     d = release['appliance_release_v1']
-    return {'device_id': DEVICE, 'hostname': 'james-owned', 'public_base_url': 'http://192.0.2.2:8080',
+    return {'device_id': DEVICE, 'hostname': 'nest-owned', 'public_base_url': 'http://192.0.2.2:8080',
         'cache_base_url': 'http://192.0.2.2:8080/cache', 'cache_public_key_fingerprint': '3' * 64,
         'appliance_network': {'interfaces': [{'ifname': 'eth0', 'address': '52:54:00:c7:be:01'}]},
         'appliance_release': release['version'], 'appliance_base_os': 'nixos', 'appliance_base_os_version': '26.05',
@@ -66,7 +66,7 @@ def node(release, generation, when):
         'system_generation': generation, 'system_closure_sha256': d['system_closure']['sha256'],
         'sqlite_migrations_sha256': d['sqlite_migrations_sha256'], 'state_schema': 3,
         'appliance_boot_mode': 'uefi', 'appliance_secure_boot': False, 'network_fallback_active': False,
-        'appliance_local_health': {'status': 'healthy'}, 'james_reported_at': when.isoformat(),
+        'appliance_local_health': {'status': 'healthy'}, 'nest_reported_at': when.isoformat(),
         'update_status': 'idle', 'update_attempt_id': '', 'update_stage': 'idle', 'appliance_package_update': {'status': 'idle'}}
 
 
@@ -112,7 +112,7 @@ class Run:
         self.fixture.wait_ready = lambda api: deepcopy(self.before)
         self.fixture.monitor.events = self.qmp_events
         self.fixture.monitor.call = lambda cmd, args: (self.nics.append((cmd, args)), self.nic_times.append(self.clock.t))
-        self.evidence = {'schema': 'cybex.james.nixos-appliance-qualification.v1', 'ok': True,
+        self.evidence = {'schema': 'tiaris.nest.nixos-appliance-qualification.v1', 'ok': True,
             'qualified_manifest_sha256': hashlib.sha256(self.previous_body).hexdigest(),
             'release_version': self.previous['version'], 'base_os': 'nixos', 'secure_boot': False,
             **{k: self.before[k] for k in ('system_toplevel', 'system_generation', 'system_closure_sha256', 'nixpkgs_revision')},
@@ -137,7 +137,7 @@ class Run:
 
     def terminal(self):
         value = node(self.previous if self.rollback else self.candidate, '7' if self.rollback else '11', self.clock.now())
-        if self.stale: value['james_reported_at'] = self.before['james_reported_at']
+        if self.stale: value['nest_reported_at'] = self.before['nest_reported_at']
         value.update(update_attempt_id=ATTEMPT, update_status='rolled_back' if self.rollback else 'succeeded',
             update_stage='boot_fallback' if self.rollback else 'committed', update_target_version=self.candidate['version'])
         d = self.candidate['appliance_release_v1']
@@ -229,7 +229,7 @@ class TransitionTests(unittest.TestCase):
         def api(path, body=None):
             result = original(path, body)
             if path.endswith(DEVICE) and 3 <= run.clock.t < 214:
-                result['node']['james_reported_at'] = run.clock.now().isoformat()
+                result['node']['nest_reported_at'] = run.clock.now().isoformat()
             return result
         run.api = api
         with tempfile.TemporaryDirectory() as temporary:
@@ -244,7 +244,7 @@ class TransitionTests(unittest.TestCase):
             def api(path, body=None):
                 result = original(path, body)
                 if path.endswith(DEVICE) and run.clock.t >= 3:
-                    result['node'].update({key: value, 'james_reported_at': run.clock.now().isoformat()})
+                    result['node'].update({key: value, 'nest_reported_at': run.clock.now().isoformat()})
                 return result
             run.api = api
             with self.subTest(key=key), tempfile.TemporaryDirectory() as temporary:
@@ -257,7 +257,7 @@ class TransitionTests(unittest.TestCase):
         def api(path, body=None):
             result = original(path, body)
             if path.endswith(DEVICE):
-                result['node']['james_reported_at'] = run.before['james_reported_at']
+                result['node']['nest_reported_at'] = run.before['nest_reported_at']
             return result
         run.api = api
         with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(ValueError, 'Candidate agent contact'):
@@ -291,7 +291,7 @@ class TransitionTests(unittest.TestCase):
             directory = Path(temporary)
             with self.assertRaisesRegex(ValueError, 'outside the candidate boot'):
                 run.execute(directory / 'result.json')
-            diagnostic = json.loads((directory / 'cybex-james-nixos-rollback-failure.json').read_text())
+            diagnostic = json.loads((directory / 'tiaris-nest-nixos-rollback-failure.json').read_text())
             self.assertLess(T.timestamp(diagnostic['bootstrap_at']), T.timestamp(diagnostic['candidate_reset_at']))
 
     def test_inert_gate_failure_prevents_update_admission(self):
@@ -337,7 +337,7 @@ class TransitionTests(unittest.TestCase):
                         with self.assertRaises((ValueError, OSError)):
                             run.execute(Path(temporary) / 'result.json')
                         if recorder == 'print':
-                            self.assertTrue((Path(temporary) / 'cybex-james-nixos-rollback-failure.json').exists())
+                            self.assertTrue((Path(temporary) / 'tiaris-nest-nixos-rollback-failure.json').exists())
                     self.assertEqual(order, ['stop'] if stop_fails else ['stop', 'remove'])
 
     def test_failure_receipt_retains_safe_boundary_facts_without_raw_report(self):
@@ -347,7 +347,7 @@ class TransitionTests(unittest.TestCase):
             directory = Path(temporary)
             with self.assertRaisesRegex(ValueError, 'Candidate agent contact'):
                 run.execute(directory / 'result.json')
-            receipt = directory / 'cybex-james-nixos-rollback-failure.json'
+            receipt = directory / 'tiaris-nest-nixos-rollback-failure.json'
             evidence = json.loads(receipt.read_text())
             self.assertEqual(evidence['stage'], 'candidate_gate_contact')
             self.assertEqual(evidence['reported_appliance_release'], '1.2.4')
@@ -449,7 +449,7 @@ class TransitionTests(unittest.TestCase):
 
     def test_cached_same_fresh_report_counts_once(self):
         run = Run()
-        run.node_mutation = lambda n: {**n, 'james_reported_at': datetime.datetime(2026,9,21,0,0,3,tzinfo=T.UTC).isoformat()}
+        run.node_mutation = lambda n: {**n, 'nest_reported_at': datetime.datetime(2026,9,21,0,0,3,tzinfo=T.UTC).isoformat()}
         with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(ValueError, 'timed out'):
             run.execute(Path(temporary) / 'result.json', timeout=10)
 

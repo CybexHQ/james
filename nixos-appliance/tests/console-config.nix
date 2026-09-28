@@ -1,8 +1,8 @@
-# Evaluate the real appliance modules without compiling James or an ISO.
+# Evaluate the real appliance modules without compiling Nest or an ISO.
 { nixpkgs }:
 let
   pkgs = import nixpkgs { system = "x86_64-linux"; };
-  placeholder = pkgs.runCommand "james-console-evaluation-placeholder" { version = "0.0.0"; } "mkdir -p $out";
+  placeholder = pkgs.runCommand "nest-console-evaluation-placeholder" { version = "0.0.0"; } "mkdir -p $out";
   appliance = {
     package = placeholder;
     udpcast = placeholder;
@@ -26,7 +26,7 @@ let
 in {
   setup = evaluate [ ../iso.nix ];
   installed = evaluate [ ../module.nix {
-    services.cybex-james = { enable = true; inherit appliance; };
+    services.tiaris-nest = { enable = true; inherit appliance; };
     system.stateVersion = "26.05";
   } ];
 }

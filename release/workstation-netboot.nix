@@ -18,7 +18,7 @@ assert builtins.elem sourcePin.repository [ "CybexHQ/manage" "CybexHQ/developmen
 assert sourceRevisionMatches;
 assert nixpkgsRevisionMatches;
 assert runtimeVersion == sourcePin.runtime_version;
-import (manageRepo + "/deploy/nixos/cybex-installer-netboot.nix") {
+import (manageRepo + "/deploy/nixos/tiaris-installer-netboot.nix") {
   inherit nixpkgs system sourceDateEpoch;
   repoRoot = manageRepo;
   manageSourceRevision = sourcePin.revision;

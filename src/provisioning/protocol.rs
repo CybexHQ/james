@@ -1,5 +1,5 @@
 use super::inventory::{
-    JamesProvisioningDisk, JamesProvisioningEthernetInterface, JamesProvisioningInventory,
+    NestProvisioningDisk, NestProvisioningEthernetInterface, NestProvisioningInventory,
     hardware_digest, inventory_sha256,
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -18,17 +18,17 @@ use std::{fs, path::Path, time::Duration};
 use uuid::Uuid;
 
 const ENVELOPE_SIZE: usize = 8192;
-const ENVELOPE_SCHEMA: &str = "cybex.james.provisioning-envelope.v1";
-const ENVELOPE_SIGNATURE_DOMAIN: &str = "CYBEX-JAMES-PROVISIONING-ENVELOPE-V1";
-const KEY_DERIVATION_DOMAIN: &[u8] = b"CYBEX-JAMES-PROVISIONING-KEY-V1\0";
-const REQUEST_SIGNATURE_DOMAIN: &str = "CYBEX-JAMES-PROVISIONING-V1";
-pub(crate) const INSTALL_PLAN_SCHEMA_V1: &str = "cybex.james.install-plan.v1";
-pub(crate) const INSTALL_PLAN_SCHEMA_V3: &str = "cybex.james.install-plan.v3";
-pub(crate) const INSTALL_PLAN_SCHEMA_V2: &str = "cybex.james.install-plan.v2";
-const INSTALL_PLAN_SIGNATURE_DOMAIN_V1: &str = "CYBEX-JAMES-INSTALL-PLAN-V1";
-const INSTALL_PLAN_SIGNATURE_DOMAIN_V2: &str = "CYBEX-JAMES-INSTALL-PLAN-V2";
+const ENVELOPE_SCHEMA: &str = "tiaris.nest.provisioning-envelope.v1";
+const ENVELOPE_SIGNATURE_DOMAIN: &str = "TIARIS-NEST-PROVISIONING-ENVELOPE-V1";
+const KEY_DERIVATION_DOMAIN: &[u8] = b"TIARIS-NEST-PROVISIONING-KEY-V1\0";
+const REQUEST_SIGNATURE_DOMAIN: &str = "TIARIS-NEST-PROVISIONING-V1";
+pub(crate) const INSTALL_PLAN_SCHEMA_V1: &str = "tiaris.nest.install-plan.v1";
+pub(crate) const INSTALL_PLAN_SCHEMA_V3: &str = "tiaris.nest.install-plan.v3";
+pub(crate) const INSTALL_PLAN_SCHEMA_V2: &str = "tiaris.nest.install-plan.v2";
+const INSTALL_PLAN_SIGNATURE_DOMAIN_V1: &str = "TIARIS-NEST-INSTALL-PLAN-V1";
+const INSTALL_PLAN_SIGNATURE_DOMAIN_V2: &str = "TIARIS-NEST-INSTALL-PLAN-V2";
 pub(crate) const NETWORK_SNAPSHOT_DELIVERY: &str = "network-snapshot-v1";
-const IDENTITY_TRANSITION_SIGNATURE_DOMAIN: &str = "CYBEX-JAMES-IDENTITY-TRANSITION-V1";
+const IDENTITY_TRANSITION_SIGNATURE_DOMAIN: &str = "TIARIS-NEST-IDENTITY-TRANSITION-V1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -52,7 +52,7 @@ pub(crate) struct VerifiedEnvelope {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct JamesProvisioningNetworkPlan {
+pub struct NestProvisioningNetworkPlan {
     pub mode: String,
     pub interface_id: String,
     pub address_cidr: Option<String>,
@@ -63,7 +63,7 @@ pub struct JamesProvisioningNetworkPlan {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct JamesMaintenanceWindowPlan {
+pub struct NestMaintenanceWindowPlan {
     pub timezone: String,
     pub weekday: u8,
     pub start: String,
@@ -90,10 +90,10 @@ pub struct SignedInstallPlan {
     pub reserved_device_id: String,
     pub display_name: String,
     pub target_disk_id: String,
-    pub target_disk: JamesProvisioningDisk,
-    pub network_interface: JamesProvisioningEthernetInterface,
-    pub network: JamesProvisioningNetworkPlan,
-    pub maintenance_window: JamesMaintenanceWindowPlan,
+    pub target_disk: NestProvisioningDisk,
+    pub network_interface: NestProvisioningEthernetInterface,
+    pub network: NestProvisioningNetworkPlan,
+    pub maintenance_window: NestMaintenanceWindowPlan,
     #[serde(default)]
     pub management_cidrs: Vec<String>,
     #[serde(default)]
@@ -120,7 +120,7 @@ struct ClaimRequest<'a> {
     provisioning_public_key: String,
     provisioning_public_key_fingerprint: String,
     hardware_digest: &'a str,
-    inventory: &'a JamesProvisioningInventory,
+    inventory: &'a NestProvisioningInventory,
 }
 
 #[derive(Debug, Deserialize)]
@@ -316,7 +316,7 @@ pub(crate) fn verify_install_plan(
     value: Value,
     signing_key: &VerifyingKey,
     envelope: &ProvisioningEnvelope,
-    inventory: &JamesProvisioningInventory,
+    inventory: &NestProvisioningInventory,
 ) -> Result<SignedInstallPlan> {
     verify_install_plan_inner(value, signing_key, envelope, inventory, false)
 }
@@ -325,7 +325,7 @@ pub(crate) fn verify_durable_install_plan(
     value: Value,
     signing_key: &VerifyingKey,
     envelope: &ProvisioningEnvelope,
-    inventory: &JamesProvisioningInventory,
+    inventory: &NestProvisioningInventory,
 ) -> Result<SignedInstallPlan> {
     verify_install_plan_inner(value, signing_key, envelope, inventory, true)
 }
@@ -378,7 +378,7 @@ pub(crate) fn verify_promoted_install_plan(
                     .is_some_and(|r| r.nixos().is_ok())
                 && plan.package_transport_url.is_some() =>
         {
-            "CYBEX-JAMES-INSTALL-PLAN-V3"
+            "TIARIS-NEST-INSTALL-PLAN-V3"
         }
         _ => bail!("promoted install plan package-delivery contract is incompatible"),
     };
@@ -455,7 +455,7 @@ fn verify_install_plan_inner(
     value: Value,
     signing_key: &VerifyingKey,
     envelope: &ProvisioningEnvelope,
-    inventory: &JamesProvisioningInventory,
+    inventory: &NestProvisioningInventory,
     acknowledged_attempt: bool,
 ) -> Result<SignedInstallPlan> {
     let plan: SignedInstallPlan =
@@ -505,7 +505,7 @@ fn verify_install_plan_inner(
                     .is_some_and(|r| r.nixos().is_ok())
                 && plan.package_transport_url.is_some() =>
         {
-            "CYBEX-JAMES-INSTALL-PLAN-V3"
+            "TIARIS-NEST-INSTALL-PLAN-V3"
         }
         _ => bail!("install plan package-delivery contract is incompatible"),
     };
@@ -615,7 +615,7 @@ impl ProvisioningClient {
             .redirect(Policy::none())
             .timeout(Duration::from_secs(30))
             .https_only(true)
-            .user_agent(concat!("cybex-james-bootstrap/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("tiaris-nest-bootstrap/", env!("CARGO_PKG_VERSION")))
             .build()
             .context("build provisioning HTTP client")?;
         Ok(Self {
@@ -667,7 +667,7 @@ impl ProvisioningClient {
         &self,
         media_secret: &str,
         key: &SigningKey,
-        inventory: &JamesProvisioningInventory,
+        inventory: &NestProvisioningInventory,
         hardware_digest: &str,
     ) -> Result<AgentSessionResponse> {
         let public = key.verifying_key().to_bytes();
@@ -681,7 +681,7 @@ impl ProvisioningClient {
         let response = self
             .signed_json(
                 Method::POST,
-                "/v1/agent/james/provisioning-sessions/claim",
+                "/v1/agent/nest/provisioning-sessions/claim",
                 key,
                 Some(media_secret),
                 Some(&request),
@@ -692,7 +692,7 @@ impl ProvisioningClient {
 
     pub(crate) async fn poll_plan(&self, key: &SigningKey) -> Result<AgentSessionResponse> {
         let path = format!(
-            "/v1/agent/james/provisioning-sessions/{}/plan",
+            "/v1/agent/nest/provisioning-sessions/{}/plan",
             self.session_id
         );
         let response = self
@@ -732,7 +732,7 @@ impl ProvisioningClient {
             payload: json!({}),
         };
         let path = format!(
-            "/v1/agent/james/provisioning-sessions/{}/events",
+            "/v1/agent/nest/provisioning-sessions/{}/events",
             self.session_id
         );
         let response: EventResponse = self
@@ -774,7 +774,7 @@ impl ProvisioningClient {
                 .encode(device_key.sign(transition.as_bytes()).to_bytes()),
         };
         let path = format!(
-            "/v1/agent/james/provisioning-sessions/{}/activate-identity",
+            "/v1/agent/nest/provisioning-sessions/{}/activate-identity",
             self.session_id
         );
         let first = self
@@ -836,11 +836,11 @@ impl ProvisioningClient {
         let mut request = self
             .http
             .request(method, format!("{}{}", self.origin, path))
-            .header("x-cybex-request-id", request_id)
-            .header("x-cybex-timestamp", timestamp)
-            .header("x-cybex-signature", signature);
+            .header("x-tiaris-request-id", request_id)
+            .header("x-tiaris-timestamp", timestamp)
+            .header("x-tiaris-signature", signature);
         if let Some(secret) = media_secret {
-            request = request.header("x-cybex-james-provisioning-secret", secret);
+            request = request.header("x-tiaris-nest-provisioning-secret", secret);
         }
         if !body.is_empty() {
             request = request
@@ -903,7 +903,7 @@ fn safe_http_error(status: StatusCode, body: &[u8]) -> anyhow::Error {
 
 fn deterministic_event_id(session_id: Uuid, plan_id: Uuid, sequence: i64) -> Uuid {
     let mut digest = Sha256::new();
-    digest.update(b"CYBEX-JAMES-PROVISIONING-EVENT-ID-V1\0");
+    digest.update(b"TIARIS-NEST-PROVISIONING-EVENT-ID-V1\0");
     digest.update(session_id.as_bytes());
     digest.update(plan_id.as_bytes());
     digest.update(sequence.to_be_bytes());
@@ -1000,7 +1000,7 @@ pub(crate) mod tests {
     ) -> (
         Value,
         ProvisioningEnvelope,
-        JamesProvisioningInventory,
+        NestProvisioningInventory,
         SigningKey,
     ) {
         let now = Utc::now();
@@ -1017,7 +1017,7 @@ pub(crate) mod tests {
             signature: URL_SAFE_NO_PAD.encode([0; 64]),
             zero_padding: String::new(),
         };
-        let disk = JamesProvisioningDisk {
+        let disk = NestProvisioningDisk {
             id: "disk-1".to_string(),
             path: "/dev/sda".to_string(),
             model: "Disk".to_string(),
@@ -1030,7 +1030,7 @@ pub(crate) mod tests {
             eligible: true,
             blocker_codes: Vec::new(),
         };
-        let interface = JamesProvisioningEthernetInterface {
+        let interface = NestProvisioningEthernetInterface {
             id: "pci-0000:00:03.0".to_string(),
             name: "enp0s3".to_string(),
             mac: "52:54:00:12:34:56".to_string(),
@@ -1038,8 +1038,8 @@ pub(crate) mod tests {
             addresses: vec!["192.0.2.10/24".to_string()],
             gateway: Some("192.0.2.1".to_string()),
         };
-        let inventory = JamesProvisioningInventory {
-            manufacturer: "Cybex".to_string(),
+        let inventory = NestProvisioningInventory {
+            manufacturer: "Tiaris".to_string(),
             model: "Qualification VM".to_string(),
             serial_number: "vm-1".to_string(),
             asset_tag: "lab".to_string(),
@@ -1072,7 +1072,7 @@ pub(crate) mod tests {
             "hardware_digest": hardware_digest(&inventory).unwrap(),
             "provisioning_public_key_fingerprint": provisioning_fingerprint,
             "reserved_device_id": "dev_0123456789abcdef0123456789abcdef",
-            "display_name": "Qualification James",
+            "display_name": "Qualification Nest",
             "target_disk_id": disk.id,
             "target_disk": disk,
             "network_interface": interface,
@@ -1107,11 +1107,11 @@ pub(crate) mod tests {
                 (
                     "appliance_release".to_string(),
                     json!({
-                        "schema": "cybex.james.appliance-release.v1",
+                        "schema": "tiaris.nest.appliance-release.v1",
                         "release_id": "1.2.3",
                         "ubuntu_snapshot_id": "20260801T120000Z",
-                        "cybex_repository_snapshot": {
-                            "url": "https://releases.cybex.net/cybex-james-appliance-packages-1.2.3-x86_64-linux.tar.zst",
+                        "tiaris_repository_snapshot": {
+                            "url": "https://releases.cybex.net/tiaris-nest-appliance-packages-1.2.3-x86_64-linux.tar.zst",
                             "sha256": "b".repeat(64),
                             "size_bytes": 1024
                         },
@@ -1126,7 +1126,7 @@ pub(crate) mod tests {
                 ),
                 (
                     "package_transport_url".to_string(),
-                    json!("http://192.168.122.1:8080/cybex-james-appliance-packages-1.2.3-x86_64-linux.tar.zst"),
+                    json!("http://192.168.122.1:8080/tiaris-nest-appliance-packages-1.2.3-x86_64-linux.tar.zst"),
                 ),
             ]);
         }
@@ -1184,7 +1184,7 @@ pub(crate) mod tests {
         payload.extend(serde_json::to_vec(&canonical_json(unsigned)).unwrap());
         envelope.signature = URL_SAFE_NO_PAD.encode(signing.sign(&payload).to_bytes());
         let directory =
-            std::env::temp_dir().join(format!("james-retained-media-{}", Uuid::new_v4()));
+            std::env::temp_dir().join(format!("nest-retained-media-{}", Uuid::new_v4()));
         fs::create_dir(&directory).unwrap();
         let path = directory.join("envelope.bin");
         let mut body = serde_json::to_vec(&envelope).unwrap();
@@ -1231,7 +1231,7 @@ pub(crate) mod tests {
 
         for invalid in [
             "https://manage.example.test:443",
-            "https://Manage.example.test",
+            "https://Tiaris.example.test",
             "https://manage.example.test/",
         ] {
             envelope.manage_origin = invalid.to_string();
@@ -1353,11 +1353,11 @@ pub(crate) mod tests {
         value["base_os_version"] = "26.05".into();
         value["package_delivery"] = "system-closure-v1".into();
         let fixture: Value = serde_json::from_str(include_str!(
-            "../../protocol/fixtures/james-appliance-v3.json"
+            "../../protocol/fixtures/nest-appliance-v3.json"
         ))
         .unwrap();
         value["appliance_release"] = fixture["appliance_release"].clone();
-        value["package_transport_url"]="https://releases.example/1.2.3/cybex-james-appliance-closure-1.2.3-x86_64-linux.tar.zst".into();
+        value["package_transport_url"]="https://releases.example/1.2.3/tiaris-nest-appliance-closure-1.2.3-x86_64-linux.tar.zst".into();
         value["inventory_sha256"] = inventory_sha256(&inventory).unwrap().into();
         let sign = |value: &mut Value, domain: &str| {
             let mut unsigned = value.clone();
@@ -1370,7 +1370,7 @@ pub(crate) mod tests {
             payload.extend(body);
             value["signature"] = URL_SAFE_NO_PAD.encode(key.sign(&payload).to_bytes()).into();
         };
-        sign(&mut value, "CYBEX-JAMES-INSTALL-PLAN-V3");
+        sign(&mut value, "TIARIS-NEST-INSTALL-PLAN-V3");
         let plan = verify_install_plan(value.clone(), &key.verifying_key(), &envelope, &inventory)
             .unwrap();
         assert!(plan.appliance_release.unwrap().nixos().is_ok());
@@ -1380,7 +1380,7 @@ pub(crate) mod tests {
                 .is_err()
         );
         value["base_os"] = "ubuntu".into();
-        sign(&mut value, "CYBEX-JAMES-INSTALL-PLAN-V3");
+        sign(&mut value, "TIARIS-NEST-INSTALL-PLAN-V3");
         assert!(verify_install_plan(value, &key.verifying_key(), &envelope, &inventory).is_err());
     }
 }

@@ -17,4 +17,4 @@ let
 in
 assert builtins.length first == 2;
 assert builtins.length last == 2;
-builtins.toFile "cybex-single-menu-iso-image.nix" absolute
+builtins.toFile "tiaris-single-menu-iso-image.nix" absolute

@@ -10,9 +10,9 @@ import stat
 import subprocess
 import tempfile
 
-STATE = Path('/var/lib/cybex-james/state')
-CONTROL = Path('/var/lib/cybex-james/control')
-STATUS = Path('/var/lib/cybex-james/status')
+STATE = Path('/var/lib/tiaris-nest/state')
+CONTROL = Path('/var/lib/tiaris-nest/control')
+STATUS = Path('/var/lib/tiaris-nest/status')
 INBOX = STATE / 'inbox'
 PROFILE = Path('/nix/var/nix/profiles/system')
 UID = GID = 985
@@ -88,7 +88,7 @@ def directory(path, mode, uid=0, gid=GID):
 
 @contextlib.contextmanager
 def maintenance_lock():
-    path = Path('/run/lock/cybex-james/maintenance.lock')
+    path = Path('/run/lock/tiaris-nest/maintenance.lock')
     fd = os.open(path, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)
     try:
         info = os.fstat(fd)

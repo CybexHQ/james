@@ -1,9 +1,9 @@
 //! Egress accounting for the unauthenticated `/cache/*` binary-cache route.
 //!
-//! Manage receives these totals inside the `cache` object of every James
+//! Tiaris receives these totals inside the `cache` object of every Nest
 //! report so workstation closure-transfer telemetry can be reconciled against
 //! what this appliance actually served. Counters live in memory only and
-//! restart from zero with the process; `counters_since` tells Manage which
+//! restart from zero with the process; `counters_since` tells Tiaris which
 //! epoch a total belongs to.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,7 +25,7 @@ pub struct CacheEgressCounters {
     counters_since: DateTime<Utc>,
 }
 
-/// Point-in-time copy of the counters. Field names are the wire names Manage
+/// Point-in-time copy of the counters. Field names are the wire names Tiaris
 /// expects inside the report's `cache` object.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CacheEgressSnapshot {

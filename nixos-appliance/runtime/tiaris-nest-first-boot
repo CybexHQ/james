@@ -8,11 +8,11 @@ from appliance_state import CONTROL, STATUS, STATE, INBOX, UID, GID, current, di
 from mount_policy import require_bind_mount, require_mount
 
 
-def prepare_cache_directories(root=Path('/var/cache/cybex-james'), uid=UID, gid=GID,
+def prepare_cache_directories(root=Path('/var/cache/tiaris-nest'), uid=UID, gid=GID,
                               root_uid=0, root_gid=0):
     # systemd runs this service with UMask=0077. Materialize every intentional
     # boundary in parent-before-child order so mkdir's inherited mode cannot
-    # strand the James account behind a root-only intermediate directory.
+    # strand the Nest account behind a root-only intermediate directory.
     directory(root, 0o755, root_uid, root_gid)
     directory(root / 'agent', 0o700, uid, gid)
     for name in ('home', 'cache', 'config', 'state', 'tmp'):
@@ -29,7 +29,7 @@ def main():
     require_bind_mount(CONTROL, STATE / 'control', required=('rw', 'nodev', 'nosuid'))
     require_bind_mount(STATUS, STATE / 'status', required=('rw', 'nodev', 'nosuid'))
     require_bind_mount(
-        Path('/nix'), Path('/var/cache/cybex-james/nix'),
+        Path('/nix'), Path('/var/cache/tiaris-nest/nix'),
         required=('rw', 'nodev', 'nosuid'), forbidden=('noexec',), root_searchable=True)
     directory(STATE, 0o750)
     directory(CONTROL, 0o750)
@@ -38,27 +38,27 @@ def main():
     directory(INBOX, 0o700, UID)
     prepare_cache_directories()
     for source, destination, mode in (
-        ('config.toml', '/etc/cybex-james/config.toml', 0o640),
-        ('ssh-ca.pub', '/etc/ssh/cybex-james-ca.pub', 0o644),
-        ('principals', '/etc/ssh/cybex-james-principals', 0o644),
+        ('config.toml', '/etc/tiaris-nest/config.toml', 0o640),
+        ('ssh-ca.pub', '/etc/ssh/tiaris-nest-ca.pub', 0o644),
+        ('principals', '/etc/ssh/tiaris-nest-principals', 0o644),
     ):
         write(Path(destination), read(CONTROL / source), mode=mode)
     if Path('/nix/store').stat().st_uid != 0:
         raise ValueError('Nix store is not root owned')
-    source = Path(os.environ['CYBEX_IPXE_SOURCE'])
+    source = Path(os.environ['TIARIS_IPXE_SOURCE'])
     for filename in ('snponly.efi', 'ipxe.efi'):
         body = (source / filename).read_bytes()
         if not 32768 <= len(body) <= 4194304 or body[:2] != b'MZ':
             raise ValueError('invalid immutable iPXE image')
-        write(Path('/var/cache/cybex-james/tftp') / filename, body, mode=0o644, group=0)
-    body = Path(os.environ['CYBEX_HANDOFF_SOURCE']).read_bytes()
+        write(Path('/var/cache/tiaris-nest/tftp') / filename, body, mode=0o644, group=0)
+    body = Path(os.environ['TIARIS_HANDOFF_SOURCE']).read_bytes()
     if not body.startswith(b'#!ipxe\n') or not 64 <= len(body) <= 4096:
         raise ValueError('invalid iPXE handoff')
-    write(Path('/var/cache/cybex-james/tftp/autoexec.ipxe'), body, mode=0o644, group=0)
-    run('/usr/lib/cybex-james/cybex-james-bootstrap', 'validate-installed-state')
-    run('/usr/lib/cybex-james/cybex-james-network-guard', timeout=120)
-    run('/usr/lib/cybex-james/cybex-james-bootstrap', 'reconcile-network-runtime')
-    run('/usr/bin/cybex-james', '--config', '/etc/cybex-james/config.toml', 'validate-appliance-config')
+    write(Path('/var/cache/tiaris-nest/tftp/autoexec.ipxe'), body, mode=0o644, group=0)
+    run('/usr/lib/tiaris-nest/tiaris-nest-bootstrap', 'validate-installed-state')
+    run('/usr/lib/tiaris-nest/tiaris-nest-network-guard', timeout=120)
+    run('/usr/lib/tiaris-nest/tiaris-nest-bootstrap', 'reconcile-network-runtime')
+    run('/usr/bin/tiaris-nest', '--config', '/etc/tiaris-nest/config.toml', 'validate-appliance-config')
     run('sshd', '-t')
     from generation_update import recover_boot
     recover_boot()

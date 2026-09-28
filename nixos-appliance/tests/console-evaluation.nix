@@ -9,10 +9,10 @@ let
     installedMasksAutomaticTty1 = noAutomaticLogin installed;
     installedMasksDirectTty1 = !installed.systemd.services."getty@tty1".enable;
     setupMasksDirectTty1 = !setup.systemd.services."getty@tty1".enable;
-    setupHasVisibleConsole = setup.systemd.services.cybex-james-setup-console.serviceConfig.TTYPath == "/dev/tty1";
-    installedHasVisibleConsole = installed.systemd.services.cybex-james-console.serviceConfig.TTYPath == "/dev/tty1";
-    setupKeepsBootstrapLogsOffConsole = setup.systemd.services.cybex-james-bootstrap.serviceConfig.StandardOutput == "journal"
-      && setup.systemd.services.cybex-james-bootstrap.serviceConfig.StandardError == "journal";
+    setupHasVisibleConsole = setup.systemd.services.tiaris-nest-setup-console.serviceConfig.TTYPath == "/dev/tty1";
+    installedHasVisibleConsole = installed.systemd.services.tiaris-nest-console.serviceConfig.TTYPath == "/dev/tty1";
+    setupKeepsBootstrapLogsOffConsole = setup.systemd.services.tiaris-nest-bootstrap.serviceConfig.StandardOutput == "journal"
+      && setup.systemd.services.tiaris-nest-bootstrap.serviceConfig.StandardError == "journal";
     setupBoundsTimeWait = setup.systemd.services.systemd-time-wait-sync.serviceConfig.TimeoutStartSec == "60s";
     setupHasTimeWaitUnit = builtins.elem "systemd-time-wait-sync.service" setup.systemd.additionalUpstreamSystemUnits;
   };

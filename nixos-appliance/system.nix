@@ -1,11 +1,11 @@
 { config, lib, pkgs, appliance, ... }:
 {
   imports = [ ./module.nix ];
-  services.cybex-james = { enable = true; inherit appliance; };
+  services.tiaris-nest = { enable = true; inherit appliance; };
   # Keep the exact workstation agent as a cache seed without starting its
-  # service on James. The signed system closure exports only reachable paths.
+  # service on Nest. The signed system closure exports only reachable paths.
   system.extraDependencies = [ appliance.workstationAgent ];
-  networking.hostName = "cybex-james";
+  networking.hostName = "tiaris-nest";
   system.stateVersion = "26.05";
   boot.loader.systemd-boot.enable = true;
   boot.loader.systemd-boot.configurationLimit = 4; # current + 2 known good + pending
@@ -22,11 +22,11 @@
   hardware.enableRedistributableFirmware = true;
   hardware.cpu.intel.updateMicrocode = true;
   hardware.cpu.amd.updateMicrocode = true;
-  fileSystems."/" = { device = "/dev/disk/by-label/CYBEX_ROOT"; fsType = "ext4"; };
-  fileSystems."/boot" = { device = "/dev/disk/by-label/CYBEX_EFI"; fsType = "vfat"; options = [ "umask=0077" ]; };
-  fileSystems."/var/lib/cybex-james/state" = { device = "/dev/disk/by-label/CYBEX_STATE"; fsType = "ext4"; options = [ "nodev" "nosuid" ]; neededForBoot = true; };
-  fileSystems."/nix" = { device = "/var/cache/cybex-james/nix"; fsType = "none"; options = [ "bind" "nodev" "nosuid" ]; neededForBoot = true; depends = [ "/" ]; };
-  fileSystems."/var/lib/cybex-james/control" = { device = "/var/lib/cybex-james/state/control"; fsType = "none"; options = [ "bind" "nodev" "nosuid" ]; depends = [ "/var/lib/cybex-james/state" ]; };
-  fileSystems."/var/lib/cybex-james/status" = { device = "/var/lib/cybex-james/state/status"; fsType = "none"; options = [ "bind" "nodev" "nosuid" ]; depends = [ "/var/lib/cybex-james/state" ]; };
-  swapDevices = [ { device = "/dev/disk/by-label/CYBEX_SWAP"; } ];
+  fileSystems."/" = { device = "/dev/disk/by-label/TIARIS_ROOT"; fsType = "ext4"; };
+  fileSystems."/boot" = { device = "/dev/disk/by-label/TIARIS_EFI"; fsType = "vfat"; options = [ "umask=0077" ]; };
+  fileSystems."/var/lib/tiaris-nest/state" = { device = "/dev/disk/by-label/TIARIS_STATE"; fsType = "ext4"; options = [ "nodev" "nosuid" ]; neededForBoot = true; };
+  fileSystems."/nix" = { device = "/var/cache/tiaris-nest/nix"; fsType = "none"; options = [ "bind" "nodev" "nosuid" ]; neededForBoot = true; depends = [ "/" ]; };
+  fileSystems."/var/lib/tiaris-nest/control" = { device = "/var/lib/tiaris-nest/state/control"; fsType = "none"; options = [ "bind" "nodev" "nosuid" ]; depends = [ "/var/lib/tiaris-nest/state" ]; };
+  fileSystems."/var/lib/tiaris-nest/status" = { device = "/var/lib/tiaris-nest/state/status"; fsType = "none"; options = [ "bind" "nodev" "nosuid" ]; depends = [ "/var/lib/tiaris-nest/state" ]; };
+  swapDevices = [ { device = "/dev/disk/by-label/TIARIS_SWAP"; } ];
 }

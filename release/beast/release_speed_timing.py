@@ -93,7 +93,7 @@ def measure(command, output, phase, context, timeout, grace=180, accept=None, fa
         for sig, handler in old.items():
             signal.signal(sig, handler)
         io.write(output / 'timing.json', io.canonical({
-            'schema': 'cybex.james.qualification-timing.v1', 'phase': phase,
+            'schema': 'tiaris.nest.qualification-timing.v1', 'phase': phase,
             'status': 'completed' if code == 0 else 'failed', 'reason': reason,
             'exit_code': code, 'duration_seconds': round(time.monotonic() - started, 3),
             'started_utc': utc, 'ended_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),

@@ -12,12 +12,12 @@ ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("release_predecessor", ROOT / "nixos-appliance/qualification/release_predecessor.py")
 P = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(P)
-FIXTURES = ROOT / "tools/tests/fixtures/recovery"
+FIXTURES = ROOT / "tools/tests/fixtures/tiaris-recovery"
 
 
 class RecoveryTests(unittest.TestCase):
     def setUp(self):
-        self.authorization = ROOT / "release/recovery-adoption.json"
+        self.authorization = ROOT / "tools/tests/fixtures/tiaris-recovery/authorization.json"
         self.anchor = json.loads(self.authorization.read_bytes())
         self.key = self.anchor["public_key"]
         self.version = self.anchor["successor_version"]
@@ -34,7 +34,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.authority(self.authorization, self.key, self.version, 'CybexHQ/james'),
                          self.anchor['published']['public_key'])
         for version, repository, key in [('99.0.0', 'CybexHQ/james', self.key),
-                                         (self.version, 'other/james', self.key),
+                                         (self.version, 'other/nest', self.key),
                                          (self.version, 'CybexHQ/james', self.anchor['published']['public_key'])]:
             with self.assertRaises(ValueError):
                 self.authority(self.authorization, key, version, repository)
@@ -70,9 +70,9 @@ class RecoveryTests(unittest.TestCase):
                     "assets": [{"name": P.MANIFEST}, {"name": P.COMPATIBILITY}]}
         previous = item(1, "v0.2.1-dev.4")
         self.assertEqual(P.latest([previous, item(2, "v0.2.2"), item(3, "v0.3.0", True)], "v0.2.2"), previous)
-        staged = item(4, "v0.3.1") | {'prerelease': True, 'body': 'Cybex-Cold-Qualification: required'}
+        staged = item(4, "v0.3.1") | {'prerelease': True, 'body': 'Tiaris-Cold-Qualification: required'}
         self.assertEqual(P.latest([previous, staged], 'v0.3.2'), previous)
-        stable = staged | {'prerelease': False, 'body': 'Cybex-Cold-Qualification: passed'}
+        stable = staged | {'prerelease': False, 'body': 'Tiaris-Cold-Qualification: passed'}
         self.assertEqual(P.latest([previous, stable], 'v0.3.2'), stable)
         previous["assets"].append({"name": P.MANIFEST})
         with self.assertRaises(ValueError):

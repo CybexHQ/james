@@ -1,16 +1,16 @@
 //! Release-job-only qualification of the signed public closure transport.
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use cybex_james::appliance::{
-    closure, nixos,
-    release_v3::{self, NixosRelease},
-};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::Read,
     path::PathBuf,
+};
+use tiaris_nest::appliance::{
+    closure, nixos,
+    release_v3::{self, NixosRelease},
 };
 use uuid::Uuid;
 
@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
         let mut file = File::open(&archive)?;
         closure::verify_archive(&mut file, &release, &key, None)?;
         let receipt = json!({
-            "schema": "cybex.james.public-closure-qualification.v1",
+            "schema": "tiaris.nest.public-closure-qualification.v1",
             "ok": true,
             "source_revision": args.source,
             "tag": args.tag,

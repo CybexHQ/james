@@ -14,7 +14,7 @@ use std::{
 };
 
 pub const CAPABILITY: &str = "pxe_proxy_v1";
-const STATUS_PATH: &str = "/run/cybex-james-pxe/status.json";
+const STATUS_PATH: &str = "/run/tiaris-nest-pxe/status.json";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -93,7 +93,7 @@ fn read_status(path: &Path, now: i64) -> Option<Value> {
         return None;
     }
     let value: Value = serde_json::from_slice(&bytes).ok()?;
-    if value.get("schema")?.as_str()? != "cybex.james.pxe-status.v1" {
+    if value.get("schema")?.as_str()? != "tiaris.nest.pxe-status.v1" {
         return None;
     }
     let age = now.checked_sub(value.get("checked_at")?.as_i64()?)?;
@@ -123,7 +123,7 @@ pub async fn candidate(State(state): State<AppState>) -> Json<Value> {
     let status = status();
     let ready = crate::readiness::probe(&state).await.ready;
     Json(
-        json!({"schema":"cybex.james.pxe-candidate.v1", "ready":ready, "identity":status.get("identity"),
+        json!({"schema":"tiaris.nest.pxe-candidate.v1", "ready":ready, "identity":status.get("identity"),
         "eligible":ready && status.get("eligible").and_then(Value::as_bool) == Some(true)}),
     )
 }
@@ -140,7 +140,7 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         let state = directory.join("manage-state.json");
         let desired = Desired {
-            schema: "cybex.james.pxe-discovery.v1".into(),
+            schema: "tiaris.nest.pxe-discovery.v1".into(),
             server_device_id: "qualification".into(),
             complete: true,
             peers: Vec::new(),
@@ -167,7 +167,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("pxe-status-{}", uuid::Uuid::new_v4()));
         fs::write(
             &path,
-            json!({"schema":"cybex.james.pxe-status.v1","checked_at":100,
+            json!({"schema":"tiaris.nest.pxe-status.v1","checked_at":100,
             "status":"active","reason":"proxy_ready","eligible":true})
             .to_string(),
         )

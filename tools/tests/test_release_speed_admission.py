@@ -22,7 +22,7 @@ class AdmissionTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         for name in ('candidate', 'previous', 'state', 'disk', 'lease'):
             (self.root / name).mkdir(mode=0o700)
-        self.value = dict(schema='cybex.james.serial-resources.v1', memory_gib=28,
+        self.value = dict(schema='tiaris.nest.serial-resources.v1', memory_gib=28,
             disk_gib=240, cpus=8, subnet='192.0.2.1/24',
             disk_root=str(self.root / 'disk'), lease_root=str(self.root / 'lease'))
         I.write(self.root / 'profile.json', I.canonical(self.value))

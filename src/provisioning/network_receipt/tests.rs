@@ -14,11 +14,11 @@ fn sign<T: Serialize>(value: &T, domain: &str, key: &SigningKey) -> String {
 fn fixture(mode: &str) -> (Receipt, DurableProvisioningState, SigningKey) {
     let (plan, envelope, _, key) = protocol::tests::signed_plan_fixture(
         protocol::INSTALL_PLAN_SCHEMA_V2,
-        "CYBEX-JAMES-INSTALL-PLAN-V2",
+        "TIARIS-NEST-INSTALL-PLAN-V2",
     );
     let plan = serde_json::from_value(plan).unwrap();
     let state = DurableProvisioningState {
-        schema: "cybex.james.provisioning-state.v1".into(),
+        schema: "tiaris.nest.provisioning-state.v1".into(),
         session_id: envelope.session_id,
         plan,
         manage_origin: envelope.manage_origin,
@@ -46,7 +46,7 @@ fn fixture(mode: &str) -> (Receipt, DurableProvisioningState, SigningKey) {
         },
     };
     let mut change = SignedApplianceNetworkChange {
-        schema: "cybex.james.network-change.v1".into(),
+        schema: "tiaris.nest.network-change.v1".into(),
         id: Uuid::new_v4(),
         device_id: state.plan.reserved_device_id.clone(),
         device_incarnation_id: Uuid::new_v4(),
@@ -59,8 +59,8 @@ fn fixture(mode: &str) -> (Receipt, DurableProvisioningState, SigningKey) {
         expires_at: now + chrono::Duration::minutes(5),
         signature: String::new(),
     };
-    change.signature = sign(&change, "CYBEX-JAMES-NETWORK-CHANGE-V1", &key);
-    let network = protocol::JamesProvisioningNetworkPlan {
+    change.signature = sign(&change, "TIARIS-NEST-NETWORK-CHANGE-V1", &key);
+    let network = protocol::NestProvisioningNetworkPlan {
         mode: change.network.mode.clone(),
         interface_id: change.network.interface_id.clone(),
         address_cidr: change.network.address_cidr.clone(),
@@ -69,7 +69,7 @@ fn fixture(mode: &str) -> (Receipt, DurableProvisioningState, SigningKey) {
     };
     let candidate = serde_json::to_string(&storage::netplan(&network, &state.plan)).unwrap();
     let mut acknowledgement = SignedApplianceNetworkAcknowledgement {
-        schema: "cybex.james.network-ack.v1".into(),
+        schema: "tiaris.nest.network-ack.v1".into(),
         change_id: change.id,
         device_id: change.device_id.clone(),
         candidate_sha256: protocol::sha256_hex(&candidate),
@@ -77,7 +77,7 @@ fn fixture(mode: &str) -> (Receipt, DurableProvisioningState, SigningKey) {
         expires_at: now + chrono::Duration::minutes(2),
         signature: String::new(),
     };
-    acknowledgement.signature = sign(&acknowledgement, "CYBEX-JAMES-NETWORK-ACK-V1", &key);
+    acknowledgement.signature = sign(&acknowledgement, "TIARIS-NEST-NETWORK-ACK-V1", &key);
     (
         Receipt {
             schema: SCHEMA.into(),
@@ -121,18 +121,18 @@ fn unsigned_or_mismatched_committed_network_evidence_is_rejected() {
     receipt.acknowledgement.candidate_sha256 = protocol::sha256_hex(&receipt.candidate);
     assert!(validate(&receipt, &state, &interface, true).is_err()); // unsigned changed acknowledgement
     receipt.acknowledgement.signature =
-        sign(&receipt.acknowledgement, "CYBEX-JAMES-NETWORK-ACK-V1", &key);
+        sign(&receipt.acknowledgement, "TIARIS-NEST-NETWORK-ACK-V1", &key);
     assert!(validate(&receipt, &state, &interface, true).is_ok());
     receipt.change.network.address_cidr = Some("192.0.2.99/24".into());
     assert!(validate(&receipt, &state, &interface, true).is_err());
     let (mut receipt, mut state, key) = fixture("dhcp");
     receipt.acknowledgement.change_id = Uuid::new_v4();
     receipt.acknowledgement.signature =
-        sign(&receipt.acknowledgement, "CYBEX-JAMES-NETWORK-ACK-V1", &key);
+        sign(&receipt.acknowledgement, "TIARIS-NEST-NETWORK-ACK-V1", &key);
     assert!(validate(&receipt, &state, &interface, true).is_err());
     receipt.acknowledgement.change_id = receipt.change.id;
     receipt.acknowledgement.signature =
-        sign(&receipt.acknowledgement, "CYBEX-JAMES-NETWORK-ACK-V1", &key);
+        sign(&receipt.acknowledgement, "TIARIS-NEST-NETWORK-ACK-V1", &key);
     state.plan.reserved_device_id = "dev_other_installed_identity".into();
     assert!(validate(&receipt, &state, &interface, true).is_err());
 }
@@ -145,11 +145,11 @@ fn even_a_signed_acknowledgement_cannot_commit_a_different_network_than_its_chan
         state.plan.network_interface.mac.clone(),
     );
     let mut candidate: Value = serde_json::from_str(&receipt.candidate).unwrap();
-    candidate["network"]["ethernets"]["cybex-james"]["addresses"] = json!(["192.0.2.250/24"]);
+    candidate["network"]["ethernets"]["tiaris-nest"]["addresses"] = json!(["192.0.2.250/24"]);
     receipt.candidate = serde_json::to_string(&candidate).unwrap();
     receipt.acknowledgement.candidate_sha256 = protocol::sha256_hex(&receipt.candidate);
     receipt.acknowledgement.signature =
-        sign(&receipt.acknowledgement, "CYBEX-JAMES-NETWORK-ACK-V1", &key);
+        sign(&receipt.acknowledgement, "TIARIS-NEST-NETWORK-ACK-V1", &key);
     assert!(validate(&receipt, &state, &interface, true).is_err());
     let (receipt, state, _) = fixture("dhcp");
     assert!(
@@ -171,7 +171,7 @@ fn interrupted_commit_repairs_derived_profile_only_from_verified_receipt() {
         state.plan.network_interface.mac.clone(),
     );
     validate(&receipt, &state, &interface, true).unwrap();
-    let root = std::env::temp_dir().join(format!("james-network-receipt-{}", Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("nest-network-receipt-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
     let path = root.join("netplan-approved.json");
     fs::write(

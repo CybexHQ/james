@@ -60,13 +60,13 @@ def prepare(owner):
     api('/v1/blueprint-revisions/' + revisions[0]['id'] + '/release', {
         'expected_version': current['version'],
         'unverified_reason': 'Disposable qualification profile; VM acceptance will establish verification.'})
-    policy = api('/v1/james/delivery-policy')
+    policy = api('/v1/nest/delivery-policy')
     if policy['emergency_override_mode'] is not None:
         raise ValueError('fresh fixture unexpectedly has emergency policy overrides')
-    fields = ('mode', 'approved_public_substituters', 'approved_public_keys', 'required_james_replicas',
-              'rollback_window_days', 'max_concurrent_transfers_per_james')
-    api('/v1/james/delivery-policy', {**{key: policy[key] for key in fields},
-                                    'allow_james_source_builds': False, 'allow_local_builds': False})
-    result = api('/v1/james/delivery-policy')
-    if result['allow_james_source_builds'] or result['source_builds_allowed'] or result['allow_local_builds']:
+    fields = ('mode', 'approved_public_substituters', 'approved_public_keys', 'required_nest_replicas',
+              'rollback_window_days', 'max_concurrent_transfers_per_nest')
+    api('/v1/nest/delivery-policy', {**{key: policy[key] for key in fields},
+                                    'allow_nest_source_builds': False, 'allow_local_builds': False})
+    result = api('/v1/nest/delivery-policy')
+    if result['allow_nest_source_builds'] or result['source_builds_allowed'] or result['allow_local_builds']:
         raise ValueError('fixture source-free delivery policy did not take effect')

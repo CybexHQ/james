@@ -19,9 +19,9 @@ const MAX_EFI_BOOTLOADER_BYTES: u64 = 4 * 1024 * 1024;
 const MIN_IPXE_AUTOEXEC_BYTES: u64 = 64;
 const MAX_IPXE_AUTOEXEC_BYTES: u64 = 4 * 1024;
 const MAX_BOOT_CHECK_BYTES: usize = 64 * 1024;
-const TFTP_ROOT: &str = "/var/cache/cybex-james/tftp";
+const TFTP_ROOT: &str = "/var/cache/tiaris-nest/tftp";
 const IPXE_AUTOEXEC_FILENAME: &str = "autoexec.ipxe";
-const IPXE_AUTOEXEC_PACKAGE_PATH: &str = "/usr/share/cybex-james/autoexec.ipxe";
+const IPXE_AUTOEXEC_PACKAGE_PATH: &str = "/usr/share/tiaris-nest/autoexec.ipxe";
 const IPXE_AUTOEXEC_BODY: &[u8] = include_bytes!("../assets/autoexec.ipxe");
 const READINESS_TIMEOUT: Duration = Duration::from_secs(3);
 const READINESS_POSITIVE_CACHE_TTL: Duration = Duration::from_secs(20);
@@ -640,7 +640,7 @@ async fn public_boot_url_reachable(public_base_url: &str) -> bool {
     if !is_local_address(IpAddr::V4(address)) {
         return false;
     }
-    let Ok(url) = base.join("boot.ipxe?cybex_check=1") else {
+    let Ok(url) = base.join("boot.ipxe?tiaris_check=1") else {
         return false;
     };
     let Ok(client) = public_boot_client() else {
@@ -764,14 +764,14 @@ mod tests {
     }
 
     #[test]
-    fn ipxe_chain_script_uses_the_dhcp_james_and_normalized_mac_path() {
+    fn ipxe_chain_script_uses_the_dhcp_nest_and_normalized_mac_path() {
         let script = std::str::from_utf8(IPXE_AUTOEXEC_BODY).unwrap();
         assert!(script.starts_with("#!ipxe\n"));
         assert!(script.ends_with('\n'));
         assert_eq!(script.matches("dhcp net0 ||").count(), 2);
         assert_eq!(
             script
-                .matches("chain --autofree http://${cybex-boot-server}/boot/${net0/mac:hexhyp}")
+                .matches("chain --autofree http://${tiaris-boot-server}/boot/${net0/mac:hexhyp}")
                 .count(),
             2
         );
@@ -784,7 +784,7 @@ mod tests {
     #[test]
     fn staged_ipxe_chain_script_requires_exact_root_owned_shape_and_bytes() {
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-readiness-ipxe-script-{}",
+            "tiaris-nest-readiness-ipxe-script-{}",
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir(&root).unwrap();
@@ -810,7 +810,7 @@ mod tests {
     #[test]
     fn staged_tftp_asset_requires_public_readability_and_root_only_mutation_shape() {
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-readiness-tftp-{}",
+            "tiaris-nest-readiness-tftp-{}",
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir(&root).unwrap();
@@ -876,7 +876,7 @@ mod tests {
         assert!(appliance_public_url("http://192.0.2.20").is_some());
         for invalid in [
             "https://192.0.2.20",
-            "http://james.example",
+            "http://nest.example",
             "http://192.0.2.20:8080",
             "http://192.0.2.20/path",
         ] {
@@ -907,7 +907,7 @@ mod tests {
 
         let response = public_boot_client()
             .unwrap()
-            .get(format!("http://{destination}/boot.ipxe?cybex_check=1"))
+            .get(format!("http://{destination}/boot.ipxe?tiaris_check=1"))
             .send()
             .await
             .unwrap();

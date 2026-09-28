@@ -1,6 +1,6 @@
 # NixOS production qualification
 
-The supported appliance is NixOS James V3. Ubuntu appliance builders, installed
+The supported appliance is NixOS Nest V3. Ubuntu appliance builders, installed
 runtime scripts, and qualification runners are retired. The PXE handoff shared
 with the Rust service lives in `assets/autoexec.ipxe`. Historical signed descriptors
 remain readable for publication ancestry; they are never upgrade fixtures or new
@@ -10,20 +10,20 @@ The protected release workflow builds and signs immutable production-bound
 artifacts, qualifies them, stages an immutable prerelease, independently downloads
 its published bytes, and repeats cold appliance and workstation acceptance.
 Coordinated releases require a separate exact-candidate promotion action.
-`release/coordinated.json` uses `cybex.coordinated-release.v2` and
+`release/coordinated.json` uses `tiaris.coordinated-release.v2` and
 `appliance_family: nixos`; it has no Ubuntu snapshot input.
 
 ## Isolated management service
 
 Both qualification jobs use `production-release-qualification`. Configure:
 
-- `CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN`: `https://manage.cybex.net`.
-- `CYBEX_JAMES_QUALIFICATION_CONFIG`: absolute path to a dedicated root-private
+- `TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN`: `https://manage.cybex.net`.
+- `TIARIS_NEST_QUALIFICATION_CONFIG`: absolute path to a dedicated root-private
   fixture template, in the format accepted by `isolated_manage_config.py`.
-- `CYBEX_JAMES_QUALIFICATION_STATE_ROOT`: an existing root-owned 0700 directory.
-- `CYBEX_JAMES_QUALIFICATION_SUBNET`: an unused private IPv4 /24 with its gateway.
-- `CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR` and
-  `CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256`: the independently
+- `TIARIS_NEST_QUALIFICATION_STATE_ROOT`: an existing root-owned 0700 directory.
+- `TIARIS_NEST_QUALIFICATION_SUBNET`: an unused private IPv4 /24 with its gateway.
+- `TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR` and
+  `TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256`: the independently
   signed NixOS upgrade baseline. The baseline must admit the production origin and
   fixture provisioning key, and precede the candidate version. For initial NixOS
   production qualification this is a separately built, signed private baseline;
@@ -63,8 +63,8 @@ container and never public DNS. Firewall rules do not open direct guest egress.
 Cleanup closes every forwarding socket. Changing a hostname allowlist alone cannot
 turn a development run into production qualification.
 
-The fixture builds its Manage images from the candidate's committed development
-revision. The older NixOS appliance is exercised against that current Manage
+The fixture builds its Tiaris images from the candidate's committed development
+revision. The older NixOS appliance is exercised against that current Tiaris
 harness with its separately pinned compatibility projection. Cold qualification
 uses only the independently downloaded candidate, with no warm predecessor cache.
 The fresh fixture completes Default Policy sign-in setup with an ephemeral local
@@ -81,15 +81,15 @@ certificate interval and root/password rejection checks remain unchanged.
 Source-free delivery, real appliance install,
 upgrade/rollback, managed workstation reboots, and exact compliance remain gates.
 
-Production evidence includes `cybex.james.isolated-qualification.v1`, the artifact
-origin, exact Manage revision, owned fixture identity, and proof that the live
+Production evidence includes `tiaris.nest.isolated-qualification.v1`, the artifact
+origin, exact Tiaris revision, owned fixture identity, and proof that the live
 production service was not the target. Appliance and workstation receipts must
-bind the same fixture. The producer, promoter, and Manage coordinator use the
+bind the same fixture. The producer, promoter, and Tiaris coordinator use the
 job name `Verify published NixOS release in an isolated fixture`.
 
 ## Recovery
 
-No canceled Ubuntu workflow is resumed. Manage keeps new retry journals under
+No canceled Ubuntu workflow is resumed. Tiaris keeps new retry journals under
 `components/nixos-v1`; old journals, bundles, tags and published bytes remain
 historical evidence. A failed NixOS run retains its own exact run/attempt and
 candidate identities. Never infer qualification from a completed build or relabel
@@ -101,8 +101,8 @@ and rejects an existing path before starting qualification; retries never overwr
 or reuse earlier acceptance evidence. On success, failure, or cancellation, the
 sudo runner returns directory ownership to the invoking user so normal temporary
 directory cleanup can remove it. Partial files remain private and are not uploaded.
-If an older run left the shared `cybex-james-evidence` or
-`cybex-james-cold-evidence` directory owned by root, retain any needed diagnostics
+If an older run left the shared `tiaris-nest-evidence` or
+`tiaris-nest-cold-evidence` directory owned by root, retain any needed diagnostics
 and remove only that confirmed inactive output through local maintenance. New
 attempts use distinct paths and do not depend on deleting historical evidence.
 
@@ -115,7 +115,7 @@ the corresponding maintenance operation. Persistent production databases, servic
 trust configuration and installed devices are outside fixture cleanup.
 For the separate external development path, the runner removes its VM and owned
 bridge, then uses the retained private session only to revoke the exact
-qualification provisioning session or decommission its proven temporary James
+qualification provisioning session or decommission its proven temporary Nest
 device. It records a durable teardown intent before bridge deletion and retains
 the credential on a failed API call for the guarded `owned_manage_cleanup.py retry`
 operation. The isolated production fixture keeps its separate Owner cleanup;
@@ -139,9 +139,9 @@ perform its own reboot, and report the exact transition and healthy identity.
 
 Rollback qualification installs an exact-owner transport gate at the appliance's
 QMP candidate reset, within ten seconds of that event. The gate uses the retained
-Owner's freshly verified private Manage peer and certificate identity; it does
+Owner's freshly verified private Tiaris peer and certificate identity; it does
 not resolve the public production name. The first HTTPS connection completes so
-the boot network guard can finish, while later Manage connections are denied
+the boot network guard can finish, while later Tiaris connections are denied
 until the appliance's automatic fallback reset. The harness requires firewall
 counters proving the completed first flow and later denial, and rejects any
 accepted candidate agent report. It removes the receipted gate before restoring

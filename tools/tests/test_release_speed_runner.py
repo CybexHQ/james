@@ -144,10 +144,10 @@ while True: time.sleep(0.01)
             S.acceptance(args, None, None)
         for name in S.WARM:
             I.write(args.evidence_dir / name, b'{}')
-        I.write(args.evidence_dir / 'cybex-james-unexpected.json', b'{}')
+        I.write(args.evidence_dir / 'tiaris-nest-unexpected.json', b'{}')
         with self.assertRaisesRegex(ValueError, 'inventory'):
             S.acceptance(args, None, None)
-        (args.evidence_dir / 'cybex-james-unexpected.json').unlink()
+        (args.evidence_dir / 'tiaris-nest-unexpected.json').unlink()
         (args.evidence_dir / S.WARM[0]).write_bytes(b'{"ok":true,"ok":false}')
         with self.assertRaisesRegex(ValueError, 'Duplicate'):
             S.acceptance(args, None, None)
@@ -156,7 +156,7 @@ while True: time.sleep(0.01)
         args = self.args('cold')
         args.evidence_dir.mkdir(mode=0o700)
         args.candidate_dir.mkdir(mode=0o700)
-        I.write(args.candidate_dir / 'cybex-james-release.json', b'{}')
+        I.write(args.candidate_dir / 'tiaris-nest-release.json', b'{}')
         args.candidate_manifest_sha256 = I.digest(b'{}')
         for name in S.COLD:
             I.write(args.evidence_dir / name, b'{}')
@@ -190,7 +190,7 @@ while True: time.sleep(0.01)
         args.evidence_dir.mkdir(mode=0o700)
         args.candidate_dir.mkdir(mode=0o700)
         args.predecessor_dir.mkdir(mode=0o700)
-        I.write(args.candidate_dir / 'cybex-james-release.json', b'{}')
+        I.write(args.candidate_dir / 'tiaris-nest-release.json', b'{}')
         args.candidate_manifest_sha256 = I.digest(b'{}')
         previous = b'{"version":"1.0.0"}\n'
         args.predecessor_manifest_sha256 = I.digest(previous)
@@ -228,7 +228,7 @@ class ResourceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.value = dict(schema='cybex.james.serial-resources.v1', memory_gib=28, disk_gib=240, cpus=8,
+        self.value = dict(schema='tiaris.nest.serial-resources.v1', memory_gib=28, disk_gib=240, cpus=8,
                           subnet='192.0.2.1/24', lease_root=str(self.root), disk_root=str(self.root))
         self.identity = {k: 'a' * 64 for k in ('run_sha256', 'source_sha256', 'manifest_sha256', 'profile_sha256')}
         self.available = dict(memory=44 * R.GIB, disk=340 * R.GIB, cpus=16, load=0)

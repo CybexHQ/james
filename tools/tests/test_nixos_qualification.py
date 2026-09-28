@@ -39,7 +39,7 @@ class NixosQualificationTests(unittest.TestCase):
     @staticmethod
     def network(scope, owner=None):
         return {'name': scope['bridge'], 'type': 'bridge', 'managed': True, 'used_by': [],
-                'config': {'user.cybex.nixos-qualification': owner or scope['owner'],
+                'config': {'user.tiaris.nixos-qualification': owner or scope['owner'],
                            'ipv4.address': scope['subnet'], 'ipv4.nat': 'true',
                            'ipv6.address': 'none'}}
 
@@ -108,7 +108,7 @@ class NixosQualificationTests(unittest.TestCase):
         scope = {'schema': S.SCHEMA, 'manage_origin': 'https://dev.example.com', 'bridge': 'jnqtest',
                  'owner': 'owned-run', 'subnet': '10.246.217.1/24'}
         network = {'name': scope['bridge'], 'type': 'bridge', 'managed': True,
-                   'config': {'user.cybex.nixos-qualification': scope['owner'],
+                   'config': {'user.tiaris.nixos-qualification': scope['owner'],
                               'ipv4.address': scope['subnet'], 'ipv4.nat': 'true',
                               'ipv6.address': 'none'}}
         with patch.object(S, 'read_scope', return_value=scope), \
@@ -118,7 +118,7 @@ class NixosQualificationTests(unittest.TestCase):
                              (scope, network))
             incus.assert_called_once_with('query', '/1.0/networks/jnqtest')
             forward['verify'].assert_called_once_with(Path('/private'), scope)
-            network['config']['user.cybex.nixos-qualification'] = 'another-run'
+            network['config']['user.tiaris.nixos-qualification'] = 'another-run'
             incus.return_value = json.dumps(network)
             with self.assertRaisesRegex(ValueError, 'ownership receipt'):
                 S.verify(Path('/private'), scope['manage_origin'], scope['bridge'])
@@ -150,12 +150,12 @@ class NixosQualificationTests(unittest.TestCase):
             with patch.object(runner.subprocess, 'check_output', side_effect=['f' * 40, '1' * 40]):
                 runner.write_release_inputs(state, selected, Path('/reviewed/development'), 'https://dev.example.com')
             inputs = json.loads((state / 'release-inputs.json').read_bytes())
-            self.assertEqual(inputs['james_revision'], 'f' * 40)
+            self.assertEqual(inputs['nest_revision'], 'f' * 40)
             self.assertEqual(inputs['release_source_revision'], 'a' * 40)
             self.assertEqual(inputs['manage_revision'], '1' * 40)
             self.assertEqual(inputs['manage_source_revision'], 'b' * 40)
             self.assertEqual(inputs['candidate_manifest_sha256'], hashlib.sha256(body).hexdigest())
-            self.assertEqual(inputs['james_repository'], str(ROOT))
+            self.assertEqual(inputs['nest_repository'], str(ROOT))
             self.assertEqual((state / 'release-inputs.json').stat().st_mode & 0o777, 0o600)
 
     def test_partial_tap_setup_releases_only_the_nonpersistent_owned_fd(self):
@@ -268,9 +268,9 @@ class NixosQualificationTests(unittest.TestCase):
         P.advance('0.2.6', '0.2.5')
 
     def test_historical_authority_is_exact_and_not_general_key_trust(self):
-        authorization = ROOT / 'release/recovery-adoption.json'
+        authorization = ROOT / 'tools/tests/fixtures/tiaris-recovery/authorization.json'
         value = json.loads(authorization.read_bytes())
-        previous = ROOT / 'tools/tests/fixtures/recovery/github-compatibility.json'
+        previous = ROOT / 'tools/tests/fixtures/tiaris-recovery/github-compatibility.json'
         self.assertEqual(P.release._authorized_previous_key(previous, value['public_key'], '0.2.5', authorization),
                          value['published']['public_key'])
         for version, auth in [('0.2.6', authorization), ('0.2.5', None)]:
@@ -283,12 +283,12 @@ class NixosQualificationTests(unittest.TestCase):
                 P.release._authorized_previous_key(altered, value['public_key'], '0.2.5', authorization)
 
     def test_signed_v1_ancestry_does_not_become_nixos_update_fixture(self):
-        authorization = ROOT / 'release/recovery-adoption.json'
+        authorization = ROOT / 'tools/tests/fixtures/tiaris-recovery/authorization.json'
         auth = json.loads(authorization.read_bytes())
         old = auth['published']
         base = f"https://github.com/CybexHQ/james/releases/download/{old['tag_name']}/"
-        files = {P.MANIFEST: ROOT / 'tools/tests/fixtures/recovery/github-manifest.json',
-                 P.COMPATIBILITY: ROOT / 'tools/tests/fixtures/recovery/github-compatibility.json'}
+        files = {P.MANIFEST: ROOT / 'tools/tests/fixtures/tiaris-recovery/github-manifest.json',
+                 P.COMPATIBILITY: ROOT / 'tools/tests/fixtures/tiaris-recovery/github-compatibility.json'}
         published = dict(id=old['github_release_id'], tag_name=old['tag_name'], target_commitish=old['target_commitish'],
             draft=False, prerelease=False, created_at='2026-01-01T00:00:00Z',
             assets=[{'name': n, 'browser_download_url': base + n, 'size': p.stat().st_size} for n, p in files.items()])
@@ -310,10 +310,10 @@ class NixosQualificationTests(unittest.TestCase):
     def test_missing_historical_publication_is_not_first_release(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(P, 'github', return_value=[]):
             with self.assertRaisesRegex(ValueError, 'first-release'):
-                P.resolve('CybexHQ/james', '0.2.5', '', Path(temporary), ROOT / 'release/recovery-adoption.json')
+                P.resolve('CybexHQ/james', '0.2.5', '', Path(temporary), ROOT / 'tools/tests/fixtures/tiaris-recovery/authorization.json')
 
     def transition(self):
-        fixture = json.loads((ROOT / 'protocol/fixtures/james-appliance-v3.json').read_bytes())
+        fixture = json.loads((ROOT / 'protocol/fixtures/nest-appliance-v3.json').read_bytes())
         candidate = {'version': '0.2.6', 'appliance_release_v1': deepcopy(fixture['appliance_release']),
                      'installer_iso_template_v3': {'manage_origin': 'https://dev.example.com'}}
         previous = deepcopy(candidate)
@@ -321,7 +321,7 @@ class NixosQualificationTests(unittest.TestCase):
         previous['appliance_release_v1']['system_toplevel'] = '/nix/store/' + '1' * 32 + '-previous'
         previous['appliance_release_v1']['system_closure']['sha256'] = '1' * 64
         source = candidate['appliance_release_v1']['source_revision']
-        evidence = dict(schema='cybex.james.nixos-appliance-update-qualification.v1', ok=True,
+        evidence = dict(schema='tiaris.nest.nixos-appliance-update-qualification.v1', ok=True,
             candidate_manifest_sha256='a' * 64, predecessor_manifest_sha256='b' * 64, harness_revision=source,
             candidate_release='0.2.6', predecessor_release='0.2.5', secure_boot=False,
             identity_preserved=True, candidate_reboot_observed=True, appliance_projection_healthy=True,
@@ -349,7 +349,7 @@ class NixosQualificationTests(unittest.TestCase):
 
     def test_rollback_requires_automatic_source_boot_and_reason(self):
         candidate, previous, evidence, source = self.transition()
-        evidence.update(schema='cybex.james.nixos-appliance-rollback-qualification.v1',
+        evidence.update(schema='tiaris.nest.nixos-appliance-rollback-qualification.v1',
             automatic_rollback=True, fallback_reboot_observed=True, rollback_reason='local_health_failed',
             fault='owned_candidate_manage_transport_gate_until_automatic_fallback',
             gate_prearmed_before_admission=True, gate_arming='candidate_dhcp_bootstrap',

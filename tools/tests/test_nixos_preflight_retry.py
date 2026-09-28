@@ -76,7 +76,7 @@ class RetryBoundaryTests(unittest.TestCase):
         self.initial = {'id': 'session', 'state': 'approved', 'release_version': '1.2.3',
                         'reserved_device_id': 'dev_' + 'a' * 32, 'inventory_sha256': 'b' * 64,
                         'install_plan': {'id': 'old-plan', 'plan_revision': 1,
-                            'schema': 'cybex.james.install-plan.v3', 'session_id': 'session',
+                            'schema': 'tiaris.nest.install-plan.v3', 'session_id': 'session',
                             'target_disk_id': 'exact-disk', 'target_disk': {'serial': 'owned'},
                             'hardware_digest': 'c' * 64, 'network_interface': {'mac': '02:00:00:00:00:01'},
                             'package_delivery': 'system-closure-v1', 'package_transport_url': 'private-fixture',
@@ -108,7 +108,7 @@ class RetryBoundaryTests(unittest.TestCase):
         with self.assertRaises(ValueError): R.validate_new_plan(self.initial, self.initial)
 
     def test_fresh_authenticated_heartbeat_proves_restart_without_revision_increment(self):
-        # Manage only increments a repeated claim revision when inventory changes.
+        # Tiaris only increments a repeated claim revision when inventory changes.
         waiting = {'id': 'session', 'state': 'awaiting_approval', 'session_revision': 5,
                    'heartbeat_at': '2026-09-21T10:00:00Z'}
         fresh = {**waiting, 'heartbeat_at': '2026-09-21T10:00:02Z'}
@@ -159,7 +159,7 @@ class RetryBoundaryTests(unittest.TestCase):
                     patch.object(R, 'QMP', return_value=monitor), patch.object(R, 'fingerprint', return_value='before'), \
                     patch.object(R, 'sha256', return_value='iso-sha'):
                 R.begin(args, api)
-            self.assertEqual(api.call_args_list[-1].args, ('/v1/james/provisioning-sessions/session/retry', {'session_revision': 4}))
+            self.assertEqual(api.call_args_list[-1].args, ('/v1/nest/provisioning-sessions/session/retry', {'session_revision': 4}))
             receipt = json.loads(args.receipt.read_bytes())
             self.assertEqual(receipt['disk_digest_before'], receipt['disk_digest_after_failure'])
             self.assertNotIn('ok', receipt)

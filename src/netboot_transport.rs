@@ -77,7 +77,7 @@ pub(super) fn attempt_identity(descriptor_sha256: &str, transport: Option<&str>)
         None => descriptor_sha256.to_owned(),
         Some(value) => sha256_bytes(
             format!(
-                "CYBEX-WORKSTATION-TRANSPORT-V1\n{descriptor_sha256}\n{}\n",
+                "TIARIS-WORKSTATION-TRANSPORT-V1\n{descriptor_sha256}\n{}\n",
                 sha256_bytes(value.as_bytes())
             )
             .as_bytes(),
@@ -93,7 +93,7 @@ pub(super) fn raw_attempt_identity(
         None | Some(serde_json::Value::Null) => attempt_identity(descriptor_sha256, None),
         Some(serde_json::Value::String(value)) => attempt_identity(descriptor_sha256, Some(value)),
         Some(value) => sha256_bytes(
-            format!("CYBEX-WORKSTATION-MALFORMED-TRANSPORT-V1\n{descriptor_sha256}\n{value}\n")
+            format!("TIARIS-WORKSTATION-MALFORMED-TRANSPORT-V1\n{descriptor_sha256}\n{value}\n")
                 .as_bytes(),
         ),
     }

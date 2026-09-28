@@ -5,8 +5,8 @@ import unittest
 
 class PackageAnchorContractTests(unittest.TestCase):
     def setUp(self):
-        from test_james_release import JamesReleaseToolTests
-        self.fixture = JamesReleaseToolTests()
+        from test_nest_release import NestReleaseToolTests
+        self.fixture = NestReleaseToolTests()
         self.fixture.setUp()
         self.addCleanup(self.fixture.tearDown)
 
@@ -19,13 +19,13 @@ class PackageAnchorContractTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         descriptor = json.loads(output.read_text())['appliance_release_v1']
         self.assertEqual(set(descriptor['required_package_versions']), {
-            'cybex-james', 'cybex-james-appliance', 'cybex-james-bootstrap',
+            'tiaris-nest', 'tiaris-nest-appliance', 'tiaris-nest-bootstrap',
             'linux-firmware', 'linux-generic', 'nix-bin', 'python3',
         })
         metadata = json.loads((fixture.directory / 'package-snapshot.json').read_text())
         self.assertEqual(metadata['required_package_versions']['udpcast'], '20120424-2build2')
-        self.assertEqual(descriptor['cybex_repository_snapshot']['sha256'], metadata['sha256'])
-        self.assertEqual(descriptor['cybex_repository_snapshot']['size_bytes'], metadata['size_bytes'])
+        self.assertEqual(descriptor['tiaris_repository_snapshot']['sha256'], metadata['sha256'])
+        self.assertEqual(descriptor['tiaris_repository_snapshot']['size_bytes'], metadata['size_bytes'])
         self.assertEqual(descriptor['source_revision'], 'd' * 40)
 
     def test_signer_still_requires_udpcast_in_authenticated_build_inputs(self):

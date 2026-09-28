@@ -27,7 +27,7 @@ def load(name):
 class ProductionTests(unittest.TestCase):
     def test_signed_appliance_cache_requires_exact_workstation_agent(self):
         build = runpy.run_path(str(HELPERS.parent / 'build.py'))
-        agent = Path('/nix/store/' + 'a' * 32 + '-cybex-agent-0.1.0')
+        agent = Path('/nix/store/' + 'a' * 32 + '-tiaris-agent-0.1.0')
         with tempfile.TemporaryDirectory() as temporary:
             cache = Path(temporary)
             manifest = cache / 'manifest.json'
@@ -111,7 +111,7 @@ class ProductionTests(unittest.TestCase):
         acceptance = load('release_acceptance')
         manifest = {'installer_iso_template_v3': {'manage_origin': 'https://manage.cybex.net'},
                     'appliance_release_v1': {'manage_source_revision': 'a' * 40}}
-        scope = {'schema': 'cybex.james.isolated-qualification.v1', 'manage_origin': 'https://manage.cybex.net',
+        scope = {'schema': 'tiaris.nest.isolated-qualification.v1', 'manage_origin': 'https://manage.cybex.net',
                  'manage_revision': 'a' * 40, 'owner': '01234567-89ab-cdef-0123-456789abcdef',
                  'live_production_access': False}
         acceptance.validate_scope(manifest, {'qualification_scope': scope})
@@ -149,11 +149,11 @@ class ProductionTests(unittest.TestCase):
             digest = hashlib.sha256(body).hexdigest()
             response_digest = digest
             def respond(*args, **kwargs):
-                kwargs['response_headers']['x-cybex-james-envelope-sha256'] = response_digest
+                kwargs['response_headers']['x-tiaris-nest-envelope-sha256'] = response_digest
                 return body
             owner.client.return_value.request_bytes.side_effect = respond
             request = {'operation': 'personalize',
-                       'path': '/v1/james/provisioning-sessions/01234567-89ab-cdef-0123-456789abcdef/personalization-envelope',
+                       'path': '/v1/nest/provisioning-sessions/01234567-89ab-cdef-0123-456789abcdef/personalization-envelope',
                        'secret': 'media-secret'}
             with patch.object(sys, 'path', [str(HELPERS), *sys.path]), \
                     patch('isolated_manage_config.read_file', return_value=b'fixture-token'):

@@ -1,4 +1,4 @@
-"""Own a fresh, private Manage deployment for exact-origin NixOS qualification.
+"""Own a fresh, private Tiaris deployment for exact-origin NixOS qualification.
 
 No command-line prepare path is provided until the runner supplies a reviewed
 network adapter. The adapter MUST establish DNS, guest and Docker host/egress
@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 
 
 def sibling(name):
-    spec = importlib.util.spec_from_file_location('_james_' + name, Path(__file__).with_name(name + '.py'))
+    spec = importlib.util.spec_from_file_location('_nest_' + name, Path(__file__).with_name(name + '.py'))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -39,9 +39,9 @@ inputs = sibling('isolated_manage_config')
 resources = sibling('isolated_manage_resources')
 transport = sibling('isolated_manage_transport')
 tls_forwarding = sibling('isolated_manage_tls_proxy')
-SCHEMA = 'cybex.james.isolated-manage.v2'
-GUARD_SCHEMA = 'cybex.james.isolated-manage-network.v1'
-ARTIFACT_URL_SCHEMA = 'cybex.james.isolated-manage-artifact-urls.v1'
+SCHEMA = 'tiaris.nest.isolated-manage.v2'
+GUARD_SCHEMA = 'tiaris.nest.isolated-manage-network.v1'
+ARTIFACT_URL_SCHEMA = 'tiaris.nest.isolated-manage-artifact-urls.v1'
 RELEASES = ('predecessor', 'candidate')
 
 
@@ -57,7 +57,7 @@ class Owner:
 
     def scope(self):
         if os.geteuid() != 0:
-            raise ValueError('isolated Manage ownership requires root')
+            raise ValueError('isolated Tiaris ownership requires root')
         inputs.ordinary_path(self.state)
         module = runpy.run_path(str(Path(__file__).with_name('development-scope.py')))
         value = module['read_scope'](self.state)
@@ -97,7 +97,7 @@ class Owner:
                 or value.get('context', {}).get('bridge') != scope['bridge']
                 or value.get('context', {}).get('subnet') != scope['subnet']
                 or value.get('peer_ipv4') != str(ipaddress.ip_interface(scope['subnet']).ip)):
-            raise ValueError('isolated Manage receipt differs from the owned scope')
+            raise ValueError('isolated Tiaris receipt differs from the owned scope')
         return value
 
     def docker(self, receipt):
@@ -115,7 +115,7 @@ class Owner:
                     raise ValueError('invalid fixture container identity')
                 members.append(identity)
             elif complete:
-                raise ValueError('isolated Manage fixture is missing an owned container identity')
+                raise ValueError('isolated Tiaris fixture is missing an owned container identity')
         return members
 
     def guard(self, receipt):
@@ -198,7 +198,7 @@ class Owner:
                 raise ValueError('offline fixture prepare requires a retained artifact coordinator factory')
             if any(path.exists() or path.is_symlink()
                    for path in (self.directory, self.state / 'manage.json', self.state / 'session')):
-                raise ValueError('refusing to adopt an existing Manage fixture')
+                raise ValueError('refusing to adopt an existing Tiaris fixture')
             config, secret = inputs.load(config_path, self.run)
             releases = inputs.signed_releases(config, secret, candidate_dir, predecessor_dir)
             scope = self.scope()
@@ -298,7 +298,7 @@ class Owner:
         app_env = resources.environment(config, secret, receipt['releases'][selected],
                                         receipt['artifact_transports']['releases'][selected],
                                         database_password, ssh_ca, receipt['guard']['proxy_url'])
-        values = {'app': (10001, app_env, 'exec /opt/cybex/bin/cybex\n'),
+        values = {'app': (10001, app_env, 'exec /opt/tiaris/bin/tiaris\n'),
                   'db': (999, {'PATH': '/usr/lib/postgresql/17/bin:/usr/local/bin:/usr/bin:/bin',
                                'LANG': 'C.UTF-8', 'POSTGRES_USER': 'fixture',
                                'POSTGRES_PASSWORD': database_password, 'POSTGRES_DB': 'fixture',
@@ -316,7 +316,7 @@ class Owner:
                 data = self.directory / (role + '-data')
                 data.mkdir(mode=0o700)
                 os.chown(data, uid, uid)
-                mounts.append([str(data), '/var/lib/cybex' if role == 'app' else '/var/lib/postgresql/data', False])
+                mounts.append([str(data), '/var/lib/tiaris' if role == 'app' else '/var/lib/postgresql/data', False])
             else:
                 for name, body, mode in (('tls.crt', secret['certificate'], 0o444),
                                          ('tls.key', secret['tls_key'], 0o400),
@@ -378,11 +378,11 @@ class Owner:
                 health = self.client(receipt).request('/v1/health')
                 if (health.get('source_revision') != receipt['source_revision']
                         or health.get('source_dirty') is not False):
-                    raise RuntimeError('isolated Manage binary does not match reviewed clean source')
+                    raise RuntimeError('isolated Tiaris binary does not match reviewed clean source')
                 return
             except (ValueError, OSError):
                 if time.monotonic() >= deadline:
-                    raise ValueError('fresh fixture Manage did not become healthy') from None
+                    raise ValueError('fresh fixture Tiaris did not become healthy') from None
                 time.sleep(1)
 
     def bootstrap(self, receipt):
@@ -390,7 +390,7 @@ class Owner:
         value = self.client(receipt).request('/v1/auth/bootstrap', {
             'email': 'qualification-' + receipt['owner'] + '@example.invalid',
             'display_name': 'Disposable qualification operator', 'password': password,
-            'organization_name': 'Disposable James qualification', 'organization_type': 'company',
+            'organization_name': 'Disposable Nest qualification', 'organization_type': 'company',
             'workstation_language': 'en-US', 'workstation_keyboard': 'us',
             'workstation_timezone': 'UTC', 'workstation_region_confirmed': True})
         token = value['session_token']
@@ -405,9 +405,9 @@ class Owner:
         path = self.directory / 'app.env'
         body = inputs.read_file(path, private=False, uid=10001)
         replacements = {
-            'CYBEX_JAMES_UPDATE_QUALIFICATION_ENABLED': 'true',
-            'CYBEX_JAMES_UPDATE_QUALIFICATION_ORGANIZATION_ID': receipt['organization_id'],
-            'CYBEX_JAMES_UPDATE_QUALIFICATION_DEVICE_IDS': device_id,
+            'TIARIS_NEST_UPDATE_QUALIFICATION_ENABLED': 'true',
+            'TIARIS_NEST_UPDATE_QUALIFICATION_ORGANIZATION_ID': receipt['organization_id'],
+            'TIARIS_NEST_UPDATE_QUALIFICATION_DEVICE_IDS': device_id,
         }
         found = {key: 0 for key in replacements}
         lines = []
@@ -417,8 +417,8 @@ class Owner:
                 found[key] += 1
                 line = key + '=' + replacements[key]
             lines.append(line)
-        if found['CYBEX_JAMES_UPDATE_QUALIFICATION_ENABLED'] != 1 or any(
-                found[key] for key in replacements if key != 'CYBEX_JAMES_UPDATE_QUALIFICATION_ENABLED'):
+        if found['TIARIS_NEST_UPDATE_QUALIFICATION_ENABLED'] != 1 or any(
+                found[key] for key in replacements if key != 'TIARIS_NEST_UPDATE_QUALIFICATION_ENABLED'):
             raise ValueError('fixture qualification environment is not in its initial closed state')
         lines.extend(key + '=' + replacements[key] for key in replacements if not found[key])
         updated = ('\n'.join(lines) + '\n').encode()
@@ -480,12 +480,12 @@ class Owner:
         release = receipt['releases'][role]
         transports = receipt['artifact_transports']['releases'][role]
         replacements = {
-            'CYBEX_JAMES_RELEASE_MANIFEST_URL': release['manifest_url'],
-            'CYBEX_JAMES_RELEASE_MANIFEST_SHA256': release['manifest_sha256'],
-            'CYBEX_JAMES_RELEASE_VERSION': release['version'],
-            'CYBEX_JAMES_COMPATIBILITY_PROJECTION_SHA256': release['compatibility_sha256'],
-            'CYBEX_DEV_JAMES_RELEASE_MANIFEST_TRANSPORT_URL': transports['manifest_transport_url'],
-            'CYBEX_DEV_JAMES_WORKSTATION_TRANSPORT_URL': transports['bundle_transport_url'],
+            'TIARIS_NEST_RELEASE_MANIFEST_URL': release['manifest_url'],
+            'TIARIS_NEST_RELEASE_MANIFEST_SHA256': release['manifest_sha256'],
+            'TIARIS_NEST_RELEASE_VERSION': release['version'],
+            'TIARIS_NEST_COMPATIBILITY_PROJECTION_SHA256': release['compatibility_sha256'],
+            'TIARIS_DEV_NEST_RELEASE_MANIFEST_TRANSPORT_URL': transports['manifest_transport_url'],
+            'TIARIS_DEV_NEST_WORKSTATION_TRANSPORT_URL': transports['bundle_transport_url'],
         }
         path = self.directory / 'app.env'
         body = inputs.read_file(path, private=False, uid=10001)
@@ -534,7 +534,7 @@ class Owner:
                 self.guard(receipt)
                 self.verify_artifacts(receipt)
             else:
-                raise ValueError('isolated Manage fixture cannot select a release in its current state')
+                raise ValueError('isolated Tiaris fixture cannot select a release in its current state')
             # Repeating these writes is intentional: interruption at any save boundary
             # resumes the same durable role without consulting "latest" state.
             self.replace_release_environment(receipt, role)
@@ -558,9 +558,9 @@ class Owner:
                     raise ValueError('fixture already admits a different qualification device')
                 return receipt
             token = inputs.read_file(self.state / 'session', maximum=8192).decode().strip()
-            detail = self.client(receipt).request('/v1/james/nodes/' + device_id, token=token)
+            detail = self.client(receipt).request('/v1/nest/nodes/' + device_id, token=token)
             if detail.get('node', {}).get('device_id') != device_id:
-                raise ValueError('qualification target is not an active James node in the owned organization')
+                raise ValueError('qualification target is not an active Nest node in the owned organization')
             receipt['status'] = 'reconfiguring'
             receipt['allowed_device_id'] = device_id
             self.save(receipt)
@@ -579,12 +579,12 @@ class Owner:
     def verify(self):
         receipt = self.read()
         if receipt['status'] != 'ready':
-            raise ValueError('isolated Manage fixture has not completed fresh bootstrap')
+            raise ValueError('isolated Tiaris fixture has not completed fresh bootstrap')
         if (receipt.get('selected_release') not in RELEASES or receipt.get('pending_release') is not None
                 or receipt.get('artifact_status') != 'ready'
                 or receipt.get('containers', {}).get('app', {}).get('image')
                 != receipt.get('images', {}).get('app', {}).get(receipt.get('selected_release'))):
-            raise ValueError('isolated Manage release selection is not exact and complete')
+            raise ValueError('isolated Tiaris release selection is not exact and complete')
         self.verify_artifacts(receipt)
         self.guard(receipt)
         docker = self.docker(receipt)
@@ -601,7 +601,7 @@ class Owner:
             value = docker.verify_container(role, spec['id'], spec['image'], spec['uid'],
                                             receipt['context']['network_id'], spec['mounts'], dns=receipt['peer_ipv4'], peer=spec['peer'])
             if not value['State']['Running']:
-                raise ValueError('isolated Manage owned container is not running')
+                raise ValueError('isolated Tiaris owned container is not running')
         self.client(receipt).request('/v1/health')
         return receipt
 

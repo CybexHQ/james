@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build deterministic, signed Cybex James release manifests.
+"""Build deterministic, signed Tiaris Nest release manifests.
 
 The private Ed25519 key is opened without following symlinks and is passed to
 OpenSSL through an inherited file descriptor. Its bytes and path are never
@@ -29,74 +29,74 @@ from typing import Any, NoReturn, Sequence
 from urllib.parse import urlsplit
 
 _v3_spec = importlib.util.spec_from_file_location(
-    "cybex_appliance_v3", Path(__file__).with_name("appliance_v3.py")
+    "tiaris_appliance_v3", Path(__file__).with_name("appliance_v3.py")
 )
 assert _v3_spec is not None and _v3_spec.loader is not None
 appliance_v3 = importlib.util.module_from_spec(_v3_spec)
 _v3_spec.loader.exec_module(appliance_v3)
 
 _closure_spec = importlib.util.spec_from_file_location(
-    "cybex_system_closure", Path(__file__).with_name("system_closure.py")
+    "tiaris_system_closure", Path(__file__).with_name("system_closure.py")
 )
 assert _closure_spec is not None and _closure_spec.loader is not None
 system_closure = importlib.util.module_from_spec(_closure_spec)
 _closure_spec.loader.exec_module(system_closure)
 
 
-SCHEMA = "cybex.james.release.v1"
-RELEASE_COMPATIBILITY_SCHEMA = "cybex.james.release-compatibility.v1"
+SCHEMA = "tiaris.nest.release.v1"
+RELEASE_COMPATIBILITY_SCHEMA = "tiaris.nest.release-compatibility.v1"
 RELEASE_COMPATIBILITY_SIGNATURE_DOMAIN = (
-    "CYBEX-JAMES-RELEASE-COMPATIBILITY-V1"
+    "TIARIS-NEST-RELEASE-COMPATIBILITY-V1"
 )
-COMPONENT_COMPATIBILITY_SCHEMA = "cybex.component-compatibility.v1"
-RELEASE_MANIFEST_FILENAME = "cybex-james-release.json"
-RELEASE_COMPATIBILITY_FILENAME = "cybex-james-release-compatibility.json"
+COMPONENT_COMPATIBILITY_SCHEMA = "tiaris.component-compatibility.v1"
+RELEASE_MANIFEST_FILENAME = "tiaris-nest-release.json"
+RELEASE_COMPATIBILITY_FILENAME = "tiaris-nest-release-compatibility.json"
 INSTALLER_ISO_ARCHITECTURE = "x86_64-linux"
 INSTALLER_ISO_MAX_BYTES = 16 * 1024 * 1024 * 1024
 INSTALLER_ISO_TEMPLATE_SIGNATURE_DOMAIN = (
-    "CYBEX-JAMES-INSTALLER-ISO-TEMPLATE-V2"
+    "TIARIS-NEST-INSTALLER-ISO-TEMPLATE-V2"
 )
 INSTALLER_ISO_TEMPLATE_BASE_OS = "ubuntu"
 INSTALLER_ISO_TEMPLATE_BASE_OS_VERSION = "26.04"
 INSTALLER_ISO_TEMPLATE_PERSONALIZATION_SIZE = 8192
 INSTALLER_ISO_TEMPLATE_NETWORK_PACKAGE_DELIVERY = "network-snapshot-v1"
-INSTALLER_ISO_TEMPLATE_BUILD_SCHEMA = "cybex.james.installer-template-build.v1"
+INSTALLER_ISO_TEMPLATE_BUILD_SCHEMA = "tiaris.nest.installer-template-build.v1"
 APPLIANCE_PACKAGE_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024 * 1024
-MANAGE_SOURCE_METADATA_SCHEMA = "cybex.james.manage-source.v1"
+MANAGE_SOURCE_METADATA_SCHEMA = "tiaris.nest.manage-source.v1"
 MANAGE_SOURCE_METADATA_MAX_BYTES = 16 * 1024
 MANAGE_SOURCE_ARCHIVE_MAX_BYTES = 256 * 1024 * 1024
 MANAGE_SOURCE_CATALOG_MAX_BYTES = 512 * 1024 * 1024
 MANAGE_SOURCE_CATALOG_MAX_REVISIONS = 32
 MANAGE_SOURCE_INSTALLER_REQUIRED_PATHS = frozenset(
     {
-        "agent/cybex-agent/Cargo.toml",
-        "agent/cybex-agent/Cargo.lock",
-        "agent/cybex-agent/src/hardware_inventory.rs",
-        "agent/cybex-agent/src/installer_boot.rs",
-        "agent/cybex-agent/src/lib.rs",
-        "agent/cybex-agent/src/main.rs",
-        "agent/cybex-agent/src/managed_wifi.rs",
-        "deploy/nixos/cybex-agent-module.nix",
-        "deploy/nixos/cybex-apply-blueprint.sh",
-        "deploy/nixos/cybex-authd-packages.nix",
-        "deploy/nixos/cybex-authd.nix",
-        "deploy/nixos/cybex-blueprints.nix",
-        "deploy/nixos/cybex-himmelblau-packages.nix",
-        "deploy/nixos/cybex-himmelblau.nix",
-        "deploy/nixos/cybex-ldap.nix",
+        "agent/tiaris-agent/Cargo.toml",
+        "agent/tiaris-agent/Cargo.lock",
+        "agent/tiaris-agent/src/hardware_inventory.rs",
+        "agent/tiaris-agent/src/installer_boot.rs",
+        "agent/tiaris-agent/src/lib.rs",
+        "agent/tiaris-agent/src/main.rs",
+        "agent/tiaris-agent/src/managed_wifi.rs",
+        "deploy/nixos/tiaris-agent-module.nix",
+        "deploy/nixos/tiaris-apply-blueprint.sh",
+        "deploy/nixos/tiaris-authd-packages.nix",
+        "deploy/nixos/tiaris-authd.nix",
+        "deploy/nixos/tiaris-blueprints.nix",
+        "deploy/nixos/tiaris-himmelblau-packages.nix",
+        "deploy/nixos/tiaris-himmelblau.nix",
+        "deploy/nixos/tiaris-ldap.nix",
     }
 )
-JAMES_DEBIAN_PACKAGE_MAX_BYTES = 512 * 1024 * 1024
-APPLIANCE_RELEASE_SIGNATURE_DOMAIN_V1 = "CYBEX-JAMES-APPLIANCE-RELEASE-V1"
-APPLIANCE_RELEASE_SIGNATURE_DOMAIN_V2 = "CYBEX-JAMES-APPLIANCE-RELEASE-V2"
-APPLIANCE_RELEASE_SCHEMA_V1 = "cybex.james.appliance-release.v1"
-APPLIANCE_RELEASE_SCHEMA_V2 = "cybex.james.appliance-release.v2"
-WORKSTATION_NETBOOT_SIGNATURE_DOMAIN = "CYBEX-JAMES-WORKSTATION-NETBOOT-V1"
-WORKSTATION_NETBOOT_SCHEMA = "cybex.james.workstation-netboot.v1"
-WORKSTATION_NETBOOT_MANIFEST_SCHEMA = "cybex.james.workstation-netboot-manifest.v1"
+NEST_DEBIAN_PACKAGE_MAX_BYTES = 512 * 1024 * 1024
+APPLIANCE_RELEASE_SIGNATURE_DOMAIN_V1 = "TIARIS-NEST-APPLIANCE-RELEASE-V1"
+APPLIANCE_RELEASE_SIGNATURE_DOMAIN_V2 = "TIARIS-NEST-APPLIANCE-RELEASE-V2"
+APPLIANCE_RELEASE_SCHEMA_V1 = "tiaris.nest.appliance-release.v1"
+APPLIANCE_RELEASE_SCHEMA_V2 = "tiaris.nest.appliance-release.v2"
+WORKSTATION_NETBOOT_SIGNATURE_DOMAIN = "TIARIS-NEST-WORKSTATION-NETBOOT-V1"
+WORKSTATION_NETBOOT_SCHEMA = "tiaris.nest.workstation-netboot.v1"
+WORKSTATION_NETBOOT_MANIFEST_SCHEMA = "tiaris.nest.workstation-netboot-manifest.v1"
 WORKSTATION_NETBOOT_ARCHITECTURE = "x86_64-linux"
 WORKSTATION_NETBOOT_FORMAT = "split-squashfs-v1"
-WORKSTATION_NETBOOT_REQUIRED_JAMES_PROTOCOL = 4
+WORKSTATION_NETBOOT_REQUIRED_NEST_PROTOCOL = 4
 WORKSTATION_NETBOOT_MAX_BYTES = 8 * 1024 * 1024 * 1024
 WORKSTATION_NETBOOT_COMPONENTS = (
     "bzImage",
@@ -234,7 +234,7 @@ def _public_der(private_fd: int) -> bytes:
 
 def _sign(private_fd: int, message: bytes) -> bytes:
     os.lseek(private_fd, 0, os.SEEK_SET)
-    with tempfile.TemporaryFile(prefix="cybex-james-release-message-") as message_file:
+    with tempfile.TemporaryFile(prefix="tiaris-nest-release-message-") as message_file:
         message_file.write(message)
         message_file.flush()
         message_file.seek(0)
@@ -249,7 +249,7 @@ def _sign(private_fd: int, message: bytes) -> bytes:
                 _private_fd_path(message_file.fileno()),
             ],
             pass_fds=[private_fd, message_file.fileno()],
-            action="sign the James release manifest",
+            action="sign the Nest release manifest",
         )
     if len(signature) != 64:
         _fail("OpenSSL returned an invalid Ed25519 signature")
@@ -257,7 +257,7 @@ def _sign(private_fd: int, message: bytes) -> bytes:
 
 
 def _self_verify(public_der: bytes, signature: bytes, message: bytes) -> None:
-    with tempfile.TemporaryDirectory(prefix="cybex-james-release-verify-") as directory:
+    with tempfile.TemporaryDirectory(prefix="tiaris-nest-release-verify-") as directory:
         directory_path = Path(directory)
         public_path = directory_path / "public.der"
         signature_path = directory_path / "signature.bin"
@@ -283,7 +283,7 @@ def _self_verify(public_der: bytes, signature: bytes, message: bytes) -> None:
                 "-in",
                 str(message_path),
             ],
-            action="self-verify the James release signature",
+            action="self-verify the Nest release signature",
         )
 
 
@@ -692,7 +692,7 @@ def _installer_iso_template_inputs(
             "together; manifest generation also requires template build metadata"
         )
     expected_name = (
-        f"cybex-james-appliance-template-{version}-{INSTALLER_ISO_ARCHITECTURE}.iso"
+        f"tiaris-nest-appliance-template-{version}-{INSTALLER_ISO_ARCHITECTURE}.iso"
     )
     path = Path(path_value)
     if path.name != expected_name:
@@ -753,7 +753,7 @@ def _validate_installer_iso_template_metadata(
         required_fields | optional_fields
     ):
         _fail("installer ISO template build metadata fields are not the exact supported set")
-    expected_schema = ("cybex.james.installer-template-build.v3"
+    expected_schema = ("tiaris.nest.installer-template-build.v3"
                        if descriptor.get("package_delivery") == appliance_v3.DELIVERY
                        else INSTALLER_ISO_TEMPLATE_BUILD_SCHEMA)
     if metadata["schema"] != expected_schema:
@@ -897,7 +897,7 @@ def _appliance_release_inputs(
         return _nixos_appliance_release_inputs(arguments, version, notes_url)
     bundle = Path(arguments.appliance_package_snapshot)
     metadata_path = Path(arguments.appliance_package_snapshot_metadata)
-    expected_name = f"cybex-james-appliance-packages-{version}-x86_64-linux.tar.zst"
+    expected_name = f"tiaris-nest-appliance-packages-{version}-x86_64-linux.tar.zst"
     if bundle.name != expected_name:
         _fail(f"appliance package snapshot must be named {expected_name}")
     url = _validate_url(
@@ -933,7 +933,7 @@ def _appliance_release_inputs(
         "appliance package snapshot metadata",
     )
     if (
-        metadata["schema"] != "cybex.james.appliance-package-snapshot.v1"
+        metadata["schema"] != "tiaris.nest.appliance-package-snapshot.v1"
         or metadata["release_id"] != version
         or metadata["filename"] != expected_name
         or not isinstance(metadata["ubuntu_snapshot_id"], str)
@@ -954,15 +954,15 @@ def _appliance_release_inputs(
         )
     manage_source_revision = _validate_revision(
         metadata["manage_source_revision"],
-        "appliance package Manage source revision",
+        "appliance package Tiaris source revision",
     )
     _require_sha256(
         metadata["manage_source_sha256"],
-        "appliance package Manage source SHA-256",
+        "appliance package Tiaris source SHA-256",
     )
     _require_positive_int(
         metadata["manage_source_size_bytes"],
-        "appliance package Manage source size",
+        "appliance package Tiaris source size",
         maximum=MANAGE_SOURCE_ARCHIVE_MAX_BYTES,
     )
     workstation_manage_revision = getattr(
@@ -971,18 +971,18 @@ def _appliance_release_inputs(
     if workstation_manage_revision is not None:
         workstation_manage_revision = _validate_revision(
             workstation_manage_revision,
-            "workstation netboot Manage revision",
+            "workstation netboot Tiaris revision",
         )
         if manage_source_revision != workstation_manage_revision:
             _fail(
-                "appliance package Manage source revision does not match the "
-                "workstation netboot Manage revision"
+                "appliance package Tiaris source revision does not match the "
+                "workstation netboot Tiaris revision"
             )
         for field in ("manage_source_sha256", "manage_source_size_bytes"):
             supplied = getattr(arguments, "workstation_netboot_" + field, None)
             if supplied is None or supplied != metadata[field]:
                 _fail(
-                    "workstation netboot Manage source digest and size are required "
+                    "workstation netboot Tiaris source digest and size are required "
                     "and must match the appliance package metadata"
                 )
     actual_sha, actual_size = _inspect_artifact(
@@ -994,9 +994,9 @@ def _appliance_release_inputs(
         _fail("appliance package snapshot metadata does not match the bundle")
     versions = metadata["required_package_versions"]
     required_names = {
-        "cybex-james",
-        "cybex-james-bootstrap",
-        "cybex-james-appliance",
+        "tiaris-nest",
+        "tiaris-nest-bootstrap",
+        "tiaris-nest-appliance",
         "linux-generic",
         "linux-firmware",
         "nix-bin",
@@ -1029,15 +1029,15 @@ def _appliance_release_inputs(
         ),
         "release_id": version,
         "ubuntu_snapshot_id": metadata["ubuntu_snapshot_id"],
-        "cybex_repository_snapshot": {
+        "tiaris_repository_snapshot": {
             "url": url,
             "sha256": actual_sha,
             "size_bytes": actual_size,
         },
-        # This is a frozen wire contract consumed by installed James binaries.
+        # This is a frozen wire contract consumed by installed Nest binaries.
         # Additional Debian dependencies belong to the authenticated archive,
         # not this exact-key map. UDPcast remains mandatory in signer metadata
-        # above and pinned by cybex-james' exact Debian dependency; the archive
+        # above and pinned by tiaris-nest' exact Debian dependency; the archive
         # digest binds its package, version, SPDX and corresponding source.
         "required_package_versions": {
             name: value for name, value in versions.items() if name != "udpcast"
@@ -1067,7 +1067,7 @@ def _nixos_appliance_release_inputs(arguments, version, notes_url):
         "manage_origin", "manage_source", "microcode_versions", "filename", "sha256", "size_bytes",
     }
     _require_exact_object_keys(metadata, metadata_fields, "NixOS closure build metadata")
-    if metadata["schema"] != "cybex.james.appliance-closure-build.v1":
+    if metadata["schema"] != "tiaris.nest.appliance-closure-build.v1":
         _fail("NixOS closure build metadata schema is incompatible")
     if metadata["manage_origin"] != _validate_manage_origin(arguments.expected_manage_origin):
         _fail("NixOS closure metadata differs from the explicit Management origin")
@@ -1089,18 +1089,18 @@ def _nixos_appliance_release_inputs(arguments, version, notes_url):
     })
     appliance_v3.validate_descriptor(descriptor, version, signed=False)
     if metadata["source_revision"] != getattr(arguments, "appliance_source_revision", None):
-        _fail("NixOS closure James source revision differs from the explicit release input")
+        _fail("NixOS closure Nest source revision differs from the explicit release input")
     if metadata["manage_source_revision"] != getattr(arguments, "workstation_netboot_manage_revision", None):
-        _fail("NixOS closure and workstation runtime must use the same exact Manage source")
+        _fail("NixOS closure and workstation runtime must use the same exact Tiaris source")
     if metadata["nixpkgs_revision"] != getattr(arguments, "workstation_netboot_nixpkgs_revision", None):
         _fail("NixOS closure and workstation runtime must use the same nixpkgs pin")
     source = _require_exact_object_keys(metadata["manage_source"],
-        {"revision", "sha256", "size_bytes", "store_path"}, "NixOS embedded Manage source")
+        {"revision", "sha256", "size_bytes", "store_path"}, "NixOS embedded Tiaris source")
     if source["revision"] != metadata["manage_source_revision"]:
-        _fail("NixOS embedded Manage source revision differs from its closure")
+        _fail("NixOS embedded Tiaris source revision differs from its closure")
     for field in ("sha256", "size_bytes"):
         if source[field] != getattr(arguments, "workstation_netboot_manage_source_" + field, None):
-            _fail("NixOS embedded Manage source identity differs from the workstation runtime")
+            _fail("NixOS embedded Tiaris source identity differs from the workstation runtime")
     return descriptor, [(bundle, "NixOS system closure"), (metadata_path, "NixOS closure build metadata")]
 
 
@@ -1153,13 +1153,13 @@ def _verify_manage_source_git_archive(path: Path, revision: str) -> None:
     try:
         size_bytes = path.stat().st_size
     except OSError:
-        _fail("could not inspect the packaged Manage source archive")
+        _fail("could not inspect the packaged Tiaris source archive")
     if (
         size_bytes <= 0
         or size_bytes > MANAGE_SOURCE_ARCHIVE_MAX_BYTES
         or size_bytes % (20 * 512) != 0
     ):
-        _fail("packaged Manage source archive framing is not deterministic")
+        _fail("packaged Tiaris source archive framing is not deterministic")
     try:
         with path.open("rb") as archive_file:
             identity = subprocess.run(
@@ -1171,9 +1171,9 @@ def _verify_manage_source_git_archive(path: Path, revision: str) -> None:
                 timeout=30,
             )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        _fail("git is required to verify the packaged Manage source archive")
+        _fail("git is required to verify the packaged Tiaris source archive")
     if identity.returncode != 0 or identity.stdout != f"{revision}\n".encode("ascii"):
-        _fail("packaged Manage source archive does not bind its declared revision")
+        _fail("packaged Tiaris source archive does not bind its declared revision")
 
     observed: set[str] = set()
     regular_files: set[str] = set()
@@ -1183,20 +1183,20 @@ def _verify_manage_source_git_archive(path: Path, revision: str) -> None:
     try:
         with tarfile.open(path, mode="r:") as source_archive:
             for member in source_archive:
-                name = _normalized_tar_name(member.name, "packaged Manage source archive")
+                name = _normalized_tar_name(member.name, "packaged Tiaris source archive")
                 if name in observed:
-                    _fail("packaged Manage source archive contains a duplicate entry")
+                    _fail("packaged Tiaris source archive contains a duplicate entry")
                 observed.add(name)
                 if len(observed) > 100_000:
-                    _fail("packaged Manage source archive contains too many entries")
+                    _fail("packaged Tiaris source archive contains too many entries")
                 if not (member.isdir() or member.isreg()) or member.islnk() or member.issym():
                     _fail(
-                        "packaged Manage source archive contains a symlink, hardlink, "
+                        "packaged Tiaris source archive contains a symlink, hardlink, "
                         "or nonregular entry"
                     )
                 expected_mode = 0o755 if member.isdir() else None
                 if member.isreg() and member.mode not in (0o644, 0o755):
-                    _fail("packaged Manage source archive file mode is not deterministic")
+                    _fail("packaged Tiaris source archive file mode is not deterministic")
                 if (
                     member.uid != 0
                     or member.gid != 0
@@ -1204,50 +1204,50 @@ def _verify_manage_source_git_archive(path: Path, revision: str) -> None:
                     or member.gname != "root"
                     or (expected_mode is not None and member.mode != expected_mode)
                 ):
-                    _fail("packaged Manage source archive ownership is not deterministic")
+                    _fail("packaged Tiaris source archive ownership is not deterministic")
                 pax_headers = dict(member.pax_headers)
                 if pax_headers.pop("comment", None) != revision:
-                    _fail("packaged Manage source archive lost its revision marker")
+                    _fail("packaged Tiaris source archive lost its revision marker")
                 if pax_headers and pax_headers != {"path": member.name}:
-                    _fail("packaged Manage source archive has unsupported extended metadata")
+                    _fail("packaged Tiaris source archive has unsupported extended metadata")
                 if source_mtime is None:
                     if not isinstance(member.mtime, int) or member.mtime < 0:
-                        _fail("packaged Manage source archive timestamp is invalid")
+                        _fail("packaged Tiaris source archive timestamp is invalid")
                     source_mtime = member.mtime
                 elif member.mtime != source_mtime:
-                    _fail("packaged Manage source archive timestamps are not deterministic")
+                    _fail("packaged Tiaris source archive timestamps are not deterministic")
                 if member.isreg():
                     regular_files.add(name)
                     if member.size < 0:
-                        _fail("packaged Manage source archive contains an invalid size")
+                        _fail("packaged Tiaris source archive contains an invalid size")
                     regular_bytes += member.size
                     if regular_bytes > MANAGE_SOURCE_ARCHIVE_MAX_BYTES:
-                        _fail("packaged Manage source archive contents exceed their bound")
+                        _fail("packaged Tiaris source archive contents exceed their bound")
                     extracted = source_archive.extractfile(member)
                     if extracted is None:
-                        _fail("packaged Manage source archive entry could not be read")
+                        _fail("packaged Tiaris source archive entry could not be read")
                     consumed = 0
                     while chunk := extracted.read(1024 * 1024):
                         consumed += len(chunk)
                         if consumed > member.size:
                             _fail(
-                                "packaged Manage source archive entry exceeded its declared size"
+                                "packaged Tiaris source archive entry exceeded its declared size"
                             )
                     if consumed != member.size:
-                        _fail("packaged Manage source archive entry is truncated")
+                        _fail("packaged Tiaris source archive entry is truncated")
             logical_end = source_archive.offset
     except ReleaseError:
         raise
     except (tarfile.TarError, OSError, EOFError):
-        _fail("packaged Manage source archive is malformed or truncated")
+        _fail("packaged Tiaris source archive is malformed or truncated")
     if not MANAGE_SOURCE_INSTALLER_REQUIRED_PATHS <= regular_files:
-        _fail("packaged Manage source archive omits a required installer source path")
+        _fail("packaged Tiaris source archive omits a required installer source path")
     try:
         with path.open("rb") as archive_file:
             archive_file.seek(logical_end)
             trailing = archive_file.read()
     except OSError:
-        _fail("could not inspect packaged Manage source archive framing")
+        _fail("could not inspect packaged Tiaris source archive framing")
     # Git pads two EOF blocks to a complete 20-block record. When only one
     # block remains in the last record it must emit another record, making the
     # canonical trailer 21 blocks long. Require that exact framing, not merely
@@ -1255,7 +1255,7 @@ def _verify_manage_source_git_archive(path: Path, revision: str) -> None:
     record_bytes = 20 * 512
     expected_size = ((logical_end + 1024 + record_bytes - 1) // record_bytes) * record_bytes
     if size_bytes != expected_size or any(trailing):
-        _fail("packaged Manage source archive has noncanonical trailing bytes")
+        _fail("packaged Tiaris source archive has noncanonical trailing bytes")
 
 
 def _inspect_packaged_manage_source(
@@ -1266,9 +1266,9 @@ def _inspect_packaged_manage_source(
     retain_to: Path | None = None,
 ) -> dict[str, object]:
     if expected_revision is not None:
-        _validate_revision(expected_revision, "selected packaged Manage source")
-    expected_package_name = f"cybex-james_{version}-1_amd64.deb"
-    with tempfile.TemporaryDirectory(prefix="cybex-james-manage-source-") as directory:
+        _validate_revision(expected_revision, "selected packaged Tiaris source")
+    expected_package_name = f"tiaris-nest_{version}-1_amd64.deb"
+    with tempfile.TemporaryDirectory(prefix="tiaris-nest-manage-source-") as directory:
         directory_path = Path(directory)
         package_path = directory_path / expected_package_name
         try:
@@ -1291,7 +1291,7 @@ def _inspect_packaged_manage_source(
                         continue
                     package_count += 1
                     if package_count != 1:
-                        _fail("appliance package snapshot contains duplicate cybex-james packages")
+                        _fail("appliance package snapshot contains duplicate tiaris-nest packages")
                     if (
                         not member.isreg()
                         or member.islnk()
@@ -1302,13 +1302,13 @@ def _inspect_packaged_manage_source(
                         or member.mtime != 0
                         or member.pax_headers
                     ):
-                        _fail("packaged cybex-james Debian metadata is not deterministic")
+                        _fail("packaged tiaris-nest Debian metadata is not deterministic")
                     _copy_tar_member(
                         archive,
                         member,
                         package_path,
-                        "packaged cybex-james Debian",
-                        JAMES_DEBIAN_PACKAGE_MAX_BYTES,
+                        "packaged tiaris-nest Debian",
+                        NEST_DEBIAN_PACKAGE_MAX_BYTES,
                     )
         except ReleaseError:
             raise
@@ -1326,7 +1326,7 @@ def _inspect_packaged_manage_source(
             del stderr
             _fail("appliance package snapshot decompression failed")
         if package_count != 1:
-            _fail("appliance package snapshot omits its exact cybex-james package")
+            _fail("appliance package snapshot omits its exact tiaris-nest package")
 
         control = subprocess.run(
             ["dpkg-deb", "--show", "--showformat=${Package}\n${Version}\n${Architecture}\n",
@@ -1334,8 +1334,8 @@ def _inspect_packaged_manage_source(
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             check=False,
         )
-        if control.returncode != 0 or control.stdout != f"cybex-james\n{version}-1\namd64\n".encode():
-            _fail("packaged Manage source Debian control identity differs from its release")
+        if control.returncode != 0 or control.stdout != f"tiaris-nest\n{version}-1\namd64\n".encode():
+            _fail("packaged Tiaris source Debian control identity differs from its release")
 
         try:
             data_tar = subprocess.Popen(
@@ -1345,9 +1345,9 @@ def _inspect_packaged_manage_source(
                 stderr=subprocess.PIPE,
             )
         except (FileNotFoundError, OSError):
-            _fail("dpkg-deb is required to inspect the packaged Manage source")
+            _fail("dpkg-deb is required to inspect the packaged Tiaris source")
         assert data_tar.stdout is not None
-        source_directory = "usr/share/cybex-james/manage-source"
+        source_directory = "usr/share/tiaris-nest/manage-source"
         source_prefix = source_directory + "/"
         source_directory_seen = False
         archives: dict[str, tuple[Path, str, int]] = {}
@@ -1361,7 +1361,7 @@ def _inspect_packaged_manage_source(
                     name = member.name[2:] if member.name.startswith("./") else member.name
                     if name == source_directory:
                         if source_directory_seen:
-                            _fail("cybex-james package contains a duplicate Manage source directory")
+                            _fail("tiaris-nest package contains a duplicate Tiaris source directory")
                         source_directory_seen = True
                         if (
                             not member.isdir()
@@ -1370,20 +1370,20 @@ def _inspect_packaged_manage_source(
                             or member.mode != 0o755
                             or member.pax_headers
                         ):
-                            _fail("packaged Manage source directory metadata is unsafe")
+                            _fail("packaged Tiaris source directory metadata is unsafe")
                         continue
                     if not name.startswith(source_prefix):
                         continue
                     relative_name = name[len(source_prefix) :]
                     match = re.fullmatch(r"([0-9a-f]{40})\.(json|tar)", relative_name)
                     if match is None or "/" in relative_name:
-                        _fail("cybex-james package contains an unexpected Manage source entry")
+                        _fail("tiaris-nest package contains an unexpected Tiaris source entry")
                     revision, kind = match.groups()
                     if (revision, kind) in entries:
-                        _fail("cybex-james package contains duplicate Manage source entries")
+                        _fail("tiaris-nest package contains duplicate Tiaris source entries")
                     entries.add((revision, kind))
                     if len({entry[0] for entry in entries}) > MANAGE_SOURCE_CATALOG_MAX_REVISIONS:
-                        _fail("packaged Manage source catalog exceeds its revision bound")
+                        _fail("packaged Tiaris source catalog exceeds its revision bound")
                     if (
                         not member.isreg()
                         or member.islnk()
@@ -1394,36 +1394,36 @@ def _inspect_packaged_manage_source(
                         or member.pax_headers
                     ):
                         _fail(
-                            "packaged Manage source is a symlink, hardlink, nonregular, "
+                            "packaged Tiaris source is a symlink, hardlink, nonregular, "
                             "or has unsafe metadata"
                         )
                     if kind == "tar":
                         catalog_bytes += member.size
                         if catalog_bytes > MANAGE_SOURCE_CATALOG_MAX_BYTES:
-                            _fail("packaged Manage source catalog exceeds its total byte bound")
+                            _fail("packaged Tiaris source catalog exceeds its total byte bound")
                         archive_path = directory_path / f"{revision}.tar"
                         archive_sha256, archive_size = _copy_tar_member(
                             package_archive,
                             member,
                             archive_path,
-                            "packaged Manage source archive",
+                            "packaged Tiaris source archive",
                             MANAGE_SOURCE_ARCHIVE_MAX_BYTES,
                         )
                         archives[revision] = (archive_path, archive_sha256, archive_size)
                     else:
                         if member.size <= 0 or member.size > MANAGE_SOURCE_METADATA_MAX_BYTES:
-                            _fail("packaged Manage source metadata size is outside its bound")
+                            _fail("packaged Tiaris source metadata size is outside its bound")
                         extracted = package_archive.extractfile(member)
                         if extracted is None:
-                            _fail("packaged Manage source metadata could not be read")
+                            _fail("packaged Tiaris source metadata could not be read")
                         metadata_body = extracted.read(MANAGE_SOURCE_METADATA_MAX_BYTES + 1)
                         if len(metadata_body) != member.size:
-                            _fail("packaged Manage source metadata is truncated")
+                            _fail("packaged Tiaris source metadata is truncated")
                         metadata_bodies[revision] = metadata_body
         except ReleaseError:
             raise
         except (tarfile.TarError, OSError, EOFError):
-            data_error = "cybex-james Debian data archive is malformed or truncated"
+            data_error = "tiaris-nest Debian data archive is malformed or truncated"
         finally:
             data_tar.stdout.close()
             data_stderr = data_tar.stderr.read() if data_tar.stderr is not None else b""
@@ -1434,19 +1434,19 @@ def _inspect_packaged_manage_source(
             _fail(data_error)
         if data_return_code != 0:
             del data_stderr
-            _fail("dpkg-deb could not inspect the packaged Manage source")
+            _fail("dpkg-deb could not inspect the packaged Tiaris source")
         if (
             not source_directory_seen
             or not archives
             or set(metadata_bodies) != set(archives)
         ):
-            _fail("cybex-james package omits its exact Manage source archive contract")
+            _fail("tiaris-nest package omits its exact Tiaris source archive contract")
         if expected_revision is None:
             if len(archives) != 1:
-                _fail("multiple packaged Manage sources require an exact selected revision")
+                _fail("multiple packaged Tiaris sources require an exact selected revision")
             expected_revision = next(iter(archives))
         if expected_revision not in archives:
-            _fail("cybex-james package omits the selected Manage source revision")
+            _fail("tiaris-nest package omits the selected Tiaris source revision")
         for revision, (archive_path, archive_sha256, archive_size) in archives.items():
             _verify_manage_source_pair(
                 archive_path, metadata_bodies[revision], revision,
@@ -1454,7 +1454,7 @@ def _inspect_packaged_manage_source(
             )
         if retain_to is not None:
             if retain_to.exists() or retain_to.is_symlink():
-                _fail("retained Manage source output must not already exist")
+                _fail("retained Tiaris source output must not already exist")
             retain_to.mkdir(mode=0o755, parents=True)
             retain_to.chmod(0o755)
             for revision, (archive_path, _, _) in archives.items():
@@ -1479,34 +1479,34 @@ def _verify_manage_source_pair(
     try:
         metadata = json.loads(metadata_body)
     except (UnicodeDecodeError, json.JSONDecodeError):
-        _fail("packaged Manage source metadata is invalid JSON")
+        _fail("packaged Tiaris source metadata is invalid JSON")
     metadata = _require_exact_object_keys(
         metadata,
         {"filename", "revision", "schema", "sha256", "size_bytes"},
-        "packaged Manage source metadata",
+        "packaged Tiaris source metadata",
     )
     canonical_metadata = (
         json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         + "\n"
     ).encode("ascii")
     if metadata_body != canonical_metadata:
-        _fail("packaged Manage source metadata is not canonical compact sorted JSON")
+        _fail("packaged Tiaris source metadata is not canonical compact sorted JSON")
     if (
         metadata["schema"] != MANAGE_SOURCE_METADATA_SCHEMA
         or metadata["revision"] != revision
         or metadata["filename"] != f"{revision}.tar"
         or _require_sha256(
-            metadata["sha256"], "packaged Manage source metadata SHA-256"
+            metadata["sha256"], "packaged Tiaris source metadata SHA-256"
         )
         != archive_sha256
         or _require_positive_int(
             metadata["size_bytes"],
-            "packaged Manage source metadata size",
+            "packaged Tiaris source metadata size",
             maximum=MANAGE_SOURCE_ARCHIVE_MAX_BYTES,
         )
         != archive_size
     ):
-        _fail("packaged Manage source metadata does not match its archive")
+        _fail("packaged Tiaris source metadata does not match its archive")
     _verify_manage_source_git_archive(archive_path, revision)
 
 
@@ -1524,7 +1524,7 @@ def _workstation_netboot_message(descriptor: dict[str, Any]) -> bytes:
             "manage_source_sha256",
             "manage_source_size_bytes",
         } <= descriptor.keys():
-            _fail("workstation netboot Manage source identity is incomplete")
+            _fail("workstation netboot Tiaris source identity is incomplete")
         source_identity = (
             f"{descriptor['manage_source_size_bytes']}\n"
             f"{descriptor['manage_source_sha256']}\n"
@@ -1537,7 +1537,7 @@ def _workstation_netboot_message(descriptor: dict[str, Any]) -> bytes:
         f"{source_identity}"
         f"{descriptor['architecture']}\n"
         f"{descriptor['format']}\n"
-        f"{descriptor['required_james_protocol']}\n"
+        f"{descriptor['required_nest_protocol']}\n"
         f"{components['bzImage']['size_bytes']}\n"
         f"{components['bzImage']['sha256']}\n"
         f"{components['initrd']['size_bytes']}\n"
@@ -1564,7 +1564,7 @@ def _workstation_netboot_inputs(
     )
     if any(values) and not all(values):
         _fail(
-            "workstation netboot bundle, tree, URL, runtime version, Manage revision, "
+            "workstation netboot bundle, tree, URL, runtime version, Tiaris revision, "
             "and nixpkgs revision must be supplied together"
         )
     if not any(values):
@@ -1573,7 +1573,7 @@ def _workstation_netboot_inputs(
     runtime_version = _validate_version(arguments.workstation_netboot_runtime_version)
     manage_revision = _validate_revision(
         arguments.workstation_netboot_manage_revision,
-        "workstation netboot Manage revision",
+        "workstation netboot Tiaris revision",
     )
     nixpkgs_revision = _validate_revision(
         arguments.workstation_netboot_nixpkgs_revision,
@@ -1586,19 +1586,19 @@ def _workstation_netboot_inputs(
         arguments, "workstation_netboot_manage_source_size_bytes", None
     )
     if (manage_source_sha256 is None) != (manage_source_size_bytes is None):
-        _fail("workstation netboot Manage source digest and size must be supplied together")
+        _fail("workstation netboot Tiaris source digest and size must be supplied together")
     if manage_source_sha256 is not None:
         manage_source_sha256 = _require_sha256(
-            manage_source_sha256, "workstation netboot Manage source SHA-256"
+            manage_source_sha256, "workstation netboot Tiaris source SHA-256"
         )
         manage_source_size_bytes = _require_positive_int(
             manage_source_size_bytes,
-            "workstation netboot Manage source size",
+            "workstation netboot Tiaris source size",
             maximum=MANAGE_SOURCE_ARCHIVE_MAX_BYTES,
         )
     bundle = Path(arguments.workstation_netboot_bundle)
     expected_name = (
-        f"cybex-workstation-netboot-{runtime_version}-{manage_revision[:12]}-"
+        f"tiaris-workstation-netboot-{runtime_version}-{manage_revision[:12]}-"
         f"{WORKSTATION_NETBOOT_ARCHITECTURE}.tar.zst"
     )
     if bundle.name != expected_name:
@@ -1667,7 +1667,7 @@ def _inspect_workstation_netboot(
             "runtime_version",
             "architecture",
             "format",
-            "required_james_protocol",
+            "required_nest_protocol",
             "manage_source_revision",
             "nixpkgs_revision",
             "source_date_epoch",
@@ -1683,7 +1683,7 @@ def _inspect_workstation_netboot(
         "runtime_version": runtime_version,
         "architecture": WORKSTATION_NETBOOT_ARCHITECTURE,
         "format": WORKSTATION_NETBOOT_FORMAT,
-        "required_james_protocol": WORKSTATION_NETBOOT_REQUIRED_JAMES_PROTOCOL,
+        "required_nest_protocol": WORKSTATION_NETBOOT_REQUIRED_NEST_PROTOCOL,
         "manage_source_revision": manage_revision,
         "nixpkgs_revision": nixpkgs_revision,
     }
@@ -1753,7 +1753,7 @@ def _inspect_workstation_netboot(
         "nixpkgs_revision": nixpkgs_revision,
         "architecture": WORKSTATION_NETBOOT_ARCHITECTURE,
         "format": WORKSTATION_NETBOOT_FORMAT,
-        "required_james_protocol": WORKSTATION_NETBOOT_REQUIRED_JAMES_PROTOCOL,
+        "required_nest_protocol": WORKSTATION_NETBOOT_REQUIRED_NEST_PROTOCOL,
         "url": url,
         "sha256": bundle_sha256,
         "size_bytes": bundle_size,
@@ -1916,7 +1916,7 @@ def _manifest_command(arguments: argparse.Namespace) -> None:
         arguments, version, require_build_metadata=True
     )
     if installer_iso_template_inputs is None:
-        _fail("installer_iso_template_v2 is required for every James release")
+        _fail("installer_iso_template_v2 is required for every Nest release")
     installer_iso_template: dict[str, Any] | None = None
     appliance_release_inputs = _appliance_release_inputs(arguments, version, notes_url)
     appliance_release: dict[str, Any] | None = None
@@ -2047,7 +2047,7 @@ def _manifest_command(arguments: argparse.Namespace) -> None:
         manifest["workstation_netboot"] = workstation_netboot
     body = (json.dumps(manifest, indent=2, ensure_ascii=True) + "\n").encode("utf-8")
     _atomic_write(output, body)
-    print(f"wrote signed James release manifest: {output}")
+    print(f"wrote signed Nest release manifest: {output}")
 
 
 def _public_key_command(arguments: argparse.Namespace) -> None:
@@ -2148,7 +2148,7 @@ def _validate_compatibility_contract(
 ) -> dict[str, Any]:
     contract = _require_exact_object_keys(
         value,
-        {"schema", "protocol_version", "manage", "james", "workstation_runtime"},
+        {"schema", "protocol_version", "manage", "nest", "workstation_runtime"},
         "component compatibility contract",
     )
     if contract["schema"] != COMPONENT_COMPATIBILITY_SCHEMA:
@@ -2163,35 +2163,35 @@ def _validate_compatibility_contract(
     )
     manage = _require_exact_object_keys(
         contract["manage"],
-        {"minimum_james_protocol", "maximum_james_protocol"},
-        "Manage compatibility range",
+        {"minimum_nest_protocol", "maximum_nest_protocol"},
+        "Tiaris compatibility range",
     )
-    james = _require_exact_object_keys(
-        contract["james"],
+    nest = _require_exact_object_keys(
+        contract["nest"],
         {"minimum_manage_protocol", "maximum_manage_protocol"},
-        "James compatibility range",
+        "Nest compatibility range",
     )
     manage_minimum = _require_positive_int(
-        manage["minimum_james_protocol"],
-        "Manage minimum James protocol",
+        manage["minimum_nest_protocol"],
+        "Tiaris minimum Nest protocol",
         maximum=2**31 - 1,
     )
     manage_maximum = _require_positive_int(
-        manage["maximum_james_protocol"],
-        "Manage maximum James protocol",
+        manage["maximum_nest_protocol"],
+        "Tiaris maximum Nest protocol",
         maximum=2**31 - 1,
     )
-    james_minimum = _require_positive_int(
-        james["minimum_manage_protocol"],
-        "James minimum Manage protocol",
+    nest_minimum = _require_positive_int(
+        nest["minimum_manage_protocol"],
+        "Nest minimum Tiaris protocol",
         maximum=2**31 - 1,
     )
-    james_maximum = _require_positive_int(
-        james["maximum_manage_protocol"],
-        "James maximum Manage protocol",
+    nest_maximum = _require_positive_int(
+        nest["maximum_manage_protocol"],
+        "Nest maximum Tiaris protocol",
         maximum=2**31 - 1,
     )
-    if manage_minimum > manage_maximum or james_minimum > james_maximum:
+    if manage_minimum > manage_maximum or nest_minimum > nest_maximum:
         _fail("component compatibility protocol range is inverted")
 
     runtime = _require_exact_object_keys(
@@ -2202,7 +2202,7 @@ def _validate_compatibility_contract(
             "manifest_schema",
             "architecture",
             "format",
-            "required_james_protocol",
+            "required_nest_protocol",
             "import_states",
             "import_error_codes",
             "resolution_states",
@@ -2218,8 +2218,8 @@ def _validate_compatibility_contract(
         maximum=2**31 - 1,
     )
     _require_positive_int(
-        runtime["required_james_protocol"],
-        "workstation runtime required James protocol",
+        runtime["required_nest_protocol"],
+        "workstation runtime required Nest protocol",
         maximum=2**31 - 1,
     )
     if require_current_runtime_contract:
@@ -2228,7 +2228,7 @@ def _validate_compatibility_contract(
             "manifest_schema": WORKSTATION_NETBOOT_MANIFEST_SCHEMA,
             "architecture": WORKSTATION_NETBOOT_ARCHITECTURE,
             "format": WORKSTATION_NETBOOT_FORMAT,
-            "required_james_protocol": WORKSTATION_NETBOOT_REQUIRED_JAMES_PROTOCOL,
+            "required_nest_protocol": WORKSTATION_NETBOOT_REQUIRED_NEST_PROTOCOL,
         }
         for field, expected in expected_runtime_scalars.items():
             if runtime[field] != expected:
@@ -2270,46 +2270,46 @@ def _runtime_compatibility_tuple(contract: dict[str, Any]) -> dict[str, object]:
             "manifest_schema",
             "architecture",
             "format",
-            "required_james_protocol",
+            "required_nest_protocol",
         )
     }
 
 
 def _verify_component_compatibility_command(arguments: argparse.Namespace) -> None:
-    james_value, _ = _load_bounded_json(
-        Path(arguments.james_compatibility),
-        "James component compatibility contract",
+    nest_value, _ = _load_bounded_json(
+        Path(arguments.nest_compatibility),
+        "Nest component compatibility contract",
         maximum_bytes=1024 * 1024,
     )
     manage_value, _ = _load_bounded_json(
         Path(arguments.manage_compatibility),
-        "Manage component compatibility contract",
+        "Tiaris component compatibility contract",
         maximum_bytes=1024 * 1024,
     )
-    james = _validate_compatibility_contract(james_value)
+    nest = _validate_compatibility_contract(nest_value)
     manage = _validate_compatibility_contract(
         manage_value, require_current_runtime_contract=False
     )
-    james_protocol = james["protocol_version"]
+    nest_protocol = nest["protocol_version"]
     manage_protocol = manage["protocol_version"]
     if not (
-        manage["manage"]["minimum_james_protocol"]
-        <= james_protocol
-        <= manage["manage"]["maximum_james_protocol"]
+        manage["manage"]["minimum_nest_protocol"]
+        <= nest_protocol
+        <= manage["manage"]["maximum_nest_protocol"]
     ):
-        _fail(f"Manage does not accept selected James protocol {james_protocol}")
+        _fail(f"Tiaris does not accept selected Nest protocol {nest_protocol}")
     if not (
-        james["james"]["minimum_manage_protocol"]
+        nest["nest"]["minimum_manage_protocol"]
         <= manage_protocol
-        <= james["james"]["maximum_manage_protocol"]
+        <= nest["nest"]["maximum_manage_protocol"]
     ):
-        _fail(f"selected James does not accept Manage protocol {manage_protocol}")
-    if _runtime_compatibility_tuple(james) != _runtime_compatibility_tuple(manage):
-        _fail("James and Manage workstation runtime compatibility tuples do not match")
+        _fail(f"selected Nest does not accept Tiaris protocol {manage_protocol}")
+    if _runtime_compatibility_tuple(nest) != _runtime_compatibility_tuple(manage):
+        _fail("Nest and Tiaris workstation runtime compatibility tuples do not match")
     print(
-        "verified semantic James/Manage compatibility: "
-        f"james_protocol={james_protocol} manage_protocol={manage_protocol} "
-        f"runtime_epoch={james['workstation_runtime']['compatibility_epoch']}"
+        "verified semantic Nest/Tiaris compatibility: "
+        f"nest_protocol={nest_protocol} manage_protocol={manage_protocol} "
+        f"runtime_epoch={nest['workstation_runtime']['compatibility_epoch']}"
     )
 
 
@@ -2356,8 +2356,8 @@ def _release_manifest_artifact_identities(
     if not isinstance(artifact["url"], str):
         _fail("artifact-url must be a string")
     artifact_url = _validate_url(artifact["url"], "artifact-url")
-    if urlsplit(artifact_url).path.rsplit("/", 1)[-1] != "cybex-james-x86_64-linux":
-        _fail("artifact-url filename does not bind the James binary")
+    if urlsplit(artifact_url).path.rsplit("/", 1)[-1] != "tiaris-nest-x86_64-linux":
+        _fail("artifact-url filename does not bind the Nest binary")
     artifact_sha256 = _require_sha256(artifact["sha256"], "artifact.sha256")
     binary_signature = _canonical_base64(
         value["signature"], "binary signature", expected_bytes=64
@@ -2405,7 +2405,7 @@ def _release_manifest_artifact_identities(
         _fail("installer ISO template URL must be a string")
     template_url = _validate_url(template["url"], "installer-iso-template-url")
     expected_template_name = (
-        f"cybex-james-appliance-template-{version}-{INSTALLER_ISO_ARCHITECTURE}.iso"
+        f"tiaris-nest-appliance-template-{version}-{INSTALLER_ISO_ARCHITECTURE}.iso"
     )
     if urlsplit(template_url).path.rsplit("/", 1)[-1] != expected_template_name:
         _fail("installer ISO template URL does not bind its release filename")
@@ -2480,7 +2480,7 @@ def _release_manifest_artifact_identities(
                 "schema",
                 "release_id",
                 "ubuntu_snapshot_id",
-                "cybex_repository_snapshot",
+                "tiaris_repository_snapshot",
                 "required_package_versions",
                 "expected_kernel",
                 "minimum_protocol",
@@ -2515,13 +2515,13 @@ def _release_manifest_artifact_identities(
                 or appliance["schema"]
                 not in {APPLIANCE_RELEASE_SCHEMA_V1, APPLIANCE_RELEASE_SCHEMA_V2}
                 or appliance["release_id"] != version
-                or appliance["minimum_protocol"] != WORKSTATION_NETBOOT_REQUIRED_JAMES_PROTOCOL
+                or appliance["minimum_protocol"] != WORKSTATION_NETBOOT_REQUIRED_NEST_PROTOCOL
                 or appliance["minimum_state_schema"] != 2
                 or appliance["rollback_compatible"] is not True
             ):
                 _fail("appliance release descriptor is incompatible")
             snapshot = _require_exact_object_keys(
-                appliance["cybex_repository_snapshot"],
+                appliance["tiaris_repository_snapshot"],
                 {"url", "sha256", "size_bytes"},
                 "appliance repository snapshot",
             )
@@ -2531,7 +2531,7 @@ def _release_manifest_artifact_identities(
                 snapshot["url"], "appliance-package-snapshot-url"
             )
             expected_snapshot_name = (
-                f"cybex-james-appliance-packages-{version}-x86_64-linux.tar.zst"
+                f"tiaris-nest-appliance-packages-{version}-x86_64-linux.tar.zst"
             )
             if urlsplit(snapshot_url).path.rsplit("/", 1)[-1] != expected_snapshot_name:
                 _fail("appliance package snapshot URL does not bind its release filename")
@@ -2574,7 +2574,7 @@ def _release_manifest_artifact_identities(
             "nixpkgs_revision",
             "architecture",
             "format",
-            "required_james_protocol",
+            "required_nest_protocol",
             "url",
             "sha256",
             "size_bytes",
@@ -2598,8 +2598,8 @@ def _release_manifest_artifact_identities(
             workstation["schema"] != WORKSTATION_NETBOOT_SCHEMA
             or workstation["architecture"] != WORKSTATION_NETBOOT_ARCHITECTURE
             or workstation["format"] != WORKSTATION_NETBOOT_FORMAT
-            or workstation["required_james_protocol"]
-            != WORKSTATION_NETBOOT_REQUIRED_JAMES_PROTOCOL
+            or workstation["required_nest_protocol"]
+            != WORKSTATION_NETBOOT_REQUIRED_NEST_PROTOCOL
             or not isinstance(workstation["runtime_version"], str)
             or not isinstance(workstation["manage_source_revision"], str)
             or not isinstance(workstation["nixpkgs_revision"], str)
@@ -2608,7 +2608,7 @@ def _release_manifest_artifact_identities(
         runtime_version = _validate_version(workstation["runtime_version"])
         manage_revision = _validate_revision(
             workstation["manage_source_revision"],
-            "workstation netboot Manage revision",
+            "workstation netboot Tiaris revision",
         )
         _validate_revision(
             workstation["nixpkgs_revision"],
@@ -2617,11 +2617,11 @@ def _release_manifest_artifact_identities(
         if "manage_source_sha256" in workstation:
             _require_sha256(
                 workstation["manage_source_sha256"],
-                "workstation netboot Manage source SHA-256",
+                "workstation netboot Tiaris source SHA-256",
             )
             _require_positive_int(
                 workstation["manage_source_size_bytes"],
-                "workstation netboot Manage source size",
+                "workstation netboot Tiaris source size",
                 maximum=MANAGE_SOURCE_ARCHIVE_MAX_BYTES,
             )
         if not isinstance(workstation["url"], str):
@@ -2630,7 +2630,7 @@ def _release_manifest_artifact_identities(
             workstation["url"], "workstation-netboot-url"
         )
         expected_workstation_name = (
-            f"cybex-workstation-netboot-{runtime_version}-{manage_revision[:12]}-"
+            f"tiaris-workstation-netboot-{runtime_version}-{manage_revision[:12]}-"
             f"{WORKSTATION_NETBOOT_ARCHITECTURE}.tar.zst"
         )
         if (
@@ -2686,7 +2686,7 @@ def _release_manifest_artifact_identities(
             if appliance[field] != workstation_identity[field]:
                 _fail("NixOS appliance and workstation runtime source pins disagree")
     identities: dict[str, object] = {
-        "james_binary": {"url": artifact_url, "sha256": artifact_sha256},
+        "nest_binary": {"url": artifact_url, "sha256": artifact_sha256},
         "appliance_iso_template": {
             "url": template_url,
             "sha256": template_sha256,
@@ -2727,7 +2727,7 @@ def _release_compatibility_unsigned_payload(
             "descriptor_schema": runtime["schema"],
             "architecture": runtime["architecture"],
             "format": runtime["format"],
-            "required_james_protocol": runtime["required_james_protocol"],
+            "required_nest_protocol": runtime["required_nest_protocol"],
         }
         for field, expected in expected_runtime_contract.items():
             if runtime_contract[field] != expected:
@@ -2738,7 +2738,7 @@ def _release_compatibility_unsigned_payload(
     return (
         {
             "schema": RELEASE_COMPATIBILITY_SCHEMA,
-            "james_release_version": version,
+            "nest_release_version": version,
             "release_manifest": {
                 "url": manifest_url,
                 "sha256": hashlib.sha256(manifest_body).hexdigest(),
@@ -2772,7 +2772,7 @@ def _verified_release_compatibility_payload(
         _fail("release compatibility asset must be canonical compact sorted JSON")
     expected_asset_fields = {
         "schema",
-        "james_release_version",
+        "nest_release_version",
         "release_manifest",
         "compatibility",
         "compatibility_sha256",
@@ -2787,9 +2787,9 @@ def _verified_release_compatibility_payload(
         _fail(
             f"release compatibility asset schema must be {RELEASE_COMPATIBILITY_SCHEMA}"
         )
-    if not isinstance(asset["james_release_version"], str):
-        _fail("release compatibility James version must be a string")
-    _validate_version(asset["james_release_version"])
+    if not isinstance(asset["nest_release_version"], str):
+        _fail("release compatibility Nest version must be a string")
+    _validate_version(asset["nest_release_version"])
     release_manifest = _require_exact_object_keys(
         asset["release_manifest"],
         {"url", "sha256"},
@@ -2810,7 +2810,7 @@ def _verified_release_compatibility_payload(
     artifacts = _require_exact_object_keys(
         asset["artifacts"],
         {
-            "james_binary",
+            "nest_binary",
             "appliance_iso_template",
             "appliance_package_snapshot",
             "workstation_runtime",
@@ -3029,7 +3029,7 @@ def _authorized_previous_key(path, current_key, current_version, authorization_p
     if authorization_path is None:
         _fail("historical predecessor authority requires an explicit signed authorization")
     authorization, auth_body = _load_bounded_json(Path(authorization_path), "historical authorization", maximum_bytes=1024 * 1024)
-    if (authorization.get("schema") != "cybex.james.recovery-adoption.v1"
+    if (authorization.get("schema") != "tiaris.nest.recovery-adoption.v1"
             or authorization.get("public_key") != current_key
             or authorization.get("successor_version") != current_version
             or auth_body != _canonical_json_body(authorization)):
@@ -3037,10 +3037,10 @@ def _authorized_previous_key(path, current_key, current_version, authorization_p
     signature = _canonical_base64(authorization.get("signature"), "historical authorization signature", expected_bytes=64)
     payload = {k: v for k, v in authorization.items() if k != "signature"}
     _self_verify(ED25519_PUBLIC_DER_PREFIX + _trusted_public_key(current_key), signature,
-                 b"CYBEX-JAMES-RECOVERY-ADOPTION-V1\n" + _canonical_json_body(payload))
+                 b"TIARIS-NEST-RECOVERY-ADOPTION-V1\n" + _canonical_json_body(payload))
     published = authorization.get("published", {})
     expected_url = (f"https://github.com/{authorization.get('repository')}/releases/download/"
-                    f"{published.get('tag_name')}/cybex-james-release.json")
+                    f"{published.get('tag_name')}/tiaris-nest-release.json")
     if (published.get("public_key") != previous.get("public_key")
             or published.get("compatibility_sha256") != hashlib.sha256(body).hexdigest()
             or published.get("manifest_sha256") != previous.get("release_manifest", {}).get("sha256")
@@ -3094,7 +3094,7 @@ def _release_compatibility_command(arguments: argparse.Namespace) -> None:
         _verify_signed_messages(public_der, manifest_signed_messages)
         if previous_compatibility_path is not None:
             previous_key = _authorized_previous_key(previous_compatibility_path, public_key,
-                payload["james_release_version"], getattr(arguments, "historical_authorization", None))
+                payload["nest_release_version"], getattr(arguments, "historical_authorization", None))
             _enforce_runtime_identity_transition(
                 previous_compatibility_path,
                 payload,
@@ -3122,7 +3122,7 @@ def _release_compatibility_command(arguments: argparse.Namespace) -> None:
     _self_verify(public_der, signature, message)
     asset = {**payload, "signature": base64.b64encode(signature).decode("ascii")}
     _atomic_write(output, _canonical_json_body(asset))
-    print(f"wrote signed James release compatibility asset: {output}")
+    print(f"wrote signed Nest release compatibility asset: {output}")
 
 
 def _verify_release_compatibility_command(arguments: argparse.Namespace) -> None:
@@ -3160,8 +3160,8 @@ def _verify_release_compatibility_command(arguments: argparse.Namespace) -> None
     )
     _verify_signed_messages(public_der, manifest_signed_messages)
     print(
-        "verified signed James release compatibility asset: "
-        f"version={actual_payload['james_release_version']} "
+        "verified signed Nest release compatibility asset: "
+        f"version={actual_payload['nest_release_version']} "
         f"manifest_sha256={actual_payload['release_manifest']['sha256']} "
         f"compatibility_sha256={actual_payload['compatibility_sha256']}"
     )
@@ -3189,15 +3189,15 @@ def _verify_release_successor_command(arguments: argparse.Namespace) -> None:
         previous_asset,
         previous_body,
         _authorized_previous_key(previous_path, arguments.trusted_public_key,
-            current_payload["james_release_version"], getattr(arguments, "historical_authorization", None)),
+            current_payload["nest_release_version"], getattr(arguments, "historical_authorization", None)),
         require_current_runtime_contract=False,
         require_current_installer_origin=False,
     )
-    current_version = current_payload["james_release_version"]
-    previous_version = previous_payload["james_release_version"]
+    current_version = current_payload["nest_release_version"]
+    previous_version = previous_payload["nest_release_version"]
     if _compare_semver(current_version, previous_version) <= 0:
         _fail(
-            "current James release version must have greater SemVer precedence "
+            "current Nest release version must have greater SemVer precedence "
             "than the latest published predecessor"
         )
     _enforce_runtime_identity_transition(
@@ -3209,7 +3209,7 @@ def _verify_release_successor_command(arguments: argparse.Namespace) -> None:
     _enforce_appliance_state_schema_transition(previous_payload, current_payload)
     _enforce_installer_manage_origin_transition(previous_payload, current_payload)
     print(
-        "verified James release successor: "
+        "verified Nest release successor: "
         f"previous={previous_version} current={current_version}"
     )
 
@@ -3219,7 +3219,7 @@ def _verify_nixos_source_identity(closure, workstation):
     if (source["revision"] != workstation["manage_source_revision"]
             or source["sha256"] != workstation.get("manage_source_sha256")
             or source["size_bytes"] != workstation.get("manage_source_size_bytes")):
-        _fail("closure embedded Manage source must exactly match the workstation descriptor")
+        _fail("closure embedded Tiaris source must exactly match the workstation descriptor")
 
 
 def _verify_nixos_command(arguments, manifest):
@@ -3229,11 +3229,11 @@ def _verify_nixos_command(arguments, manifest):
     if not arguments.appliance_package_snapshot or not arguments.workstation_netboot_bundle or not arguments.workstation_netboot_tree:
         _fail("NixOS verification requires the complete closure, ISO and workstation artifacts")
     artifact = Path(arguments.artifact)
-    if artifact.name != "cybex-james-x86_64-linux":
-        _fail("binary artifact must be named cybex-james-x86_64-linux")
-    digest, _ = _inspect_artifact(artifact, "James binary")
+    if artifact.name != "tiaris-nest-x86_64-linux":
+        _fail("binary artifact must be named tiaris-nest-x86_64-linux")
+    digest, _ = _inspect_artifact(artifact, "Nest binary")
     if digest != manifest["artifact"]["sha256"]:
-        _fail("James binary differs from its signed identity")
+        _fail("Nest binary differs from its signed identity")
     template = manifest["installer_iso_template_v3"]
     if template["manage_origin"] != _validate_manage_origin(arguments.expected_manage_origin):
         _fail("NixOS ISO Management origin differs from the explicit expected origin")
@@ -3282,7 +3282,7 @@ def _verify_nixos_command(arguments, manifest):
         inspected_release, _ = _nixos_appliance_release_inputs(build_args, version, manifest["notes_url"])
         if inspected_release != {key: value for key, value in release.items() if key != "signature"}:
             _fail("NixOS build metadata differs from its signed release")
-    print(f"verified signed NixOS James release: version={version} system_closure_sha256={release['system_closure']['sha256']}")
+    print(f"verified signed NixOS Nest release: version={version} system_closure_sha256={release['system_closure']['sha256']}")
 
 
 def _verify_command(arguments: argparse.Namespace) -> None:
@@ -3327,8 +3327,8 @@ def _verify_command(arguments: argparse.Namespace) -> None:
     if not isinstance(manifest["version"], str):
         _fail("release manifest version must be a string")
     version = _validate_version(manifest["version"])
-    if artifact_path.name != "cybex-james-x86_64-linux":
-        _fail("binary artifact must be named cybex-james-x86_64-linux")
+    if artifact_path.name != "tiaris-nest-x86_64-linux":
+        _fail("binary artifact must be named tiaris-nest-x86_64-linux")
     release_url = _validate_url(str(manifest["release_url"]), "release-url")
     notes_url = _validate_url(str(manifest["notes_url"]), "notes-url")
     if not isinstance(manifest["published_at"], str):
@@ -3461,7 +3461,7 @@ def _verify_command(arguments: argparse.Namespace) -> None:
             "schema",
             "release_id",
             "ubuntu_snapshot_id",
-            "cybex_repository_snapshot",
+            "tiaris_repository_snapshot",
             "required_package_versions",
             "expected_kernel",
             "minimum_protocol",
@@ -3501,13 +3501,13 @@ def _verify_command(arguments: argparse.Namespace) -> None:
         ):
             _fail("appliance release descriptor is incompatible")
         snapshot = _require_exact_object_keys(
-            descriptor["cybex_repository_snapshot"],
+            descriptor["tiaris_repository_snapshot"],
             {"url", "sha256", "size_bytes"},
             "appliance repository snapshot",
         )
         snapshot_path = Path(arguments.appliance_package_snapshot)
         expected_snapshot_name = (
-            f"cybex-james-appliance-packages-{version}-x86_64-linux.tar.zst"
+            f"tiaris-nest-appliance-packages-{version}-x86_64-linux.tar.zst"
         )
         if snapshot_path.name != expected_snapshot_name:
             _fail(f"appliance package snapshot must be named {expected_snapshot_name}")
@@ -3572,7 +3572,7 @@ def _verify_command(arguments: argparse.Namespace) -> None:
             "nixpkgs_revision",
             "architecture",
             "format",
-            "required_james_protocol",
+            "required_nest_protocol",
             "url",
             "sha256",
             "size_bytes",
@@ -3637,12 +3637,12 @@ def _verify_command(arguments: argparse.Namespace) -> None:
             ))
         ):
             _fail(
-                "packaged Manage source revision does not match the signed "
+                "packaged Tiaris source revision does not match the signed "
                 "workstation netboot descriptor"
             )
         workstation_sha = descriptor["sha256"]
     print(
-        "verified signed James release manifest: "
+        "verified signed Nest release manifest: "
         f"version={version} binary_sha256={actual_artifact_sha}"
         + (
             f" workstation_netboot_sha256={workstation_sha}"
@@ -3665,7 +3665,7 @@ def _verify_command(arguments: argparse.Namespace) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Build signed Cybex James release manifests without exposing private key bytes."
+        description="Build signed Tiaris Nest release manifests without exposing private key bytes."
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -3674,7 +3674,7 @@ def _parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
         help="hash an artifact and atomically write a signed manifest",
     )
-    manifest.add_argument("--artifact", required=True, help="regular James binary artifact")
+    manifest.add_argument("--artifact", required=True, help="regular Nest binary artifact")
     manifest.add_argument("--artifact-url", required=True, help="exact HTTP(S) download URL")
     manifest.add_argument("--version", required=True, help="canonical Cargo SemVer without a leading v")
     manifest.add_argument("--private-key", required=True, help="mode-0600 Ed25519 PEM private key")
@@ -3731,7 +3731,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     manifest.add_argument(
         "--appliance-source-revision",
-        help="exact lowercase 40-hex James source revision; selects appliance release V2",
+        help="exact lowercase 40-hex Nest source revision; selects appliance release V2",
     )
     manifest.add_argument(
         "--workstation-netboot-bundle",
@@ -3751,7 +3751,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     manifest.add_argument(
         "--workstation-netboot-manage-revision",
-        help="exact lowercase 40-hex Manage source revision",
+        help="exact lowercase 40-hex Tiaris source revision",
     )
     manifest.add_argument(
         "--workstation-netboot-nixpkgs-revision",
@@ -3759,12 +3759,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     manifest.add_argument(
         "--workstation-netboot-manage-source-sha256",
-        help="SHA-256 of the exact packaged Manage source archive",
+        help="SHA-256 of the exact packaged Tiaris source archive",
     )
     manifest.add_argument(
         "--workstation-netboot-manage-source-size-bytes",
         type=int,
-        help="size of the exact packaged Manage source archive",
+        help="size of the exact packaged Tiaris source archive",
     )
     manifest.add_argument(
         "--published-at",
@@ -3776,13 +3776,13 @@ def _parser() -> argparse.ArgumentParser:
     verify_components = commands.add_parser(
         "verify-component-compatibility",
         allow_abbrev=False,
-        help="verify semantic compatibility between selected James and Manage contracts",
+        help="verify semantic compatibility between selected Nest and Tiaris contracts",
     )
     verify_components.add_argument(
-        "--james-compatibility", required=True, help="James component compatibility contract"
+        "--nest-compatibility", required=True, help="Nest component compatibility contract"
     )
     verify_components.add_argument(
-        "--manage-compatibility", required=True, help="Manage component compatibility contract"
+        "--manage-compatibility", required=True, help="Tiaris component compatibility contract"
     )
     verify_components.set_defaults(handler=_verify_component_compatibility_command)
 
@@ -3792,12 +3792,12 @@ def _parser() -> argparse.ArgumentParser:
         help="bind a release manifest and compatibility contract in a signed asset",
     )
     compatibility.add_argument(
-        "--manifest", required=True, help="exact signed James release manifest"
+        "--manifest", required=True, help="exact signed Nest release manifest"
     )
     compatibility.add_argument(
         "--manifest-url",
         required=True,
-        help="exact immutable URL for cybex-james-release.json",
+        help="exact immutable URL for tiaris-nest-release.json",
     )
     compatibility.add_argument(
         "--compatibility",
@@ -3818,7 +3818,7 @@ def _parser() -> argparse.ArgumentParser:
     compatibility.add_argument(
         "--output",
         required=True,
-        help="cybex-james-release-compatibility.json output path",
+        help="tiaris-nest-release-compatibility.json output path",
     )
     compatibility.set_defaults(handler=_release_compatibility_command)
 
@@ -3831,7 +3831,7 @@ def _parser() -> argparse.ArgumentParser:
         "--asset", required=True, help="signed release compatibility asset"
     )
     verify_compatibility.add_argument(
-        "--manifest", required=True, help="exact referenced James release manifest"
+        "--manifest", required=True, help="exact referenced Nest release manifest"
     )
     verify_compatibility.add_argument(
         "--manifest-url",

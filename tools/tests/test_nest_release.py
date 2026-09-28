@@ -17,11 +17,11 @@ import unittest
 
 
 REPOSITORY = Path(__file__).resolve().parents[2]
-TOOL = REPOSITORY / "tools" / "james-release.py"
+TOOL = REPOSITORY / "tools" / "nest-release.py"
 WEAK_PUBLIC_KEYS = REPOSITORY / "trust" / "ed25519-weak-public-keys.txt"
 
 
-class JamesReleaseToolTests(unittest.TestCase):
+class NestReleaseToolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.directory = Path(self.temporary.name)
@@ -33,13 +33,13 @@ class JamesReleaseToolTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         self.private_key.chmod(0o600)
-        self.artifact = self.directory / "cybex-james-x86_64-linux"
-        self.artifact.write_bytes(b"deterministic James artifact\0\xff\n")
+        self.artifact = self.directory / "tiaris-nest-x86_64-linux"
+        self.artifact.write_bytes(b"deterministic Nest artifact\0\xff\n")
         self.template = self.directory / (
-            "cybex-james-appliance-template-0.1.1-x86_64-linux.iso"
+            "tiaris-nest-appliance-template-0.1.1-x86_64-linux.iso"
         )
         self.personalization_offset = 4096
-        media = bytearray(b"Cybex Ubuntu template\n" * 900)
+        media = bytearray(b"Tiaris Ubuntu template\n" * 900)
         media[
             self.personalization_offset : self.personalization_offset + 8192
         ] = bytes(8192)
@@ -76,7 +76,7 @@ class JamesReleaseToolTests(unittest.TestCase):
         package_delivery: str | None = None,
     ) -> None:
         metadata: dict[str, object] = {
-            "schema": "cybex.james.installer-template-build.v1",
+            "schema": "tiaris.nest.installer-template-build.v1",
             "version": version,
             "architecture": "x86_64-linux",
             "base_os": "ubuntu",
@@ -100,7 +100,7 @@ class JamesReleaseToolTests(unittest.TestCase):
             "--artifact",
             str(self.artifact),
             "--artifact-url",
-            "https://releases.example.test/v0.1.1/cybex-james-x86_64-linux",
+            "https://releases.example.test/v0.1.1/tiaris-nest-x86_64-linux",
             "--version",
             "0.1.1",
             "--private-key",
@@ -115,7 +115,7 @@ class JamesReleaseToolTests(unittest.TestCase):
             str(self.template),
             "--installer-iso-template-url",
             "https://releases.example.test/v0.1.1/"
-            "cybex-james-appliance-template-0.1.1-x86_64-linux.iso",
+            "tiaris-nest-appliance-template-0.1.1-x86_64-linux.iso",
             "--installer-iso-template-metadata",
             str(self.template_metadata),
             "--installer-iso-template-personalization-offset",
@@ -146,13 +146,13 @@ class JamesReleaseToolTests(unittest.TestCase):
     def network_package_arguments(self) -> tuple[list[str], Path]:
         self.write_template_metadata(package_delivery="network-snapshot-v1")
         snapshot = self.directory / (
-            "cybex-james-appliance-packages-0.1.1-x86_64-linux.tar.zst"
+            "tiaris-nest-appliance-packages-0.1.1-x86_64-linux.tar.zst"
         )
         snapshot.write_bytes(b"deterministic package snapshot\0\xff\n")
         versions = {
-            "cybex-james": "0.1.1",
-            "cybex-james-bootstrap": "0.1.1",
-            "cybex-james-appliance": "0.1.1",
+            "tiaris-nest": "0.1.1",
+            "tiaris-nest-bootstrap": "0.1.1",
+            "tiaris-nest-appliance": "0.1.1",
             "linux-generic": "6.17.0.1.1",
             "linux-firmware": "20260715.git123-0ubuntu1",
             "nix-bin": "2.30.1+dfsg-1",
@@ -163,7 +163,7 @@ class JamesReleaseToolTests(unittest.TestCase):
         metadata.write_text(
             json.dumps(
                 {
-                    "schema": "cybex.james.appliance-package-snapshot.v1",
+                    "schema": "tiaris.nest.appliance-package-snapshot.v1",
                     "release_id": "0.1.1",
                     "ubuntu_snapshot_id": "20260804T000000Z",
                     "manage_origin": self.manage_origin,
@@ -217,16 +217,16 @@ class JamesReleaseToolTests(unittest.TestCase):
                 "size_bytes": len(body),
             }
         manifest = {
-            "schema": "cybex.james.workstation-netboot-manifest.v1",
+            "schema": "tiaris.nest.workstation-netboot-manifest.v1",
             "runtime_version": runtime_version,
             "architecture": "x86_64-linux",
             "format": "split-squashfs-v1",
-            "required_james_protocol": 4,
+            "required_nest_protocol": 4,
             "manage_source_revision": manage_revision,
             "nixpkgs_revision": nixpkgs_revision,
             "source_date_epoch": source_date_epoch,
-            "toplevel": "/nix/store/00000000000000000000000000000000-cybex-runtime",
-            "kernel_cmdline_template": "init=/init cybex.squashfs={squashfs_url}",
+            "toplevel": "/nix/store/00000000000000000000000000000000-tiaris-runtime",
+            "kernel_cmdline_template": "init=/init tiaris.squashfs={squashfs_url}",
             "components": components,
             "provenance": {"builder": "test"},
         }
@@ -250,7 +250,7 @@ class JamesReleaseToolTests(unittest.TestCase):
                 entry.mtime = source_date_epoch
                 archive.addfile(entry, io.BytesIO(body))
         bundle = self.directory / (
-            f"cybex-workstation-netboot-{runtime_version}-{manage_revision[:12]}-"
+            f"tiaris-workstation-netboot-{runtime_version}-{manage_revision[:12]}-"
             "x86_64-linux.tar.zst"
         )
         subprocess.run(
@@ -297,7 +297,7 @@ class JamesReleaseToolTests(unittest.TestCase):
             "--manifest",
             str(manifest),
             "--manifest-url",
-            "https://releases.example.test/v0.1.1/cybex-james-release.json",
+            "https://releases.example.test/v0.1.1/tiaris-nest-release.json",
             "--compatibility",
             str(self.compatibility),
         ]
@@ -329,50 +329,50 @@ class JamesReleaseToolTests(unittest.TestCase):
         )
 
     def test_component_compatibility_is_semantic_not_byte_or_revision_equality(self) -> None:
-        james = json.loads(self.compatibility.read_text(encoding="utf-8"))
+        nest = json.loads(self.compatibility.read_text(encoding="utf-8"))
         manage = json.loads(self.compatibility.read_text(encoding="utf-8"))
-        james["james"]["maximum_manage_protocol"] = 5
+        nest["nest"]["maximum_manage_protocol"] = 5
         manage["protocol_version"] = 5
-        manage["manage"]["maximum_james_protocol"] = 5
-        manage["james"]["maximum_manage_protocol"] = 5
+        manage["manage"]["maximum_nest_protocol"] = 5
+        manage["nest"]["maximum_manage_protocol"] = 5
         manage["workstation_runtime"]["resolution_states"].append("future_resolution")
-        james_path = self.directory / "james-compatibility.json"
+        nest_path = self.directory / "nest-compatibility.json"
         manage_path = self.directory / "manage-compatibility.json"
-        self.write_canonical_json(james_path, james)
+        self.write_canonical_json(nest_path, nest)
         self.write_canonical_json(manage_path, manage)
 
         compatible = self.run_tool(
             "verify-component-compatibility",
-            "--james-compatibility",
-            str(james_path),
+            "--nest-compatibility",
+            str(nest_path),
             "--manage-compatibility",
             str(manage_path),
         )
         self.assertEqual(compatible.returncode, 0, compatible.stderr.decode())
-        self.assertIn(b"james_protocol=4 manage_protocol=5", compatible.stdout)
+        self.assertIn(b"nest_protocol=4 manage_protocol=5", compatible.stdout)
 
         manage["manage"] = {
-            "minimum_james_protocol": 5,
-            "maximum_james_protocol": 5,
+            "minimum_nest_protocol": 5,
+            "maximum_nest_protocol": 5,
         }
         self.write_canonical_json(manage_path, manage)
         rejected_protocol = self.run_tool(
             "verify-component-compatibility",
-            "--james-compatibility",
-            str(james_path),
+            "--nest-compatibility",
+            str(nest_path),
             "--manage-compatibility",
             str(manage_path),
         )
         self.assertEqual(rejected_protocol.returncode, 2)
-        self.assertIn(b"does not accept selected James protocol 4", rejected_protocol.stderr)
+        self.assertIn(b"does not accept selected Nest protocol 4", rejected_protocol.stderr)
 
-        manage["manage"]["minimum_james_protocol"] = 4
+        manage["manage"]["minimum_nest_protocol"] = 4
         manage["workstation_runtime"]["compatibility_epoch"] += 1
         self.write_canonical_json(manage_path, manage)
         rejected_runtime = self.run_tool(
             "verify-component-compatibility",
-            "--james-compatibility",
-            str(james_path),
+            "--nest-compatibility",
+            str(nest_path),
             "--manage-compatibility",
             str(manage_path),
         )
@@ -468,7 +468,7 @@ class JamesReleaseToolTests(unittest.TestCase):
         self.assertEqual(accepted.returncode, 0, accepted.stderr.decode())
         for invalid in (
             "https://manage.example.test:443",
-            "https://Manage.example.test",
+            "https://Tiaris.example.test",
             "https://manage.example.test/",
             "https://user@manage.example.test",
             "http://manage.example.test",
@@ -499,7 +499,7 @@ class JamesReleaseToolTests(unittest.TestCase):
         self.assertIn("appliance_release_v1", manifest)
         self.assertEqual(
             manifest["appliance_release_v1"]["schema"],
-            "cybex.james.appliance-release.v2",
+            "tiaris.nest.appliance-release.v2",
         )
         self.assertEqual(
             manifest["appliance_release_v1"]["source_revision"], "d" * 40
@@ -619,7 +619,7 @@ class JamesReleaseToolTests(unittest.TestCase):
             set(asset),
             {
                 "schema",
-                "james_release_version",
+                "nest_release_version",
                 "release_manifest",
                 "compatibility",
                 "compatibility_sha256",
@@ -628,8 +628,8 @@ class JamesReleaseToolTests(unittest.TestCase):
                 "signature",
             },
         )
-        self.assertEqual(asset["schema"], "cybex.james.release-compatibility.v1")
-        self.assertEqual(asset["james_release_version"], "0.1.1")
+        self.assertEqual(asset["schema"], "tiaris.nest.release-compatibility.v1")
+        self.assertEqual(asset["nest_release_version"], "0.1.1")
         self.assertEqual(asset["compatibility"], contract)
         canonical_contract = (
             json.dumps(
@@ -645,14 +645,14 @@ class JamesReleaseToolTests(unittest.TestCase):
             asset["release_manifest"],
             {
                 "url": "https://releases.example.test/v0.1.1/"
-                "cybex-james-release.json",
+                "tiaris-nest-release.json",
                 "sha256": hashlib.sha256(original_manifest).hexdigest(),
             },
         )
         manifest = json.loads(original_manifest)
         self.assertNotIn("release_compatibility", manifest)
         self.assertEqual(
-            asset["artifacts"]["james_binary"], manifest["artifact"]
+            asset["artifacts"]["nest_binary"], manifest["artifact"]
         )
         self.assertEqual(
             asset["artifacts"]["appliance_iso_template"],
@@ -693,7 +693,7 @@ class JamesReleaseToolTests(unittest.TestCase):
         release_tool["_self_verify"](
             public_der,
             compatibility_signature,
-            b"CYBEX-JAMES-RELEASE-COMPATIBILITY-V1\n"
+            b"TIARIS-NEST-RELEASE-COMPATIBILITY-V1\n"
             + canonical_unsigned_asset,
         )
         with self.assertRaises(release_tool["ReleaseError"]):
@@ -749,9 +749,9 @@ class JamesReleaseToolTests(unittest.TestCase):
 
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         asset = json.loads(output.read_text(encoding="utf-8"))
-        self.assertEqual(asset["artifacts"]["james_binary"], manifest["artifact"])
+        self.assertEqual(asset["artifacts"]["nest_binary"], manifest["artifact"])
         expected_appliance = dict(
-            manifest["appliance_release_v1"]["cybex_repository_snapshot"]
+            manifest["appliance_release_v1"]["tiaris_repository_snapshot"]
         )
         expected_appliance["minimum_state_schema"] = 2
         self.assertEqual(
@@ -776,10 +776,10 @@ class JamesReleaseToolTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("jq"), "jq is required")
     def test_governed_signing_command_forwards_packaged_source_identity(self):
         workflow = (REPOSITORY / ".github/workflows/release.yml").read_text()
-        command = re.search(r'          python3 tools/james-release.py manifest .*?--published-at "\$published_at"',
+        command = re.search(r'          python3 tools/nest-release.py manifest .*?--published-at "\$published_at"',
                             workflow, re.DOTALL).group()
         command = re.sub(r'\$\{\{.*?\}\}', 'fixture', command)
-        metadata = self.directory / "cybex-james-appliance-closure-metadata.json"
+        metadata = self.directory / "tiaris-nest-appliance-closure-metadata.json"
         metadata.write_text(json.dumps({"manage_source": {"sha256": "c" * 64, "size_bytes": 123}}))
         # Execute the real workflow invocation, capturing argv before signing.
         script = 'python3() { printf "%s\\0" "$@"; }; template_args=(); ' + command
@@ -806,7 +806,7 @@ class JamesReleaseToolTests(unittest.TestCase):
             with self.subTest(case=label):
                 result = self.run_tool(*self.manifest_arguments(output), *package_arguments, *arguments)
                 self.assertEqual(result.returncode, 2, result.stdout.decode())
-                self.assertIn(b"Manage source", result.stderr)
+                self.assertIn(b"Tiaris source", result.stderr)
                 self.assertFalse(output.exists())
         signed = self.run_tool(*self.manifest_arguments(output), *package_arguments, *workstation_arguments)
         self.assertEqual(signed.returncode, 0, signed.stderr.decode())
@@ -891,7 +891,7 @@ class JamesReleaseToolTests(unittest.TestCase):
             output, manifest_path, command="verify-compatibility"
         )
         arguments[arguments.index("--manifest-url") + 1] = (
-            "https://releases.example.test/v0.1.2/cybex-james-release.json"
+            "https://releases.example.test/v0.1.2/tiaris-nest-release.json"
         )
         rejected = self.run_tool(*arguments)
         self.assertEqual(rejected.returncode, 2)
@@ -953,7 +953,7 @@ class JamesReleaseToolTests(unittest.TestCase):
         def signed_version(version: str, output: Path) -> Path:
             payload = dict(previous_asset)
             payload.pop("signature")
-            payload["james_release_version"] = version
+            payload["nest_release_version"] = version
             message = release_tool["_release_compatibility_message"](payload)
             private_fd = os.open(self.private_key, os.O_RDONLY)
             try:
@@ -1019,7 +1019,7 @@ class JamesReleaseToolTests(unittest.TestCase):
         workflow = (REPOSITORY / ".github" / "workflows" / "release.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn("group: james-release-publish", workflow)
+        self.assertIn("group: nest-release-publish", workflow)
         predecessor_check = workflow.rfind("verify-successor")
         immutable_publish = workflow.rfind(
             'gh release edit "$GITHUB_REF_NAME" --draft=false'
@@ -1067,7 +1067,7 @@ class JamesReleaseToolTests(unittest.TestCase):
             legacy_value, self.directory / "legacy-predecessor.json"
         )
         current_value = json.loads(json.dumps(generated_asset))
-        current_value["james_release_version"] = "0.1.2"
+        current_value["nest_release_version"] = "0.1.2"
         current_path = sign_asset(current_value, self.directory / "current.json")
 
         accepted = self.run_tool(
@@ -1082,7 +1082,7 @@ class JamesReleaseToolTests(unittest.TestCase):
         self.assertEqual(accepted.returncode, 0, accepted.stderr.decode())
 
         switched_value = json.loads(json.dumps(generated_asset))
-        switched_value["james_release_version"] = "0.1.2"
+        switched_value["nest_release_version"] = "0.1.2"
         switched_value["artifacts"]["appliance_iso_template"][
             "manage_origin"
         ] = "https://manage.cybex.net"
@@ -1102,7 +1102,7 @@ class JamesReleaseToolTests(unittest.TestCase):
         self.assertIn(b"must not change within a release lineage", rejected.stderr)
 
         production_template = self.directory / (
-            "cybex-james-appliance-template-0.1.2-x86_64-linux.iso"
+            "tiaris-nest-appliance-template-0.1.2-x86_64-linux.iso"
         )
         production_template.write_bytes(self.template.read_bytes())
         self.template = production_template
@@ -1195,7 +1195,7 @@ class JamesReleaseToolTests(unittest.TestCase):
         self.assertEqual(generated.returncode, 0, generated.stderr.decode())
 
         current_template = self.directory / (
-            "cybex-james-appliance-template-0.1.2-x86_64-linux.iso"
+            "tiaris-nest-appliance-template-0.1.2-x86_64-linux.iso"
         )
         current_template.write_bytes(self.template.read_bytes())
         self.write_template_metadata(version="0.1.2")
@@ -1299,13 +1299,13 @@ class JamesReleaseToolTests(unittest.TestCase):
         def signed_asset(
             name: str,
             *,
-            james_version: str,
+            nest_version: str,
             runtime: dict[str, object] | None,
             epoch: int = 1,
         ) -> Path:
             payload = json.loads(json.dumps(previous_asset))
             payload.pop("signature")
-            payload["james_release_version"] = james_version
+            payload["nest_release_version"] = nest_version
             payload["artifacts"]["workstation_runtime"] = runtime
             payload["compatibility"]["workstation_runtime"][
                 "compatibility_epoch"
@@ -1344,7 +1344,7 @@ class JamesReleaseToolTests(unittest.TestCase):
 
         exact_reuse = signed_asset(
             "watermark-exact-reuse.json",
-            james_version="0.1.2",
+            nest_version="0.1.2",
             runtime=previous_runtime,
         )
         accepted = verify(previous_asset_path, exact_reuse)
@@ -1358,7 +1358,7 @@ class JamesReleaseToolTests(unittest.TestCase):
         advanced_runtime["sha256"] = "c" * 64
         advanced = signed_asset(
             "watermark-advanced.json",
-            james_version="0.1.2",
+            nest_version="0.1.2",
             runtime=advanced_runtime,
         )
         accepted = verify(previous_asset_path, advanced)
@@ -1368,7 +1368,7 @@ class JamesReleaseToolTests(unittest.TestCase):
         downgraded_runtime["runtime_version"] = "2.3.3"
         downgraded = signed_asset(
             "watermark-downgraded.json",
-            james_version="0.1.2",
+            nest_version="0.1.2",
             runtime=downgraded_runtime,
         )
         rejected = verify(previous_asset_path, downgraded)
@@ -1379,7 +1379,7 @@ class JamesReleaseToolTests(unittest.TestCase):
         advanced_same_bundle["sha256"] = previous_runtime["sha256"]
         same_bundle = signed_asset(
             "watermark-advanced-same-bundle.json",
-            james_version="0.1.2",
+            nest_version="0.1.2",
             runtime=advanced_same_bundle,
         )
         rejected = verify(previous_asset_path, same_bundle)
@@ -1388,7 +1388,7 @@ class JamesReleaseToolTests(unittest.TestCase):
 
         removed = signed_asset(
             "watermark-removed.json",
-            james_version="0.1.2",
+            nest_version="0.1.2",
             runtime=None,
         )
         rejected = verify(previous_asset_path, removed)
@@ -1397,13 +1397,13 @@ class JamesReleaseToolTests(unittest.TestCase):
 
         epoch_two_previous = signed_asset(
             "watermark-epoch-two-previous.json",
-            james_version="0.1.1",
+            nest_version="0.1.1",
             runtime=previous_runtime,
             epoch=2,
         )
         epoch_regression = signed_asset(
             "watermark-epoch-regression.json",
-            james_version="0.1.2",
+            nest_version="0.1.2",
             runtime=advanced_runtime,
             epoch=1,
         )
@@ -1413,7 +1413,7 @@ class JamesReleaseToolTests(unittest.TestCase):
 
         epoch_advance_same_bundle = signed_asset(
             "watermark-epoch-advance-same-bundle.json",
-            james_version="0.1.2",
+            nest_version="0.1.2",
             runtime=previous_runtime,
             epoch=2,
         )
@@ -1486,7 +1486,7 @@ class JamesReleaseToolTests(unittest.TestCase):
                 entry.mtime = manifest["source_date_epoch"]
                 archive.addfile(entry, io.BytesIO(body))
         next_bundle = self.directory / (
-            f"cybex-workstation-netboot-{next_runtime_version}-{'a' * 12}-"
+            f"tiaris-workstation-netboot-{next_runtime_version}-{'a' * 12}-"
             "x86_64-linux.tar.zst"
         )
         subprocess.run(

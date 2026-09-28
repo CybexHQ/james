@@ -20,8 +20,8 @@ use std::{
     process::Command,
 };
 const GIB: u64 = 1024 * 1024 * 1024;
-const STAGING: &str = "/run/cybex-appliance-closure";
-const ARCHIVE: &str = "/run/cybex-appliance-closure/closure.tar.zst";
+const STAGING: &str = "/run/tiaris-appliance-closure";
+const ARCHIVE: &str = "/run/tiaris-appliance-closure/closure.tar.zst";
 const TARGET: &str = "/mnt";
 
 fn release(plan: &SignedInstallPlan) -> Result<&NixosRelease> {
@@ -42,7 +42,7 @@ fn validate_closure_transport(transport: &str, artifact: &SystemClosure) -> Resu
         return Ok(());
     }
     // The signed plan may select the same bounded private bridge accepted by
-    // Manage qualification and appliance updates. It changes only transport:
+    // Tiaris qualification and appliance updates. It changes only transport:
     // the independently signed closure identity and NAR checks still apply.
     validate_qualification_package_transport_url(
         transport,
@@ -164,9 +164,9 @@ pub(super) async fn create_remaining(prepared: &PreparedStorage) -> Result<()> {
         .to_str()
         .ok_or_else(|| anyhow!("disk path"))?;
     for (index, kind, label) in [
-        (2u8, "ef00", "CYBEX_EFI"),
-        (3, "8200", "CYBEX_SWAP"),
-        (4, "8300", "CYBEX_ROOT"),
+        (2u8, "ef00", "TIARIS_EFI"),
+        (3, "8200", "TIARIS_SWAP"),
+        (4, "8300", "TIARIS_ROOT"),
     ] {
         let slot = usize::from(index - 1);
         let start = prepared.partition_starts[slot];
@@ -213,7 +213,7 @@ async fn format_filesystems(
         let body = super::read_bounded_nofollow(&marker, 4096, "prepared target filesystems")?;
         let value: serde_json::Value = serde_json::from_slice(&body)?;
         ensure!(
-            value["schema"] == "cybex.james.prepared-filesystems.v3"
+            value["schema"] == "tiaris.nest.prepared-filesystems.v3"
                 && value["plan_sha256"] == state.plan.plan_sha256
                 && value["root_uuid"] == identity(root)?
                 && value["esp_uuid"] == identity(esp)?
@@ -225,9 +225,13 @@ async fn format_filesystems(
     // The receipt is created before any import. Without it, restarting this exact
     // approved attempt safely repeats formatting, never adopts an old root/cache.
     for (program, args, partition) in [
-        ("mkfs.ext4", vec!["-F", "-m", "1", "-L", "CYBEX_ROOT"], root),
-        ("mkfs.vfat", vec!["-F", "32", "-n", "CYBEX_EFI"], esp),
-        ("mkswap", vec!["-L", "CYBEX_SWAP"], swap),
+        (
+            "mkfs.ext4",
+            vec!["-F", "-m", "1", "-L", "TIARIS_ROOT"],
+            root,
+        ),
+        ("mkfs.vfat", vec!["-F", "32", "-n", "TIARIS_EFI"], esp),
+        ("mkswap", vec!["-L", "TIARIS_SWAP"], swap),
     ] {
         ensure!(
             tokio::process::Command::new(program)
@@ -242,7 +246,7 @@ async fn format_filesystems(
     storage::atomic_write(
         &marker,
         &serde_json::to_vec(
-            &json!({"schema":"cybex.james.prepared-filesystems.v3","plan_sha256":state.plan.plan_sha256,"root_uuid":identity(root)?,"esp_uuid":identity(esp)?,"swap_uuid":identity(swap)?}),
+            &json!({"schema":"tiaris.nest.prepared-filesystems.v3","plan_sha256":state.plan.plan_sha256,"root_uuid":identity(root)?,"esp_uuid":identity(esp)?,"swap_uuid":identity(swap)?}),
         )?,
         0o600,
     )
@@ -296,9 +300,9 @@ pub(super) async fn install(prepared: &PreparedStorage, key_path: &Path) -> Resu
     mount(&root, target, "defaults").await?;
     prepare_installed_layout(target, 0, 0, 985)?;
     mount(&esp, &target.join("boot"), "umask=0077").await?;
-    let target_state = target.join("var/lib/cybex-james/state");
+    let target_state = target.join("var/lib/tiaris-nest/state");
     mount(&prepared.state_mount, &target_state, "bind,nodev,nosuid").await?;
-    let target_nix = target.join("var/cache/cybex-james/nix");
+    let target_nix = target.join("var/cache/tiaris-nest/nix");
     mount(&target_nix, &target.join("nix"), "bind,nodev,nosuid,exec").await?;
     let mut archive = OpenOptions::new()
         .read(true)
@@ -312,7 +316,7 @@ pub(super) async fn install(prepared: &PreparedStorage, key_path: &Path) -> Resu
             .checked_add(closure::MAX_EXPANDED)
             .ok_or_else(|| anyhow!("install space overflow"))?,
     )?;
-    let cache = target.join(format!("var/cache/cybex-james/.install-{}", state.plan.id));
+    let cache = target.join(format!("var/cache/tiaris-nest/.install-{}", state.plan.id));
     if cache.exists() {
         let old = fs::symlink_metadata(&cache)?;
         ensure!(
@@ -323,7 +327,7 @@ pub(super) async fn install(prepared: &PreparedStorage, key_path: &Path) -> Resu
     }
     closure::verify_archive(&mut archive, &release, &key, Some(&cache))?;
     let trust = format!(
-        "cybex-james-appliance-1:{}",
+        "tiaris-nest-appliance-1:{}",
         super::protocol::standard_base64(key.as_bytes())
     );
     storage::run_checked(
@@ -398,7 +402,7 @@ pub(super) async fn install(prepared: &PreparedStorage, key_path: &Path) -> Resu
         .ok_or_else(|| anyhow!("installed generation unavailable"))?;
     nixos::generation(generation)?;
     let installed = nixos::InstalledState {
-        schema: "cybex.james.installed-appliance.v3".into(),
+        schema: "tiaris.nest.installed-appliance.v3".into(),
         system_generation: generation.into(),
         system_toplevel: release.system_toplevel.clone(),
         system_closure_sha256: release.system_closure.sha256.clone(),
@@ -469,14 +473,14 @@ fn prepare_installed_layout(
     let directories = [
         ("var", expected_gid, 0o755),
         ("var/cache", expected_gid, 0o755),
-        ("var/cache/cybex-james", expected_gid, 0o755),
-        ("var/cache/cybex-james/nix", expected_gid, 0o755),
+        ("var/cache/tiaris-nest", expected_gid, 0o755),
+        ("var/cache/tiaris-nest/nix", expected_gid, 0o755),
         ("var/lib", expected_gid, 0o755),
-        ("var/lib/cybex-james", service_gid, 0o750),
-        ("var/lib/cybex-james/state", service_gid, 0o750),
+        ("var/lib/tiaris-nest", service_gid, 0o750),
+        ("var/lib/tiaris-nest/state", service_gid, 0o750),
         ("usr", expected_gid, 0o755),
         ("usr/share", expected_gid, 0o755),
-        ("usr/share/cybex-james", expected_gid, 0o755),
+        ("usr/share/tiaris-nest", expected_gid, 0o755),
     ];
     for (relative, gid, mode) in directories {
         prepare_owned_directory(&target.join(relative), expected_uid, gid, mode)?;
@@ -536,7 +540,7 @@ fn materialize_state(
         (
             "netplan-dhcp-fallback.json",
             storage::netplan(
-                &super::protocol::JamesProvisioningNetworkPlan {
+                &super::protocol::NestProvisioningNetworkPlan {
                     mode: "dhcp".into(),
                     interface_id: state.plan.network.interface_id.clone(),
                     address_cidr: None,
@@ -551,9 +555,9 @@ fn materialize_state(
         storage::atomic_write(&path, &serde_json::to_vec(&value)?, 0o640)?;
         chown(&path, 0, 985)?;
     }
-    let key_projection = target.join("usr/share/cybex-james/release-public-key");
+    let key_projection = target.join("usr/share/tiaris-nest/release-public-key");
     storage::atomic_write(&key_projection, &fs::read(key_path)?, 0o644)?;
-    let config = storage::james_config(target, state, &storage::public_base_url(&state.plan))?
+    let config = storage::nest_config(target, state, &storage::public_base_url(&state.plan))?
         .replace("/usr/bin/nix", "/run/current-system/sw/bin/nix")
         .replace(
             "/usr/bin/udp-sender",
@@ -668,7 +672,7 @@ mod tests {
 
     fn closure_artifact() -> SystemClosure {
         SystemClosure {
-            url: "https://releases.example/1.2.3/cybex-james-appliance-closure-1.2.3-x86_64-linux.tar.zst".into(),
+            url: "https://releases.example/1.2.3/tiaris-nest-appliance-closure-1.2.3-x86_64-linux.tar.zst".into(),
             sha256: "a".repeat(64),
             size_bytes: 1024,
         }
@@ -678,7 +682,7 @@ mod tests {
     fn closure_transport_accepts_signed_url_or_exact_private_qualification_archive() {
         let artifact = closure_artifact();
         assert!(validate_closure_transport(&artifact.url, &artifact).is_ok());
-        let filename = "cybex-james-appliance-closure-1.2.3-x86_64-linux.tar.zst";
+        let filename = "tiaris-nest-appliance-closure-1.2.3-x86_64-linux.tar.zst";
         for authority in [
             "10.20.30.40:8080",
             "192.168.50.1:8080",
@@ -697,7 +701,7 @@ mod tests {
     #[test]
     fn closure_transport_rejects_unsafe_or_rebound_qualification_urls() {
         let artifact = closure_artifact();
-        let filename = "cybex-james-appliance-closure-1.2.3-x86_64-linux.tar.zst";
+        let filename = "tiaris-nest-appliance-closure-1.2.3-x86_64-linux.tar.zst";
         for transport in [
             format!("http://bridge.internal:8080/{filename}"),
             format!("http://8.8.8.8:8080/{filename}"),
@@ -743,11 +747,11 @@ mod tests {
     #[test]
     fn installed_layout_repairs_only_explicit_public_and_service_directories() {
         let root =
-            std::env::temp_dir().join(format!("cybex-james-nix-backing-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("tiaris-nest-nix-backing-{}", uuid::Uuid::new_v4()));
         let status = Command::new("sh")
             .args([
                 "-c",
-                "umask 077; mkdir -p \"$1\"/var/cache/cybex-james/nix \"$1\"/var/lib/cybex-james/state \"$1\"/usr/share/cybex-james",
+                "umask 077; mkdir -p \"$1\"/var/cache/tiaris-nest/nix \"$1\"/var/lib/tiaris-nest/state \"$1\"/usr/share/tiaris-nest",
                 "fixture",
             ])
             .arg(&root)
@@ -761,12 +765,12 @@ mod tests {
         for relative in [
             "var",
             "var/cache",
-            "var/cache/cybex-james",
-            "var/cache/cybex-james/nix",
+            "var/cache/tiaris-nest",
+            "var/cache/tiaris-nest/nix",
             "var/lib",
             "usr",
             "usr/share",
-            "usr/share/cybex-james",
+            "usr/share/tiaris-nest",
         ] {
             assert_eq!(
                 fs::symlink_metadata(root.join(relative))
@@ -778,7 +782,7 @@ mod tests {
                 "{relative} retained restrictive bootstrap permissions"
             );
         }
-        for relative in ["var/lib/cybex-james", "var/lib/cybex-james/state"] {
+        for relative in ["var/lib/tiaris-nest", "var/lib/tiaris-nest/state"] {
             assert_eq!(
                 fs::symlink_metadata(root.join(relative))
                     .unwrap()
@@ -800,7 +804,7 @@ mod tests {
     #[tokio::test]
     async fn activation_child_uses_public_umask_without_changing_parent() {
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-install-umask-{}",
+            "tiaris-nest-install-umask-{}",
             uuid::Uuid::new_v4()
         ));
         fs::create_dir(&root).unwrap();

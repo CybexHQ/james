@@ -14,7 +14,7 @@ LIFECYCLE_FLAGS = (
 DELIVERY_FLAGS = (
     'workstation_runtime_operational', 'workstation_runtime_converged',
     'builtin_blueprints_source_free', 'builtin_blueprints_deliverable',
-    'builtin_blueprints_qualified_on_new_james',
+    'builtin_blueprints_qualified_on_new_nest',
 )
 
 
@@ -24,7 +24,7 @@ def validate_scope(manifest, evidence):
         import uuid
         scope = evidence.get('qualification_scope', {})
         if (set(scope) != {'schema', 'manage_origin', 'manage_revision', 'owner', 'live_production_access'}
-                or scope['schema'] != 'cybex.james.isolated-qualification.v1'
+                or scope['schema'] != 'tiaris.nest.isolated-qualification.v1'
                 or scope['manage_origin'] != origin
                 or scope['manage_revision'] != manifest['appliance_release_v1']['manage_source_revision']
                 or scope['live_production_access'] is not False
@@ -37,7 +37,7 @@ def validate_lifecycle(manifest, manifest_sha256, evidence, source, phase):
     if phase not in {'prepublication', 'cold'}:
         raise ValueError('Unknown acceptance phase')
     cold = phase == 'cold'
-    if (evidence.get('schema') != 'cybex.james.nixos-appliance-qualification.v1'
+    if (evidence.get('schema') != 'tiaris.nest.nixos-appliance-qualification.v1'
             or any(evidence.get(k) is not True for k in LIFECYCLE_FLAGS)
             or evidence.get('final_state') != 'ready'
             or evidence.get('qualification_kind') != 'candidate'
@@ -66,7 +66,7 @@ def validate_lifecycle(manifest, manifest_sha256, evidence, source, phase):
         raise ValueError('Delivery evidence does not match its acceptance phase')
     catalog = evidence.get('qualified_blueprints', {})
     blueprints = catalog.get('blueprints', [])
-    if (catalog.get('schema') != 'cybex.james.qualification-blueprints.v1'
+    if (catalog.get('schema') != 'tiaris.nest.qualification-blueprints.v1'
             or len(blueprints) != 3
             or {b.get('desktop_profile') for b in blueprints} != {'taskbar', 'dock', 'tiling'}
             or len({b.get('id') for b in blueprints}) != 3
@@ -82,7 +82,7 @@ def validate_workstation(manifest, cold, evidence):
     # The installed runtime records the signed release-independent component
     # identity, using the same canonical vocabulary as the workstation harness.
     import workstation_lifecycle
-    if (evidence.get('schema') != 'cybex.james.published-workstation-qualification.v1'
+    if (evidence.get('schema') != 'tiaris.nest.published-workstation-qualification.v1'
             or any(evidence.get(k) is not True for k in ('ok', 'pxe_boot_observed', 'fresh_install_completed'))
             or evidence.get('source_builds_allowed') is not False
             or evidence.get('release_version') != manifest['version']
@@ -90,7 +90,7 @@ def validate_workstation(manifest, cold, evidence):
             or evidence.get('bundle_sha256') != descriptor['sha256']
             or evidence.get('manage_source_revision') != descriptor['manage_source_revision']
             or evidence.get('descriptor_sha256') != workstation_lifecycle.descriptor_digest(descriptor)
-            or evidence.get('james_device_id') != cold['device_id']
+            or evidence.get('nest_device_id') != cold['device_id']
             or not re.fullmatch(r'dev_[0-9a-f]{32}', evidence.get('workstation_device_id', ''))
             or evidence.get('workstation_device_id') == cold['device_id']):
         raise ValueError('Workstation evidence does not qualify the exact published runtime')
@@ -99,7 +99,7 @@ def validate_workstation(manifest, cold, evidence):
     profiles = evidence.get('blueprints', [])
     actual = {(b.get('blueprint_id'), b.get('revision_id'), b.get('slug')) for b in profiles}
     if len(profiles) != 3 or actual != expected:
-        raise ValueError('Workstation profiles differ from the cold James catalog')
+        raise ValueError('Workstation profiles differ from the cold Nest catalog')
     for profile in profiles:
         if (profile.get('configuration_status') != 'compliant'
                 or profile.get('managed_reboot_completed') is not True
@@ -115,7 +115,7 @@ def validate_public_closure(manifest, manifest_sha256, evidence, source):
     if (set(evidence) != {'schema', 'ok', 'source_revision', 'tag', 'release_version',
                          'manifest_sha256', 'closure_url', 'closure_sha256',
                          'closure_size_bytes', 'archive_verified'}
-            or evidence['schema'] != 'cybex.james.public-closure-qualification.v1'
+            or evidence['schema'] != 'tiaris.nest.public-closure-qualification.v1'
             or evidence['ok'] is not True
             or evidence['archive_verified'] is not True
             or evidence['source_revision'] != source
@@ -134,11 +134,11 @@ def validate_transition(manifest, digest, previous, previous_digest, evidence, s
     import release_predecessor
     release_predecessor.advance(manifest['version'], previous['version'])
     candidate, predecessor = manifest['appliance_release_v1'], previous['appliance_release_v1']
-    if (candidate['schema'] != 'cybex.james.appliance-release.v3'
+    if (candidate['schema'] != 'tiaris.nest.appliance-release.v3'
             or predecessor['schema'] != candidate['schema']
             or candidate['source_revision'] != source
             or manifest['installer_iso_template_v3']['manage_origin'] != previous['installer_iso_template_v3']['manage_origin']
-            or evidence.get('schema') != f'cybex.james.nixos-appliance-{phase}-qualification.v1'
+            or evidence.get('schema') != f'tiaris.nest.nixos-appliance-{phase}-qualification.v1'
             or evidence.get('candidate_manifest_sha256') != digest
             or evidence.get('predecessor_manifest_sha256') != previous_digest
             or evidence.get('harness_revision') != source

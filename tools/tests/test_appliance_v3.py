@@ -7,9 +7,9 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-API = runpy.run_path(str(ROOT / "tools/james-release.py"))
+API = runpy.run_path(str(ROOT / "tools/nest-release.py"))
 V3 = API["appliance_v3"]
-FIXTURE = json.loads((ROOT / "protocol/fixtures/james-appliance-v3.json").read_text())
+FIXTURE = json.loads((ROOT / "protocol/fixtures/nest-appliance-v3.json").read_text())
 
 
 class ApplianceV3Tests(unittest.TestCase):
@@ -42,7 +42,7 @@ class ApplianceV3Tests(unittest.TestCase):
                                         V3.descriptor_message(modified))
 
     def test_legacy_fields_unknown_fields_and_missing_anchors_fail(self):
-        for key in ("ubuntu_snapshot_id", "cybex_repository_snapshot", "required_package_versions", "expected_kernel", "other"):
+        for key in ("ubuntu_snapshot_id", "tiaris_repository_snapshot", "required_package_versions", "expected_kernel", "other"):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 V3.validate_descriptor({**FIXTURE["appliance_release"], key: "legacy"})
         for key in V3.DESCRIPTOR_FIELDS:

@@ -11,14 +11,14 @@ let
         || relative == handoff || (type == "directory" && pkgs.lib.hasPrefix (relative + "/") handoff);
   };
 in pkgs.rustPlatform.buildRustPackage {
-  pname = "cybex-james";
+  pname = "tiaris-nest";
   version = (builtins.fromTOML (builtins.readFile (repo + "/Cargo.toml"))).package.version;
   src = source;
   cargoLock.lockFile = source + "/Cargo.lock";
-  CYBEX_JAMES_BUILD_MANAGE_ORIGIN = manageOrigin;
+  TIARIS_NEST_BUILD_MANAGE_ORIGIN = manageOrigin;
   doCheck = false; # Locked Rust tests are a separate release gate.
   postInstall = ''
-    install -Dm0444 ${source}/assets/pxe-menu.png $out/share/cybex-james/assets/pxe-menu.png
+    install -Dm0444 ${source}/assets/pxe-menu.png $out/share/tiaris-nest/assets/pxe-menu.png
   '';
   meta = { license = pkgs.lib.licenses.gpl3Only; platforms = [ "x86_64-linux" ]; };
 }

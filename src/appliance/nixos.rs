@@ -19,14 +19,14 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 pub const CAPABILITY: &str = "appliance_update_v3";
-pub const IDENTITY_PATH: &str = "/usr/share/cybex-james/system-identity.json";
-pub const MIGRATIONS_PATH: &str = "/usr/share/cybex-james/sqlite-migrations.json";
+pub const IDENTITY_PATH: &str = "/usr/share/tiaris-nest/system-identity.json";
+pub const MIGRATIONS_PATH: &str = "/usr/share/tiaris-nest/sqlite-migrations.json";
 const RESERVE: u64 = 23 * 1024 * 1024 * 1024;
 // STATE is deliberately only 16 GiB. Bulk bytes belong to the root-backed
 // cache; only requests and durable privileged transaction receipts use STATE.
-const UPDATE_CACHE_ROOT: &str = "/var/cache/cybex-james/appliance-updates";
-const UPDATE_BUNDLE_ROOT: &str = "/var/cache/cybex-james/appliance-updates/inbox";
-const UPDATE_PRIVATE_ROOT: &str = "/var/cache/cybex-james/appliance-updates/private";
+const UPDATE_CACHE_ROOT: &str = "/var/cache/tiaris-nest/appliance-updates";
+const UPDATE_BUNDLE_ROOT: &str = "/var/cache/tiaris-nest/appliance-updates/inbox";
+const UPDATE_PRIVATE_ROOT: &str = "/var/cache/tiaris-nest/appliance-updates/private";
 const DATABASE_BACKUP_RESERVE: u64 = 1024 * 1024 * 1024;
 static QUEUE: Mutex<(bool, Option<super::ManagedApplianceUpdate<NixosRelease>>)> =
     Mutex::new((false, None));
@@ -112,7 +112,7 @@ fn read_installed() -> Result<InstalledState> {
         .release
         .verify_file(Path::new(super::RELEASE_PUBLIC_KEY_PATH))?;
     ensure!(
-        state.schema == "cybex.james.installed-appliance.v3"
+        state.schema == "tiaris.nest.installed-appliance.v3"
             && state.base_os == "nixos"
             && state.base_os_version == release_v3::NIXOS_VERSION
             && state.at_rest_protection == "none"
@@ -201,7 +201,7 @@ async fn store(update: super::ManagedApplianceUpdate<NixosRelease>) -> Result<()
     super::write_atomic_json(
         Path::new(super::UPDATE_REQUEST_PATH),
         &StoredUpdate {
-            schema: "cybex.james.appliance-update-request.v3".into(),
+            schema: "tiaris.nest.appliance-update-request.v3".into(),
             attempt_id: update.attempt_id,
             requested_at: update.requested_at,
             release: update.release,
@@ -345,7 +345,7 @@ pub fn verify_update() -> Result<PathBuf> {
     )?;
     let request: StoredUpdate = serde_json::from_value(release_v3::strict_json(&body)?)?;
     ensure!(
-        request.schema == "cybex.james.appliance-update-request.v3" && !request.attempt_id.is_nil(),
+        request.schema == "tiaris.nest.appliance-update-request.v3" && !request.attempt_id.is_nil(),
         "update inbox schema/attempt"
     );
     let key = request
@@ -382,7 +382,7 @@ pub fn verify_update() -> Result<PathBuf> {
             "system-rollback-intent.json",
         ] {
             ensure!(
-                !Path::new("/var/lib/cybex-james/control")
+                !Path::new("/var/lib/tiaris-nest/control")
                     .join(receipt)
                     .exists(),
                 "pending update transaction blocks verifier"
@@ -441,7 +441,7 @@ pub fn verify_update() -> Result<PathBuf> {
             super::write_atomic_json(
                 &receipt_directory.join("verified-update.json"),
                 &json!({
-                    "schema":"cybex.james.verified-appliance-update.v3","attempt_id":request.attempt_id,"request_sha256":hex::encode(Sha256::digest(&body)),
+                    "schema":"tiaris.nest.verified-appliance-update.v3","attempt_id":request.attempt_id,"request_sha256":hex::encode(Sha256::digest(&body)),
                     "descriptor_sha256":hex::encode(Sha256::digest(serde_json::to_vec(&super::canonical_json(serde_json::to_value(&request.release)?))?)),
                     "target_release":request.release.release_id,"source_revision":request.release.source_revision,"system_closure_sha256":request.release.system_closure.sha256,
                     "system_closure_size_bytes":request.release.system_closure.size_bytes,"system_toplevel":request.release.system_toplevel,"sqlite_migrations_sha256":request.release.sqlite_migrations_sha256,
@@ -466,7 +466,7 @@ pub fn verify_update() -> Result<PathBuf> {
         ]
         .iter()
         .any(|name| {
-            Path::new("/var/lib/cybex-james/control")
+            Path::new("/var/lib/tiaris-nest/control")
                 .join(name)
                 .exists()
         });
@@ -535,10 +535,10 @@ fn validate_migrations(source: &NixosRelease, candidate: &NixosRelease) -> Resul
     );
     let inventory = release_v3::strict_json(&bytes)?;
     ensure!(
-        inventory["schema"] == "cybex.james.sqlite-migrations.v1",
+        inventory["schema"] == "tiaris.nest.sqlite-migrations.v1",
         "migration inventory schema"
     );
-    let output=std::process::Command::new("sqlite3").args(["-readonly","-json","/var/lib/cybex-james/state/agent/cybex-james.sqlite","SELECT version, lower(hex(checksum)) AS sqlx_checksum, success FROM _sqlx_migrations ORDER BY version LIMIT 4097;"]).output()?;
+    let output=std::process::Command::new("sqlite3").args(["-readonly","-json","/var/lib/tiaris-nest/state/agent/tiaris-nest.sqlite","SELECT version, lower(hex(checksum)) AS sqlx_checksum, success FROM _sqlx_migrations ORDER BY version LIMIT 4097;"]).output()?;
     ensure!(
         output.status.success() && output.stdout.len() <= 16 * 1024 * 1024,
         "rollback_database_incompatible: live SQLite inventory"
@@ -567,7 +567,7 @@ pub async fn report(state: &crate::AppState) -> Result<super::ApplianceReport> {
     let actual_generation = booted_generation(&actual)?;
     let mut installed = read_installed()?;
     if actual.to_str() != Some(installed.system_toplevel.as_str()) {
-        let pending_path = Path::new("/var/lib/cybex-james/control/pending-system-generation.json");
+        let pending_path = Path::new("/var/lib/tiaris-nest/control/pending-system-generation.json");
         let pending = if pending_path.exists() {
             let bytes = crate::provisioning::read_bounded_nofollow(
                 pending_path,
@@ -576,7 +576,7 @@ pub async fn report(state: &crate::AppState) -> Result<super::ApplianceReport> {
             )?;
             let pending = release_v3::strict_json(&bytes)?;
             ensure!(
-                pending["schema"] == "cybex.james.pending-system-generation.v3"
+                pending["schema"] == "tiaris.nest.pending-system-generation.v3"
                     && pending["system_toplevel"].as_str() == actual.to_str()
                     && pending["candidate_generation"] == actual_generation,
                 "booted candidate differs from protected pending seal"
@@ -586,13 +586,13 @@ pub async fn report(state: &crate::AppState) -> Result<super::ApplianceReport> {
             // A manual boot of a retained good generation is reported truthfully
             // without reinterpreting an already committed update as rollback.
             let bytes = crate::provisioning::read_bounded_nofollow(
-                Path::new("/var/lib/cybex-james/control/known-good-system.json"),
+                Path::new("/var/lib/tiaris-nest/control/known-good-system.json"),
                 1024 * 1024,
                 "known-good NixOS generations",
             )?;
             let known = release_v3::strict_json(&bytes)?;
             ensure!(
-                known["schema"] == "cybex.james.known-good-system.v3",
+                known["schema"] == "tiaris.nest.known-good-system.v3",
                 "known-good schema"
             );
             known["generations"]
@@ -753,8 +753,8 @@ pub fn record_manage_contact(device_id: &str, fingerprint: &str, origin: &str) -
     }
     let boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
     super::write_atomic_json(
-        Path::new("/var/lib/cybex-james/state/agent/manage-contact.json"),
-        &json!({"schema":"cybex.james.manage-contact.v1","device_id":device_id,"public_key_fingerprint":fingerprint,"manage_origin":origin,"reported_at":Utc::now(),"boot_id":boot_id.trim()}),
+        Path::new("/var/lib/tiaris-nest/state/agent/manage-contact.json"),
+        &json!({"schema":"tiaris.nest.manage-contact.v1","device_id":device_id,"public_key_fingerprint":fingerprint,"manage_origin":origin,"reported_at":Utc::now(),"boot_id":boot_id.trim()}),
         0o600,
     )
 }
@@ -786,7 +786,7 @@ fn booted_generation(actual: &Path) -> Result<String> {
 }
 
 fn snapshot_database(private: &Path) -> Result<PathBuf> {
-    let database = "/var/lib/cybex-james/state/agent/cybex-james.sqlite";
+    let database = "/var/lib/tiaris-nest/state/agent/tiaris-nest.sqlite";
     let output = std::process::Command::new("timeout")
         .args([
             "60",
@@ -821,7 +821,7 @@ fn snapshot_database(private: &Path) -> Result<PathBuf> {
     let output = std::process::Command::new("timeout")
         .args([
             "60",
-            "/run/current-system/sw/bin/cybex-james",
+            "/run/current-system/sw/bin/tiaris-nest",
             "verify-appliance-database",
             "--database",
         ])
@@ -933,7 +933,7 @@ mod tests {
 
     #[tokio::test]
     async fn private_closure_override_does_not_follow_or_accept_redirect() {
-        let root = std::env::temp_dir().join(format!("cybex-private-closure-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("tiaris-private-closure-{}", Uuid::new_v4()));
         fs::create_dir(&root).unwrap();
         let path = root.join("closure.tar.zst");
         let release = closure_fixture(b"expected signed bytes");
@@ -957,7 +957,7 @@ mod tests {
 
     #[tokio::test]
     async fn closure_download_rejects_equal_length_tampered_bytes() {
-        let root = std::env::temp_dir().join(format!("cybex-closure-hash-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("tiaris-closure-hash-{}", Uuid::new_v4()));
         fs::create_dir(&root).unwrap();
         let path = root.join("closure.tar.zst");
         let release = closure_fixture(b"expected");
@@ -991,10 +991,10 @@ mod tests {
 
     #[test]
     fn state_16_gib_does_not_receive_bulk_or_workstation_reserve() {
-        assert!(UPDATE_BUNDLE_ROOT.starts_with("/var/cache/cybex-james/"));
-        assert!(UPDATE_PRIVATE_ROOT.starts_with("/var/cache/cybex-james/"));
-        assert!(super::super::UPDATE_REQUEST_PATH.starts_with("/var/lib/cybex-james/state/"));
-        assert!(super::super::UPDATE_ROOT.starts_with("/var/lib/cybex-james/control/"));
+        assert!(UPDATE_BUNDLE_ROOT.starts_with("/var/cache/tiaris-nest/"));
+        assert!(UPDATE_PRIVATE_ROOT.starts_with("/var/cache/tiaris-nest/"));
+        assert!(super::super::UPDATE_REQUEST_PATH.starts_with("/var/lib/tiaris-nest/state/"));
+        assert!(super::super::UPDATE_ROOT.starts_with("/var/lib/tiaris-nest/control/"));
         // The installed 16 GiB STATE is absent from bulk admission: ROOT backs
         // both cache and /nix. Existing staging bytes are already in free-space.
         assert!(admit_update_space(true, 64 * GIB, 64 * GIB, 9 * GIB, 4 * GIB).is_ok());
@@ -1013,7 +1013,7 @@ mod tests {
     #[test]
     fn authenticated_failure_allows_a_corrected_attempt_without_erasing_changed_inbox() {
         let directory =
-            std::env::temp_dir().join(format!("cybex-update-cleanup-{}", Uuid::new_v4()));
+            std::env::temp_dir().join(format!("tiaris-update-cleanup-{}", Uuid::new_v4()));
         fs::create_dir(&directory).unwrap();
         let request = directory.join("request.json");
         let bundle = directory.join("attempt.tar.zst");

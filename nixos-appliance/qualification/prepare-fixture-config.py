@@ -59,7 +59,7 @@ def prepare(template, candidate_dir, predecessor_dir, directory):
     images = {}
     for role, snapshot in (('candidate', candidate), ('predecessor', previous)):
         manifest, asset = snapshot['manifest'], snapshot['compatibility']
-        if (manifest['appliance_release_v1']['schema'] != 'cybex.james.appliance-release.v3'
+        if (manifest['appliance_release_v1']['schema'] != 'tiaris.nest.appliance-release.v3'
                 or manifest['installer_iso_template_v3']['manage_origin'] != value['manage_origin']
                 or material['public_key'] not in manifest['installer_iso_template_v3']['provisioning_public_keys']):
             raise ValueError('fixture inputs must be exact-origin signed NixOS releases')
@@ -67,13 +67,13 @@ def prepare(template, candidate_dir, predecessor_dir, directory):
         if role == 'predecessor' and projection == candidate['compatibility']['compatibility_sha256']:
             images[role] = images['candidate']
             continue
-        tag = 'cybex/qualification-manage:' + revision[:12] + '-' + projection[:12]
-        subprocess.run(['docker', 'build', '--build-arg', 'CYBEX_SOURCE_REVISION=' + revision,
-            '--build-arg', 'CYBEX_SOURCE_DIRTY=false', '--build-arg', 'CYBEX_RELEASE_GIT_SHA=' + revision,
-            '--build-arg', 'CYBEX_BUILD_JAMES_COMPATIBILITY_PROJECTION_SHA256=' + projection,
+        tag = 'tiaris/qualification-manage:' + revision[:12] + '-' + projection[:12]
+        subprocess.run(['docker', 'build', '--build-arg', 'TIARIS_SOURCE_REVISION=' + revision,
+            '--build-arg', 'TIARIS_SOURCE_DIRTY=false', '--build-arg', 'TIARIS_RELEASE_GIT_SHA=' + revision,
+            '--build-arg', 'TIARIS_BUILD_NEST_COMPATIBILITY_PROJECTION_SHA256=' + projection,
             '--label', 'org.opencontainers.image.revision=' + revision,
             '--label', 'org.opencontainers.image.source=' + config.SOURCE,
-            '--label', 'net.cybex.manage.james-compatibility-projection-sha256=' + projection,
+            '--label', 'net.tiaris.manage.nest-compatibility-projection-sha256=' + projection,
             '-t', tag, str(checkout)], check=True)
         images[role] = run('docker', 'image', 'inspect', '--format', '{{.Id}}', tag)
     value['app_images'] = images
@@ -88,7 +88,7 @@ def prepare(template, candidate_dir, predecessor_dir, directory):
     path.write_bytes(config.canonical(value))
     path.chmod(0o600)
     config.load(path)
-    receipt = {'schema': 'cybex.james.fixture-config-owner.v1', 'directory': str(directory),
+    receipt = {'schema': 'tiaris.nest.fixture-config-owner.v1', 'directory': str(directory),
                'source_revision': revision,
                'files': {name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
                          for name in ('config.json', 'tls_certificate', 'tls_private_key', 'provisioning_seed_file')}}

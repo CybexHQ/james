@@ -20,8 +20,8 @@ ROLLBACK = CONTROL / 'system-rollback-intent.json'
 INSTALLED = CONTROL / 'appliance-release.json'
 KNOWN = CONTROL / 'known-good-system.json'
 REQUEST = INBOX / 'appliance-update-request.json'
-ROOTS = Path('/nix/var/nix/gcroots/cybex-appliance')
-STAGING = Path('/var/cache/cybex-james/appliance-updates')
+ROOTS = Path('/nix/var/nix/gcroots/tiaris-appliance')
+STAGING = Path('/var/cache/tiaris-nest/appliance-updates')
 
 
 def file_digest(path):
@@ -85,7 +85,7 @@ def observed_system_versions():
     boot_version = package if re.fullmatch(r'[0-9]+(?:\.[0-9]+)*', package) else bootctl[1]
     return {'kernel': run('uname', '-r'), 'systemd-boot': boot_version,
         'nix': run('/run/current-system/sw/bin/nix', '--version').split()[-1],
-        'cybex-james': run('/run/current-system/sw/bin/cybex-james', '--version').split()[-1]}
+        'tiaris-nest': run('/run/current-system/sw/bin/tiaris-nest', '--version').split()[-1]}
 
 
 def verify_observed_versions(expected):
@@ -210,11 +210,11 @@ def recover_boot():
             if installed['system_toplevel'] != booted['system_toplevel']:
                 raise ValueError('initial installed system receipt differs from boot')
             set_default(booted['loader_entry'])
-            save(KNOWN, {'schema': 'cybex.james.known-good-system.v3', 'generations': [known_good(booted, installed)]})
+            save(KNOWN, {'schema': 'tiaris.nest.known-good-system.v3', 'generations': [known_good(booted, installed)]})
             pin(booted['system_toplevel'], 'good-' + booted['system_generation'])
         return
     receipt = load(PENDING)
-    if receipt['schema'] != 'cybex.james.pending-system-generation.v3':
+    if receipt['schema'] != 'tiaris.nest.pending-system-generation.v3':
         raise ValueError('unknown pending generation schema')
     safe_attempt(receipt['attempt_id'])
     if terminal_matches(receipt):
@@ -263,7 +263,7 @@ def still_waiting_for_window():
         attempt = safe_attempt(json.loads(body)['attempt_id'])
         verified = load(CONTROL / 'appliance-updates' / attempt / 'verified-update.json')
         source = current()
-        if (verified['schema'] != 'cybex.james.verified-appliance-update.v3'
+        if (verified['schema'] != 'tiaris.nest.verified-appliance-update.v3'
                 or verified['attempt_id'] != attempt
                 or verified['request_sha256'] != hashlib.sha256(body).hexdigest()
                 or verified['source_system_generation'] != source['system_generation']
@@ -271,7 +271,7 @@ def still_waiting_for_window():
             return False
     except (OSError, ValueError, KeyError, TypeError):
         return False
-    policy = subprocess.run(['/usr/lib/cybex-james/cybex-james-appliance-update-window', str(CONTROL / 'install-plan.json')], timeout=30)
+    policy = subprocess.run(['/usr/lib/tiaris-nest/tiaris-nest-appliance-update-window', str(CONTROL / 'install-plan.json')], timeout=30)
     if policy.returncode == 75 and read(REQUEST, owner=UID, maximum=256 * 1024) == body:
         emit_status(verified, 'waiting_window', 'maintenance_window')
         return True
@@ -288,19 +288,19 @@ def stage():
             return
         # Root verifier revalidates signature, exact inbox inode/archive, complete
         # NAR graph, live SQLite and signed policy before yielding private cache.
-        cache = Path(run('/usr/bin/cybex-james', 'verify-appliance-update', timeout=4 * 3600))
+        cache = Path(run('/usr/bin/tiaris-nest', 'verify-appliance-update', timeout=4 * 3600))
         attempt = safe_attempt(cache.parent.name)
         if cache != STAGING / 'private' / attempt / 'cache':
             raise ValueError('invalid verified update cache path')
         verified = load(CONTROL / 'appliance-updates' / attempt / 'verified-update.json')
         attempt = safe_attempt(verified['attempt_id'])
-        if (verified['schema'] != 'cybex.james.verified-appliance-update.v3'
+        if (verified['schema'] != 'tiaris.nest.verified-appliance-update.v3'
                 or cache != STAGING / 'private' / attempt / 'cache'
                 or verified['cache_path'] != str(cache)):
             raise ValueError('invalid verified update receipt')
         receipt = dict(verified)
         try:
-            policy = subprocess.run(['/usr/lib/cybex-james/cybex-james-appliance-update-window', str(CONTROL / 'install-plan.json')], timeout=30)
+            policy = subprocess.run(['/usr/lib/tiaris-nest/tiaris-nest-appliance-update-window', str(CONTROL / 'install-plan.json')], timeout=30)
             if policy.returncode == 75:
                 emit_status(receipt, 'waiting_window', 'maintenance_window')
                 return
@@ -312,11 +312,11 @@ def stage():
                 '--option', 'substituters', '', '--option', 'require-sigs', 'true', verified['system_toplevel'], timeout=4 * 3600)
             if verified['database_backup'] != str(cache.parent / 'database-compatibility.sqlite'):
                 raise ValueError('unexpected database compatibility backup')
-            run(verified['system_toplevel'] + '/sw/bin/cybex-james', 'verify-appliance-database',
+            run(verified['system_toplevel'] + '/sw/bin/tiaris-nest', 'verify-appliance-database',
                 '--database', verified['database_backup'], timeout=60)
             pin(verified['system_toplevel'], 'pending-' + attempt)
             source = current()
-            receipt.update(schema='cybex.james.system-prepare-intent.v3', source_generation=source['system_generation'],
+            receipt.update(schema='tiaris.nest.system-prepare-intent.v3', source_generation=source['system_generation'],
                 source_toplevel=source['system_toplevel'], source_loader_entry=source['loader_entry'], source_installed=load(INSTALLED), source_known_good=load(KNOWN))
             save(PREPARE, receipt)
             # Persistent EFI override protects the source before Nix rewrites loader.conf.
@@ -331,7 +331,7 @@ def stage():
             set_default(source['loader_entry'])
             verify_boot_entry(receipt['source_loader_entry'], receipt['source_toplevel'])
             verify_boot_entry(receipt['candidate_loader_entry'], receipt['system_toplevel'])
-            receipt['schema'] = 'cybex.james.pending-system-generation.v3'
+            receipt['schema'] = 'tiaris.nest.pending-system-generation.v3'
             receipt['prepared_boot_id'] = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
             receipt['prepared_at'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
             save(PENDING, receipt)
@@ -366,7 +366,7 @@ def contact_ready(receipt):
     plan = load(CONTROL / 'provisioning-state.json')
     timestamp = datetime.datetime.fromisoformat(value['reported_at'].replace('Z', '+00:00'))
     age = (datetime.datetime.now(datetime.timezone.utc) - timestamp).total_seconds()
-    return (value['schema'] == 'cybex.james.manage-contact.v1'
+    return (value['schema'] == 'tiaris.nest.manage-contact.v1'
         and value['boot_id'] == Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         and value['device_id'] == identity['device_id']
         and value['public_key_fingerprint'] == identity['public_key_fingerprint']
@@ -374,11 +374,11 @@ def contact_ready(receipt):
 
 
 def health_ready(receipt):
-    for unit in ('cybex-james', 'cybex-james-first-boot', 'cybex-james-firewall', 'nginx', 'tftpd-hpa', 'nix-daemon', 'sshd'):
+    for unit in ('tiaris-nest', 'tiaris-nest-first-boot', 'tiaris-nest-firewall', 'nginx', 'tftpd-hpa', 'nix-daemon', 'sshd'):
         if subprocess.run(['systemctl', 'is-active', '--quiet', unit], timeout=5).returncode:
             return False
     run('curl', '--fail', '--silent', '--show-error', '--noproxy', '*', '--max-time', '10',
-        'http://127.0.0.1:8080/healthz?cybex_fresh=1', timeout=12)
+        'http://127.0.0.1:8080/healthz?tiaris_fresh=1', timeout=12)
     return contact_ready(receipt)
 
 
@@ -387,7 +387,7 @@ def retain(receipt, installed):
     selected = known_good(current(), installed)
     rows = [selected] + [row for row in rows if row['system_generation'] != selected['system_generation']]
     keep, obsolete = rows[:3], rows[3:]
-    save(KNOWN, {'schema': 'cybex.james.known-good-system.v3', 'generations': keep})
+    save(KNOWN, {'schema': 'tiaris.nest.known-good-system.v3', 'generations': keep})
     for row in keep:
         pin(row['system_toplevel'], 'good-' + row['system_generation'])
     return obsolete
@@ -410,11 +410,11 @@ def commit():
             recover_boot()
             return
         try:
-            inputs = load(Path('/usr/share/cybex-james/appliance-release.json'))
+            inputs = load(Path('/usr/share/tiaris-nest/appliance-release.json'))
             for field in ('source_revision', 'nixpkgs_revision', 'manage_source_revision', 'release_id', 'base_os', 'base_os_version'):
                 if inputs[field] != receipt['release'][field]:
                     raise ValueError('booted immutable release inputs differ')
-            if hashlib.sha256(read(Path('/usr/share/cybex-james/sqlite-migrations.json'))).hexdigest() != receipt['sqlite_migrations_sha256']:
+            if hashlib.sha256(read(Path('/usr/share/tiaris-nest/sqlite-migrations.json'))).hexdigest() != receipt['sqlite_migrations_sha256']:
                 raise ValueError('booted migration inventory differs')
             verify_observed_versions(receipt['release']['required_system_versions'])
             verify_boot_entry(receipt['candidate_loader_entry'], receipt['system_toplevel'])
@@ -430,9 +430,9 @@ def commit():
                 time.sleep(5)
             else:
                 raise RuntimeError('candidate health deadline expired')
-            save(COMMIT, {'schema': 'cybex.james.system-commit-intent.v3', 'pending_sha256': hashlib.sha256(read(PENDING)).hexdigest(), 'attempt_id': receipt['attempt_id']})
+            save(COMMIT, {'schema': 'tiaris.nest.system-commit-intent.v3', 'pending_sha256': hashlib.sha256(read(PENDING)).hexdigest(), 'attempt_id': receipt['attempt_id']})
             set_default(receipt['candidate_loader_entry'])
-            installed = {'schema': 'cybex.james.installed-appliance.v3', 'release': receipt['release'],
+            installed = {'schema': 'tiaris.nest.installed-appliance.v3', 'release': receipt['release'],
                 'system_generation': receipt['candidate_generation'], 'system_toplevel': receipt['system_toplevel'],
                 'system_closure_sha256': receipt['system_closure_sha256'], 'at_rest_protection': 'none',
                 'base_os': 'nixos', 'base_os_version': receipt['release']['base_os_version']}
@@ -449,7 +449,7 @@ def commit():
         except Exception:
             if terminal_matches(receipt):
                 raise # durable success must never be rewritten as rollback
-            save(ROLLBACK, {'schema': 'cybex.james.system-rollback-intent.v3',
+            save(ROLLBACK, {'schema': 'tiaris.nest.system-rollback-intent.v3',
                 'pending_sha256': hashlib.sha256(read(PENDING)).hexdigest(), 'reason': 'local_health_failed', 'attempt_id': receipt['attempt_id']})
             restore_source(receipt)
             emit_status(receipt, 'health_checking', 'rollback_pending', 'local_health_failed')

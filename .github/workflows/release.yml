@@ -1,4 +1,4 @@
-name: James Release
+name: Nest Release
 
 on:
   pull_request:
@@ -91,11 +91,11 @@ jobs:
     name: Build and sign release candidate once
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [contracts, rust-release, nix]
-    runs-on: [self-hosted, linux, x64, cybex-james-lab]
+    runs-on: [self-hosted, linux, x64, tiaris-nest-lab]
     environment: production-release
     timeout-minutes: 240
     concurrency:
-      group: james-local-candidate-build
+      group: nest-local-candidate-build
       cancel-in-progress: false
     outputs:
       version: ${{ steps.release-version.outputs.version }}
@@ -116,10 +116,10 @@ jobs:
       contents: read
       actions: read
     env:
-      CYBEX_JAMES_BUILD_MANAGE_ORIGIN: ${{ vars.CYBEX_JAMES_BUILD_MANAGE_ORIGIN }}
-      CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
-      CYBEX_JAMES_PROVISIONING_PUBLIC_KEYS: ${{ vars.CYBEX_JAMES_PROVISIONING_PUBLIC_KEYS }}
-      CYBEX_JAMES_RELEASE_ARTIFACT: cybex-james-release-candidate-${{ github.run_id }}
+      TIARIS_NEST_BUILD_MANAGE_ORIGIN: ${{ vars.TIARIS_NEST_BUILD_MANAGE_ORIGIN }}
+      TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY }}
+      TIARIS_NEST_PROVISIONING_PUBLIC_KEYS: ${{ vars.TIARIS_NEST_PROVISIONING_PUBLIC_KEYS }}
+      TIARIS_NEST_RELEASE_ARTIFACT: tiaris-nest-release-candidate-${{ github.run_id }}
     steps:
       - name: Checkout exact tag
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -135,13 +135,13 @@ jobs:
           version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
           test "v$version" = "$GITHUB_REF_NAME"
           python3 tools/coordinated-release.py validate >> "$GITHUB_OUTPUT"
-          test -n "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
-          test -n "$CYBEX_JAMES_PROVISIONING_PUBLIC_KEYS"
-          python3 tools/james-release.py validate-manage-origin \
-            --expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN"
-          python3 tools/james-release.py validate-public-key \
-            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
-          mapfile -t provisioning_keys < <(printf '%s\n' "$CYBEX_JAMES_PROVISIONING_PUBLIC_KEYS" | sed '/^[[:space:]]*$/d')
+          test -n "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
+          test -n "$TIARIS_NEST_PROVISIONING_PUBLIC_KEYS"
+          python3 tools/nest-release.py validate-manage-origin \
+            --expected-manage-origin "$TIARIS_NEST_BUILD_MANAGE_ORIGIN"
+          python3 tools/nest-release.py validate-public-key \
+            --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
+          mapfile -t provisioning_keys < <(printf '%s\n' "$TIARIS_NEST_PROVISIONING_PUBLIC_KEYS" | sed '/^[[:space:]]*$/d')
           test "${#provisioning_keys[@]}" -ge 1
           test "${#provisioning_keys[@]}" -le 8
           test "$(printf '%s\n' "${provisioning_keys[@]}" | LC_ALL=C sort -u | wc -l)" -eq "${#provisioning_keys[@]}"
@@ -149,10 +149,10 @@ jobs:
             <(printf '%s\n' "${provisioning_keys[@]}") \
             <(printf '%s\n' "${provisioning_keys[@]}" | LC_ALL=C sort)
           for key in "${provisioning_keys[@]}"; do
-            python3 tools/james-release.py validate-public-key --trusted-public-key "$key"
+            python3 tools/nest-release.py validate-public-key --trusted-public-key "$key"
           done
           printf 'version=%s\nmanage_origin=%s\n' \
-            "$version" "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" >> "$GITHUB_OUTPUT"
+            "$version" "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" >> "$GITHUB_OUTPUT"
 
       - name: Resolve pinned workstation source
         id: workstation-source
@@ -167,7 +167,7 @@ jobs:
           [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
           test "$nixpkgs_revision" = 74cc63f702f7d60a557e152a57b40fb1fd0f72ac
           [[ "$runtime_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([-+][0-9A-Za-z.-]+)?$ ]]
-          bundle_name="cybex-workstation-netboot-${runtime_version}-${revision:0:12}-x86_64-linux.tar.zst"
+          bundle_name="tiaris-workstation-netboot-${runtime_version}-${revision:0:12}-x86_64-linux.tar.zst"
           printf 'repository=%s\nrevision=%s\nruntime_version=%s\nnixpkgs_revision=%s\nbundle_name=%s\n' \
             "$repository" "$revision" "$runtime_version" "$nixpkgs_revision" "$bundle_name" \
             >> "$GITHUB_OUTPUT"
@@ -176,10 +176,10 @@ jobs:
         shell: bash
         env:
           # The sealed secret keeps its pre-rename storage key until it is rotated.
-          GH_TOKEN: ${{ secrets.CYBEX_FORGE_RELEASE_POLICY_TOKEN }}
+          GH_TOKEN: ${{ secrets.TIARIS_FORGE_RELEASE_POLICY_TOKEN }}
         run: |
           set -euo pipefail
-          : "${GH_TOKEN:?configure CYBEX_JAMES_RELEASE_POLICY_TOKEN with repository Administration read permission}"
+          : "${GH_TOKEN:?configure TIARIS_NEST_RELEASE_POLICY_TOKEN with repository Administration read permission}"
           immutable_enabled="$(gh api --method GET \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
@@ -197,11 +197,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
-          response="$RUNNER_TEMP/cybex-james-run-artifacts.json"
+          response="$RUNNER_TEMP/tiaris-nest-run-artifacts.json"
           gh api \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?name=$CYBEX_JAMES_RELEASE_ARTIFACT&per_page=100" \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?name=$TIARIS_NEST_RELEASE_ARTIFACT&per_page=100" \
             > "$response"
           count="$(jq '[.artifacts[] | select(.expired == false)] | length' "$response")"
           case "$count" in
@@ -213,7 +213,7 @@ jobs:
               artifact="$(jq -c '.artifacts[] | select(.expired == false)' "$response")"
               artifact_id="$(jq -r '.id' <<<"$artifact")"
               digest="$(jq -r '.digest' <<<"$artifact")"
-              test "$(jq -r '.name' <<<"$artifact")" = "$CYBEX_JAMES_RELEASE_ARTIFACT"
+              test "$(jq -r '.name' <<<"$artifact")" = "$TIARIS_NEST_RELEASE_ARTIFACT"
               test "$(jq -r '.workflow_run.id' <<<"$artifact")" = "$GITHUB_RUN_ID"
               test "$(jq -r '.workflow_run.head_sha' <<<"$artifact")" = "${GITHUB_SHA,,}"
               [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]]
@@ -226,7 +226,7 @@ jobs:
               exit 1
               ;;
           esac
-          printf 'artifact_name=%s\n' "$CYBEX_JAMES_RELEASE_ARTIFACT" >> "$GITHUB_OUTPUT"
+          printf 'artifact_name=%s\n' "$TIARIS_NEST_RELEASE_ARTIFACT" >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact pinned Manage source
         if: steps.release-candidate.outputs.reuse != 'true'
@@ -238,7 +238,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           # The sealed secret keeps its pre-rename storage key until it is rotated.
-          ssh-key: ${{ secrets.CYBEX_DEVELOPMENT_SOURCE_SSH_KEY }}
+          ssh-key: ${{ secrets.TIARIS_DEVELOPMENT_SOURCE_SSH_KEY }}
 
       - name: Verify pinned Manage source and runtime version
         if: steps.release-candidate.outputs.reuse != 'true'
@@ -248,8 +248,8 @@ jobs:
           test "$(git -C manage-source rev-parse HEAD)" = "${{ steps.workstation-source.outputs.revision }}"
           test -z "$(git -C manage-source status --porcelain)"
           test "$(tr -d '\n' < manage-source/deploy/nixos/workstation-netboot-version)" = "${{ steps.workstation-source.outputs.runtime_version }}"
-          python3 tools/james-release.py verify-component-compatibility \
-            --james-compatibility protocol/compatibility.json \
+          python3 tools/nest-release.py verify-component-compatibility \
+            --nest-compatibility protocol/compatibility.json \
             --manage-compatibility manage-source/protocol/compatibility.json
           test "$(jq -er '.workstation_runtime.compatibility_epoch' protocol/compatibility.json)" = 1
 
@@ -258,17 +258,17 @@ jobs:
         shell: bash
         env:
           # The sealed secret keeps its pre-rename storage key until it is rotated.
-          CYBEX_JAMES_RELEASE_PRIVATE_KEY_B64: ${{ secrets.CYBEX_FORGE_RELEASE_PRIVATE_KEY_B64 }}
+          TIARIS_NEST_RELEASE_PRIVATE_KEY_B64: ${{ secrets.TIARIS_FORGE_RELEASE_PRIVATE_KEY_B64 }}
         run: |
           set -euo pipefail
-          test -n "$CYBEX_JAMES_RELEASE_PRIVATE_KEY_B64"
+          test -n "$TIARIS_NEST_RELEASE_PRIVATE_KEY_B64"
 
       - name: Audit the pinned workstation agent before building its runtime
         if: steps.release-candidate.outputs.reuse != 'true'
         shell: bash
         run: |
           cargo install cargo-audit --version 0.22.1 --locked
-          cargo audit --file manage-source/agent/cybex-agent/Cargo.lock
+          cargo audit --file manage-source/agent/tiaris-agent/Cargo.lock
 
       - name: Require local release tools
         run: |
@@ -301,24 +301,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
-          directory="$RUNNER_TEMP/cybex-james-predecessor"
-          identity="$RUNNER_TEMP/cybex-james-published-predecessor.json"
+          directory="$RUNNER_TEMP/tiaris-nest-predecessor"
+          identity="$RUNNER_TEMP/tiaris-nest-published-predecessor.json"
           install -d -m 0755 dist
           arguments=()
           if [ "${{ steps.release-candidate.outputs.reuse }}" = true ]; then
-            arguments+=(--expected-identity dist/cybex-james-build-predecessor.json)
+            arguments+=(--expected-identity dist/tiaris-nest-build-predecessor.json)
           fi
           python3 -B nixos-appliance/qualification/release_predecessor.py \
             --repository "$GITHUB_REPOSITORY" \
             --candidate-version "${{ steps.release-version.outputs.version }}" \
-            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
+            --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
             --directory "$directory" --output "$identity" \
             --github-output "$GITHUB_OUTPUT" "${arguments[@]}"
           if [ -f "$identity" ]; then
-            install -m 0444 "$directory/cybex-james-release-compatibility.json" \
-              "$RUNNER_TEMP/cybex-james-previous-release-compatibility.json"
+            install -m 0444 "$directory/tiaris-nest-release-compatibility.json" \
+              "$RUNNER_TEMP/tiaris-nest-previous-release-compatibility.json"
             if [ "${{ steps.release-candidate.outputs.reuse }}" != true ]; then
-              install -m 0444 "$identity" dist/cybex-james-build-predecessor.json
+              install -m 0444 "$identity" dist/tiaris-nest-build-predecessor.json
             fi
           fi
 
@@ -336,8 +336,8 @@ jobs:
           python3 tools/beast-build.py <<'BUILD'
           set -euo pipefail
           version="$BUILD_VERSION"
-          CYBEX_JAMES_BUILD_MANAGE_ORIGIN="$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" \
-            cargo build --release --locked --bin cybex-james --bin cybex-james-bootstrap
+          TIARIS_NEST_BUILD_MANAGE_ORIGIN="$TIARIS_NEST_BUILD_MANAGE_ORIGIN" \
+            cargo build --release --locked --bin tiaris-nest --bin tiaris-nest-bootstrap
           source_epoch="$(git -C manage-source show -s --format=%ct HEAD)"
           [[ "$source_epoch" =~ ^[1-9][0-9]*$ ]]
           nix-build release/workstation-netboot.nix \
@@ -345,11 +345,11 @@ jobs:
             --arg sourceDateEpoch "$source_epoch" \
             --out-link result-workstation-netboot
           install -d -m 0755 dist
-          install -m 0755 target/release/cybex-james dist/cybex-james-x86_64-linux
-          install -m 0755 target/release/cybex-james-bootstrap "$RUNNER_TEMP/cybex-james-bootstrap"
-          test "$("$RUNNER_TEMP/cybex-james-bootstrap" required-manage-origin)" = \
-            "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN"
-          staging="$RUNNER_TEMP/cybex-workstation-netboot-tree"
+          install -m 0755 target/release/tiaris-nest dist/tiaris-nest-x86_64-linux
+          install -m 0755 target/release/tiaris-nest-bootstrap "$RUNNER_TEMP/tiaris-nest-bootstrap"
+          test "$("$RUNNER_TEMP/tiaris-nest-bootstrap" required-manage-origin)" = \
+            "$TIARIS_NEST_BUILD_MANAGE_ORIGIN"
+          staging="$RUNNER_TEMP/tiaris-workstation-netboot-tree"
           install -d -m 0755 "$staging"
           for component in manifest.json bzImage initrd nix-store.squashfs; do
             install -m 0644 "result-workstation-netboot/$component" "$staging/$component"
@@ -360,14 +360,14 @@ jobs:
           bundle="dist/$BUILD_BUNDLE"
           nix-shell release/release-tools.nix --run \
             "tar --format=ustar --sort=name --numeric-owner --owner=0 --group=0 --mode=u=rw,go=r --mtime=@$source_epoch -C '$staging' -cf - bzImage initrd manifest.json nix-store.squashfs | zstd -19 --threads=1 --no-progress --no-dictID -o '$bundle'"
-          python3 tools/james-release.py inspect-workstation-netboot \
+          python3 tools/nest-release.py inspect-workstation-netboot \
             --workstation-netboot-bundle "$bundle" \
             --workstation-netboot-tree "$staging" \
             --workstation-netboot-url "https://github.invalid/$GITHUB_REF_NAME/$BUILD_BUNDLE" \
             --workstation-netboot-runtime-version "$BUILD_RUNTIME" \
             --workstation-netboot-manage-revision "$BUILD_MANAGE_REVISION" \
             --workstation-netboot-nixpkgs-revision "$BUILD_NIXPKGS_REVISION"
-          mapfile -t provisioning_keys < <(printf '%s\n' "$CYBEX_JAMES_PROVISIONING_PUBLIC_KEYS" | sed '/^[[:space:]]*$/d')
+          mapfile -t provisioning_keys < <(printf '%s\n' "$TIARIS_NEST_PROVISIONING_PUBLIC_KEYS" | sed '/^[[:space:]]*$/d')
           template_args=()
           for key in "${provisioning_keys[@]}"; do
             template_args+=(--provisioning-public-key "$key")
@@ -377,22 +377,22 @@ jobs:
             --manage-source-revision "$BUILD_MANAGE_REVISION"
             --source-revision "$(git rev-parse HEAD)"
             --source-date-epoch "$source_epoch"
-            --expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN"
-            --release-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
+            --expected-manage-origin "$TIARIS_NEST_BUILD_MANAGE_ORIGIN"
+            --release-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
             "${template_args[@]}"
           )
           # The build sandbox receives public inputs only. NARInfos are signed
           # outside Nix and the container after these exact bytes are returned.
           nixos-appliance/build-closure.sh \
-            --unsigned-output-dir "$RUNNER_TEMP/cybex-james-unsigned-closure" \
+            --unsigned-output-dir "$RUNNER_TEMP/tiaris-nest-unsigned-closure" \
             "${build_args[@]}"
           nixos-appliance/build-template.sh \
-            --output-dir "$RUNNER_TEMP/cybex-james-template" \
+            --output-dir "$RUNNER_TEMP/tiaris-nest-template" \
             "${build_args[@]}"
-          mv "$RUNNER_TEMP/cybex-james-template/cybex-james-appliance-template-$version-x86_64-linux.iso" dist/
-          mv "$RUNNER_TEMP/cybex-james-template/cybex-james-appliance-template-$version-x86_64-linux.json" \
-            "$RUNNER_TEMP/cybex-james-appliance-template-metadata.json"
-          test "$(dist/cybex-james-x86_64-linux --version)" = "cybex-james $version"
+          mv "$RUNNER_TEMP/tiaris-nest-template/tiaris-nest-appliance-template-$version-x86_64-linux.iso" dist/
+          mv "$RUNNER_TEMP/tiaris-nest-template/tiaris-nest-appliance-template-$version-x86_64-linux.json" \
+            "$RUNNER_TEMP/tiaris-nest-appliance-template-metadata.json"
+          test "$(dist/tiaris-nest-x86_64-linux --version)" = "tiaris-nest $version"
           BUILD
 
       - name: Sign and self-verify release manifests
@@ -400,11 +400,11 @@ jobs:
         shell: bash
         env:
           # The sealed secret keeps its pre-rename storage key until it is rotated.
-          CYBEX_JAMES_RELEASE_PRIVATE_KEY_B64: ${{ secrets.CYBEX_FORGE_RELEASE_PRIVATE_KEY_B64 }}
+          TIARIS_NEST_RELEASE_PRIVATE_KEY_B64: ${{ secrets.TIARIS_FORGE_RELEASE_PRIVATE_KEY_B64 }}
         run: |
           set -euo pipefail
           version="${{ steps.release-version.outputs.version }}"
-          key_path="$RUNNER_TEMP/cybex-james-release-key.pem"
+          key_path="$RUNNER_TEMP/tiaris-nest-release-key.pem"
           cleanup_key() {
             if [ -f "$key_path" ]; then
               shred -u -n 1 -z -- "$key_path" || rm -f -- "$key_path"
@@ -412,74 +412,74 @@ jobs:
           }
           trap cleanup_key EXIT
           umask 077
-          printf '%s' "$CYBEX_JAMES_RELEASE_PRIVATE_KEY_B64" | base64 --decode > "$key_path"
+          printf '%s' "$TIARIS_NEST_RELEASE_PRIVATE_KEY_B64" | base64 --decode > "$key_path"
           chmod 0600 "$key_path"
-          derived_public_key="$(python3 tools/james-release.py public-key --private-key "$key_path")"
-          test "$derived_public_key" = "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
+          derived_public_key="$(python3 tools/nest-release.py public-key --private-key "$key_path")"
+          test "$derived_public_key" = "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
           release_base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases"
           artifact_base="$release_base/download/$GITHUB_REF_NAME"
           published_at="$(date -u -d "@$(git show -s --format=%ct HEAD)" +'%Y-%m-%dT%H:%M:%SZ')"
-          personalization_offset="$(jq -er '.personalization_offset' "$RUNNER_TEMP/cybex-james-appliance-template-metadata.json")"
-          package_delivery="$(jq -er '.package_delivery' "$RUNNER_TEMP/cybex-james-appliance-template-metadata.json")"
+          personalization_offset="$(jq -er '.personalization_offset' "$RUNNER_TEMP/tiaris-nest-appliance-template-metadata.json")"
+          package_delivery="$(jq -er '.package_delivery' "$RUNNER_TEMP/tiaris-nest-appliance-template-metadata.json")"
           test "$package_delivery" = system-closure-v1
-          mapfile -t provisioning_keys < <(printf '%s\n' "$CYBEX_JAMES_PROVISIONING_PUBLIC_KEYS" | sed '/^[[:space:]]*$/d')
+          mapfile -t provisioning_keys < <(printf '%s\n' "$TIARIS_NEST_PROVISIONING_PUBLIC_KEYS" | sed '/^[[:space:]]*$/d')
           previous_compatibility_args=()
-          if [ -s "$RUNNER_TEMP/cybex-james-previous-release-compatibility.json" ]; then
+          if [ -s "$RUNNER_TEMP/tiaris-nest-previous-release-compatibility.json" ]; then
             previous_compatibility_args=(
-              --previous-compatibility "$RUNNER_TEMP/cybex-james-previous-release-compatibility.json"
+              --previous-compatibility "$RUNNER_TEMP/tiaris-nest-previous-release-compatibility.json"
               --historical-authorization release/recovery-adoption.json
             )
           fi
           template_args=(
-            --installer-iso-template "dist/cybex-james-appliance-template-$version-x86_64-linux.iso"
-            --installer-iso-template-url "$artifact_base/cybex-james-appliance-template-$version-x86_64-linux.iso"
-            --installer-iso-template-metadata "$RUNNER_TEMP/cybex-james-appliance-template-metadata.json"
+            --installer-iso-template "dist/tiaris-nest-appliance-template-$version-x86_64-linux.iso"
+            --installer-iso-template-url "$artifact_base/tiaris-nest-appliance-template-$version-x86_64-linux.iso"
+            --installer-iso-template-metadata "$RUNNER_TEMP/tiaris-nest-appliance-template-metadata.json"
             --installer-iso-template-personalization-offset "$personalization_offset"
             --installer-iso-template-package-delivery "$package_delivery"
-            --expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN"
+            --expected-manage-origin "$TIARIS_NEST_BUILD_MANAGE_ORIGIN"
           )
           for key in "${provisioning_keys[@]}"; do
             template_args+=(--provisioning-public-key "$key")
           done
           python3 -B tools/pack-system-closure.py \
-            --cache "$RUNNER_TEMP/cybex-james-unsigned-closure/cache" \
-            --build-metadata "$RUNNER_TEMP/cybex-james-unsigned-closure/build-metadata.json" \
+            --cache "$RUNNER_TEMP/tiaris-nest-unsigned-closure/cache" \
+            --build-metadata "$RUNNER_TEMP/tiaris-nest-unsigned-closure/build-metadata.json" \
             --private-key "$key_path" \
-            --output "dist/cybex-james-appliance-closure-$version-x86_64-linux.tar.zst" \
-            --metadata-output "$RUNNER_TEMP/cybex-james-appliance-closure-metadata.json"
-          python3 tools/james-release.py manifest \
-            --artifact dist/cybex-james-x86_64-linux \
-            --artifact-url "$artifact_base/cybex-james-x86_64-linux" \
+            --output "dist/tiaris-nest-appliance-closure-$version-x86_64-linux.tar.zst" \
+            --metadata-output "$RUNNER_TEMP/tiaris-nest-appliance-closure-metadata.json"
+          python3 tools/nest-release.py manifest \
+            --artifact dist/tiaris-nest-x86_64-linux \
+            --artifact-url "$artifact_base/tiaris-nest-x86_64-linux" \
             --version "$version" \
             --private-key "$key_path" \
-            --output dist/cybex-james-release.json \
+            --output dist/tiaris-nest-release.json \
             --release-url "$release_base/tag/$GITHUB_REF_NAME" \
             --notes-url "$release_base/tag/$GITHUB_REF_NAME" \
             "${template_args[@]}" \
             --appliance-source-revision "$(git rev-parse HEAD)" \
-            --appliance-system-closure "dist/cybex-james-appliance-closure-$version-x86_64-linux.tar.zst" \
-            --appliance-system-closure-metadata "$RUNNER_TEMP/cybex-james-appliance-closure-metadata.json" \
-            --appliance-system-closure-url "$artifact_base/cybex-james-appliance-closure-$version-x86_64-linux.tar.zst" \
+            --appliance-system-closure "dist/tiaris-nest-appliance-closure-$version-x86_64-linux.tar.zst" \
+            --appliance-system-closure-metadata "$RUNNER_TEMP/tiaris-nest-appliance-closure-metadata.json" \
+            --appliance-system-closure-url "$artifact_base/tiaris-nest-appliance-closure-$version-x86_64-linux.tar.zst" \
             --workstation-netboot-bundle "dist/${{ steps.workstation-source.outputs.bundle_name }}" \
-            --workstation-netboot-tree "$RUNNER_TEMP/cybex-workstation-netboot-tree" \
+            --workstation-netboot-tree "$RUNNER_TEMP/tiaris-workstation-netboot-tree" \
             --workstation-netboot-url "$artifact_base/${{ steps.workstation-source.outputs.bundle_name }}" \
             --workstation-netboot-runtime-version "${{ steps.workstation-source.outputs.runtime_version }}" \
             --workstation-netboot-manage-revision "${{ steps.workstation-source.outputs.revision }}" \
             --workstation-netboot-nixpkgs-revision "${{ steps.workstation-source.outputs.nixpkgs_revision }}" \
-            --workstation-netboot-manage-source-sha256 "$(jq -er '.manage_source.sha256' "$RUNNER_TEMP/cybex-james-appliance-closure-metadata.json")" \
-            --workstation-netboot-manage-source-size-bytes "$(jq -er '.manage_source.size_bytes' "$RUNNER_TEMP/cybex-james-appliance-closure-metadata.json")" \
+            --workstation-netboot-manage-source-sha256 "$(jq -er '.manage_source.sha256' "$RUNNER_TEMP/tiaris-nest-appliance-closure-metadata.json")" \
+            --workstation-netboot-manage-source-size-bytes "$(jq -er '.manage_source.size_bytes' "$RUNNER_TEMP/tiaris-nest-appliance-closure-metadata.json")" \
             --published-at "$published_at"
-          python3 tools/james-release.py compatibility \
-            --manifest dist/cybex-james-release.json \
-            --manifest-url "$artifact_base/cybex-james-release.json" \
+          python3 tools/nest-release.py compatibility \
+            --manifest dist/tiaris-nest-release.json \
+            --manifest-url "$artifact_base/tiaris-nest-release.json" \
             --compatibility protocol/compatibility.json \
             --private-key "$key_path" \
             "${previous_compatibility_args[@]}" \
-            --output dist/cybex-james-release-compatibility.json
-          python3 tools/james-release.py verify-compatibility \
-            --asset dist/cybex-james-release-compatibility.json \
-            --manifest dist/cybex-james-release.json \
-            --manifest-url "$artifact_base/cybex-james-release.json" \
+            --output dist/tiaris-nest-release-compatibility.json
+          python3 tools/nest-release.py verify-compatibility \
+            --asset dist/tiaris-nest-release-compatibility.json \
+            --manifest dist/tiaris-nest-release.json \
+            --manifest-url "$artifact_base/tiaris-nest-release.json" \
             --compatibility protocol/compatibility.json \
             --trusted-public-key "$derived_public_key"
           cleanup_key
@@ -487,15 +487,15 @@ jobs:
           (
             cd dist
             checksum_files=(
-              cybex-james-x86_64-linux
-              "cybex-james-appliance-template-$version-x86_64-linux.iso"
-              "cybex-james-appliance-closure-$version-x86_64-linux.tar.zst"
+              tiaris-nest-x86_64-linux
+              "tiaris-nest-appliance-template-$version-x86_64-linux.iso"
+              "tiaris-nest-appliance-closure-$version-x86_64-linux.tar.zst"
               "${{ steps.workstation-source.outputs.bundle_name }}"
-              cybex-james-release.json
-              cybex-james-release-compatibility.json
+              tiaris-nest-release.json
+              tiaris-nest-release-compatibility.json
             )
             if [ "${{ steps.published-predecessor.outputs.exists }}" = true ]; then
-              checksum_files+=(cybex-james-build-predecessor.json)
+              checksum_files+=(tiaris-nest-build-predecessor.json)
             fi
             sha256sum -b "${checksum_files[@]}" > SHA256SUMS
           )
@@ -509,7 +509,7 @@ jobs:
         # actions/upload-artifact v4.6.2; rotate only after reviewing the official tag.
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ${{ env.CYBEX_JAMES_RELEASE_ARTIFACT }}
+          name: ${{ env.TIARIS_NEST_RELEASE_ARTIFACT }}
           path: candidate-receipt/candidate.json
           if-no-files-found: error
           compression-level: 0
@@ -531,12 +531,12 @@ jobs:
           action_digest="${action_digest#sha256:}"
           [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]]
           [[ "$action_digest" =~ ^[0-9a-f]{64}$ ]]
-          metadata="$RUNNER_TEMP/cybex-james-candidate-artifact.json"
+          metadata="$RUNNER_TEMP/tiaris-nest-candidate-artifact.json"
           gh api \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id" > "$metadata"
-          test "$(jq -r '.name' "$metadata")" = "$CYBEX_JAMES_RELEASE_ARTIFACT"
+          test "$(jq -r '.name' "$metadata")" = "$TIARIS_NEST_RELEASE_ARTIFACT"
           test "$(jq -r '.expired' "$metadata")" = "false"
           test "$(jq -r '.workflow_run.id' "$metadata")" = "$GITHUB_RUN_ID"
           test "$(jq -r '.workflow_run.head_sha' "$metadata")" = "${GITHUB_SHA,,}"
@@ -544,25 +544,25 @@ jobs:
           [[ "$api_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           test "${api_digest#sha256:}" = "$action_digest"
           printf 'artifact_id=%s\nartifact_digest=%s\nartifact_name=%s\n' \
-            "$artifact_id" "$action_digest" "$CYBEX_JAMES_RELEASE_ARTIFACT" \
+            "$artifact_id" "$action_digest" "$TIARIS_NEST_RELEASE_ARTIFACT" \
             >> "$GITHUB_OUTPUT"
 
       - name: Remove disposable workspace payloads
         if: always()
         run: |
           rm -rf -- "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE/candidate-receipt" "$GITHUB_WORKSPACE/manage-source"
-          rm -rf -- "$RUNNER_TEMP/cybex-james-unsigned-closure" "$RUNNER_TEMP/cybex-james-template" "$RUNNER_TEMP/cybex-workstation-netboot-tree"
-          rm -rf -- "$RUNNER_TEMP/cybex-james-predecessor" "$RUNNER_TEMP/cybex-james-qualification-predecessor" "$RUNNER_TEMP/cybex-james-retained-manage-source"
+          rm -rf -- "$RUNNER_TEMP/tiaris-nest-unsigned-closure" "$RUNNER_TEMP/tiaris-nest-template" "$RUNNER_TEMP/tiaris-workstation-netboot-tree"
+          rm -rf -- "$RUNNER_TEMP/tiaris-nest-predecessor" "$RUNNER_TEMP/tiaris-nest-qualification-predecessor" "$RUNNER_TEMP/tiaris-nest-retained-manage-source"
 
 
   release_qualify:
     name: Boot, install, adopt, and reboot exact candidate
     if: startsWith(github.ref, 'refs/tags/v')
     needs: release_build
-    runs-on: [self-hosted, linux, x64, cybex-james-lab]
+    runs-on: [self-hosted, linux, x64, tiaris-nest-lab]
     environment: production-release-qualification
     concurrency:
-      group: james-nixos-production-qualification
+      group: nest-nixos-production-qualification
       cancel-in-progress: false
     outputs:
       artifact_id: ${{ steps.upload-qualification.outputs.artifact-id }}
@@ -571,24 +571,24 @@ jobs:
       contents: read
       actions: read
     env:
-      CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN }}
-      CYBEX_JAMES_QUALIFICATION_SUBNET: ${{ vars.CYBEX_JAMES_QUALIFICATION_SUBNET }}
-      CYBEX_JAMES_QUALIFICATION_CONFIG: ${{ vars.CYBEX_JAMES_QUALIFICATION_CONFIG }}
-      CYBEX_JAMES_QUALIFICATION_STATE_ROOT: ${{ vars.CYBEX_JAMES_QUALIFICATION_STATE_ROOT }}
-      CYBEX_JAMES_RELEASE_VERSION: ${{ needs.release_build.outputs.version }}
-      CYBEX_JAMES_RELEASE_ARTIFACT_ID: ${{ needs.release_build.outputs.artifact_id }}
-      CYBEX_JAMES_WORKSTATION_BUNDLE_NAME: ${{ needs.release_build.outputs.workstation_bundle_name }}
-      CYBEX_JAMES_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
-      CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
-      CYBEX_JAMES_HAS_PREDECESSOR: ${{ needs.release_build.outputs.has_predecessor }}
-      CYBEX_JAMES_PUBLISHED_PREDECESSOR_IDENTITY_B64: ${{ needs.release_build.outputs.predecessor_identity_b64 }}
-      CYBEX_JAMES_PUBLISHED_PREDECESSOR_IDENTITY_SHA256: ${{ needs.release_build.outputs.predecessor_identity_sha256 }}
-      CYBEX_JAMES_PUBLISHED_PREDECESSOR_RELEASE: ${{ needs.release_build.outputs.predecessor_release }}
-      CYBEX_JAMES_PUBLISHED_PREDECESSOR_SNAPSHOT: ${{ needs.release_build.outputs.predecessor_snapshot }}
-      CYBEX_JAMES_PUBLISHED_PREDECESSOR_UPDATE_CONTRACT: ${{ needs.release_build.outputs.predecessor_update_contract }}
-      CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR: ${{ vars.CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR }}
-      CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256: ${{ vars.CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256 }}
-      CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT: ${{ vars.CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT }}
+      TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN }}
+      TIARIS_NEST_QUALIFICATION_SUBNET: ${{ vars.TIARIS_NEST_QUALIFICATION_SUBNET }}
+      TIARIS_NEST_QUALIFICATION_CONFIG: ${{ vars.TIARIS_NEST_QUALIFICATION_CONFIG }}
+      TIARIS_NEST_QUALIFICATION_STATE_ROOT: ${{ vars.TIARIS_NEST_QUALIFICATION_STATE_ROOT }}
+      TIARIS_NEST_RELEASE_VERSION: ${{ needs.release_build.outputs.version }}
+      TIARIS_NEST_RELEASE_ARTIFACT_ID: ${{ needs.release_build.outputs.artifact_id }}
+      TIARIS_NEST_WORKSTATION_BUNDLE_NAME: ${{ needs.release_build.outputs.workstation_bundle_name }}
+      TIARIS_NEST_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
+      TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY }}
+      TIARIS_NEST_HAS_PREDECESSOR: ${{ needs.release_build.outputs.has_predecessor }}
+      TIARIS_NEST_PUBLISHED_PREDECESSOR_IDENTITY_B64: ${{ needs.release_build.outputs.predecessor_identity_b64 }}
+      TIARIS_NEST_PUBLISHED_PREDECESSOR_IDENTITY_SHA256: ${{ needs.release_build.outputs.predecessor_identity_sha256 }}
+      TIARIS_NEST_PUBLISHED_PREDECESSOR_RELEASE: ${{ needs.release_build.outputs.predecessor_release }}
+      TIARIS_NEST_PUBLISHED_PREDECESSOR_SNAPSHOT: ${{ needs.release_build.outputs.predecessor_snapshot }}
+      TIARIS_NEST_PUBLISHED_PREDECESSOR_UPDATE_CONTRACT: ${{ needs.release_build.outputs.predecessor_update_contract }}
+      TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR: ${{ vars.TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR }}
+      TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256: ${{ vars.TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256 }}
+      TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT: ${{ vars.TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT }}
     steps:
       - name: Checkout exact qualification source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -601,17 +601,17 @@ jobs:
         run: |
           set -Eeuo pipefail
           for name in CONFIG SUBNET STATE_ROOT; do
-            input="CYBEX_JAMES_QUALIFICATION_$name"
+            input="TIARIS_NEST_QUALIFICATION_$name"
             : "${!input:?configure the protected production qualification environment}"
           done
-          test "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" = https://manage.cybex.net
-          test "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN" = "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN"
-          [[ "$CYBEX_JAMES_QUALIFICATION_CONFIG" = /* ]]
-          [[ "$CYBEX_JAMES_QUALIFICATION_STATE_ROOT" = /* ]]
+          test "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" = https://manage.cybex.net
+          test "$TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN" = "$TIARIS_NEST_BUILD_MANAGE_ORIGIN"
+          [[ "$TIARIS_NEST_QUALIFICATION_CONFIG" = /* ]]
+          [[ "$TIARIS_NEST_QUALIFICATION_STATE_ROOT" = /* ]]
           # The runner validates pinned fixture images, dedicated credentials and
           # private TLS transport before creating any appliance or workstation.
           sudo -n python3 -B -c 'import sys,json; sys.path.insert(0,"nixos-appliance/qualification"); import isolated_manage_config as c; c.validate(json.loads(c.read_file(sys.argv[1])))' \
-            "$CYBEX_JAMES_QUALIFICATION_CONFIG"
+            "$TIARIS_NEST_QUALIFICATION_CONFIG"
 
       - name: Download build-once candidate by immutable artifact ID
         env:
@@ -629,28 +629,28 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          version="$CYBEX_JAMES_RELEASE_VERSION"
+          version="$TIARIS_NEST_RELEASE_VERSION"
           (cd dist && sha256sum --check --strict SHA256SUMS)
           tree="$RUNNER_TEMP/workstation-netboot-qualification"
           install -d -m 0700 "$tree"
           tar --use-compress-program=unzstd \
-            -xf "dist/$CYBEX_JAMES_WORKSTATION_BUNDLE_NAME" -C "$tree"
-          python3 -B tools/james-release.py verify \
-            --manifest dist/cybex-james-release.json \
-            --artifact dist/cybex-james-x86_64-linux \
-            --installer-iso-template "dist/cybex-james-appliance-template-$version-x86_64-linux.iso" \
-            --expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" \
-            --appliance-system-closure "dist/cybex-james-appliance-closure-$version-x86_64-linux.tar.zst" \
-            --workstation-netboot-bundle "dist/$CYBEX_JAMES_WORKSTATION_BUNDLE_NAME" \
+            -xf "dist/$TIARIS_NEST_WORKSTATION_BUNDLE_NAME" -C "$tree"
+          python3 -B tools/nest-release.py verify \
+            --manifest dist/tiaris-nest-release.json \
+            --artifact dist/tiaris-nest-x86_64-linux \
+            --installer-iso-template "dist/tiaris-nest-appliance-template-$version-x86_64-linux.iso" \
+            --expected-manage-origin "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" \
+            --appliance-system-closure "dist/tiaris-nest-appliance-closure-$version-x86_64-linux.tar.zst" \
+            --workstation-netboot-bundle "dist/$TIARIS_NEST_WORKSTATION_BUNDLE_NAME" \
             --workstation-netboot-tree "$tree" \
-            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
+            --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
           artifact_base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/$GITHUB_REF_NAME"
-          python3 -B tools/james-release.py verify-compatibility \
-            --asset dist/cybex-james-release-compatibility.json \
-            --manifest dist/cybex-james-release.json \
-            --manifest-url "$artifact_base/cybex-james-release.json" \
+          python3 -B tools/nest-release.py verify-compatibility \
+            --asset dist/tiaris-nest-release-compatibility.json \
+            --manifest dist/tiaris-nest-release.json \
+            --manifest-url "$artifact_base/tiaris-nest-release.json" \
             --compatibility protocol/compatibility.json \
-            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
+            --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
 
       - name: Resolve exact predecessor media for disposable fixtures
         shell: bash
@@ -660,59 +660,59 @@ jobs:
           set -Eeuo pipefail
           arguments=()
           explicit_fixture=false
-          snapshot_parent="$RUNNER_TEMP/cybex-james-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          snapshot_parent="$RUNNER_TEMP/tiaris-nest-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           predecessor="$snapshot_parent/predecessor"
           install -d -m 0700 "$snapshot_parent"
-          if [ "$CYBEX_JAMES_HAS_PREDECESSOR" = true ]; then
-            arguments+=(--expected-identity dist/cybex-james-build-predecessor.json)
+          if [ "$TIARIS_NEST_HAS_PREDECESSOR" = true ]; then
+            arguments+=(--expected-identity dist/tiaris-nest-build-predecessor.json)
           fi
           # The published ancestry and the upgrade fixture are distinct. The
           # first V3 release needs a separately signed NixOS predecessor; an
           # Ubuntu appliance is never upgraded or relabeled as that fixture.
-          if [ -n "$CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR" ] \
-            || [ -n "$CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256" ]; then
-            : "${CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR:?missing qualification predecessor directory}"
-            [[ "$CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          if [ -n "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR" ] \
+            || [ -n "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256" ]; then
+            : "${TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR:?missing qualification predecessor directory}"
+            [[ "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
             arguments+=(
-              --qualification-predecessor-dir "$CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR"
-              --qualification-predecessor-manifest-sha256 "$CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256"
+              --qualification-predecessor-dir "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR"
+              --qualification-predecessor-manifest-sha256 "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256"
             )
             explicit_fixture=true
           fi
-          if [ "$CYBEX_JAMES_HAS_PREDECESSOR" = true ] \
+          if [ "$TIARIS_NEST_HAS_PREDECESSOR" = true ] \
             && [ "$explicit_fixture" = true ] \
-            && [ -n "$CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT" ]; then
-            timing_parent="$RUNNER_TEMP/cybex-james-release-speed-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            && [ -n "$TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT" ]; then
+            timing_parent="$RUNNER_TEMP/tiaris-nest-release-speed-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
             install -d -m 0700 "$timing_parent"
             python3 -B release/beast/release_speed.py cache \
               --mode github-warm \
-              --cache-root "$CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT" \
+              --cache-root "$TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT" \
               --directory "$predecessor" \
-              --predecessor-dir "$CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR" \
-              --predecessor-manifest-sha256 "$CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256" \
-              --expected-identity dist/cybex-james-build-predecessor.json \
+              --predecessor-dir "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR" \
+              --predecessor-manifest-sha256 "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256" \
+              --expected-identity dist/tiaris-nest-build-predecessor.json \
               --authorization release/recovery-adoption.json \
               --repository "$GITHUB_REPOSITORY" \
-              --candidate-version "$CYBEX_JAMES_RELEASE_VERSION" \
-              --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
+              --candidate-version "$TIARIS_NEST_RELEASE_VERSION" \
+              --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
               --timing-dir "$timing_parent/predecessor-cache"
           else
             python3 -B nixos-appliance/qualification/release_predecessor.py \
               --repository "$GITHUB_REPOSITORY" \
-              --candidate-version "$CYBEX_JAMES_RELEASE_VERSION" \
-              --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
+              --candidate-version "$TIARIS_NEST_RELEASE_VERSION" \
+              --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
               --directory "$predecessor" \
               --output "$predecessor/identity.json" \
               --download-media "${arguments[@]}"
           fi
-          test "$(jq -er '.appliance_release_v1.schema' "$predecessor/cybex-james-release.json")" = cybex.james.appliance-release.v3
+          test "$(jq -er '.appliance_release_v1.schema' "$predecessor/tiaris-nest-release.json")" = tiaris.nest.appliance-release.v3
 
       - name: Upload bounded predecessor-cache timing
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: cybex-james-predecessor-cache-timing-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/cybex-james-release-speed-${{ github.run_id }}-${{ github.run_attempt }}/predecessor-cache/timing.json
+          name: tiaris-nest-predecessor-cache-timing-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tiaris-nest-release-speed-${{ github.run_id }}-${{ github.run_attempt }}/predecessor-cache/timing.json
           if-no-files-found: warn
           retention-days: 30
 
@@ -721,30 +721,30 @@ jobs:
         timeout-minutes: 240
         run: |
           set -Eeuo pipefail
-          fixture_directory="$CYBEX_JAMES_QUALIFICATION_STATE_ROOT/config-warm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          fixture_directory="$TIARIS_NEST_QUALIFICATION_STATE_ROOT/config-warm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           sudo -n python3 -B nixos-appliance/qualification/prepare-fixture-config.py \
-            --template "$CYBEX_JAMES_QUALIFICATION_CONFIG" \
+            --template "$TIARIS_NEST_QUALIFICATION_CONFIG" \
             --candidate-dir "$GITHUB_WORKSPACE/dist" \
-            --predecessor-dir "$RUNNER_TEMP/cybex-james-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/predecessor" \
+            --predecessor-dir "$RUNNER_TEMP/tiaris-nest-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/predecessor" \
             --directory "$fixture_directory"
           sudo -n python3 -B nixos-appliance/qualification/run-production-qualification.py \
             --run "release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-            --manage-origin "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN" \
+            --manage-origin "$TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN" \
             --isolated-manage-config "$fixture_directory/config.json" \
-            --subnet "$CYBEX_JAMES_QUALIFICATION_SUBNET" \
-            --state-root "$CYBEX_JAMES_QUALIFICATION_STATE_ROOT" \
+            --subnet "$TIARIS_NEST_QUALIFICATION_SUBNET" \
+            --state-root "$TIARIS_NEST_QUALIFICATION_STATE_ROOT" \
             --candidate-dir "$GITHUB_WORKSPACE/dist" \
-            --predecessor-dir "$RUNNER_TEMP/cybex-james-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/predecessor" \
-            --evidence-dir "$RUNNER_TEMP/cybex-james-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
+            --predecessor-dir "$RUNNER_TEMP/tiaris-nest-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/predecessor" \
+            --evidence-dir "$RUNNER_TEMP/tiaris-nest-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
 
       - name: Retain bounded rollback failure diagnostic
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: cybex-james-rollback-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          name: tiaris-nest-rollback-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/cybex-james-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-nixos-rollback-failure.json
+            ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-nixos-rollback-failure.json
           if-no-files-found: ignore
           compression-level: 0
           retention-days: 30
@@ -753,13 +753,13 @@ jobs:
         id: upload-qualification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: cybex-james-qualified-${{ github.run_id }}
+          name: tiaris-nest-qualified-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/cybex-james-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-nixos-qualification.json
-            ${{ runner.temp }}/cybex-james-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-nixos-update-qualification.json
-            ${{ runner.temp }}/cybex-james-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-qualified-predecessor.json
-            ${{ runner.temp }}/cybex-james-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-qualified-predecessor-release.json
-            ${{ runner.temp }}/cybex-james-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-nixos-rollback-qualification.json
+            ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-nixos-qualification.json
+            ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-nixos-update-qualification.json
+            ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-qualified-predecessor.json
+            ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-qualified-predecessor-release.json
+            ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-nixos-rollback-qualification.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
@@ -768,29 +768,29 @@ jobs:
         if: success()
         run: |
           sudo -n python3 -B nixos-appliance/qualification/cleanup-fixture-config.py \
-            --directory "$CYBEX_JAMES_QUALIFICATION_STATE_ROOT/config-warm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            --directory "$TIARIS_NEST_QUALIFICATION_STATE_ROOT/config-warm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 
       - name: Remove disposable workspace payloads
         if: always()
         run: |
           rm -rf -- "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE/candidate-receipt" "$GITHUB_WORKSPACE/manage-source"
-          rm -rf -- "$RUNNER_TEMP/cybex-james-unsigned-closure" "$RUNNER_TEMP/cybex-james-template" "$RUNNER_TEMP/cybex-workstation-netboot-tree"
-          rm -rf -- "$RUNNER_TEMP/cybex-james-predecessor" "$RUNNER_TEMP/cybex-james-qualification-predecessor" "$RUNNER_TEMP/cybex-james-retained-manage-source"
-          rm -rf -- "$RUNNER_TEMP/cybex-james-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          rm -rf -- "$RUNNER_TEMP/cybex-james-release-speed-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rm -rf -- "$RUNNER_TEMP/tiaris-nest-unsigned-closure" "$RUNNER_TEMP/tiaris-nest-template" "$RUNNER_TEMP/tiaris-workstation-netboot-tree"
+          rm -rf -- "$RUNNER_TEMP/tiaris-nest-predecessor" "$RUNNER_TEMP/tiaris-nest-qualification-predecessor" "$RUNNER_TEMP/tiaris-nest-retained-manage-source"
+          rm -rf -- "$RUNNER_TEMP/tiaris-nest-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rm -rf -- "$RUNNER_TEMP/tiaris-nest-release-speed-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 
 
   release_publish:
     name: Attest and stage immutable candidate
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [release_build, release_qualify]
-    runs-on: [self-hosted, linux, x64, cybex-james-lab]
+    runs-on: [self-hosted, linux, x64, tiaris-nest-lab]
     environment: production-release
     concurrency:
       # Predecessor verification and immutable publication are one
       # repository-wide critical section. Per-tag locking permits two tags to
       # sign from the same predecessor and publish in reverse order.
-      group: james-release-publish
+      group: nest-release-publish
       cancel-in-progress: false
     permissions:
       contents: write
@@ -799,22 +799,22 @@ jobs:
       attestations: write
       artifact-metadata: write
     env:
-      CYBEX_JAMES_RELEASE_VERSION: ${{ needs.release_build.outputs.version }}
-      CYBEX_JAMES_RELEASE_ARTIFACT: ${{ needs.release_build.outputs.artifact_name }}
-      CYBEX_JAMES_RELEASE_ARTIFACT_ID: ${{ needs.release_build.outputs.artifact_id }}
-      CYBEX_JAMES_RELEASE_ARTIFACT_DIGEST: ${{ needs.release_build.outputs.artifact_digest }}
-      CYBEX_JAMES_QUALIFICATION_ARTIFACT_ID: ${{ needs.release_qualify.outputs.artifact_id }}
-      CYBEX_JAMES_QUALIFICATION_ARTIFACT_DIGEST: ${{ needs.release_qualify.outputs.artifact_digest }}
-      CYBEX_JAMES_WORKSTATION_BUNDLE_NAME: ${{ needs.release_build.outputs.workstation_bundle_name }}
-      CYBEX_JAMES_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
-      CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
-      CYBEX_JAMES_HAS_PREDECESSOR: ${{ needs.release_build.outputs.has_predecessor }}
+      TIARIS_NEST_RELEASE_VERSION: ${{ needs.release_build.outputs.version }}
+      TIARIS_NEST_RELEASE_ARTIFACT: ${{ needs.release_build.outputs.artifact_name }}
+      TIARIS_NEST_RELEASE_ARTIFACT_ID: ${{ needs.release_build.outputs.artifact_id }}
+      TIARIS_NEST_RELEASE_ARTIFACT_DIGEST: ${{ needs.release_build.outputs.artifact_digest }}
+      TIARIS_NEST_QUALIFICATION_ARTIFACT_ID: ${{ needs.release_qualify.outputs.artifact_id }}
+      TIARIS_NEST_QUALIFICATION_ARTIFACT_DIGEST: ${{ needs.release_qualify.outputs.artifact_digest }}
+      TIARIS_NEST_WORKSTATION_BUNDLE_NAME: ${{ needs.release_build.outputs.workstation_bundle_name }}
+      TIARIS_NEST_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
+      TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY }}
+      TIARIS_NEST_HAS_PREDECESSOR: ${{ needs.release_build.outputs.has_predecessor }}
     steps:
       - name: Require production-bound artifacts for publication
         shell: bash
         run: |
           set -Eeuo pipefail
-          if [ "${CYBEX_JAMES_BUILD_MANAGE_ORIGIN:-}" != https://manage.cybex.net ]; then
+          if [ "${TIARIS_NEST_BUILD_MANAGE_ORIGIN:-}" != https://manage.cybex.net ]; then
             echo '::error::Development qualification artifacts cannot be published or promoted as production releases. Production-origin isolated qualification remains required.'
             exit 1
           fi
@@ -831,7 +831,7 @@ jobs:
           set -Eeuo pipefail
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA,,}"
           test -z "$(git status --porcelain)"
-          test "v$CYBEX_JAMES_RELEASE_VERSION" = "$GITHUB_REF_NAME"
+          test "v$TIARIS_NEST_RELEASE_VERSION" = "$GITHUB_REF_NAME"
 
       - name: Require independent archive verifier
         run: command -v zstd
@@ -861,15 +861,15 @@ jobs:
             test "$(jq -r '.digest' "$metadata")" = "sha256:$expected_digest"
           }
           validate_artifact \
-            "$CYBEX_JAMES_RELEASE_ARTIFACT_ID" \
-            "$CYBEX_JAMES_RELEASE_ARTIFACT" \
-            "$CYBEX_JAMES_RELEASE_ARTIFACT_DIGEST" \
-            "$RUNNER_TEMP/cybex-james-candidate-artifact.json"
+            "$TIARIS_NEST_RELEASE_ARTIFACT_ID" \
+            "$TIARIS_NEST_RELEASE_ARTIFACT" \
+            "$TIARIS_NEST_RELEASE_ARTIFACT_DIGEST" \
+            "$RUNNER_TEMP/tiaris-nest-candidate-artifact.json"
           validate_artifact \
-            "$CYBEX_JAMES_QUALIFICATION_ARTIFACT_ID" \
-            "cybex-james-qualified-$GITHUB_RUN_ID" \
-            "$CYBEX_JAMES_QUALIFICATION_ARTIFACT_DIGEST" \
-            "$RUNNER_TEMP/cybex-james-qualification-artifact.json"
+            "$TIARIS_NEST_QUALIFICATION_ARTIFACT_ID" \
+            "tiaris-nest-qualified-$GITHUB_RUN_ID" \
+            "$TIARIS_NEST_QUALIFICATION_ARTIFACT_DIGEST" \
+            "$RUNNER_TEMP/tiaris-nest-qualification-artifact.json"
 
       - name: Download original release candidate independently by artifact ID
         env:
@@ -886,7 +886,7 @@ jobs:
       - name: Download exact-candidate qualification evidence by artifact ID
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          artifact-ids: ${{ env.CYBEX_JAMES_QUALIFICATION_ARTIFACT_ID }}
+          artifact-ids: ${{ env.TIARIS_NEST_QUALIFICATION_ARTIFACT_ID }}
           path: qualification
           merge-multiple: true
 
@@ -894,22 +894,22 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          version="$CYBEX_JAMES_RELEASE_VERSION"
-          expected="$RUNNER_TEMP/cybex-james-publish-expected"
-          actual="$RUNNER_TEMP/cybex-james-publish-actual"
+          version="$TIARIS_NEST_RELEASE_VERSION"
+          expected="$RUNNER_TEMP/tiaris-nest-publish-expected"
+          actual="$RUNNER_TEMP/tiaris-nest-publish-actual"
           expected_names=(
             SHA256SUMS
-            cybex-james-release-compatibility.json
-            cybex-james-release.json
-            cybex-james-x86_64-linux
-            "cybex-james-appliance-template-$version-x86_64-linux.iso"
-            "cybex-james-appliance-closure-$version-x86_64-linux.tar.zst"
-            "$CYBEX_JAMES_WORKSTATION_BUNDLE_NAME"
+            tiaris-nest-release-compatibility.json
+            tiaris-nest-release.json
+            tiaris-nest-x86_64-linux
+            "tiaris-nest-appliance-template-$version-x86_64-linux.iso"
+            "tiaris-nest-appliance-closure-$version-x86_64-linux.tar.zst"
+            "$TIARIS_NEST_WORKSTATION_BUNDLE_NAME"
           )
-          case "$CYBEX_JAMES_HAS_PREDECESSOR" in
-            true) expected_names+=(cybex-james-build-predecessor.json) ;;
-            false) test ! -e dist/cybex-james-build-predecessor.json ;;
-            *) echo 'error: invalid James predecessor state' >&2; exit 1 ;;
+          case "$TIARIS_NEST_HAS_PREDECESSOR" in
+            true) expected_names+=(tiaris-nest-build-predecessor.json) ;;
+            false) test ! -e dist/tiaris-nest-build-predecessor.json ;;
+            *) echo 'error: invalid Nest predecessor state' >&2; exit 1 ;;
           esac
           printf '%s\n' "${expected_names[@]}" | LC_ALL=C sort > "$expected"
           find dist -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort > "$actual"
@@ -921,68 +921,68 @@ jobs:
           done < "$expected"
           (cd dist && sha256sum --check --strict SHA256SUMS)
           printf '%s\n' bzImage initrd manifest.json nix-store.squashfs \
-            > "$RUNNER_TEMP/cybex-workstation-archive-expected"
+            > "$RUNNER_TEMP/tiaris-workstation-archive-expected"
           tar --use-compress-program=unzstd \
-            -tf "dist/$CYBEX_JAMES_WORKSTATION_BUNDLE_NAME" \
-            > "$RUNNER_TEMP/cybex-workstation-archive-actual"
+            -tf "dist/$TIARIS_NEST_WORKSTATION_BUNDLE_NAME" \
+            > "$RUNNER_TEMP/tiaris-workstation-archive-actual"
           diff -u \
-            "$RUNNER_TEMP/cybex-workstation-archive-expected" \
-            "$RUNNER_TEMP/cybex-workstation-archive-actual"
+            "$RUNNER_TEMP/tiaris-workstation-archive-expected" \
+            "$RUNNER_TEMP/tiaris-workstation-archive-actual"
           test "$(tar --use-compress-program=unzstd -tvf \
-            "dist/$CYBEX_JAMES_WORKSTATION_BUNDLE_NAME" | awk '$1 !~ /^-rw-r--r--$/ {bad=1} END {print bad+0}')" = 0
-          install -d -m 0700 "$RUNNER_TEMP/cybex-workstation-netboot-verify"
+            "dist/$TIARIS_NEST_WORKSTATION_BUNDLE_NAME" | awk '$1 !~ /^-rw-r--r--$/ {bad=1} END {print bad+0}')" = 0
+          install -d -m 0700 "$RUNNER_TEMP/tiaris-workstation-netboot-verify"
           tar --use-compress-program=unzstd \
-            -xf "dist/$CYBEX_JAMES_WORKSTATION_BUNDLE_NAME" \
-            -C "$RUNNER_TEMP/cybex-workstation-netboot-verify"
-          python3 -B tools/james-release.py verify \
-            --manifest dist/cybex-james-release.json \
-            --artifact dist/cybex-james-x86_64-linux \
-            --installer-iso-template "dist/cybex-james-appliance-template-$version-x86_64-linux.iso" \
-            --expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" \
-            --appliance-system-closure "dist/cybex-james-appliance-closure-$version-x86_64-linux.tar.zst" \
-            --workstation-netboot-bundle "dist/$CYBEX_JAMES_WORKSTATION_BUNDLE_NAME" \
-            --workstation-netboot-tree "$RUNNER_TEMP/cybex-workstation-netboot-verify" \
-            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
+            -xf "dist/$TIARIS_NEST_WORKSTATION_BUNDLE_NAME" \
+            -C "$RUNNER_TEMP/tiaris-workstation-netboot-verify"
+          python3 -B tools/nest-release.py verify \
+            --manifest dist/tiaris-nest-release.json \
+            --artifact dist/tiaris-nest-x86_64-linux \
+            --installer-iso-template "dist/tiaris-nest-appliance-template-$version-x86_64-linux.iso" \
+            --expected-manage-origin "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" \
+            --appliance-system-closure "dist/tiaris-nest-appliance-closure-$version-x86_64-linux.tar.zst" \
+            --workstation-netboot-bundle "dist/$TIARIS_NEST_WORKSTATION_BUNDLE_NAME" \
+            --workstation-netboot-tree "$RUNNER_TEMP/tiaris-workstation-netboot-verify" \
+            --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
           artifact_base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/$GITHUB_REF_NAME"
-          python3 -B tools/james-release.py verify-compatibility \
-            --asset dist/cybex-james-release-compatibility.json \
-            --manifest dist/cybex-james-release.json \
-            --manifest-url "$artifact_base/cybex-james-release.json" \
+          python3 -B tools/nest-release.py verify-compatibility \
+            --asset dist/tiaris-nest-release-compatibility.json \
+            --manifest dist/tiaris-nest-release.json \
+            --manifest-url "$artifact_base/tiaris-nest-release.json" \
             --compatibility protocol/compatibility.json \
-            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
-          evidence=qualification/cybex-james-nixos-qualification.json
-          update_evidence=qualification/cybex-james-nixos-update-qualification.json
-          rollback=qualification/cybex-james-nixos-rollback-qualification.json
-          predecessor_identity=qualification/cybex-james-qualified-predecessor.json
-          predecessor_manifest=qualification/cybex-james-qualified-predecessor-release.json
+            --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
+          evidence=qualification/tiaris-nest-nixos-qualification.json
+          update_evidence=qualification/tiaris-nest-nixos-update-qualification.json
+          rollback=qualification/tiaris-nest-nixos-rollback-qualification.json
+          predecessor_identity=qualification/tiaris-nest-qualified-predecessor.json
+          predecessor_manifest=qualification/tiaris-nest-qualified-predecessor-release.json
           for file in "$evidence" "$update_evidence" "$rollback" "$predecessor_identity" "$predecessor_manifest"; do
             test -f "$file" && test ! -L "$file"
           done
           test "$(jq -er '.manifest_sha256' "$predecessor_identity")" = \
             "$(sha256sum "$predecessor_manifest" | awk '{print $1}')"
           python3 -B nixos-appliance/qualification/release_acceptance.py \
-            --phase prepublication --manifest dist/cybex-james-release.json \
+            --phase prepublication --manifest dist/tiaris-nest-release.json \
             --evidence "$evidence" --source "$GITHUB_SHA"
           python3 -B nixos-appliance/qualification/release_acceptance.py \
-            --phase update --manifest dist/cybex-james-release.json \
+            --phase update --manifest dist/tiaris-nest-release.json \
             --evidence "$update_evidence" --source "$GITHUB_SHA" \
             --predecessor-manifest "$predecessor_manifest"
           python3 -B nixos-appliance/qualification/release_acceptance.py \
-            --phase rollback --manifest dist/cybex-james-release.json \
+            --phase rollback --manifest dist/tiaris-nest-release.json \
             --evidence "$rollback" --source "$GITHUB_SHA" \
             --predecessor-manifest "$predecessor_manifest"
-          install -m 0700 dist/cybex-james-x86_64-linux "$RUNNER_TEMP/cybex-james-release-verify"
-          test "$("$RUNNER_TEMP/cybex-james-release-verify" --version)" = "cybex-james $version"
-          rm -f -- "$RUNNER_TEMP/cybex-james-release-verify"
+          install -m 0700 dist/tiaris-nest-x86_64-linux "$RUNNER_TEMP/tiaris-nest-release-verify"
+          test "$("$RUNNER_TEMP/tiaris-nest-release-verify" --version)" = "tiaris-nest $version"
+          rm -f -- "$RUNNER_TEMP/tiaris-nest-release-verify"
 
       - name: Require repository immutable-release policy
         shell: bash
         env:
           # The sealed secret keeps its pre-rename storage key until it is rotated.
-          GH_TOKEN: ${{ secrets.CYBEX_FORGE_RELEASE_POLICY_TOKEN }}
+          GH_TOKEN: ${{ secrets.TIARIS_FORGE_RELEASE_POLICY_TOKEN }}
         run: |
           set -euo pipefail
-          : "${GH_TOKEN:?configure CYBEX_JAMES_RELEASE_POLICY_TOKEN with repository Administration read permission}"
+          : "${GH_TOKEN:?configure TIARIS_NEST_RELEASE_POLICY_TOKEN with repository Administration read permission}"
           immutable_enabled="$(gh api --method GET \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
@@ -994,23 +994,23 @@ jobs:
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           subject-path: |
-            dist/cybex-james-x86_64-linux
-            dist/cybex-james-appliance-template-${{ env.CYBEX_JAMES_RELEASE_VERSION }}-x86_64-linux.iso
-            dist/cybex-james-appliance-closure-${{ env.CYBEX_JAMES_RELEASE_VERSION }}-x86_64-linux.tar.zst
-            dist/${{ env.CYBEX_JAMES_WORKSTATION_BUNDLE_NAME }}
-            dist/cybex-james-release.json
-            dist/cybex-james-release-compatibility.json
+            dist/tiaris-nest-x86_64-linux
+            dist/tiaris-nest-appliance-template-${{ env.TIARIS_NEST_RELEASE_VERSION }}-x86_64-linux.iso
+            dist/tiaris-nest-appliance-closure-${{ env.TIARIS_NEST_RELEASE_VERSION }}-x86_64-linux.tar.zst
+            dist/${{ env.TIARIS_NEST_WORKSTATION_BUNDLE_NAME }}
+            dist/tiaris-nest-release.json
+            dist/tiaris-nest-release-compatibility.json
             dist/SHA256SUMS
-            qualification/cybex-james-nixos-qualification.json
+            qualification/tiaris-nest-nixos-qualification.json
 
       - name: Attest exact NixOS update and rollback qualification
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           subject-path: |
-            qualification/cybex-james-nixos-update-qualification.json
-            qualification/cybex-james-qualified-predecessor.json
-            qualification/cybex-james-qualified-predecessor-release.json
-            qualification/cybex-james-nixos-rollback-qualification.json
+            qualification/tiaris-nest-nixos-update-qualification.json
+            qualification/tiaris-nest-qualified-predecessor.json
+            qualification/tiaris-nest-qualified-predecessor-release.json
+            qualification/tiaris-nest-nixos-rollback-qualification.json
 
       - name: Remove only a stale draft for this exact tag
         env:
@@ -1025,16 +1025,16 @@ jobs:
             --jq '.sha')"
           test "${remote_tag_commit,,}" = "${GITHUB_SHA,,}"
           owner_run="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          owner_run_marker="Cybex-Release-Workflow: $owner_run"
-          owner_artifact_marker="Cybex-Candidate-Artifact-ID: $CYBEX_JAMES_RELEASE_ARTIFACT_ID"
-          owner_digest_marker="Cybex-Candidate-Artifact-SHA256: $CYBEX_JAMES_RELEASE_ARTIFACT_DIGEST"
+          owner_run_marker="Tiaris-Release-Workflow: $owner_run"
+          owner_artifact_marker="Tiaris-Candidate-Artifact-ID: $TIARIS_NEST_RELEASE_ARTIFACT_ID"
+          owner_digest_marker="Tiaris-Candidate-Artifact-SHA256: $TIARIS_NEST_RELEASE_ARTIFACT_DIGEST"
           expected_body="$(printf '%s\n%s\n%s\n%s' \
             "$owner_run_marker" \
             "$owner_artifact_marker" \
             "$owner_digest_marker" \
-            "Cybex-Cold-Qualification: required")"
-          existing="$RUNNER_TEMP/cybex-james-existing-release.json"
-          existing_pages="$RUNNER_TEMP/cybex-james-existing-releases.json"
+            "Tiaris-Cold-Qualification: required")"
+          existing="$RUNNER_TEMP/tiaris-nest-existing-release.json"
+          existing_pages="$RUNNER_TEMP/tiaris-nest-existing-releases.json"
           gh api --paginate --slurp \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
@@ -1051,30 +1051,30 @@ jobs:
             test "$(jq -r '.tag_name' "$existing")" = "$GITHUB_REF_NAME"
             test "$(jq -r '.draft' "$existing")" = "true"
             test "$(jq -r '.immutable' "$existing")" = "false"
-            test "$(jq -r '.name // ""' "$existing")" = "Cybex James $GITHUB_REF_NAME"
+            test "$(jq -r '.name // ""' "$existing")" = "Tiaris Nest $GITHUB_REF_NAME"
             test "$(jq -r '.body // ""' "$existing")" = "$expected_body"
             stale_id="$(jq -r '.id' "$existing")"
             [[ "$stale_id" =~ ^[1-9][0-9]*$ ]]
-            stale_assets="$RUNNER_TEMP/cybex-james-existing-release-assets.json"
+            stale_assets="$RUNNER_TEMP/tiaris-nest-existing-release-assets.json"
             gh api \
               -H 'Accept: application/vnd.github+json' \
               -H 'X-GitHub-Api-Version: 2026-03-10' \
               "repos/$GITHUB_REPOSITORY/releases/$stale_id/assets?per_page=100" \
               > "$stale_assets"
             jq -e \
-              --arg binary "cybex-james-x86_64-linux" \
-              --arg template "cybex-james-appliance-template-$CYBEX_JAMES_RELEASE_VERSION-x86_64-linux.iso" \
-              --arg closure "cybex-james-appliance-closure-$CYBEX_JAMES_RELEASE_VERSION-x86_64-linux.tar.zst" \
-              --arg netboot "$CYBEX_JAMES_WORKSTATION_BUNDLE_NAME" \
-              --arg manifest "cybex-james-release.json" \
-              --arg compatibility "cybex-james-release-compatibility.json" \
+              --arg binary "tiaris-nest-x86_64-linux" \
+              --arg template "tiaris-nest-appliance-template-$TIARIS_NEST_RELEASE_VERSION-x86_64-linux.iso" \
+              --arg closure "tiaris-nest-appliance-closure-$TIARIS_NEST_RELEASE_VERSION-x86_64-linux.tar.zst" \
+              --arg netboot "$TIARIS_NEST_WORKSTATION_BUNDLE_NAME" \
+              --arg manifest "tiaris-nest-release.json" \
+              --arg compatibility "tiaris-nest-release-compatibility.json" \
               --arg checksums "SHA256SUMS" \
-              --arg qualification "cybex-james-nixos-qualification.json" \
-              --arg update_qualification "cybex-james-nixos-update-qualification.json" \
-              --arg rollback_qualification "cybex-james-nixos-rollback-qualification.json" \
-              --arg predecessor_identity "cybex-james-build-predecessor.json" \
-              --arg qualified_predecessor "cybex-james-qualified-predecessor.json" \
-              --arg qualified_manifest "cybex-james-qualified-predecessor-release.json" \
+              --arg qualification "tiaris-nest-nixos-qualification.json" \
+              --arg update_qualification "tiaris-nest-nixos-update-qualification.json" \
+              --arg rollback_qualification "tiaris-nest-nixos-rollback-qualification.json" \
+              --arg predecessor_identity "tiaris-nest-build-predecessor.json" \
+              --arg qualified_predecessor "tiaris-nest-qualified-predecessor.json" \
+              --arg qualified_manifest "tiaris-nest-qualified-predecessor-release.json" \
               'type == "array"
                and length <= 13
                and ((map(.name) | length) == (map(.name) | unique | length))
@@ -1099,30 +1099,30 @@ jobs:
           set -euo pipefail
           owner_run="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           release_markers="$(printf '%s\n%s\n%s\n%s' \
-            "Cybex-Release-Workflow: $owner_run" \
-            "Cybex-Candidate-Artifact-ID: $CYBEX_JAMES_RELEASE_ARTIFACT_ID" \
-            "Cybex-Candidate-Artifact-SHA256: $CYBEX_JAMES_RELEASE_ARTIFACT_DIGEST" \
-            "Cybex-Cold-Qualification: required")"
+            "Tiaris-Release-Workflow: $owner_run" \
+            "Tiaris-Candidate-Artifact-ID: $TIARIS_NEST_RELEASE_ARTIFACT_ID" \
+            "Tiaris-Candidate-Artifact-SHA256: $TIARIS_NEST_RELEASE_ARTIFACT_DIGEST" \
+            "Tiaris-Cold-Qualification: required")"
           gh release create "$GITHUB_REF_NAME" \
             --draft --prerelease --latest=false --verify-tag --target "$GITHUB_SHA" \
             --notes "$release_markers" \
-            --title "Cybex James $GITHUB_REF_NAME"
+            --title "Tiaris Nest $GITHUB_REF_NAME"
           release_assets=(
-            dist/cybex-james-x86_64-linux
-            "dist/cybex-james-appliance-template-$CYBEX_JAMES_RELEASE_VERSION-x86_64-linux.iso"
-            "dist/cybex-james-appliance-closure-$CYBEX_JAMES_RELEASE_VERSION-x86_64-linux.tar.zst"
-            "dist/$CYBEX_JAMES_WORKSTATION_BUNDLE_NAME"
-            dist/cybex-james-release.json
-            dist/cybex-james-release-compatibility.json
+            dist/tiaris-nest-x86_64-linux
+            "dist/tiaris-nest-appliance-template-$TIARIS_NEST_RELEASE_VERSION-x86_64-linux.iso"
+            "dist/tiaris-nest-appliance-closure-$TIARIS_NEST_RELEASE_VERSION-x86_64-linux.tar.zst"
+            "dist/$TIARIS_NEST_WORKSTATION_BUNDLE_NAME"
+            dist/tiaris-nest-release.json
+            dist/tiaris-nest-release-compatibility.json
             dist/SHA256SUMS
-            qualification/cybex-james-nixos-qualification.json
-            qualification/cybex-james-nixos-update-qualification.json
-            qualification/cybex-james-nixos-rollback-qualification.json
-            qualification/cybex-james-qualified-predecessor.json
-            qualification/cybex-james-qualified-predecessor-release.json
+            qualification/tiaris-nest-nixos-qualification.json
+            qualification/tiaris-nest-nixos-update-qualification.json
+            qualification/tiaris-nest-nixos-rollback-qualification.json
+            qualification/tiaris-nest-qualified-predecessor.json
+            qualification/tiaris-nest-qualified-predecessor-release.json
           )
-          if [ "$CYBEX_JAMES_HAS_PREDECESSOR" = true ]; then
-            release_assets+=(dist/cybex-james-build-predecessor.json)
+          if [ "$TIARIS_NEST_HAS_PREDECESSOR" = true ]; then
+            release_assets+=(dist/tiaris-nest-build-predecessor.json)
           fi
           gh release upload "$GITHUB_REF_NAME" "${release_assets[@]}"
 
@@ -1132,7 +1132,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          current_releases="$RUNNER_TEMP/cybex-james-current-releases.json"
+          current_releases="$RUNNER_TEMP/tiaris-nest-current-releases.json"
           gh api --paginate --slurp \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
@@ -1144,23 +1144,23 @@ jobs:
                else error("expected exactly one release for tag")
                end' \
             "$current_releases")"
-          remote_assets="$RUNNER_TEMP/cybex-james-release-assets.json"
+          remote_assets="$RUNNER_TEMP/tiaris-nest-release-assets.json"
           release_asset_paths=(
-            dist/cybex-james-x86_64-linux
-            "dist/cybex-james-appliance-template-$CYBEX_JAMES_RELEASE_VERSION-x86_64-linux.iso"
-            "dist/cybex-james-appliance-closure-$CYBEX_JAMES_RELEASE_VERSION-x86_64-linux.tar.zst"
-            "dist/$CYBEX_JAMES_WORKSTATION_BUNDLE_NAME"
-            dist/cybex-james-release.json
-            dist/cybex-james-release-compatibility.json
+            dist/tiaris-nest-x86_64-linux
+            "dist/tiaris-nest-appliance-template-$TIARIS_NEST_RELEASE_VERSION-x86_64-linux.iso"
+            "dist/tiaris-nest-appliance-closure-$TIARIS_NEST_RELEASE_VERSION-x86_64-linux.tar.zst"
+            "dist/$TIARIS_NEST_WORKSTATION_BUNDLE_NAME"
+            dist/tiaris-nest-release.json
+            dist/tiaris-nest-release-compatibility.json
             dist/SHA256SUMS
-            qualification/cybex-james-nixos-qualification.json
-            qualification/cybex-james-nixos-update-qualification.json
-            qualification/cybex-james-nixos-rollback-qualification.json
-            qualification/cybex-james-qualified-predecessor.json
-            qualification/cybex-james-qualified-predecessor-release.json
+            qualification/tiaris-nest-nixos-qualification.json
+            qualification/tiaris-nest-nixos-update-qualification.json
+            qualification/tiaris-nest-nixos-rollback-qualification.json
+            qualification/tiaris-nest-qualified-predecessor.json
+            qualification/tiaris-nest-qualified-predecessor-release.json
           )
-          if [ "$CYBEX_JAMES_HAS_PREDECESSOR" = true ]; then
-            release_asset_paths+=(dist/cybex-james-build-predecessor.json)
+          if [ "$TIARIS_NEST_HAS_PREDECESSOR" = true ]; then
+            release_asset_paths+=(dist/tiaris-nest-build-predecessor.json)
           fi
           expected_asset_count="${#release_asset_paths[@]}"
           remote_assets_match() {
@@ -1195,27 +1195,27 @@ jobs:
           test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')" = "true"
           # Resolve both signed authorities again under the publication lock.
           # A changed published release ancestry invalidates the run.
-          predecessor="$(mktemp -d "$RUNNER_TEMP/cybex-james-publish-predecessor-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.XXXXXXXX")"
+          predecessor="$(mktemp -d "$RUNNER_TEMP/tiaris-nest-publish-predecessor-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.XXXXXXXX")"
           trap 'rm -rf -- "$predecessor"' EXIT
           arguments=()
-          if [ "$CYBEX_JAMES_HAS_PREDECESSOR" = true ]; then
-            arguments+=(--expected-identity dist/cybex-james-build-predecessor.json)
+          if [ "$TIARIS_NEST_HAS_PREDECESSOR" = true ]; then
+            arguments+=(--expected-identity dist/tiaris-nest-build-predecessor.json)
           fi
           python3 -B nixos-appliance/qualification/release_predecessor.py \
             --repository "$GITHUB_REPOSITORY" \
-            --candidate-version "$CYBEX_JAMES_RELEASE_VERSION" \
-            --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
+            --candidate-version "$TIARIS_NEST_RELEASE_VERSION" \
+            --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
             --directory "$predecessor" --output "$predecessor/identity.json" \
             "${arguments[@]}"
-          if [ "$CYBEX_JAMES_HAS_PREDECESSOR" = true ]; then
-            python3 -B tools/james-release.py verify-successor \
-              --previous-compatibility "$predecessor/cybex-james-release-compatibility.json" \
-              --current-compatibility dist/cybex-james-release-compatibility.json \
+          if [ "$TIARIS_NEST_HAS_PREDECESSOR" = true ]; then
+            python3 -B tools/nest-release.py verify-successor \
+              --previous-compatibility "$predecessor/tiaris-nest-release-compatibility.json" \
+              --current-compatibility dist/tiaris-nest-release-compatibility.json \
               --historical-authorization release/recovery-adoption.json \
-              --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
+              --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
           else
             test ! -e "$predecessor/identity.json"
-            test ! -e dist/cybex-james-build-predecessor.json
+            test ! -e dist/tiaris-nest-build-predecessor.json
           fi
           gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false
           immutable=false
@@ -1245,17 +1245,17 @@ jobs:
         if: always()
         run: |
           rm -rf -- "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE/candidate-receipt" "$GITHUB_WORKSPACE/manage-source"
-          rm -rf -- "$RUNNER_TEMP/cybex-james-unsigned-closure" "$RUNNER_TEMP/cybex-james-template" "$RUNNER_TEMP/cybex-workstation-netboot-tree"
-          rm -rf -- "$RUNNER_TEMP/cybex-james-predecessor" "$RUNNER_TEMP/cybex-james-qualification-predecessor" "$RUNNER_TEMP/cybex-james-retained-manage-source"
+          rm -rf -- "$RUNNER_TEMP/tiaris-nest-unsigned-closure" "$RUNNER_TEMP/tiaris-nest-template" "$RUNNER_TEMP/tiaris-workstation-netboot-tree"
+          rm -rf -- "$RUNNER_TEMP/tiaris-nest-predecessor" "$RUNNER_TEMP/tiaris-nest-qualification-predecessor" "$RUNNER_TEMP/tiaris-nest-retained-manage-source"
 
 
   release_cold_qualify:
     name: Verify published NixOS release in an isolated fixture
     needs: [release_build, release_publish]
-    runs-on: [self-hosted, linux, x64, cybex-james-lab]
+    runs-on: [self-hosted, linux, x64, tiaris-nest-lab]
     environment: production-release-qualification
     concurrency:
-      group: james-nixos-production-qualification
+      group: nest-nixos-production-qualification
       cancel-in-progress: false
     permissions:
       contents: read
@@ -1264,11 +1264,11 @@ jobs:
       artifact_id: ${{ steps.cold-evidence.outputs.artifact-id }}
       artifact_digest: ${{ steps.cold-evidence.outputs.artifact-digest }}
     env:
-      CYBEX_JAMES_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
-      CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN }}
-      CYBEX_JAMES_QUALIFICATION_SUBNET: ${{ vars.CYBEX_JAMES_QUALIFICATION_SUBNET }}
-      CYBEX_JAMES_QUALIFICATION_CONFIG: ${{ vars.CYBEX_JAMES_QUALIFICATION_CONFIG }}
-      CYBEX_JAMES_QUALIFICATION_STATE_ROOT: ${{ vars.CYBEX_JAMES_QUALIFICATION_STATE_ROOT }}
+      TIARIS_NEST_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
+      TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN }}
+      TIARIS_NEST_QUALIFICATION_SUBNET: ${{ vars.TIARIS_NEST_QUALIFICATION_SUBNET }}
+      TIARIS_NEST_QUALIFICATION_CONFIG: ${{ vars.TIARIS_NEST_QUALIFICATION_CONFIG }}
+      TIARIS_NEST_QUALIFICATION_STATE_ROOT: ${{ vars.TIARIS_NEST_QUALIFICATION_STATE_ROOT }}
     steps:
       - name: Checkout exact published source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -1286,17 +1286,17 @@ jobs:
         run: |
           set -Eeuo pipefail
           for name in CONFIG SUBNET STATE_ROOT; do
-            input="CYBEX_JAMES_QUALIFICATION_$name"
+            input="TIARIS_NEST_QUALIFICATION_$name"
             : "${!input:?configure the protected production qualification environment}"
           done
-          test "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" = https://manage.cybex.net
-          test "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN" = "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN"
-          [[ "$CYBEX_JAMES_QUALIFICATION_CONFIG" = /* ]]
-          [[ "$CYBEX_JAMES_QUALIFICATION_STATE_ROOT" = /* ]]
+          test "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" = https://manage.cybex.net
+          test "$TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN" = "$TIARIS_NEST_BUILD_MANAGE_ORIGIN"
+          [[ "$TIARIS_NEST_QUALIFICATION_CONFIG" = /* ]]
+          [[ "$TIARIS_NEST_QUALIFICATION_STATE_ROOT" = /* ]]
           # The runner validates pinned fixture images, dedicated credentials and
           # private TLS transport before creating any appliance or workstation.
           sudo -n python3 -B -c 'import sys,json; sys.path.insert(0,"nixos-appliance/qualification"); import isolated_manage_config as c; c.validate(json.loads(c.read_file(sys.argv[1])))' \
-            "$CYBEX_JAMES_QUALIFICATION_CONFIG"
+            "$TIARIS_NEST_QUALIFICATION_CONFIG"
 
       - name: Download the bounded candidate receipt
         env:
@@ -1316,67 +1316,67 @@ jobs:
         shell: bash
         timeout-minutes: 60
         env:
-          TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
+          TRUSTED_KEY: ${{ vars.TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY }}
         run: |
           set -Eeuo pipefail
-          public_dir="$RUNNER_TEMP/cybex-james-public-closure-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          public_dir="$RUNNER_TEMP/tiaris-nest-public-closure-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -m 0700 "$public_dir"
           public_closure_key="$public_dir/release-public-key"
           trap 'rm -f -- "$public_closure_key"' EXIT
           printf '%s\n' "$TRUSTED_KEY" > "$public_closure_key"
           chmod 0600 "$public_closure_key"
-          CARGO_TARGET_DIR="$public_dir/target" cargo run --release --locked --bin cybex-james-qualify-public-closure -- \
-            --manifest dist/cybex-james-release.json \
+          CARGO_TARGET_DIR="$public_dir/target" cargo run --release --locked --bin tiaris-nest-qualify-public-closure -- \
+            --manifest dist/tiaris-nest-release.json \
             --trusted-public-key "$public_closure_key" \
             --source "$GITHUB_SHA" --tag "$GITHUB_REF_NAME" \
-            --output "$public_dir/cybex-james-public-closure-qualification.json"
+            --output "$public_dir/tiaris-nest-public-closure-qualification.json"
 
       - name: Require exact published bytes and cold runtime convergence
         shell: bash
         timeout-minutes: 240
         env:
           GH_TOKEN: ${{ github.token }}
-          TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
+          TRUSTED_KEY: ${{ vars.TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY }}
         run: |
           set -Eeuo pipefail
           (cd dist && sha256sum --check --strict SHA256SUMS)
-          published="$RUNNER_TEMP/cybex-james-published-manifest.json"
+          published="$RUNNER_TEMP/tiaris-nest-published-manifest.json"
           curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-            "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/cybex-james-release.json" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/tiaris-nest-release.json" \
             --output "$published"
-          cmp dist/cybex-james-release.json "$published"
+          cmp dist/tiaris-nest-release.json "$published"
           test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq '.immutable')" = true
-          fixture_directory="$CYBEX_JAMES_QUALIFICATION_STATE_ROOT/config-cold-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          fixture_directory="$TIARIS_NEST_QUALIFICATION_STATE_ROOT/config-cold-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           sudo -n python3 -B nixos-appliance/qualification/prepare-fixture-config.py \
-            --template "$CYBEX_JAMES_QUALIFICATION_CONFIG" \
+            --template "$TIARIS_NEST_QUALIFICATION_CONFIG" \
             --candidate-dir "$GITHUB_WORKSPACE/dist" \
             --directory "$fixture_directory"
           sudo -n python3 -B nixos-appliance/qualification/run-production-qualification.py \
             --run "published-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-            --manage-origin "$CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN" \
+            --manage-origin "$TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN" \
             --isolated-manage-config "$fixture_directory/config.json" \
-            --subnet "$CYBEX_JAMES_QUALIFICATION_SUBNET" \
-            --state-root "$CYBEX_JAMES_QUALIFICATION_STATE_ROOT" \
+            --subnet "$TIARIS_NEST_QUALIFICATION_SUBNET" \
+            --state-root "$TIARIS_NEST_QUALIFICATION_STATE_ROOT" \
             --candidate-dir "$GITHUB_WORKSPACE/dist" \
-            --evidence-dir "$RUNNER_TEMP/cybex-james-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --evidence-dir "$RUNNER_TEMP/tiaris-nest-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --trusted-public-key "$TRUSTED_KEY" --published-cold
-          mv -- "$RUNNER_TEMP/cybex-james-public-closure-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cybex-james-public-closure-qualification.json" \
-            "$RUNNER_TEMP/cybex-james-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cybex-james-public-closure-qualification.json"
+          mv -- "$RUNNER_TEMP/tiaris-nest-public-closure-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tiaris-nest-public-closure-qualification.json" \
+            "$RUNNER_TEMP/tiaris-nest-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tiaris-nest-public-closure-qualification.json"
           python3 -B nixos-appliance/qualification/release_acceptance.py \
-            --phase cold --manifest dist/cybex-james-release.json --source "$GITHUB_SHA" \
-            --evidence "$RUNNER_TEMP/cybex-james-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cybex-james-published-cold-qualification.json" \
-            --public-closure "$RUNNER_TEMP/cybex-james-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cybex-james-public-closure-qualification.json" \
-            --workstation "$RUNNER_TEMP/cybex-james-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cybex-james-published-workstation-qualification.json"
+            --phase cold --manifest dist/tiaris-nest-release.json --source "$GITHUB_SHA" \
+            --evidence "$RUNNER_TEMP/tiaris-nest-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tiaris-nest-published-cold-qualification.json" \
+            --public-closure "$RUNNER_TEMP/tiaris-nest-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tiaris-nest-public-closure-qualification.json" \
+            --workstation "$RUNNER_TEMP/tiaris-nest-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tiaris-nest-published-workstation-qualification.json"
 
       - name: Retain published cold-install qualification evidence
         id: cold-evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: cybex-james-published-cold-${{ github.run_id }}
+          name: tiaris-nest-published-cold-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/cybex-james-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-published-cold-qualification.json
-            ${{ runner.temp }}/cybex-james-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-published-workstation-qualification.json
-            ${{ runner.temp }}/cybex-james-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/cybex-james-public-closure-qualification.json
+            ${{ runner.temp }}/tiaris-nest-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-published-cold-qualification.json
+            ${{ runner.temp }}/tiaris-nest-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-published-workstation-qualification.json
+            ${{ runner.temp }}/tiaris-nest-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-public-closure-qualification.json
           if-no-files-found: error
           retention-days: 90
 
@@ -1384,15 +1384,15 @@ jobs:
         if: success()
         run: |
           sudo -n python3 -B nixos-appliance/qualification/cleanup-fixture-config.py \
-            --directory "$CYBEX_JAMES_QUALIFICATION_STATE_ROOT/config-cold-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            --directory "$TIARIS_NEST_QUALIFICATION_STATE_ROOT/config-cold-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 
       - name: Remove disposable workspace payloads
         if: always()
         run: |
           rm -rf -- "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE/candidate-receipt" "$GITHUB_WORKSPACE/manage-source"
-          rm -rf -- "$RUNNER_TEMP/cybex-james-public-closure-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          rm -rf -- "$RUNNER_TEMP/cybex-james-unsigned-closure" "$RUNNER_TEMP/cybex-james-template" "$RUNNER_TEMP/cybex-workstation-netboot-tree"
-          rm -rf -- "$RUNNER_TEMP/cybex-james-predecessor" "$RUNNER_TEMP/cybex-james-qualification-predecessor" "$RUNNER_TEMP/cybex-james-retained-manage-source"
+          rm -rf -- "$RUNNER_TEMP/tiaris-nest-public-closure-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rm -rf -- "$RUNNER_TEMP/tiaris-nest-unsigned-closure" "$RUNNER_TEMP/tiaris-nest-template" "$RUNNER_TEMP/tiaris-workstation-netboot-tree"
+          rm -rf -- "$RUNNER_TEMP/tiaris-nest-predecessor" "$RUNNER_TEMP/tiaris-nest-qualification-predecessor" "$RUNNER_TEMP/tiaris-nest-retained-manage-source"
 
 
   release_promote:
@@ -1402,19 +1402,19 @@ jobs:
     runs-on: ubuntu-latest
     environment: production-release
     concurrency:
-      group: james-release-publish
+      group: nest-release-publish
       cancel-in-progress: false
     permissions:
       contents: write
       actions: read
     env:
-      CYBEX_JAMES_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
+      TIARIS_NEST_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
     steps:
       - name: Require production-bound artifacts for publication
         shell: bash
         run: |
           set -Eeuo pipefail
-          if [ "${CYBEX_JAMES_BUILD_MANAGE_ORIGIN:-}" != https://manage.cybex.net ]; then
+          if [ "${TIARIS_NEST_BUILD_MANAGE_ORIGIN:-}" != https://manage.cybex.net ]; then
             echo '::error::Development qualification artifacts cannot be published or promoted as production releases. Production-origin isolated qualification remains required.'
             exit 1
           fi
@@ -1428,7 +1428,7 @@ jobs:
       - name: Authenticate cold acceptance and promote unchanged assets
         env:
           GH_TOKEN: ${{ github.token }}
-          TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
+          TRUSTED_KEY: ${{ vars.TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY }}
           COLD_ID: ${{ needs.release_cold_qualify.outputs.artifact_id }}
           COLD_DIGEST: ${{ needs.release_cold_qualify.outputs.artifact_digest }}
           CANDIDATE_ID: ${{ needs.release_build.outputs.artifact_id }}

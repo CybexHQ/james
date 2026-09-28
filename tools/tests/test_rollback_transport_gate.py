@@ -14,7 +14,7 @@ spec = importlib.util.spec_from_file_location('test_nixos_rollback_gate', HELPER
 G = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(G)
 OWNER = '01234567-89ab-4def-8123-456789abcdef'
-SCOPE = {'schema': 'cybex.james.nixos-isolated-scope.v1', 'owner': OWNER,
+SCOPE = {'schema': 'tiaris.nest.nixos-isolated-scope.v1', 'owner': OWNER,
          'bridge': 'jnq0123456789', 'manage_origin': 'https://manage.cybex.net',
          'subnet': '10.249.217.1/24'}
 TARGET = {'owner': OWNER, 'bridge': SCOPE['bridge'], 'origin': SCOPE['manage_origin'],

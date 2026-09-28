@@ -13,9 +13,9 @@ import zipfile
 import release_acceptance as acceptance
 import release_predecessor as predecessor
 
-FILES = {'cybex-james-published-cold-qualification.json',
-         'cybex-james-published-workstation-qualification.json',
-         'cybex-james-public-closure-qualification.json'}
+FILES = {'tiaris-nest-published-cold-qualification.json',
+         'tiaris-nest-published-workstation-qualification.json',
+         'tiaris-nest-public-closure-qualification.json'}
 
 
 def canonical_artifact_digest(value):
@@ -31,7 +31,7 @@ def artifact_evidence(body, metadata, expected_digest, run, source):
     if (metadata.get('expired') is not False
             or metadata.get('workflow_run', {}).get('id') != run
             or metadata.get('workflow_run', {}).get('head_sha') != source
-            or metadata.get('name') != f'cybex-james-published-cold-{run}'
+            or metadata.get('name') != f'tiaris-nest-published-cold-{run}'
             or not re.fullmatch(r'sha256:[0-9a-f]{64}', expected_digest)
             or metadata.get('digest') != expected_digest
             or 'sha256:' + hashlib.sha256(body).hexdigest() != expected_digest):
@@ -82,19 +82,19 @@ def main():
         f'repos/{args.repository}/actions/artifacts/{args.artifact_id}/zip'])
     receipts = artifact_evidence(archive, metadata, args.artifact_digest, args.run, args.source)
     staged = api('releases/tags/' + args.tag)
-    owner = f'Cybex-Release-Workflow: https://github.com/{args.repository}/actions/runs/{args.run}'
-    markers = [owner, f'Cybex-Candidate-Artifact-ID: {args.candidate_id}',
-               f'Cybex-Candidate-Artifact-SHA256: {args.candidate_digest}']
+    owner = f'Tiaris-Release-Workflow: https://github.com/{args.repository}/actions/runs/{args.run}'
+    markers = [owner, f'Tiaris-Candidate-Artifact-ID: {args.candidate_id}',
+               f'Tiaris-Candidate-Artifact-SHA256: {args.candidate_digest}']
     if (staged.get('immutable') is not True or staged['draft']
             or staged['target_commitish'] != args.source
             or any(marker not in (staged.get('body') or '').splitlines() for marker in markers)):
         raise ValueError('Immutable staged release does not belong to this candidate')
     base = f'https://github.com/{args.repository}/releases/download/{args.tag}/'
-    with tempfile.TemporaryDirectory(prefix='james-stable-promotion-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='nest-stable-promotion-') as temporary:
         directory = Path(temporary)
         names = [predecessor.MANIFEST, predecessor.COMPATIBILITY]
-        if any(a['name'] == 'cybex-james-build-predecessor.json' for a in staged['assets']):
-            names.append('cybex-james-build-predecessor.json')
+        if any(a['name'] == 'tiaris-nest-build-predecessor.json' for a in staged['assets']):
+            names.append('tiaris-nest-build-predecessor.json')
         for name in names:
             matches = [a for a in staged['assets'] if a['name'] == name]
             if len(matches) != 1 or matches[0]['browser_download_url'] != base + name:
@@ -109,37 +109,37 @@ def main():
             raise ValueError('Staged manifest does not bind its tag')
         if manifest.get('installer_iso_template_v3', {}).get('manage_origin') != 'https://manage.cybex.net':
             raise ValueError('Development qualification artifacts cannot be promoted as production releases')
-        cold = receipts['cybex-james-published-cold-qualification.json']
+        cold = receipts['tiaris-nest-published-cold-qualification.json']
         acceptance.validate_lifecycle(manifest, predecessor.sha(directory / predecessor.MANIFEST),
                                       cold, args.source, 'cold')
         acceptance.validate_public_closure(manifest, predecessor.sha(directory / predecessor.MANIFEST),
-                                           receipts['cybex-james-public-closure-qualification.json'], args.source)
+                                           receipts['tiaris-nest-public-closure-qualification.json'], args.source)
         acceptance.validate_workstation(manifest, cold,
-            receipts['cybex-james-published-workstation-qualification.json'])
+            receipts['tiaris-nest-published-workstation-qualification.json'])
         # Repeat predecessor admission under the same publication concurrency
         # lock: another completed release must not reverse the lineage while
         # this candidate spends time in real cold/workstation qualification.
         current = predecessor.resolve(args.repository, manifest['version'], args.trusted_public_key,
             directory / 'predecessor', predecessor.ROOT / 'release/recovery-adoption.json')
-        receipt = directory / 'cybex-james-build-predecessor.json'
+        receipt = directory / 'tiaris-nest-build-predecessor.json'
         expected = predecessor.checked_json(receipt)[0] if receipt.exists() else None
         if current != expected:
             raise ValueError('Predecessor changed while the prerelease was qualifying')
-        passed = ['Cybex-Cold-Qualification: passed', f'Cybex-Cold-Artifact-ID: {args.artifact_id}',
-                  f'Cybex-Cold-Artifact-SHA256: {args.artifact_digest}']
+        passed = ['Tiaris-Cold-Qualification: passed', f'Tiaris-Cold-Artifact-ID: {args.artifact_id}',
+                  f'Tiaris-Cold-Artifact-SHA256: {args.artifact_digest}']
         body = staged.get('body') or ''
         if not staged['prerelease']:
             if all(marker in body.splitlines() for marker in passed):
                 print('Exact cold-qualified release is already stable')
                 return
             raise ValueError('Existing stable release lacks this exact acceptance provenance')
-        if body.splitlines().count('Cybex-Cold-Qualification: required') != 1:
+        if body.splitlines().count('Tiaris-Cold-Qualification: required') != 1:
             raise ValueError('Staged release lacks its pending cold-qualification marker')
         if args.verify_only:
             print('Exact immutable candidate passed cold qualification; production approval is still required')
             return
         notes = directory / 'notes.md'
-        notes.write_text(body.replace('Cybex-Cold-Qualification: required', '\n'.join(passed)) + '\n')
+        notes.write_text(body.replace('Tiaris-Cold-Qualification: required', '\n'.join(passed)) + '\n')
         subprocess.run(['gh', 'release', 'edit', args.tag, '--repo', args.repository,
                         '--prerelease=false', '--latest', '--notes-file', str(notes)], check=True)
     promoted = api('releases/tags/' + args.tag)
@@ -148,7 +148,7 @@ def main():
             or promoted['prerelease'] or inventory(promoted) != inventory(staged)
             or api('releases/latest')['id'] != promoted['id']):
         raise ValueError('Stable promotion did not preserve immutable release identity')
-    print('Immutable release promoted after exact cold James and workstation acceptance')
+    print('Immutable release promoted after exact cold Nest and workstation acceptance')
 
 
 if __name__ == '__main__':

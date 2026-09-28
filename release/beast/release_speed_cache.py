@@ -102,7 +102,7 @@ def warm(args, p=None):
             snap = p.verify_pair_snapshot(signed, args.trusted_public_key)
             p.advance(args.candidate_version, snap['manifest']['version'])
             files = inventory(snap, p)
-            binding = {'schema': 'cybex.james.transport-cache.v1', 'verifier': source_digest(),
+            binding = {'schema': 'tiaris.nest.transport-cache.v1', 'verifier': source_digest(),
                 'trust': io.digest(args.trusted_public_key.encode()), 'repository': args.repository,
                 'authorization': io.digest(authorization_body),
                 'manifest': io.digest(snap['manifest_body']),
@@ -171,7 +171,7 @@ def evict(root, incoming, maximum):
         if re.fullmatch('[0-9a-f]{64}', path.name):
             io.directory(path)
             seal = io.load(path / 'seal.json')
-            if (seal.get('schema') != 'cybex.james.transport-cache.v1'
+            if (seal.get('schema') != 'tiaris.nest.transport-cache.v1'
                     or io.digest(io.read(path / 'seal.json')) != path.name):
                 raise ValueError('Cache seal changed')
             names = set(seal['files']) | {'seal.json'}

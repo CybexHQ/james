@@ -15,7 +15,7 @@ import tarfile
 import tempfile
 from types import SimpleNamespace
 
-API = SimpleNamespace(**runpy.run_path(str(Path(__file__).with_name("james-release.py"))))
+API = SimpleNamespace(**runpy.run_path(str(Path(__file__).with_name("nest-release.py"))))
 CLOSURE = API.system_closure
 
 
@@ -100,7 +100,7 @@ def main():
     metadata, _ = API._load_bounded_json(Path(args.build_metadata), "unsigned closure metadata", maximum_bytes=256 * 1024)
     metadata_fields = CLOSURE.MANIFEST_FIELDS - {"store_paths", "total_nar_bytes"} | {"manage_origin"}
     API.appliance_v3.exact(metadata, metadata_fields, "unsigned closure build metadata")
-    if metadata["schema"] != "cybex.james.appliance-closure-build.v1":
+    if metadata["schema"] != "tiaris.nest.appliance-closure-build.v1":
         API._fail("unsigned closure build metadata schema is invalid")
     API._validate_manage_origin(metadata["manage_origin"])
     if output.name != API.appliance_v3.archive_name(metadata["release_id"]):
@@ -124,7 +124,7 @@ def main():
         public_der = API._public_der(private_fd)
         public_key = base64.b64encode(public_der[len(API.ED25519_PUBLIC_DER_PREFIX):]).decode()
         API._trusted_public_key(public_key)
-        if metadata["nix_signing_public_key"] != "cybex-james-appliance-1:" + public_key:
+        if metadata["nix_signing_public_key"] != "tiaris-nest-appliance-1:" + public_key:
             API._fail("closure signing key differs from its compiled release authority")
         with tempfile.TemporaryDirectory(prefix=".closure-sign-", dir=output.parent) as directory:
             staging = Path(directory) / "cache"
@@ -139,7 +139,7 @@ def main():
                 signature = API._sign(private_fd, message)
                 API._self_verify(public_der, signature, message)
                 with (staging / name).open("ab") as stream:
-                    stream.write(b"Sig: cybex-james-appliance-1:" + base64.b64encode(signature) + b"\n")
+                    stream.write(b"Sig: tiaris-nest-appliance-1:" + base64.b64encode(signature) + b"\n")
             API._require_stable_private_key(private_fd, identity)
             candidate = Path(directory) / output.name
             pack(staging, candidate)

@@ -16,7 +16,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
-API = SimpleNamespace(**runpy.run_path(str(ROOT / "tools/james-release.py")))
+API = SimpleNamespace(**runpy.run_path(str(ROOT / "tools/nest-release.py")))
 C = API.system_closure
 PACK = SimpleNamespace(**runpy.run_path(str(ROOT / "tools/pack-system-closure.py")))
 
@@ -56,7 +56,7 @@ class SystemClosureTests(unittest.TestCase):
         git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture")
         revision = git("rev-parse", "HEAD").decode().strip()
         source = git("-c", "tar.umask=0022", "archive", "--format=tar", "HEAD")
-        fixture = json.loads((ROOT / "protocol/fixtures/james-appliance-v3.json").read_text())
+        fixture = json.loads((ROOT / "protocol/fixtures/nest-appliance-v3.json").read_text())
         self.descriptor = {k: v for k, v in fixture["appliance_release"].items() if k != "signature"}
         self.source_path = "/nix/store/" + "1" * 32 + "-manage-source.tar"
         self.top = "/nix/store/" + "2" * 32 + "-nixos-system"
@@ -64,7 +64,7 @@ class SystemClosureTests(unittest.TestCase):
         self.manifest = {k: self.descriptor[k] for k in (
             "release_id", "base_os", "base_os_version", "source_revision", "manage_source_revision", "nixpkgs_revision",
             "system_toplevel", "required_system_versions", "sqlite_migrations_sha256")}
-        self.manifest.update(schema="cybex.james.system-closure.v1", nix_signing_public_key="cybex-james-appliance-1:" + self.public,
+        self.manifest.update(schema="tiaris.nest.system-closure.v1", nix_signing_public_key="tiaris-nest-appliance-1:" + self.public,
             manage_source={"revision": revision, "sha256": hashlib.sha256(source).hexdigest(), "size_bytes": len(source), "store_path": self.source_path},
             microcode_versions={"intel": "2026", "amd": "2026"}, store_paths=[], total_nar_bytes=0)
         self.add_nar(self.source_path, regular_nar(source), [])
@@ -81,7 +81,7 @@ class SystemClosureTests(unittest.TestCase):
                 "NarHash": "sha256:" + C.nix_base32(hashlib.sha256(nar).digest()), "NarSize": str(len(nar)),
                 "References": " ".join(p.split("/")[-1] for p in refs)}
         signature = API._sign(self.key_fd, C.fingerprint({**info, "references": refs}))
-        info["Sig"] = "cybex-james-appliance-1:" + base64.b64encode(signature).decode()
+        info["Sig"] = "tiaris-nest-appliance-1:" + base64.b64encode(signature).decode()
         (self.cache / (name + ".narinfo")).write_text("".join(k + ": " + v + "\n" for k, v in info.items()))
         self.manifest["store_paths"] = [row for row in self.manifest["store_paths"] if row["path"] != path]
         self.manifest["store_paths"].append({"path": path, "nar_hash": info["NarHash"], "nar_size": len(nar), "references": refs, "narinfo": name + ".narinfo"})
@@ -124,7 +124,7 @@ class SystemClosureTests(unittest.TestCase):
 
     def test_external_signer_roundtrip_and_wrong_key_rejected(self):
         metadata = {k: v for k, v in self.manifest.items() if k not in {"store_paths", "total_nar_bytes"}}
-        metadata.update(schema="cybex.james.appliance-closure-build.v1", manage_origin="https://console.example.invalid")
+        metadata.update(schema="tiaris.nest.appliance-closure-build.v1", manage_origin="https://console.example.invalid")
         build = self.root / "build.json"
         build.write_text(json.dumps(metadata))
         for path in self.cache.glob("*.narinfo"):
@@ -138,7 +138,7 @@ class SystemClosureTests(unittest.TestCase):
         self.verify(output)
         output.unlink()
         (self.root / "result.json").unlink()
-        metadata["nix_signing_public_key"] = "cybex-james-appliance-1:" + base64.b64encode(bytes(32)).decode()
+        metadata["nix_signing_public_key"] = "tiaris-nest-appliance-1:" + base64.b64encode(bytes(32)).decode()
         build.write_text(json.dumps(metadata))
         result = subprocess.run(args, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
@@ -159,7 +159,7 @@ class SystemClosureTests(unittest.TestCase):
                     self.add_nar(self.top, regular_nar(b"top"), ["/nix/store/" + "3" * 32 + "-missing"])
                     self.write_manifest()
                 elif mutation == "signature":
-                    info.write_text(info.read_text().replace("Sig: cybex-james-appliance-1:", "Sig: wrong-authority:"))
+                    info.write_text(info.read_text().replace("Sig: tiaris-nest-appliance-1:", "Sig: wrong-authority:"))
                 elif mutation == "source":
                     self.manifest["manage_source"]["sha256"] = "0" * 64
                     self.write_manifest()

@@ -27,7 +27,7 @@ class AcceptanceTests(unittest.TestCase):
         self.source = 'a' * 40
         self.digest = 'b' * 64
         self.manifest = {'version': '0.2.3',
-            'appliance_release_v1': {'schema': 'cybex.james.appliance-release.v3',
+            'appliance_release_v1': {'schema': 'tiaris.nest.appliance-release.v3',
                 'source_revision': self.source, 'manage_source_revision': 'e' * 40,
                 'system_closure': {'sha256': 'f' * 64}, 'system_toplevel': '/nix/store/exact-system',
                 'nixpkgs_revision': '9' * 40},
@@ -37,7 +37,7 @@ class AcceptanceTests(unittest.TestCase):
                     name: {'sha256': str(i) * 64, 'size_bytes': 10}
                     for i, name in enumerate(('bzImage', 'initrd', 'nix-store.squashfs'), 1)}}}
         self.cold = {k: True for k in acceptance.LIFECYCLE_FLAGS + acceptance.DELIVERY_FLAGS}
-        self.cold.update(schema='cybex.james.nixos-appliance-qualification.v1',
+        self.cold.update(schema='tiaris.nest.nixos-appliance-qualification.v1',
             final_state='ready', qualification_kind='candidate', qualified_manifest_sha256=self.digest,
             harness_revision=self.source, release_version='0.2.3', base_os='nixos', system_closure_sha256='f' * 64, system_toplevel='/nix/store/exact-system',
             nixpkgs_revision='9' * 40, manage_source_revision='e' * 40, secure_boot=False,
@@ -45,26 +45,26 @@ class AcceptanceTests(unittest.TestCase):
             template_sha256='c' * 64, system_generation='1', device_id='dev_' + '1' * 32,
             candidate_runtime_required=True, workstation_runtime_prepublication_deferred=False,
             builtin_blueprints_prepublication_deferred=False,
-            qualified_blueprints={'schema': 'cybex.james.qualification-blueprints.v1', 'blueprints': [
+            qualified_blueprints={'schema': 'tiaris.nest.qualification-blueprints.v1', 'blueprints': [
                 {'id': profile, 'current_revision_id': profile + '-revision', 'slug': profile,
                  'desktop_profile': profile} for profile in ('taskbar', 'dock', 'tiling')]})
-        self.workstation = dict(schema='cybex.james.published-workstation-qualification.v1', ok=True,
+        self.workstation = dict(schema='tiaris.nest.published-workstation-qualification.v1', ok=True,
             pxe_boot_observed=True, fresh_install_completed=True, source_builds_allowed=False,
             release_version='0.2.3', runtime_version='1.0.67', bundle_sha256='d' * 64,
             manage_source_revision='e' * 40,
             descriptor_sha256=workstation_lifecycle.descriptor_digest(self.manifest['workstation_netboot']),
-            james_device_id=self.cold['device_id'], workstation_device_id='dev_' + '2' * 32,
+            nest_device_id=self.cold['device_id'], workstation_device_id='dev_' + '2' * 32,
             blueprints=[{'blueprint_id': profile, 'revision_id': profile + '-revision', 'slug': profile,
                 'configuration_status': 'compliant', 'managed_reboot_completed': True,
                 'identity_preserved': True, 'boot_id_before': 'before', 'boot_id_after': 'after',
                 'system': '/nix/store/exact-system'} for profile in ('taskbar', 'dock', 'tiling')])
 
-        scope = {'schema': 'cybex.james.isolated-qualification.v1',
+        scope = {'schema': 'tiaris.nest.isolated-qualification.v1',
                  'manage_origin': 'https://manage.cybex.net', 'manage_revision': 'e' * 40,
                  'owner': '01234567-89ab-cdef-0123-456789abcdef', 'live_production_access': False}
         self.cold['qualification_scope'] = scope
         self.workstation['qualification_scope'] = scope
-        self.public_closure = dict(schema='cybex.james.public-closure-qualification.v1', ok=True,
+        self.public_closure = dict(schema='tiaris.nest.public-closure-qualification.v1', ok=True,
             source_revision=self.source, tag='v' + self.manifest['version'],
             release_version=self.manifest['version'],
             manifest_sha256=self.digest, closure_url='https://github.com/CybexHQ/james/closure',
@@ -110,7 +110,7 @@ class AcceptanceTests(unittest.TestCase):
     def test_old_runtime_and_partial_workstation_acceptance_cannot_promote(self):
         acceptance.validate_workstation(self.manifest, self.cold, self.workstation)
         for field, value in [('runtime_version', '1.0.61'), ('bundle_sha256', 'f' * 64),
-                             ('descriptor_sha256', 'f' * 64), ('james_device_id', 'dev_' + '3' * 32),
+                             ('descriptor_sha256', 'f' * 64), ('nest_device_id', 'dev_' + '3' * 32),
                              ('source_builds_allowed', True), ('pxe_boot_observed', False)]:
             with self.subTest(field=field), self.assertRaises(ValueError):
                 acceptance.validate_workstation(self.manifest, self.cold, self.workstation | {field: value})
@@ -174,12 +174,12 @@ class AcceptanceTests(unittest.TestCase):
         body = archive()
         digest = 'sha256:' + hashlib.sha256(body).hexdigest()
         metadata = dict(expired=False, workflow_run={'id': 123, 'head_sha': self.source},
-                        name='cybex-james-published-cold-123', digest=digest)
+                        name='tiaris-nest-published-cold-123', digest=digest)
         self.assertEqual(set(promotion.artifact_evidence(body, metadata, digest, 123, self.source)), promotion.FILES)
         missing = io.BytesIO()
         with zipfile.ZipFile(missing, 'w') as package:
-            package.writestr('cybex-james-published-cold-qualification.json', '{}')
-            package.writestr('cybex-james-published-workstation-qualification.json', '{}')
+            package.writestr('tiaris-nest-published-cold-qualification.json', '{}')
+            package.writestr('tiaris-nest-published-workstation-qualification.json', '{}')
         missing_body = missing.getvalue()
         missing_digest = 'sha256:' + hashlib.sha256(missing_body).hexdigest()
         with self.assertRaisesRegex(ValueError, 'inventory'):
@@ -212,7 +212,7 @@ class AcceptanceTests(unittest.TestCase):
         # upload-artifact@v4 returns bare hex; the REST API prefixes sha256:.
         action_digest = hashlib.sha256(body).hexdigest()
         metadata = dict(expired=False, workflow_run={'id': 123, 'head_sha': self.source},
-                        name='cybex-james-published-cold-123', digest='sha256:' + action_digest)
+                        name='tiaris-nest-published-cold-123', digest='sha256:' + action_digest)
         self.assertEqual(set(promotion.artifact_evidence(
             body, metadata, action_digest, 123, self.source)), promotion.FILES)
         for value in ('sha1:' + action_digest, 'sha256:sha256:' + action_digest,
@@ -225,9 +225,9 @@ class AcceptanceTests(unittest.TestCase):
         cold = self.cold | {'qualified_manifest_sha256': hashlib.sha256(manifest_body).hexdigest()}
         output = io.BytesIO()
         with zipfile.ZipFile(output, 'w') as package:
-            package.writestr('cybex-james-published-cold-qualification.json', json.dumps(cold))
-            package.writestr('cybex-james-published-workstation-qualification.json', json.dumps(self.workstation))
-            package.writestr('cybex-james-public-closure-qualification.json', json.dumps(
+            package.writestr('tiaris-nest-published-cold-qualification.json', json.dumps(cold))
+            package.writestr('tiaris-nest-published-workstation-qualification.json', json.dumps(self.workstation))
+            package.writestr('tiaris-nest-public-closure-qualification.json', json.dumps(
                 self.public_closure | {'manifest_sha256': hashlib.sha256(manifest_body).hexdigest()}))
         archive = output.getvalue()
         action_digest = hashlib.sha256(archive).hexdigest()
@@ -235,13 +235,13 @@ class AcceptanceTests(unittest.TestCase):
         tag = 'v' + self.manifest['version']
         base = f'https://github.com/CybexHQ/james/releases/download/{tag}/'
         identity = {'release_id': '0.2.1-dev.29'}
-        bodies = {'cybex-james-release.json': manifest_body,
-                  'cybex-james-release-compatibility.json': b'{}\n',
-                  'cybex-james-build-predecessor.json': json.dumps(identity).encode()}
+        bodies = {'tiaris-nest-release.json': manifest_body,
+                  'tiaris-nest-release-compatibility.json': b'{}\n',
+                  'tiaris-nest-build-predecessor.json': json.dumps(identity).encode()}
         staged = dict(id=900, immutable=True, draft=False, prerelease=True, target_commitish=self.source,
-            body='\n'.join(['Cybex-Release-Workflow: https://github.com/CybexHQ/james/actions/runs/42',
-                'Cybex-Candidate-Artifact-ID: 66', 'Cybex-Candidate-Artifact-SHA256: ' + candidate_digest,
-                'Cybex-Cold-Qualification: required']),
+            body='\n'.join(['Tiaris-Release-Workflow: https://github.com/CybexHQ/james/actions/runs/42',
+                'Tiaris-Candidate-Artifact-ID: 66', 'Tiaris-Candidate-Artifact-SHA256: ' + candidate_digest,
+                'Tiaris-Cold-Qualification: required']),
             assets=[dict(id=i, name=name, browser_download_url=base + name, size=len(body),
                          digest='sha256:' + hashlib.sha256(body).hexdigest())
                     for i, (name, body) in enumerate(bodies.items(), 1)])
@@ -255,7 +255,7 @@ class AcceptanceTests(unittest.TestCase):
                     'Verify published NixOS release in an isolated fixture', 'conclusion': 'success'}]},
                 'actions/artifacts/77': dict(expired=False, size_in_bytes=len(archive),
                     workflow_run={'id': 42, 'head_sha': self.source},
-                    name='cybex-james-published-cold-42', digest='sha256:' + action_digest),
+                    name='tiaris-nest-published-cold-42', digest='sha256:' + action_digest),
                 'releases/tags/' + tag: promoted or staged, 'releases/latest': promoted}[path]
 
         def edit(arguments, **_kwargs):
@@ -263,8 +263,8 @@ class AcceptanceTests(unittest.TestCase):
             self.assertIn('--prerelease=false', arguments)
             self.assertIn('--latest', arguments)
             notes = Path(arguments[arguments.index('--notes-file') + 1]).read_text()
-            self.assertIn('Cybex-Cold-Artifact-SHA256: sha256:' + action_digest, notes)
-            self.assertNotIn('Cybex-Cold-Qualification: required', notes)
+            self.assertIn('Tiaris-Cold-Artifact-SHA256: sha256:' + action_digest, notes)
+            self.assertNotIn('Tiaris-Cold-Qualification: required', notes)
             promoted.update(staged | {'prerelease': False, 'body': notes})
 
         arguments = ['promote', '--repository', 'CybexHQ/james', '--tag', tag, '--source', self.source,

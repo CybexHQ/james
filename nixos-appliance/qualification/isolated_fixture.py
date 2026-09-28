@@ -50,7 +50,7 @@ class API:
             return request(self.isolated_state, 'api', path=path, body=body)
         request = urllib.request.Request(self.origin + path,
             headers={'Authorization': 'Bearer ' + self.token, 'Content-Type': 'application/json',
-                     'User-Agent': 'cybex-dev-qualification/1'},
+                     'User-Agent': 'tiaris-dev-qualification/1'},
             data=None if body is None else json.dumps(body).encode())
         return HTTP['request_json'](self.client, request, timeout=30,
                                     max_bytes=16 * 1024**2)
@@ -130,7 +130,7 @@ class Fixture:
             raise ValueError('Fixture must belong to this private run')
         identity = json.loads((self.directory / 'fixture.json').read_bytes())
         self.hardware = SCOPE['hardware_identity'](self.scope, 'appliance')
-        if (identity['schema'] != 'cybex.james.qualification-fixture.v1'
+        if (identity['schema'] != 'tiaris.nest.qualification-fixture.v1'
                 or identity['bridge'] != self.scope['bridge']
                 or any(identity.get(key) != value for key, value in self.hardware.items())
                 or identity['device_id'] != evidence['device_id']
@@ -150,7 +150,7 @@ class Fixture:
         try:
             self.tap = SCOPE['tap'](self.state, self.scope['manage_origin'], self.scope['bridge'], 'appliance', True)
             self.process = subprocess.Popen(['qemu-system-x86_64', '-enable-kvm', '-machine', 'q35,smm=on', '-global', 'driver=cfi.pflash01,property=secure,value=on',
-                '-cpu', 'host', '-smp', '4', '-m', os.environ.get('CYBEX_JAMES_QUALIFICATION_MEMORY_MIB', '18432'),
+                '-cpu', 'host', '-smp', '4', '-m', os.environ.get('TIARIS_NEST_QUALIFICATION_MEMORY_MIB', '18432'),
                 '-uuid', self.hardware['uuid'],
                 '-drive', 'if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd',
                 '-drive', f'if=pflash,format=raw,unit=1,file={d}/OVMF_VARS.fd',
@@ -177,8 +177,8 @@ class Fixture:
         for _ in range(240):
             if self.process.poll() is not None:
                 raise ValueError('Fixture QEMU exited before readiness')
-            node = api(f'/v1/james/nodes/{self.device}')['node']
-            seen = datetime.datetime.fromisoformat((node.get('james_reported_at') or '1970-01-01T00:00:00Z').replace('Z', '+00:00'))
+            node = api(f'/v1/nest/nodes/{self.device}')['node']
+            seen = datetime.datetime.fromisoformat((node.get('nest_reported_at') or '1970-01-01T00:00:00Z').replace('Z', '+00:00'))
             if seen > self.started and node.get('appliance_local_health', {}).get('status') == 'healthy':
                 self.monitor.events()
                 return node

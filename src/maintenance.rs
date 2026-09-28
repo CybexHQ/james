@@ -7,8 +7,8 @@ use std::{fs, io, path::Path};
 
 use anyhow::{Context, Result, bail};
 
-const APPLIANCE_UPDATE_LOCK: &str = "/run/lock/cybex-james/appliance-update.lock";
-const CONTROL: &str = "/var/lib/cybex-james/control";
+const APPLIANCE_UPDATE_LOCK: &str = "/run/lock/tiaris-nest/appliance-update.lock";
+const CONTROL: &str = "/var/lib/tiaris-nest/control";
 
 fn generation_recovery_pending(control: &Path) -> bool {
     [
@@ -34,7 +34,7 @@ pub fn lease_active() -> Result<bool> {
         return Ok(true);
     }
     let path = Path::new(if crate::appliance::nixos::is_nixos() {
-        "/run/lock/cybex-james/maintenance.lock"
+        "/run/lock/tiaris-nest/maintenance.lock"
     } else {
         APPLIANCE_UPDATE_LOCK
     });
@@ -97,7 +97,7 @@ pub async fn acquire_build_lease() -> Result<BuildLease> {
             .read(true)
             .write(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open("/run/lock/cybex-james/maintenance.lock")?;
+            .open("/run/lock/tiaris-nest/maintenance.lock")?;
         let metadata = file.metadata()?;
         if !metadata.is_file()
             || metadata.nlink() != 1
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn durable_generation_recovery_fences_builds_until_cleanup() {
-        let root = std::env::temp_dir().join(format!("james-maintenance-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("nest-maintenance-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root).unwrap();
         assert!(!generation_recovery_pending(&root));
         for receipt in [

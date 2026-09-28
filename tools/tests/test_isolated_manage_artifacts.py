@@ -43,8 +43,8 @@ def free_ports(count):
 
 
 class FakeVerifier:
-    MANIFEST = 'cybex-james-release.json'
-    COMPATIBILITY = 'cybex-james-release-compatibility.json'
+    MANIFEST = 'tiaris-nest-release.json'
+    COMPATIBILITY = 'tiaris-nest-release-compatibility.json'
 
     def __init__(self, values):
         self.values = values
@@ -71,7 +71,7 @@ class FakeVerifier:
 
 class CoordinatorTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix='cybex-artifact-coordinator-')
+        self.temporary = tempfile.TemporaryDirectory(prefix='tiaris-artifact-coordinator-')
         self.root = Path(self.temporary.name)
         self.root.chmod(0o700)
         self.state = self.root / 'state'
@@ -90,18 +90,18 @@ class CoordinatorTests(unittest.TestCase):
             directory.mkdir(mode=0o700)
             bodies = {
                 A.release_verifier.MANIFEST: ('signed manifest ' + role).encode(),
-                f'cybex-james-appliance-template-{version}-x86_64-linux.iso': ('iso ' + role).encode(),
-                f'cybex-james-appliance-closure-{version}-x86_64-linux.tar.zst': ('closure ' + role).encode(),
-                'cybex-workstation-netboot-1.0.0-aaaaaaaaaaaa-x86_64-linux.tar.zst': shared_workstation,
+                f'tiaris-nest-appliance-template-{version}-x86_64-linux.iso': ('iso ' + role).encode(),
+                f'tiaris-nest-appliance-closure-{version}-x86_64-linux.tar.zst': ('closure ' + role).encode(),
+                'tiaris-workstation-netboot-1.0.0-aaaaaaaaaaaa-x86_64-linux.tar.zst': shared_workstation,
             }
             for name, body in bodies.items():
                 path = directory / name
                 path.write_bytes(body)
                 path.chmod(0o600)
             manifest_name = A.release_verifier.MANIFEST
-            iso_name = f'cybex-james-appliance-template-{version}-x86_64-linux.iso'
-            closure_name = f'cybex-james-appliance-closure-{version}-x86_64-linux.tar.zst'
-            workstation_name = 'cybex-workstation-netboot-1.0.0-aaaaaaaaaaaa-x86_64-linux.tar.zst'
+            iso_name = f'tiaris-nest-appliance-template-{version}-x86_64-linux.iso'
+            closure_name = f'tiaris-nest-appliance-closure-{version}-x86_64-linux.tar.zst'
+            workstation_name = 'tiaris-workstation-netboot-1.0.0-aaaaaaaaaaaa-x86_64-linux.tar.zst'
             manifest = {'version': version,
                         'installer_iso_template_v3': {
                             'url': 'https://releases.example/' + iso_name,
@@ -114,7 +114,7 @@ class CoordinatorTests(unittest.TestCase):
                             'url': 'https://releases.example/' + workstation_name,
                             'sha256': sha(shared_workstation), 'size_bytes': len(shared_workstation)}}
             compatibility_sha = sha(('compatibility ' + role).encode())
-            compatibility = {'james_release_version': version,
+            compatibility = {'nest_release_version': version,
                              'compatibility_sha256': compatibility_sha,
                              'release_manifest': {'url': 'https://releases.example/' + manifest_name,
                                                   'sha256': sha(bodies[manifest_name])}}
@@ -172,14 +172,14 @@ class CoordinatorTests(unittest.TestCase):
         predecessor = urls['releases']['predecessor']
         candidate = urls['releases']['candidate']
         self.assertEqual(predecessor['manifest_transport_url'],
-                         f'http://127.0.0.1:{self.endpoints["predecessor-backend"][1]}/cybex-james-release.json')
+                         f'http://127.0.0.1:{self.endpoints["predecessor-backend"][1]}/tiaris-nest-release.json')
         self.assertEqual(candidate['manifest_transport_url'],
-                         f'http://127.0.0.1:{self.endpoints["candidate-backend"][1]}/cybex-james-release.json')
-        self.assertIn(f':{self.endpoints["guest"][1]}/cybex-james-appliance-closure-1.2.2-',
+                         f'http://127.0.0.1:{self.endpoints["candidate-backend"][1]}/tiaris-nest-release.json')
+        self.assertIn(f':{self.endpoints["guest"][1]}/tiaris-nest-appliance-closure-1.2.2-',
                       predecessor['package_transport_url'])
         self.assertEqual(predecessor['bundle_transport_url'], candidate['bundle_transport_url'])
         guest = self.coordinator.receipt['listeners']['guest']['artifacts']
-        shared = [value for value in guest if value['filename'].startswith('cybex-workstation-netboot-')]
+        shared = [value for value in guest if value['filename'].startswith('tiaris-workstation-netboot-')]
         self.assertEqual(len(shared), 1)
         self.assertEqual(shared[0]['roles'], ['predecessor', 'candidate'])
         self.assertEqual(self.coordinator.verify(self.scope), urls)
@@ -237,7 +237,7 @@ class CoordinatorTests(unittest.TestCase):
     def test_real_signature_verification_returns_exact_snapshots_and_rejects_replacement(self):
         directory = self.root / 'real-signed-release'
         directory.mkdir(mode=0o700)
-        fixtures = ROOT / 'tools/tests/fixtures/recovery'
+        fixtures = ROOT / 'tools/tests/fixtures/tiaris-recovery'
         manifest_path = directory / A.release_verifier.MANIFEST
         compatibility_path = directory / A.release_verifier.COMPATIBILITY
         originals = {
@@ -247,7 +247,7 @@ class CoordinatorTests(unittest.TestCase):
         for path, body in originals.items():
             path.write_bytes(body)
             path.chmod(0o600)
-        anchor = json.loads((ROOT / 'release/recovery-adoption.json').read_bytes())
+        anchor = json.loads((ROOT / 'tools/tests/fixtures/tiaris-recovery/authorization.json').read_bytes())
         key, url = anchor['public_key'], anchor['recovery']['manifest_url']
         snapshot = A.release_verifier.verify_pair_snapshot(directory, key, url)
         self.assertEqual(snapshot['manifest_body'], originals[manifest_path])
@@ -361,7 +361,7 @@ class CoordinatorTests(unittest.TestCase):
 
     def test_same_guest_filename_requires_equal_signed_identity(self):
         candidate = self.root / 'candidate'
-        workstation = next(candidate.glob('cybex-workstation-netboot-*'))
+        workstation = next(candidate.glob('tiaris-workstation-netboot-*'))
         workstation.write_bytes(b'different candidate workstation')
         workstation.chmod(0o600)
         descriptor = self.values[candidate]['manifest']['workstation_netboot']

@@ -1,4 +1,4 @@
-"""Strict inputs for a fresh Manage fixture; never consult runtime environment files."""
+"""Strict inputs for a fresh Tiaris fixture; never consult runtime environment files."""
 from __future__ import annotations
 
 import base64
@@ -17,7 +17,7 @@ _spec = importlib.util.spec_from_file_location('fixture_tls_client_hello', Path(
 egress = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(egress)
 
-SCHEMA = 'cybex.james.isolated-manage-config.v2'
+SCHEMA = 'tiaris.nest.isolated-manage-config.v2'
 SOURCE = 'https://github.com/CybexHQ/development'
 PRODUCTION = Path('/home/john/Code/Cybex/manage')
 FIELDS = {'schema', 'manage_origin', 'manage_checkout', 'manage_revision', 'app_images',
@@ -94,12 +94,12 @@ def origin(value):
 
 def validate(value):
     if not isinstance(value, dict) or set(value) != FIELDS or value['schema'] != SCHEMA:
-        raise ValueError('unexpected isolated Manage configuration fields')
+        raise ValueError('unexpected isolated Tiaris configuration fields')
     origin(value['manage_origin'])
     if not re.fullmatch(r'[0-9a-f]{40}', value['manage_revision']):
-        raise ValueError('fixture needs an exact reviewed Manage source revision')
+        raise ValueError('fixture needs an exact reviewed Tiaris source revision')
     if not isinstance(value['app_images'], dict) or set(value['app_images']) != {'predecessor', 'candidate'}:
-        raise ValueError('fixture needs explicit predecessor and candidate Manage images')
+        raise ValueError('fixture needs explicit predecessor and candidate Tiaris images')
     for reference in (*value['app_images'].values(), value['postgres_image'], value['tls_image']):
         if not isinstance(reference, str) or not re.fullmatch(
                 r'(?:[a-z0-9][a-z0-9./:_-]*@)?sha256:[0-9a-f]{64}', reference):
@@ -136,7 +136,7 @@ def check_source(config, run=command):
 
 def load(config_path, run=command):
     if os.geteuid() != 0:
-        raise ValueError('isolated Manage ownership requires root')
+        raise ValueError('isolated Tiaris ownership requires root')
     config_path = ordinary_path(config_path)
     directory = config_path.parent.stat()
     if directory.st_uid != 0 or stat.S_IMODE(directory.st_mode) != 0o700:
@@ -207,7 +207,7 @@ def signed_releases(config, secrets, candidate_dir, predecessor_dir, *, verifier
                         'compatibility_sha256': asset['compatibility_sha256'],
                         'transport_filenames': artifacts}
         if role == 'candidate' and manifest['appliance_release_v1']['manage_source_revision'] != config['manage_revision']:
-            raise ValueError('release Manage provenance differs from the reviewed fixture image')
+            raise ValueError('release Tiaris provenance differs from the reviewed fixture image')
     if result['candidate']['manifest_sha256'] == result['predecessor']['manifest_sha256']:
         if config['initial_release'] != 'candidate':
             raise ValueError('a cold-only fixture must initially select the candidate')

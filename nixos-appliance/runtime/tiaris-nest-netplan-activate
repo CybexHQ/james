@@ -10,8 +10,8 @@ import subprocess
 import tempfile
 import time
 
-ACTIVE = Path('/etc/netplan/90-cybex-james.yaml')
-TARGET = Path('/run/systemd/network/10-cybex-james.network')
+ACTIVE = Path('/etc/netplan/90-tiaris-nest.yaml')
+TARGET = Path('/run/systemd/network/10-tiaris-nest.network')
 
 
 def prepare_runtime_directory(root, uid=0, gid=0):
@@ -26,9 +26,9 @@ def prepare_runtime_directory(root, uid=0, gid=0):
 
 def render(value):
     network = value['network']
-    if network['version'] != 2 or network['renderer'] != 'networkd' or set(network['ethernets']) != {'cybex-james'}:
+    if network['version'] != 2 or network['renderer'] != 'networkd' or set(network['ethernets']) != {'tiaris-nest'}:
         raise ValueError('invalid approved network contract')
-    interface = network['ethernets']['cybex-james']
+    interface = network['ethernets']['tiaris-nest']
     name = interface['set-name']
     mac = interface['match']['macaddress']
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}', name) or name == 'lo':
@@ -67,7 +67,7 @@ def main():
         raise ValueError('network plan is oversized')
     name, body = render(json.loads(raw))
     prepare_runtime_directory(TARGET.parents[2])
-    fd, temporary = tempfile.mkstemp(dir=TARGET.parent, prefix='.cybex-network-')
+    fd, temporary = tempfile.mkstemp(dir=TARGET.parent, prefix='.tiaris-network-')
     try:
         with os.fdopen(fd, 'wb') as stream:
             os.fchmod(stream.fileno(), 0o640)
@@ -76,7 +76,7 @@ def main():
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, TARGET)
-        if os.environ.get('CYBEX_NETWORK_RENDER_ONLY') == '1':
+        if os.environ.get('TIARIS_NETWORK_RENDER_ONLY') == '1':
             return
         subprocess.run(['networkctl', 'reload'], check=True)
         subprocess.run(['networkctl', 'reconfigure', name], check=True)

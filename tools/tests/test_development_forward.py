@@ -90,7 +90,7 @@ class ForwardOwnershipTests(unittest.TestCase):
         self.assertNotIn('restore', execute.call_args.args[0][0])
 
 
-@unittest.skipUnless(os.environ.get('CYBEX_NIXOS_NETWORK_NAMESPACE') == '1',
+@unittest.skipUnless(os.environ.get('TIARIS_NIXOS_NETWORK_NAMESPACE') == '1',
                      'requires an explicitly disposable root network namespace')
 class ForwardKernelTests(unittest.TestCase):
     def setUp(self):

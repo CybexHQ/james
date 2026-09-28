@@ -18,8 +18,8 @@ import sys
 from urllib.parse import urlsplit
 import uuid
 
-SCHEMA = "cybex.james.nixos-development-scope.v1"
-ISOLATED_SCHEMA = "cybex.james.nixos-isolated-scope.v1"
+SCHEMA = "tiaris.nest.nixos-development-scope.v1"
+ISOLATED_SCHEMA = "tiaris.nest.nixos-isolated-scope.v1"
 FIELDS = {"schema", "run", "manage_origin", "bridge", "subnet", "owner"}
 FORWARD = runpy.run_path(str(Path(__file__).with_name('development_forward.py')))
 GATE = runpy.run_path(str(Path(__file__).with_name('rollback_transport_gate.py')))
@@ -114,7 +114,7 @@ def owned_network(scope, network):
     config = network.get("config", {})
     return (network.get("name") == scope["bridge"] and network.get("type") == "bridge"
             and network.get("managed") is True
-            and config.get("user.cybex.nixos-qualification") == scope["owner"]
+            and config.get("user.tiaris.nixos-qualification") == scope["owner"]
             and config.get("ipv4.address") == scope["subnet"]
             and config.get("ipv4.nat") == "true" and config.get("ipv6.address") == "none")
 
@@ -169,7 +169,7 @@ def prepare(args):
         os.close(directory)
     try:
         incus("network", "create", bridge, "--type=bridge", "ipv4.address=" + str(subnet),
-              "ipv4.nat=true", "ipv6.address=none", "user.cybex.nixos-qualification=" + scope["owner"])
+              "ipv4.nat=true", "ipv6.address=none", "user.tiaris.nixos-qualification=" + scope["owner"])
         verify(args.state_dir, args.manage_origin, bridge, require_forwarding=False, require_isolation=False)
         FORWARD['prepare'](args.state_dir, scope)
         verify(args.state_dir, args.manage_origin, bridge, require_isolation=False)

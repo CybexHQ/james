@@ -1,4 +1,4 @@
-"""Observe appliance-owned NixOS transitions through authenticated Manage reports."""
+"""Observe appliance-owned NixOS transitions through authenticated Tiaris reports."""
 import base64
 import datetime
 import hashlib
@@ -114,7 +114,7 @@ def validate_inputs(candidate, candidate_digest, previous, previous_digest, evid
     release_predecessor.advance(candidate['version'], previous['version'])
     for manifest in (candidate, previous):
         descriptor = manifest['appliance_release_v1']
-        if (descriptor['schema'] != 'cybex.james.appliance-release.v3'
+        if (descriptor['schema'] != 'tiaris.nest.appliance-release.v3'
                 or descriptor['release_id'] != manifest['version'] or descriptor['base_os'] != 'nixos'
                 or manifest['installer_iso_template_v3']['manage_origin'] != origin):
             raise ValueError('Transition manifests must bind this development NixOS scope')
@@ -122,7 +122,7 @@ def validate_inputs(candidate, candidate_digest, previous, previous_digest, evid
     generation(evidence.get('system_generation'))
     if (candidate['appliance_release_v1']['source_revision'] != source
             or not re.fullmatch(r'[0-9a-f]{64}', candidate_digest)
-            or evidence.get('schema') != 'cybex.james.nixos-appliance-qualification.v1'
+            or evidence.get('schema') != 'tiaris.nest.nixos-appliance-qualification.v1'
             or evidence.get('qualified_manifest_sha256') != previous_digest
             or evidence.get('release_version') != previous['version']
             or evidence.get('base_os') != 'nixos' or evidence.get('secure_boot') is not False
@@ -217,7 +217,7 @@ def predecessor_report(before, node):
 def rollback_failure(output, stage, error, timings, gate, node, candidate_reset,
                      fallback_reset, bootstrap, revalidated):
     """Retain bounded public facts before fixture/API cleanup erases the cause."""
-    diagnostic = {'schema': 'cybex.james.rollback-gate-diagnostic.v2',
+    diagnostic = {'schema': 'tiaris.nest.rollback-gate-diagnostic.v2',
         'stage': stage, 'error_type': type(error).__name__, 'stage_seconds': timings,
         'candidate_reset_at': candidate_reset.isoformat() if candidate_reset else None,
         'fallback_reset_at': fallback_reset.isoformat() if fallback_reset else None,
@@ -229,7 +229,7 @@ def rollback_failure(output, stage, error, timings, gate, node, candidate_reset,
         value = node.get(field) if isinstance(node, dict) else None
         diagnostic['reported_' + field] = value if isinstance(value, str) and len(value) <= 128 and re.fullmatch(pattern, value) else None
     try:
-        seen = timestamp(node.get('james_reported_at'))
+        seen = timestamp(node.get('nest_reported_at'))
         diagnostic['reported_at'] = seen.isoformat()
         diagnostic['reported_after_candidate_reset'] = candidate_reset is not None and seen > candidate_reset
     except (AttributeError, ValueError, TypeError):
@@ -241,7 +241,7 @@ def rollback_failure(output, stage, error, timings, gate, node, candidate_reset,
     except Exception as inspect_error:
         diagnostic['gate_inspection_error_type'] = type(inspect_error).__name__
     try:
-        path = output.with_name('cybex-james-nixos-rollback-failure.json')
+        path = output.with_name('tiaris-nest-nixos-rollback-failure.json')
         write_evidence(path, diagnostic)
         if os.geteuid() == 0 and 'SUDO_UID' in os.environ and 'SUDO_GID' in os.environ:
             # The orchestrator hands the private parent directory back to the
@@ -263,10 +263,10 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
     if before.get('device_id') != evidence['device_id'] or fixture.device != evidence['device_id']:
         raise ValueError('Running predecessor identity differs from its fixture')
     # A full accepted report is signed by the permanent device identity. Neither
-    # heartbeats nor a cached local response advance james_reported_at.
-    seen_before = timestamp(before['james_reported_at'])
+    # heartbeats nor a cached local response advance nest_reported_at.
+    seen_before = timestamp(before['nest_reported_at'])
     gate = rollback_transport_gate.Gate(fixture, before) if rollback else None
-    prefix = f'/v1/james/nodes/{fixture.device}'
+    prefix = f'/v1/nest/nodes/{fixture.device}'
     admission = (schedule_admission.AdmissionExercise(api, fixture.device, clock=clock,
         sleep=sleep, now=now, timeout=min(timeout, 300)) if exercise_admission else None)
     gate_stage_seconds = {}
@@ -378,7 +378,7 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
                     if candidate_started_at is None or not candidate_started_at <= gate_activated_at <= now():
                         raise ValueError('Rollback gate activated outside the candidate boot')
             node = api(prefix)['node']
-            seen = timestamp(node.get('james_reported_at'))
+            seen = timestamp(node.get('nest_reported_at'))
             if seen > now() + datetime.timedelta(seconds=30):
                 raise ValueError('Accepted report timestamp is unexpectedly in the future')
             if rollback and fallback_reset is None:
@@ -390,7 +390,7 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
                     failure_stage = 'candidate_gate_contact'
                     raise ValueError('Candidate agent contact was accepted despite rollback gate')
             # Old terminal outcomes from another attempt must neither fail nor
-            # satisfy this run while the newly admitted request reaches James.
+            # satisfy this run while the newly admitted request reaches Nest.
             if node.get('update_attempt_id') != attempt:
                 sleep(1)
                 continue
@@ -428,7 +428,7 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
             if final_preflight['device_incarnation_id'] != expected['device_incarnation_id'] or identity(node) != preserved_identity:
                 raise ValueError('Permanent device incarnation changed during the transition')
             phase = 'rollback' if rollback else 'update'
-            result = {'schema': f'cybex.james.nixos-appliance-{phase}-qualification.v1', 'ok': True,
+            result = {'schema': f'tiaris.nest.nixos-appliance-{phase}-qualification.v1', 'ok': True,
                 'candidate_manifest_sha256': hashlib.sha256(candidate_body).hexdigest(),
                 'predecessor_manifest_sha256': hashlib.sha256(previous_body).hexdigest(),
                 'predecessor_evidence_sha256': evidence_digest, 'harness_revision': source,

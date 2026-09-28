@@ -1,12 +1,12 @@
-# NixOS James appliance
+# NixOS Nest appliance
 
-This directory is the NixOS successor to the Ubuntu James appliance. Its initial
+This directory is the NixOS successor to the Ubuntu Nest appliance. Its initial
 implementation is under development; builds and qualification must not be claimed
 complete until their gates pass. Existing Ubuntu appliances require a human
-reinstall from the current James ISO. They do not receive a NixOS in-place update.
+reinstall from the current Nest ISO. They do not receive a NixOS in-place update.
 
-The product journey stays **Download James ISO → one disk safety check → Install
-James once → Ready**, with no local appliance input. James requires x86-64 UEFI
+The product journey stays **Download Nest ISO → one disk safety check → Install
+Nest once → Ready**, with no local appliance input. Nest requires x86-64 UEFI
 with Secure Boot turned off, at least 16 GiB RAM, the existing CPU/wired-Ethernet
 requirements and an eligible fixed disk of at least 160 GiB. Firmware Secure Boot
 state is reported for information and is not an admission check.
@@ -18,23 +18,23 @@ appliance pin. The appliance and workstation runtime move their pin together.
 The initial pin is NixOS 26.05, revision
 `74cc63f702f7d60a557e152a57b40fb1fd0f72ac`. Use that release's default LTS kernel,
 redistributable firmware and Intel/AMD microcode. Record actual kernel, firmware,
-microcode, Nix, James and systemd-boot versions in the closure manifest.
+microcode, Nix, Nest and systemd-boot versions in the closure manifest.
 Initial evaluated versions are kernel `6.18.38`, Nix `2.34.7` and systemd-boot
 `260.2`; stable OS release is `26.05` despite `lib.version=26.05pre-git`.
 
 The non-flake entrypoint `default.nix` exposes the installed system
 toplevel, local closure cache/manifest, installer ISO and NixOS VM tests. Build
-scripts accept an exact clean James revision, exact Manage source checkout and
-revision, explicit expected canonical HTTPS Manage origin, offline release public
+scripts accept an exact clean Nest revision, exact Tiaris source checkout and
+revision, explicit expected canonical HTTPS Tiaris origin, offline release public
 key and sorted unique provisioning public keys. The named appliance Nix key is
 derived from the same release public authority.
 Private signing keys must never be a Nix derivation input or enter the store.
 
 Outputs are build-once immutable candidates:
 
-* `cybex-james-appliance-template-<version>-x86_64-linux.iso`;
+* `tiaris-nest-appliance-template-<version>-x86_64-linux.iso`;
 * unsigned template metadata with exact digest, length and personalization extent;
-* `cybex-james-appliance-closure-<version>-x86_64-linux.tar.zst`;
+* `tiaris-nest-appliance-closure-<version>-x86_64-linux.tar.zst`;
 * bounded closure metadata, signed descriptors and the existing release and
   compatibility assets.
 
@@ -43,14 +43,14 @@ publication consume the same bytes; rebuilding invalidates qualification. Only
 public keys and organization-neutral assets are embedded. Node identities,
 customer configuration and private workstation cache keys are created at runtime.
 
-The exact Manage source archive and digest metadata are embedded as immutable
-store paths and exposed at `/usr/share/cybex-james/manage-source/<revision>.tar`
+The exact Tiaris source archive and digest metadata are embedded as immutable
+store paths and exposed at `/usr/share/tiaris-nest/manage-source/<revision>.tar`
 and `.json`. Activation verifies signed identity and makes atomic fsynced
 root-owned 0444 single-link copies in an ordinary root-owned 0755 directory.
 Store directories are 0555 and optimized files may be hardlinked, so a directory
 symlink or direct bind fails existing verification. Retain bounded secure reopening;
 do not weaken it to follow untrusted symlinks. The signed
-workstation descriptor, embedded archive and release Manage revision must agree.
+workstation descriptor, embedded archive and release Tiaris revision must agree.
 Preserve corresponding source/licence/SPDX material for the pinned udpcast
 implementation and the published GPL source offer.
 
@@ -63,12 +63,12 @@ protected files outside the Nix store and unsigned builder.
 ```sh
 bash nixos-appliance/build-template.sh \
   --manage-source-dir "$MANAGE_SOURCE" --manage-source-revision "$MANAGE_REVISION" \
-  --source-revision "$JAMES_REVISION" --expected-manage-origin "$MANAGE_ORIGIN" \
+  --source-revision "$NEST_REVISION" --expected-manage-origin "$MANAGE_ORIGIN" \
   --release-public-key "$RELEASE_PUBLIC_KEY" \
   --provisioning-public-key "$PROVISIONING_PUBLIC_KEY" --output-dir "$ISO_OUTPUT"
 bash nixos-appliance/build-closure.sh \
   --manage-source-dir "$MANAGE_SOURCE" --manage-source-revision "$MANAGE_REVISION" \
-  --source-revision "$JAMES_REVISION" --expected-manage-origin "$MANAGE_ORIGIN" \
+  --source-revision "$NEST_REVISION" --expected-manage-origin "$MANAGE_ORIGIN" \
   --release-public-key "$RELEASE_PUBLIC_KEY" \
   --provisioning-public-key "$PROVISIONING_PUBLIC_KEY" --unsigned-output-dir "$CACHE_OUTPUT"
 python3 tools/pack-system-closure.py \
@@ -85,22 +85,22 @@ sectors even on 4 KiB-sector hardware.
 
 | Partition | Label | Size / filesystem | Purpose |
 | --- | --- | --- | --- |
-| 1 | `CYBEX_STATE` | 16 GiB ext4 | created first; identity, SQLite, config and receipts |
-| 2 | `CYBEX_EFI` | 1 GiB FAT32 | `/boot`, UEFI systemd-boot |
-| 3 | `CYBEX_SWAP` | 8 GiB swap | no hibernation contract |
-| 4 | `CYBEX_ROOT` | remainder, ext4 | root, writable store, caches and build output |
+| 1 | `TIARIS_STATE` | 16 GiB ext4 | created first; identity, SQLite, config and receipts |
+| 2 | `TIARIS_EFI` | 1 GiB FAT32 | `/boot`, UEFI systemd-boot |
+| 3 | `TIARIS_SWAP` | 8 GiB swap | no hibernation contract |
+| 4 | `TIARIS_ROOT` | remainder, ext4 | root, writable store, caches and build output |
 
 A 160 GiB disk leaves approximately 135 GiB minus GPT/alignment slack for root;
 require at least 134 GiB computed root capacity. Root ext4 reserves 1% for root.
 The final admission uses actual available bytes including filesystem overhead,
 not the nominal partition size. `/nix` is an executable `nodev,nosuid` bind of
-`/var/cache/cybex-james/nix`; root owns the store and its parents. James is an
+`/var/cache/tiaris-nest/nix`; root owns the store and its parents. Nest is an
 allowed Nix daemon user, never a trusted Nix user.
 
-STATE mounts at `/var/lib/cybex-james/state` with `nodev,nosuid`. Its `agent/` and
-`inbox/` are James-owned 0700; its `control/` and `status/` are root:James 0750,
+STATE mounts at `/var/lib/tiaris-nest/state` with `nodev,nosuid`. Its `agent/` and
+`inbox/` are Nest-owned 0700; its `control/` and `status/` are root:Nest 0750,
 bind-mounted at the historical control/status paths. Protected files are bounded,
-single-link regular files, 0640 root:James or 0600 root for secrets. Signed plan,
+single-link regular files, 0640 root:Nest or 0600 root for secrets. Signed plan,
 identity transition, config, CA/principal, CIDRs, network decisions and update
 receipts persist across every generation. Do not place secrets in store paths.
 
@@ -111,7 +111,7 @@ good generations, active job roots and protected artifacts cannot be reclaimed t
 make an update fit. Daily GC uses the job/update exclusion barrier.
 
 Bulk downloaded/private update staging and database rollback copies live under
-`/var/cache/cybex-james/appliance-updates/` on ROOT. Only protected verified and
+`/var/cache/tiaris-nest/appliance-updates/` on ROOT. Only protected verified and
 transaction receipts live on STATE. When staging/store share a filesystem,
 admission charges new staging + missing NAR bytes + 23 GiB once. A distinct
 staging filesystem reserves 2 GiB; the store still preserves 23 GiB. Pending
@@ -129,7 +129,7 @@ regular-file mode 0644. The explicit `nar/` header precedes all NAR payloads. Re
 duplicates, absolute/traversal paths, links, devices, sparse/extended headers,
 unexpected files, trailing data and incomplete streams.
 
-The public Nix key is `cybex-james-appliance-1:<canonical standard Base64 raw
+The public Nix key is `tiaris-nest-appliance-1:<canonical standard Base64 raw
 release Ed25519 public key>`, reusing the offline release authority with Nix's NAR
 signature format, distinct from node-generated workstation cache keys. Build the
 cache unsigned; external private signing staging adds signatures before packing.
@@ -149,8 +149,8 @@ extracts/imports onto the target only after authorized partitioning. Installatio
 requires sufficient measured available RAM for this budget.
 
 `manifest.json` is canonical recursively key-sorted compact UTF-8 JSON plus LF,
-schema `cybex.james.system-closure.v1`. It contains descriptor identity fields,
-the pinned public Nix signing key, exact Manage source identity, Intel/AMD
+schema `tiaris.nest.system-closure.v1`. It contains descriptor identity fields,
+the pinned public Nix signing key, exact Tiaris source identity, Intel/AMD
 microcode versions, sorted `store_paths` with NAR hashes/sizes/references and
 `total_nar_bytes`. The signed archive hash authenticates it; the manifest does
 not contain its own archive digest or final descriptor. The immutable system
@@ -175,12 +175,12 @@ The installed Blueprint builder uses `https://cache.nixos.org` with its pinned
 public signing key and mandatory signatures for workstation dependencies. This
 is separate from appliance import: the ISO has release-only trust, and the
 installer/updater verify the release archive and disable remote substitution.
-The James service remains an untrusted Nix daemon user.
+The Nest service remains an untrusted Nix daemon user.
 
 ## V3 release and media contract
 
-James protocol remains **4**; workstation epoch **1** and `split-squashfs-v1`
-remain unchanged. The outer release manifest remains `cybex.james.release.v1`.
+Nest protocol remains **4**; workstation epoch **1** and `split-squashfs-v1`
+remain unchanged. The outer release manifest remains `tiaris.nest.release.v1`.
 It contains `installer_iso_template_v3`; its historically named
 `appliance_release_v1` contains the inner V3 descriptor. Compatibility keeps
 `artifacts.appliance_package_snapshot` as the historical envelope name for the
@@ -190,20 +190,20 @@ manifest or fall back to V2 after a V3 validation failure.
 The appliance descriptor has exactly:
 
 ```text
-schema = cybex.james.appliance-release.v3
+schema = tiaris.nest.appliance-release.v3
 release_id, source_revision, base_os = nixos, base_os_version
 nixpkgs_revision, manage_source_revision, system_toplevel
 system_closure = {url, sha256, size_bytes}
-required_system_versions = {kernel, linux-firmware, nix, cybex-james, systemd-boot}
+required_system_versions = {kernel, linux-firmware, nix, tiaris-nest, systemd-boot}
 sqlite_migrations_sha256
 minimum_protocol = 4, minimum_state_schema = 3, rollback_compatible = true
 release_notes, signature
 ```
 
-All fields are mandatory. The five anchors are exact; `cybex-james` equals
+All fields are mandatory. The five anchors are exact; `tiaris-nest` equals
 `release_id`. No Ubuntu snapshot/package/expected-kernel fields appear in V3.
 The signature is standard Base64 Ed25519 over
-`CYBEX-JAMES-APPLIANCE-RELEASE-V3\n` plus recursively sorted compact JSON without
+`TIARIS-NEST-APPLIANCE-RELEASE-V3\n` plus recursively sorted compact JSON without
 `signature`, with no final LF. Digests/revisions are lowercase hex, URLs canonical
 immutable HTTPS, toplevel one validated store path. Historical V1/V2 objects retain
 their original encoding and signature domain for audit but are not update targets.
@@ -213,23 +213,23 @@ The ISO descriptor has required `version`, `architecture=x86_64-linux`,
 `personalization_offset`, `personalization_size=8192`, `placeholder_sha256`,
 sorted unique `provisioning_public_keys`, `package_delivery=system-closure-v1`,
 `manage_origin`, `signature`. Sign domain
-`CYBEX-JAMES-INSTALLER-ISO-TEMPLATE-V3`, then each preceding field except
+`TIARIS-NEST-INSTALLER-ISO-TEMPLATE-V3`, then each preceding field except
 signature in that exact order, one field per line, with a final LF; join key array
 with commas. Origin is independently supplied and checked against compiled
 bootstrap bytes. Release/ISO use standard Base64 signatures; install/network
 plans retain URL-safe unpadded signatures.
 
 The ISO uses installation-cd hardware support, UEFI USB-hybrid boot and the single
-branded **Boot Cybex James Setup** entry. `/CYBEX_PROVISIONING.BIN` is an ordinary
+branded **Boot Tiaris Nest Setup** entry. `/TIARIS_PROVISIONING.BIN` is an ordinary
 uncompressed ISO9660 file consisting of exactly 8192 zero bytes in one extent.
 Derive its offset from final xorriso LBA metadata, reopen its exact bytes, and
 export slot identity. Personalization changes only those bytes; test HTTP ranges
 at both edges and compare the rest of the image. Keep an arping-capable binary
 in the live image for static-address safety checks.
 
-New `cybex.james.install-plan.v3` preserves every V2 field name, including
+New `tiaris.nest.install-plan.v3` preserves every V2 field name, including
 `package_transport_url`, but binds NixOS, `system-closure-v1` and the V3
-descriptor. Its signature domain is `CYBEX-JAMES-INSTALL-PLAN-V3\n`; unsigned
+descriptor. Its signature domain is `TIARIS-NEST-INSTALL-PLAN-V3\n`; unsigned
 canonical JSON excludes `signature` and `plan_sha256`, and that JSON's SHA-256
 is `plan_sha256`. Provisioning-envelope V1 and identity cross-signatures remain
 unchanged. Decode historical plans for audit, but never execute an Ubuntu plan.
@@ -275,14 +275,14 @@ First boot checks protected ownership, mounted store/state, actual booted closur
 identity and network, stages credential-free immutable iPXE/TFTP files and enables
 managed readiness. TFTP readiness verifies exact complete transfers; HTTP boot
 readiness uses the current local IPv4 origin. The tty1 console shows only safe
-assigned name and Starting/Ready/Attention needed; administration stays in Manage.
+assigned name and Starting/Ready/Attention needed; administration stays in Tiaris.
 
 ## Services and network changes
 
-The NixOS module provides unprivileged James, sandboxed Nix daemon, nginx IPv4
+The NixOS module provides unprivileged Nest, sandboxed Nix daemon, nginx IPv4
 listener, immutable TFTP root, dnsmasq ProxyDHCP supervisor, pinned udpcast,
 certificate-only OpenSSH, atomic management-CIDR SSH nftables policy, watchdog,
-time synchronization, bounded journald and coordinated daily GC. James has private
+time synchronization, bounded journald and coordinated daily GC. Nest has private
 HOME/XDG/TMP leaves and no Linux capabilities or Nix trusted-user status.
 
 PXE keeps authenticated complete/fresh inventory, same-link peer MAC checks,
@@ -298,7 +298,7 @@ write. The original install plan remains immutable. An error before the new
 receipt is committed restores the previous network; a failure after the exact
 durable receipt preserves it for recovery.
 Historical `netplan-*.json` filenames and candidate hashing are preserved, while
-Netplan itself is absent. Render `/run/systemd/network/10-cybex-james.network`
+Netplan itself is absent. Render `/run/systemd/network/10-tiaris-nest.network`
 0640 root:systemd-network, match the approved MAC/name, reload/reconfigure, then
 verify networkd selected that exact file and obtained the intended address.
 
@@ -312,7 +312,7 @@ an expired change. Preserve approved-static DHCP recovery tied to the exact
 approved digest and runtime advertised-origin reconciliation.
 
 CA keys, exact device principal and CIDRs live in STATE and rematerialize on every
-generation. SSH permits only locked `cybex-support`, disables root/password/
+generation. SSH permits only locked `tiaris-support`, disables root/password/
 keyboard-interactive login and delegates forwarding permission to the short-lived
 certificate extensions. Private key material never appears in evidence or logs.
 
@@ -334,7 +334,7 @@ inbox.
 Initial SQLite admission requires equal source/candidate migration inventory
 digests and exact successful live SQLx version/checksum rows. The canonical
 `sqlite-migrations.json` is recursively sorted compact JSON plus LF with schema
-`cybex.james.sqlite-migrations.v1`, sorted `migrations` entries containing
+`tiaris.nest.sqlite-migrations.v1`, sorted `migrations` entries containing
 `filename`, SHA-256 `sha256`, SHA-384 `sqlx_checksum`, and integer `version`.
 Hash the entire file including LF. Do not ignore/rewrite SQLx history or restore
 an old database on rollback. New migration inventories require a separately
@@ -352,9 +352,9 @@ release/toplevel and both exact profile and loader generation identities.
 
 Candidate commit requires `/run/current-system` equal to the sealed toplevel,
 correct release/store/state, required units, three fresh successful health probes
-at least five seconds apart and a fresh authenticated Manage heartbeat/report.
+at least five seconds apart and a fresh authenticated Tiaris heartbeat/report.
 Use a 210-second deadline and 5-minute service cap. The supervisor starts even if
-James/first-boot fails (Wants/After, not Requires on checked services); dependency
+Nest/first-boot fails (Wants/After, not Requires on checked services); dependency
 waits are included in a bounded boot deadline. A bare public health endpoint
 is not identity/reachability proof. After success, fsync commit intent, set/verify
 candidate default, update known-good/installed receipt, fsync succeeded/committed
@@ -394,7 +394,7 @@ the shared pin moves to 26.11; this port does not depend on it.
 ## Qualification and release policy
 
 Use disposable, explicitly owned UEFI VMs with Secure Boot off, isolated networking,
-an explicit development Manage origin and private untracked evidence. Reject a
+an explicit development Tiaris origin and private untracked evidence. Reject a
 production origin before any VM/API mutation. Existing lab appliances are not
 qualification fixtures. Never use a host reset as evidence of automatic rollback.
 

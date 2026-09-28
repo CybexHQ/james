@@ -49,20 +49,20 @@ const CAPABILITY_BLUEPRINT_WALLPAPER_V1: &str = "blueprint_wallpaper_v1";
 const CAPABILITY_CACHE_V1: &str = "cache_v1";
 const CAPABILITY_INSTALLER_TARGET_BUILD_V2: &str = "installer_target_build_v2";
 const CAPABILITY_INSTALLER_TARGET_BUILD_V3: &str = "installer_target_build_v3";
-/// This James copies verified exact closures from an approved sibling cache
+/// This Nest copies verified exact closures from an approved sibling cache
 /// (`closure_source` in a build spec) instead of rebuilding them.
 const CAPABILITY_CACHE_REPLICA_V1: &str = "cache_replica_v1";
 const CAPABILITY_WORKSTATION_NETBOOT_TRANSPORT_V1: &str = "workstation_netboot_transport_v1";
 const CAPABILITY_WORKSTATION_NETBOOT_V1: &str = "workstation_netboot_v1";
 const CAPABILITY_WORKSTATION_ROOTFS_MULTICAST_V1: &str = crate::netboot_multicast::CAPABILITY;
-const CAPABILITY_JAMES_BOOT_GRANT_V1: &str = "james_boot_grant_v1";
+const CAPABILITY_NEST_BOOT_GRANT_V1: &str = "nest_boot_grant_v1";
 const CAPABILITY_WAKE_ON_LAN_V1: &str = crate::wake_on_lan::CAPABILITY;
 const CAPABILITY_APPLIANCE_UPDATE_V1: &str = crate::appliance::APPLIANCE_UPDATE_CAPABILITY;
 const CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1: &str =
     crate::appliance::APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_CAPABILITY;
-const CYBEX_COMPONENT_PROTOCOL_VERSION: u32 = 4;
-const CYBEX_MINIMUM_MANAGE_PROTOCOL_VERSION: u32 = 4;
-const CYBEX_MAXIMUM_MANAGE_PROTOCOL_VERSION: u32 = 4;
+const TIARIS_COMPONENT_PROTOCOL_VERSION: u32 = 4;
+const TIARIS_MINIMUM_MANAGE_PROTOCOL_VERSION: u32 = 4;
+const TIARIS_MAXIMUM_MANAGE_PROTOCOL_VERSION: u32 = 4;
 const MAX_MANAGED_PROFILES: usize = 1_000;
 const MAX_DELETED_MANAGED_PROFILES: usize = 2_000;
 const MAX_MANAGED_CLIENTS: usize = 2_000;
@@ -73,13 +73,13 @@ const MAX_REPORT_EVENTS: i64 = 500;
 const MAX_REPORT_BUILD_JOBS: usize = 500;
 const MAX_REPORT_CACHE_ARTIFACTS: usize = 2_000;
 const MAX_MANAGED_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
-const MAX_JAMES_REPORT_WARNING_RECEIPTS: usize = 32;
+const MAX_NEST_REPORT_WARNING_RECEIPTS: usize = 32;
 const MAX_BOOT_REPORT_BODY_BYTES: usize = 3 * 1024 * 1024;
 // Closure-bearing cache metadata is bounded to 24 MiB. Leave
 // room for the remainder of the authenticated node report so a verified
 // manifest is never silently dropped solely because the transport cap is
 // smaller than the persistence contract.
-const MAX_JAMES_REPORT_BODY_BYTES: usize = 32 * 1024 * 1024;
+const MAX_NEST_REPORT_BODY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_DEVICE_HOSTNAME_CHARS: usize = 253;
 const MAX_DEVICE_SERIAL_CHARS: usize = 128;
 const MAX_DEVICE_NOTES_CHARS: usize = 2_000;
@@ -88,9 +88,9 @@ const MAX_DEVICE_TAG_CHARS: usize = 64;
 const MAX_PROFILE_DESCRIPTION_CHARS: usize = 2_000;
 const MAX_PROFILE_RAW_SCRIPT_BYTES: usize = 64 * 1024;
 // Root-produced appliance health evidence belongs to the generation-local,
-// James-readable status boundary.  Keeping it out of the persistent agent
+// Nest-readable status boundary.  Keeping it out of the persistent agent
 // mount ensures it can never become a privileged trust input.
-const RELIABILITY_STATE_PATH: &str = "/var/lib/cybex-james/status/reliability-state.json";
+const RELIABILITY_STATE_PATH: &str = "/var/lib/tiaris-nest/status/reliability-state.json";
 const MAX_RELIABILITY_STATE_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -101,21 +101,21 @@ struct ManagedState {
     public_key_fingerprint: Option<String>,
     device_id: Option<String>,
     last_reported_event_id: Option<i64>,
-    james_active_report_cursor: Option<i64>,
-    james_terminal_report_cursor: Option<i64>,
-    james_rejection_report_cursor: Option<i64>,
-    james_cache_artifact_report_cursor: Option<i64>,
-    james_cache_report_instance_id: Option<String>,
-    james_cache_report_generation: Option<i64>,
-    james_report_rotation_round: u8,
-    james_report_warning_fingerprint: Option<String>,
+    nest_active_report_cursor: Option<i64>,
+    nest_terminal_report_cursor: Option<i64>,
+    nest_rejection_report_cursor: Option<i64>,
+    nest_cache_artifact_report_cursor: Option<i64>,
+    nest_cache_report_instance_id: Option<String>,
+    nest_cache_report_generation: Option<i64>,
+    nest_report_rotation_round: u8,
+    nest_report_warning_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ComponentCompatibilityContract {
     protocol_version: u32,
-    minimum_james_protocol: u32,
-    maximum_james_protocol: u32,
+    minimum_nest_protocol: u32,
+    maximum_nest_protocol: u32,
     manage_version: String,
     manage_release: String,
     #[serde(default)]
@@ -142,7 +142,7 @@ struct AgentBootConfigResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct AgentJamesConfigResponse {
+struct AgentNestConfigResponse {
     #[serde(default)]
     compatibility: Option<ComponentCompatibilityContract>,
     #[serde(default)]
@@ -176,7 +176,7 @@ struct AgentJamesConfigResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct JamesReportResponse {
+struct NestReportResponse {
     status: String,
     #[serde(default)]
     workstation_netboot: Option<WorkstationNetbootReportReceipt>,
@@ -185,16 +185,16 @@ struct JamesReportResponse {
     #[serde(default)]
     wake_on_lan: Vec<String>,
     #[serde(default)]
-    warnings: JamesReportWarnings,
+    warnings: NestReportWarnings,
 }
 
 #[derive(Debug, Default)]
-struct JamesReportWarnings {
-    codes: Vec<JamesReportWarningCode>,
+struct NestReportWarnings {
+    codes: Vec<NestReportWarningCode>,
     truncated: bool,
 }
 
-impl<'de> Deserialize<'de> for JamesReportWarnings {
+impl<'de> Deserialize<'de> for NestReportWarnings {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -210,75 +210,75 @@ impl<'de> Deserialize<'de> for JamesReportWarnings {
         Ok(Self {
             codes: receipts
                 .iter()
-                .take(MAX_JAMES_REPORT_WARNING_RECEIPTS)
+                .take(MAX_NEST_REPORT_WARNING_RECEIPTS)
                 .map(|receipt| {
-                    JamesReportWarningCode::from_untrusted(
+                    NestReportWarningCode::from_untrusted(
                         receipt.get("diagnostic_code").and_then(Value::as_str),
                     )
                 })
                 .collect(),
-            truncated: receipts.len() > MAX_JAMES_REPORT_WARNING_RECEIPTS,
+            truncated: receipts.len() > MAX_NEST_REPORT_WARNING_RECEIPTS,
         })
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum JamesReportWarningCode {
-    JamesApplianceReportInvalid,
-    JamesArtifactReportConflict,
-    JamesArtifactReportInvalid,
-    JamesBuildReportConflict,
-    JamesBuildReportInvalid,
-    JamesCacheReportInvalid,
-    JamesDiskReportInvalid,
-    JamesHostReportInvalid,
-    JamesReleaseJobIdentityMismatch,
-    JamesReleaseSourceContainsProtectedMaterial,
-    JamesReleaseSourceIdentityMismatch,
-    JamesReleaseSourceLockMissing,
+enum NestReportWarningCode {
+    NestApplianceReportInvalid,
+    NestArtifactReportConflict,
+    NestArtifactReportInvalid,
+    NestBuildReportConflict,
+    NestBuildReportInvalid,
+    NestCacheReportInvalid,
+    NestDiskReportInvalid,
+    NestHostReportInvalid,
+    NestReleaseJobIdentityMismatch,
+    NestReleaseSourceContainsProtectedMaterial,
+    NestReleaseSourceIdentityMismatch,
+    NestReleaseSourceLockMissing,
     #[default]
     Unknown,
 }
 
-impl JamesReportWarningCode {
+impl NestReportWarningCode {
     fn from_untrusted(value: Option<&str>) -> Self {
         match value {
-            Some("james_appliance_report_invalid") => Self::JamesApplianceReportInvalid,
-            Some("james_artifact_report_conflict") => Self::JamesArtifactReportConflict,
-            Some("james_artifact_report_invalid") => Self::JamesArtifactReportInvalid,
-            Some("james_build_report_conflict") => Self::JamesBuildReportConflict,
-            Some("james_build_report_invalid") => Self::JamesBuildReportInvalid,
-            Some("james_cache_report_invalid") => Self::JamesCacheReportInvalid,
-            Some("james_disk_report_invalid") => Self::JamesDiskReportInvalid,
-            Some("james_host_report_invalid") => Self::JamesHostReportInvalid,
-            Some("james_release_job_identity_mismatch") => Self::JamesReleaseJobIdentityMismatch,
-            Some("james_release_source_contains_protected_material") => {
-                Self::JamesReleaseSourceContainsProtectedMaterial
+            Some("nest_appliance_report_invalid") => Self::NestApplianceReportInvalid,
+            Some("nest_artifact_report_conflict") => Self::NestArtifactReportConflict,
+            Some("nest_artifact_report_invalid") => Self::NestArtifactReportInvalid,
+            Some("nest_build_report_conflict") => Self::NestBuildReportConflict,
+            Some("nest_build_report_invalid") => Self::NestBuildReportInvalid,
+            Some("nest_cache_report_invalid") => Self::NestCacheReportInvalid,
+            Some("nest_disk_report_invalid") => Self::NestDiskReportInvalid,
+            Some("nest_host_report_invalid") => Self::NestHostReportInvalid,
+            Some("nest_release_job_identity_mismatch") => Self::NestReleaseJobIdentityMismatch,
+            Some("nest_release_source_contains_protected_material") => {
+                Self::NestReleaseSourceContainsProtectedMaterial
             }
-            Some("james_release_source_identity_mismatch") => {
-                Self::JamesReleaseSourceIdentityMismatch
+            Some("nest_release_source_identity_mismatch") => {
+                Self::NestReleaseSourceIdentityMismatch
             }
-            Some("james_release_source_lock_missing") => Self::JamesReleaseSourceLockMissing,
+            Some("nest_release_source_lock_missing") => Self::NestReleaseSourceLockMissing,
             _ => Self::Unknown,
         }
     }
 
     const fn as_str(self) -> &'static str {
         match self {
-            Self::JamesApplianceReportInvalid => "james_appliance_report_invalid",
-            Self::JamesArtifactReportConflict => "james_artifact_report_conflict",
-            Self::JamesArtifactReportInvalid => "james_artifact_report_invalid",
-            Self::JamesBuildReportConflict => "james_build_report_conflict",
-            Self::JamesBuildReportInvalid => "james_build_report_invalid",
-            Self::JamesCacheReportInvalid => "james_cache_report_invalid",
-            Self::JamesDiskReportInvalid => "james_disk_report_invalid",
-            Self::JamesHostReportInvalid => "james_host_report_invalid",
-            Self::JamesReleaseJobIdentityMismatch => "james_release_job_identity_mismatch",
-            Self::JamesReleaseSourceContainsProtectedMaterial => {
-                "james_release_source_contains_protected_material"
+            Self::NestApplianceReportInvalid => "nest_appliance_report_invalid",
+            Self::NestArtifactReportConflict => "nest_artifact_report_conflict",
+            Self::NestArtifactReportInvalid => "nest_artifact_report_invalid",
+            Self::NestBuildReportConflict => "nest_build_report_conflict",
+            Self::NestBuildReportInvalid => "nest_build_report_invalid",
+            Self::NestCacheReportInvalid => "nest_cache_report_invalid",
+            Self::NestDiskReportInvalid => "nest_disk_report_invalid",
+            Self::NestHostReportInvalid => "nest_host_report_invalid",
+            Self::NestReleaseJobIdentityMismatch => "nest_release_job_identity_mismatch",
+            Self::NestReleaseSourceContainsProtectedMaterial => {
+                "nest_release_source_contains_protected_material"
             }
-            Self::JamesReleaseSourceIdentityMismatch => "james_release_source_identity_mismatch",
-            Self::JamesReleaseSourceLockMissing => "james_release_source_lock_missing",
+            Self::NestReleaseSourceIdentityMismatch => "nest_release_source_identity_mismatch",
+            Self::NestReleaseSourceLockMissing => "nest_release_source_lock_missing",
             Self::Unknown => "unknown",
         }
     }
@@ -449,12 +449,12 @@ struct BootAgentEventReport {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct JamesAgentReportRequest {
+struct NestAgentReportRequest {
     protocol_version: u32,
     capabilities: Vec<&'static str>,
     cache: crate::cache::CacheStatusReport,
-    build_jobs: Vec<JamesBuildJobReport>,
-    cache_artifacts: Vec<JamesCacheArtifactReport>,
+    build_jobs: Vec<NestBuildJobReport>,
+    cache_artifacts: Vec<NestCacheArtifactReport>,
     cache_inventory_instance_id: String,
     cache_inventory_generation: i64,
     cache_artifacts_complete: bool,
@@ -470,7 +470,7 @@ struct JamesAgentReportRequest {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct JamesBuildJobReport {
+struct NestBuildJobReport {
     local_id: i64,
     managed_job_id: Option<String>,
     requested_artifact_type: String,
@@ -486,10 +486,10 @@ struct JamesBuildJobReport {
     logs: String,
     error: String,
     /// Enumerated rejection reason, explicitly null when the job was not
-    /// refused. Current Manage documents this canonical shape while retaining
-    /// additive compatibility with older James versions that omitted `None`.
+    /// refused. Current Tiaris documents this canonical shape while retaining
+    /// additive compatibility with older Nest versions that omitted `None`.
     ///
-    /// Manage screens reported prose for credential-shaped words and blanks
+    /// Tiaris screens reported prose for credential-shaped words and blanks
     /// the whole field, so the reason has to travel as a code to survive.
     rejection_code: Option<String>,
     output_path: String,
@@ -505,7 +505,7 @@ struct JamesBuildJobReport {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct JamesCacheArtifactReport {
+struct NestCacheArtifactReport {
     local_id: i64,
     managed_artifact_id: Option<String>,
     artifact_type: String,
@@ -529,7 +529,7 @@ struct JamesCacheArtifactReport {
     updated_at: String,
 }
 
-impl From<BuildJob> for JamesBuildJobReport {
+impl From<BuildJob> for NestBuildJobReport {
     fn from(job: BuildJob) -> Self {
         Self {
             local_id: job.id,
@@ -561,7 +561,7 @@ impl From<BuildJob> for JamesBuildJobReport {
     }
 }
 
-impl From<CacheArtifact> for JamesCacheArtifactReport {
+impl From<CacheArtifact> for NestCacheArtifactReport {
     fn from(artifact: CacheArtifact) -> Self {
         Self {
             local_id: artifact.id,
@@ -612,15 +612,15 @@ pub enum SyncOnceDisposition {
 pub struct SyncOnceReport {
     pub schema: &'static str,
     pub outcome: SyncOnceDisposition,
-    /// True only after Manage accepted and returned JSON for the signed James
+    /// True only after Tiaris accepted and returned JSON for the signed Nest
     /// report. Boot reports are intentionally not counted here.
     pub report_posted: bool,
 }
 
 impl SyncOnceReport {
-    fn synced(_receipt: JamesReportReceipt) -> Self {
+    fn synced(_receipt: NestReportReceipt) -> Self {
         Self {
-            schema: "cybex.james.sync-once.v1",
+            schema: "tiaris.nest.sync-once.v1",
             outcome: SyncOnceDisposition::Synced,
             report_posted: true,
         }
@@ -628,7 +628,7 @@ impl SyncOnceReport {
 }
 
 #[derive(Debug)]
-struct JamesReportReceipt;
+struct NestReportReceipt;
 
 #[derive(Clone, Debug)]
 struct NormalizedManagedSettings {
@@ -651,7 +651,7 @@ pub fn spawn(state: AppState) {
                             active_managed_sync_interval_seconds(normal_interval, active_builds > 0)
                         }
                         Err(err) => {
-                            warn!(error = %err, "failed to inspect active James builds for managed sync cadence");
+                            warn!(error = %err, "failed to inspect active Nest builds for managed sync cadence");
                             normal_interval
                         }
                     }
@@ -695,10 +695,10 @@ async fn sync_once_with_outcome(state: &AppState) -> Result<SyncOnceReport> {
     if let Err(error) = sync_boot_foundation(state, &mut managed).await {
         retain_sync_failure(&mut first_failure, "boot configuration and report", error);
     }
-    let james_report = match sync_james_foundation(state, &mut managed).await {
+    let nest_report = match sync_nest_foundation(state, &mut managed).await {
         Ok(report) => Some(report),
         Err(error) => {
-            retain_sync_failure(&mut first_failure, "James configuration and report", error);
+            retain_sync_failure(&mut first_failure, "Nest configuration and report", error);
             None
         }
     };
@@ -708,9 +708,9 @@ async fn sync_once_with_outcome(state: &AppState) -> Result<SyncOnceReport> {
     if let Some(error) = first_failure {
         return Err(error);
     }
-    Ok(SyncOnceReport::synced(james_report.expect(
-        "successful James sync returns its report receipt",
-    )))
+    Ok(SyncOnceReport::synced(
+        nest_report.expect("successful Nest sync returns its report receipt"),
+    ))
 }
 
 async fn sync_boot_foundation(state: &AppState, managed: &mut ManagedState) -> Result<()> {
@@ -803,9 +803,9 @@ async fn current_boot_client_reports(pool: &SqlitePool) -> Result<Vec<BootAgentC
 
 fn require_activated_identity(managed: &ManagedState) -> Result<()> {
     managed_device_id(managed).context(
-        "James has no V2-activated appliance identity; reinstall from personalized media",
+        "Nest has no V2-activated appliance identity; reinstall from personalized media",
     )?;
-    signing_key(managed).context("James V2 appliance signing identity is incomplete")?;
+    signing_key(managed).context("Nest V2 appliance signing identity is incomplete")?;
     Ok(())
 }
 
@@ -863,7 +863,7 @@ async fn report_boot_state(state: &AppState, managed: &mut ManagedState) -> Resu
     };
     let reported_state = boot_report_state(profile_count, clients.len(), reliability_state);
     let body = BootAgentReportRequest {
-        protocol_version: CYBEX_COMPONENT_PROTOCOL_VERSION,
+        protocol_version: TIARIS_COMPONENT_PROTOCOL_VERSION,
         settings: BootAgentSettingsReport {
             public_base_url: runtime.public_base_url,
             listen_addr: state.config.server.listen_addr.clone(),
@@ -908,29 +908,29 @@ async fn report_boot_state(state: &AppState, managed: &mut ManagedState) -> Resu
     Ok(())
 }
 
-async fn sync_james_foundation(
+async fn sync_nest_foundation(
     state: &AppState,
     managed: &mut ManagedState,
-) -> Result<JamesReportReceipt> {
+) -> Result<NestReportReceipt> {
     let mut first_failure = None;
     let mut peer_runtime_epoch = None;
     let mut peer_supports_scheduling = false;
-    match fetch_james_config(state, managed).await {
+    match fetch_nest_config(state, managed).await {
         Ok(desired) => {
             peer_supports_scheduling = desired.update_schedule_supported;
             peer_runtime_epoch = desired
                 .compatibility
                 .as_ref()
                 .and_then(|contract| contract.workstation_runtime_epoch);
-            apply_james_desired(state, managed, desired, &mut first_failure).await;
+            apply_nest_desired(state, managed, desired, &mut first_failure).await;
         }
         Err(error) => retain_sync_failure(
             &mut first_failure,
-            "James desired configuration fetch",
+            "Nest desired configuration fetch",
             error,
         ),
     }
-    let report = match report_james_state(
+    let report = match report_nest_state(
         state,
         managed,
         peer_runtime_epoch.is_some(),
@@ -940,14 +940,14 @@ async fn sync_james_foundation(
     {
         Ok(report) => Some(report),
         Err(error) => {
-            retain_sync_failure(&mut first_failure, "James state report", error);
+            retain_sync_failure(&mut first_failure, "Nest state report", error);
             None
         }
     };
     if let Some(error) = first_failure {
         return Err(error);
     }
-    Ok(report.expect("successful James report returns its receipt"))
+    Ok(report.expect("successful Nest report returns its receipt"))
 }
 
 fn store_update_schedule(policy: Option<Value>, supported: bool) -> Result<()> {
@@ -958,16 +958,16 @@ fn store_update_schedule(policy: Option<Value>, supported: bool) -> Result<()> {
         )
     } else {
         if policy.is_some() {
-            bail!("appliance update policy requires NixOS James");
+            bail!("appliance update policy requires NixOS Nest");
         }
         Ok(())
     }
 }
 
-async fn apply_james_desired(
+async fn apply_nest_desired(
     state: &AppState,
     managed: &ManagedState,
-    desired: AgentJamesConfigResponse,
+    desired: AgentNestConfigResponse,
     first_failure: &mut Option<anyhow::Error>,
 ) {
     if let Err(error) = crate::wake_on_lan::apply_requests(&state.db, &desired.wake_on_lan).await {
@@ -1036,7 +1036,7 @@ async fn apply_james_desired(
         retain_sync_failure(
             first_failure,
             "managed build desired state",
-            anyhow!("managed james config returned more than {MAX_MANAGED_BUILD_JOBS} build jobs"),
+            anyhow!("managed nest config returned more than {MAX_MANAGED_BUILD_JOBS} build jobs"),
         );
     }
     let mut build_snapshot_applied = build_count_valid;
@@ -1071,7 +1071,7 @@ async fn apply_james_desired(
                     warn!(
                         job_id = %job.id,
                         %reason,
-                        "rejecting managed build job; reporting it to Manage as failed"
+                        "rejecting managed build job; reporting it to Tiaris as failed"
                     );
                     if let Err(error) = db::record_rejected_managed_build_job(
                         &state.db,
@@ -1169,7 +1169,7 @@ async fn acknowledge_pending_appliance_network_change(
     };
     let device_id = managed_device_id(managed)?;
     let path = format!(
-        "/v1/agent/devices/{device_id}/james/network-changes/{}/acknowledge",
+        "/v1/agent/devices/{device_id}/nest/network-changes/{}/acknowledge",
         pending.change_id
     );
     let body = serde_json::to_vec(&json!({
@@ -1186,37 +1186,37 @@ async fn acknowledge_pending_appliance_network_change(
     crate::appliance::accept_network_acknowledgement(&acknowledgement)
 }
 
-async fn fetch_james_config(
+async fn fetch_nest_config(
     state: &AppState,
     managed: &ManagedState,
-) -> Result<AgentJamesConfigResponse> {
+) -> Result<AgentNestConfigResponse> {
     let device_id = managed_device_id(managed)?;
-    let path = format!("/v1/agent/devices/{device_id}/james/config");
+    let path = format!("/v1/agent/devices/{device_id}/nest/config");
     let response = signed_request(state, managed, Method::GET, &path, Vec::new())
         .await?
         .send()
         .await
-        .context("fetch managed james config request failed")?;
-    let config: AgentJamesConfigResponse =
-        parse_success_json(response, "fetch managed james config").await?;
+        .context("fetch managed nest config request failed")?;
+    let config: AgentNestConfigResponse =
+        parse_success_json(response, "fetch managed nest config").await?;
     validate_component_compatibility(config.compatibility.as_ref())?;
     Ok(config)
 }
 
-async fn report_james_state(
+async fn report_nest_state(
     state: &AppState,
     managed: &mut ManagedState,
     peer_supports_runtime_fencing: bool,
     peer_supports_scheduling: bool,
-) -> Result<JamesReportReceipt> {
+) -> Result<NestReportReceipt> {
     let (build_jobs, build_listing_valid) = match db::list_build_jobs_report_page(
         &state.db,
-        managed.james_active_report_cursor,
-        managed.james_rejection_report_cursor,
-        managed.james_terminal_report_cursor,
-        managed.james_report_rotation_round,
+        managed.nest_active_report_cursor,
+        managed.nest_rejection_report_cursor,
+        managed.nest_terminal_report_cursor,
+        managed.nest_report_rotation_round,
         MAX_REPORT_BUILD_JOBS,
-        MAX_JAMES_REPORT_BODY_BYTES,
+        MAX_NEST_REPORT_BODY_BYTES,
     )
     .await
     {
@@ -1224,7 +1224,7 @@ async fn report_james_state(
         Err(_) => {
             warn!(
                 error_code = "build_report_storage_unavailable",
-                "could not read build reports; continuing independent James report lanes"
+                "could not read build reports; continuing independent Nest report lanes"
             );
             (Vec::new(), false)
         }
@@ -1244,7 +1244,7 @@ async fn report_james_state(
             true
         }
         Err(err) => {
-            warn!(error = %err, "James cache integrity scrub failed");
+            warn!(error = %err, "Nest cache integrity scrub failed");
             false
         }
     };
@@ -1259,7 +1259,7 @@ async fn report_james_state(
                 (String::new(), 0, false)
             }
         };
-    let cache_report_cursor = james_cache_report_cursor(
+    let cache_report_cursor = nest_cache_report_cursor(
         managed,
         &cache_inventory_instance_id,
         cache_inventory_generation,
@@ -1270,7 +1270,7 @@ async fn report_james_state(
             &state.db,
             cache_report_cursor,
             MAX_REPORT_CACHE_ARTIFACTS,
-            MAX_JAMES_REPORT_BODY_BYTES,
+            MAX_NEST_REPORT_BODY_BYTES,
         )
         .await
         {
@@ -1306,7 +1306,7 @@ async fn report_james_state(
             warn!(
                 error_code = crate::netboot::ERROR_RUNTIME_REPORT_STORAGE_UNAVAILABLE,
                 safe_detail = %crate::netboot::safe_failure_message(&error),
-                "workstation runtime report generation failed; sending null without blocking the James report"
+                "workstation runtime report generation failed; sending null without blocking the Nest report"
             );
             None
         }
@@ -1316,7 +1316,7 @@ async fn report_james_state(
         Err(_) => {
             warn!(
                 error_code = "workstation_multicast_report_storage_unavailable",
-                "multicast evidence is unavailable; continuing independent James report lanes"
+                "multicast evidence is unavailable; continuing independent Nest report lanes"
             );
             None
         }
@@ -1333,30 +1333,30 @@ async fn report_james_state(
         Err(error) => {
             warn!(
                 error = %safe_error(&error),
-                "appliance report generation failed; sending null without blocking independent James state"
+                "appliance report generation failed; sending null without blocking independent Nest state"
             );
             (None, Some("local_state_unavailable"))
         }
     };
-    let report_priority = JamesReportPriority::from_round(managed.james_report_rotation_round);
+    let report_priority = NestReportPriority::from_round(managed.nest_report_rotation_round);
     let build_jobs = select_build_job_reports(
         build_jobs
             .into_iter()
-            .map(JamesBuildJobReport::from)
-            // Manage cannot correlate local-only jobs and deliberately ignores
+            .map(NestBuildJobReport::from)
+            // Tiaris cannot correlate local-only jobs and deliberately ignores
             // them. Do not let them consume the managed evidence budget.
             .filter(|job| job.managed_job_id.is_some())
             .collect(),
-        managed.james_active_report_cursor,
-        managed.james_rejection_report_cursor,
-        managed.james_terminal_report_cursor,
+        managed.nest_active_report_cursor,
+        managed.nest_rejection_report_cursor,
+        managed.nest_terminal_report_cursor,
         MAX_REPORT_BUILD_JOBS,
         report_priority,
     )?;
     let cache_artifacts = rotate_report_items_after_cursor(
         cache_artifacts
             .into_iter()
-            .map(JamesCacheArtifactReport::from)
+            .map(NestCacheArtifactReport::from)
             .collect(),
         cache_report_cursor,
         |artifact| artifact.local_id,
@@ -1364,9 +1364,9 @@ async fn report_james_state(
     .into_iter()
     .take(MAX_REPORT_CACHE_ARTIFACTS)
     .collect();
-    let body = JamesAgentReportRequest {
-        protocol_version: CYBEX_COMPONENT_PROTOCOL_VERSION,
-        capabilities: james_capabilities(&state.config, peer_supports_scheduling),
+    let body = NestAgentReportRequest {
+        protocol_version: TIARIS_COMPONENT_PROTOCOL_VERSION,
+        capabilities: nest_capabilities(&state.config, peer_supports_scheduling),
         cache,
         build_jobs,
         cache_artifacts,
@@ -1382,18 +1382,18 @@ async fn report_james_state(
         appliance_report_error,
     };
     let (body, body_bytes) =
-        fit_james_report_body(body, MAX_JAMES_REPORT_BODY_BYTES, report_priority)?;
+        fit_nest_report_body(body, MAX_NEST_REPORT_BODY_BYTES, report_priority)?;
     let device_id = managed_device_id(managed)?;
-    let path = format!("/v1/agent/devices/{device_id}/james/report");
+    let path = format!("/v1/agent/devices/{device_id}/nest/report");
     let response = signed_request(state, managed, Method::POST, &path, body_bytes)
         .await?
         .header(CONTENT_TYPE, "application/json")
         .send()
         .await
-        .context("report managed james state request failed")?;
+        .context("report managed nest state request failed")?;
     let response =
-        parse_success_json::<JamesReportResponse>(response, "report managed james state").await?;
-    accept_james_report_response(&response, managed, &body)?;
+        parse_success_json::<NestReportResponse>(response, "report managed nest state").await?;
+    accept_nest_report_response(&response, managed, &body)?;
     crate::appliance::nixos::record_manage_contact(
         managed_device_id(managed)?,
         managed
@@ -1406,7 +1406,7 @@ async fn report_james_state(
     if let Err(error) = crate::wake_on_lan::acknowledge(&state.db, &response.wake_on_lan).await {
         debug!(error = %error, "Wake-on-LAN receipts remain queued for acknowledgement");
     }
-    Ok(JamesReportReceipt)
+    Ok(NestReportReceipt)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1428,8 +1428,8 @@ fn workstation_multicast_receipt_matches_sent(
 
 async fn accept_workstation_multicast_receipt(
     state: &AppState,
-    response: &JamesReportResponse,
-    body: &JamesAgentReportRequest,
+    response: &NestReportResponse,
+    body: &NestAgentReportRequest,
 ) {
     let (Some(raw), Some(sent)) = (
         response.workstation_multicast.as_ref(),
@@ -1471,31 +1471,31 @@ async fn accept_workstation_multicast_receipt(
     }
 }
 
-fn accept_james_report_response(
-    response: &JamesReportResponse,
+fn accept_nest_report_response(
+    response: &NestReportResponse,
     managed: &mut ManagedState,
-    body: &JamesAgentReportRequest,
+    body: &NestAgentReportRequest,
 ) -> Result<()> {
-    validate_james_report_status(response)?;
-    // Overall status=ok means Manage committed every independently valid
+    validate_nest_report_status(response)?;
+    // Overall status=ok means Tiaris committed every independently valid
     // lane, even when the isolated workstation runtime receipt below is a
     // rejection. Advance those accepted pages before surfacing the runtime
     // retry so a persistent runtime problem cannot pin build/cache prefixes.
-    advance_james_report_rotation(managed, body);
-    log_james_report_warnings(&response.warnings, managed);
+    advance_nest_report_rotation(managed, body);
+    log_nest_report_warnings(&response.warnings, managed);
     validate_workstation_netboot_report_receipt(response)
 }
 
-fn log_james_report_warnings(warnings: &JamesReportWarnings, managed: &mut ManagedState) -> bool {
-    let fingerprint = james_report_warning_fingerprint(warnings);
+fn log_nest_report_warnings(warnings: &NestReportWarnings, managed: &mut ManagedState) -> bool {
+    let fingerprint = nest_report_warning_fingerprint(warnings);
     if fingerprint.is_none() {
-        managed.james_report_warning_fingerprint = None;
+        managed.nest_report_warning_fingerprint = None;
         return false;
     }
-    if managed.james_report_warning_fingerprint == fingerprint {
+    if managed.nest_report_warning_fingerprint == fingerprint {
         return false;
     }
-    managed.james_report_warning_fingerprint = fingerprint;
+    managed.nest_report_warning_fingerprint = fingerprint;
     if warnings.codes.is_empty() {
         return false;
     }
@@ -1510,12 +1510,12 @@ fn log_james_report_warnings(warnings: &JamesReportWarnings, managed: &mut Manag
         warning_count = warnings.codes.len(),
         warning_receipts_truncated = warnings.truncated,
         diagnostic_codes = ?diagnostic_codes,
-        "Manage isolated one or more invalid James report lanes; the accepted lanes remain healthy and rejected evidence will be reported again"
+        "Tiaris isolated one or more invalid Nest report lanes; the accepted lanes remain healthy and rejected evidence will be reported again"
     );
     true
 }
 
-fn james_report_warning_fingerprint(warnings: &JamesReportWarnings) -> Option<String> {
+fn nest_report_warning_fingerprint(warnings: &NestReportWarnings) -> Option<String> {
     if warnings.codes.is_empty() {
         return None;
     }
@@ -1530,21 +1530,21 @@ fn james_report_warning_fingerprint(warnings: &JamesReportWarnings) -> Option<St
 }
 
 #[cfg(test)]
-fn validate_james_report_response(response: &JamesReportResponse) -> Result<()> {
-    validate_james_report_status(response)?;
+fn validate_nest_report_response(response: &NestReportResponse) -> Result<()> {
+    validate_nest_report_status(response)?;
     validate_workstation_netboot_report_receipt(response)
 }
 
-fn validate_james_report_status(response: &JamesReportResponse) -> Result<()> {
+fn validate_nest_report_status(response: &NestReportResponse) -> Result<()> {
     if response.status != "ok" {
-        bail!("Manage returned an invalid James report status");
+        bail!("Tiaris returned an invalid Nest report status");
     }
     Ok(())
 }
 
-fn validate_workstation_netboot_report_receipt(response: &JamesReportResponse) -> Result<()> {
+fn validate_workstation_netboot_report_receipt(response: &NestReportResponse) -> Result<()> {
     let Some(receipt) = response.workstation_netboot.as_ref() else {
-        // Older Manage releases predate isolated runtime receipts.
+        // Older Tiaris releases predate isolated runtime receipts.
         return Ok(());
     };
     match (receipt.state, receipt.error_code) {
@@ -1554,10 +1554,10 @@ fn validate_workstation_netboot_report_receipt(response: &JamesReportResponse) -
             | WorkstationNetbootReportReceiptState::Unavailable,
             Some(code),
         ) if code != WorkstationNetbootReportReceiptErrorCode::Unknown => Err(anyhow!(
-            "Manage did not accept workstation runtime evidence ({})",
+            "Tiaris did not accept workstation runtime evidence ({})",
             code.as_str()
         )),
-        _ => bail!("Manage returned an invalid workstation runtime report receipt"),
+        _ => bail!("Tiaris returned an invalid workstation runtime report receipt"),
     }
 }
 
@@ -1570,7 +1570,7 @@ fn runtime_report_for_peer(
         report.reconcile_generation = None;
         // The legacy nested DTO rejects unknown fields and its invariant also
         // rejects failure evidence on a ready runtime. Omit the additive
-        // warning during a Manage-first rolling upgrade; new peers receive it.
+        // warning during a Tiaris-first rolling upgrade; new peers receive it.
         report.warning_kind = None;
         report.warning_message = None;
     }
@@ -1584,10 +1584,10 @@ fn cache_inventory_generation_for_peer(
     peer_supports_lane_isolation: bool,
 ) -> i64 {
     if peer_supports_lane_isolation && (!cache_listing_valid || !cache_inventory_valid) {
-        // A negative generation is rejected by Manage's isolated cache lane.
+        // A negative generation is rejected by Tiaris's isolated cache lane.
         // This prevents a best-effort empty snapshot (or an independently
         // optimistic cache status report) from refreshing cache health when
-        // James could not read its authoritative local inventory.
+        // Nest could not read its authoritative local inventory.
         -1
     } else {
         generation
@@ -1633,28 +1633,28 @@ where
     items
 }
 
-fn james_cache_report_cursor(
+fn nest_cache_report_cursor(
     managed: &ManagedState,
     inventory_instance_id: &str,
     inventory_generation: i64,
     inventory_valid: bool,
 ) -> Option<i64> {
     (inventory_valid
-        && managed.james_cache_report_instance_id.as_deref() == Some(inventory_instance_id)
-        && managed.james_cache_report_generation == Some(inventory_generation))
-    .then_some(managed.james_cache_artifact_report_cursor)
+        && managed.nest_cache_report_instance_id.as_deref() == Some(inventory_instance_id)
+        && managed.nest_cache_report_generation == Some(inventory_generation))
+    .then_some(managed.nest_cache_artifact_report_cursor)
     .flatten()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum JamesReportPriority {
+enum NestReportPriority {
     ActiveBuilds,
     TerminalBuilds,
     RejectedBuilds,
     CacheArtifacts,
 }
 
-impl JamesReportPriority {
+impl NestReportPriority {
     fn from_round(round: u8) -> Self {
         match round % 4 {
             0 => Self::ActiveBuilds,
@@ -1675,23 +1675,23 @@ impl JamesReportPriority {
     }
 }
 
-fn james_build_job_is_terminal(job: &JamesBuildJobReport) -> bool {
+fn nest_build_job_is_terminal(job: &NestBuildJobReport) -> bool {
     matches!(job.status.as_str(), "succeeded" | "failed" | "cancelled")
 }
 
 fn select_build_job_reports(
-    reports: Vec<JamesBuildJobReport>,
+    reports: Vec<NestBuildJobReport>,
     active_cursor: Option<i64>,
     rejection_cursor: Option<i64>,
     terminal_cursor: Option<i64>,
     max_reports: usize,
-    priority: JamesReportPriority,
-) -> Result<Vec<JamesBuildJobReport>> {
+    priority: NestReportPriority,
+) -> Result<Vec<NestBuildJobReport>> {
     let mut active = Vec::new();
     let mut rejected = Vec::new();
     let mut terminal = Vec::new();
     for report in reports {
-        if !james_build_job_is_terminal(&report) {
+        if !nest_build_job_is_terminal(&report) {
             active.push(report);
         } else if report.rejection_code.is_some() {
             rejected.push(report);
@@ -1728,14 +1728,14 @@ fn select_build_job_reports(
     Ok(selected)
 }
 
-fn advance_james_report_rotation(managed: &mut ManagedState, body: &JamesAgentReportRequest) {
+fn advance_nest_report_rotation(managed: &mut ManagedState, body: &NestAgentReportRequest) {
     if let Some(job) = body
         .build_jobs
         .iter()
         .rev()
-        .find(|job| !james_build_job_is_terminal(job))
+        .find(|job| !nest_build_job_is_terminal(job))
     {
-        managed.james_active_report_cursor = Some(job.local_id);
+        managed.nest_active_report_cursor = Some(job.local_id);
     }
     if let Some(job) = body
         .build_jobs
@@ -1743,51 +1743,51 @@ fn advance_james_report_rotation(managed: &mut ManagedState, body: &JamesAgentRe
         .rev()
         .find(|job| job.rejection_code.is_some())
     {
-        managed.james_rejection_report_cursor = Some(job.local_id);
+        managed.nest_rejection_report_cursor = Some(job.local_id);
     }
     if let Some(job) = body
         .build_jobs
         .iter()
         .rev()
-        .find(|job| james_build_job_is_terminal(job) && job.rejection_code.is_none())
+        .find(|job| nest_build_job_is_terminal(job) && job.rejection_code.is_none())
     {
-        managed.james_terminal_report_cursor = Some(job.local_id);
+        managed.nest_terminal_report_cursor = Some(job.local_id);
     }
     if body.cache_inventory_generation >= 0 && !body.cache_inventory_instance_id.is_empty() {
-        let same_generation = managed.james_cache_report_instance_id.as_deref()
+        let same_generation = managed.nest_cache_report_instance_id.as_deref()
             == Some(body.cache_inventory_instance_id.as_str())
-            && managed.james_cache_report_generation == Some(body.cache_inventory_generation);
+            && managed.nest_cache_report_generation == Some(body.cache_inventory_generation);
         if !same_generation {
-            managed.james_cache_artifact_report_cursor = None;
+            managed.nest_cache_artifact_report_cursor = None;
         }
-        managed.james_cache_report_instance_id = Some(body.cache_inventory_instance_id.clone());
-        managed.james_cache_report_generation = Some(body.cache_inventory_generation);
+        managed.nest_cache_report_instance_id = Some(body.cache_inventory_instance_id.clone());
+        managed.nest_cache_report_generation = Some(body.cache_inventory_generation);
         if body.cache_artifacts_complete {
             // The next accepted report begins a fresh traversal of the same
             // generation. The just-completed page is authoritative because
-            // every earlier page was stamped with this generation by Manage.
-            managed.james_cache_artifact_report_cursor = None;
+            // every earlier page was stamped with this generation by Tiaris.
+            managed.nest_cache_artifact_report_cursor = None;
         } else if let Some(artifact) = body.cache_artifacts.last() {
-            managed.james_cache_artifact_report_cursor = Some(artifact.local_id);
+            managed.nest_cache_artifact_report_cursor = Some(artifact.local_id);
         }
     }
-    managed.james_report_rotation_round = (managed.james_report_rotation_round + 1) % 4;
+    managed.nest_report_rotation_round = (managed.nest_report_rotation_round + 1) % 4;
 }
 
-fn fit_james_report_body(
-    mut body: JamesAgentReportRequest,
+fn fit_nest_report_body(
+    mut body: NestAgentReportRequest,
     max_bytes: usize,
-    priority: JamesReportPriority,
-) -> Result<(JamesAgentReportRequest, Vec<u8>)> {
+    priority: NestReportPriority,
+) -> Result<(NestAgentReportRequest, Vec<u8>)> {
     let original_jobs = body.build_jobs.len();
     let original_artifacts = body.cache_artifacts.len();
-    if james_report_body_fits(&body, max_bytes) {
-        let body_bytes = serialize_james_report_body(&body)?;
+    if nest_report_body_fits(&body, max_bytes) {
+        let body_bytes = serialize_nest_report_body(&body)?;
         return Ok((body, body_bytes));
     }
 
     // Logs are diagnostic convenience; the managed job identity, state and
-    // cache metadata are the durable evidence that Manage needs. Drop logs
+    // cache metadata are the durable evidence that Tiaris needs. Drop logs
     // first so active and terminal job reports remain intact.
     for job in &mut body.build_jobs {
         job.logs.clear();
@@ -1796,25 +1796,25 @@ fn fit_james_report_body(
     trim_workstation_multicast_reports(&mut body, max_bytes);
 
     match priority {
-        JamesReportPriority::ActiveBuilds => {
+        NestReportPriority::ActiveBuilds => {
             trim_ordinary_terminal_reports(&mut body, max_bytes);
             trim_cache_artifact_reports(&mut body, max_bytes);
             trim_rejected_build_reports(&mut body, max_bytes);
             trim_active_build_reports(&mut body, max_bytes);
         }
-        JamesReportPriority::TerminalBuilds => {
+        NestReportPriority::TerminalBuilds => {
             trim_cache_artifact_reports(&mut body, max_bytes);
             trim_active_build_reports(&mut body, max_bytes);
             trim_rejected_build_reports(&mut body, max_bytes);
             trim_ordinary_terminal_reports(&mut body, max_bytes);
         }
-        JamesReportPriority::RejectedBuilds => {
+        NestReportPriority::RejectedBuilds => {
             trim_ordinary_terminal_reports(&mut body, max_bytes);
             trim_cache_artifact_reports(&mut body, max_bytes);
             trim_active_build_reports(&mut body, max_bytes);
             trim_rejected_build_reports(&mut body, max_bytes);
         }
-        JamesReportPriority::CacheArtifacts => {
+        NestReportPriority::CacheArtifacts => {
             trim_ordinary_terminal_reports(&mut body, max_bytes);
             trim_active_build_reports(&mut body, max_bytes);
             trim_rejected_build_reports(&mut body, max_bytes);
@@ -1822,23 +1822,23 @@ fn fit_james_report_body(
         }
     }
 
-    if !james_report_body_fits(&body, max_bytes) {
-        bail!("managed james report base body exceeded {max_bytes} bytes");
+    if !nest_report_body_fits(&body, max_bytes) {
+        bail!("managed nest report base body exceeded {max_bytes} bytes");
     }
-    let body_bytes = serialize_james_report_body(&body)?;
+    let body_bytes = serialize_nest_report_body(&body)?;
     warn!(
         jobs_sent = body.build_jobs.len(),
         jobs_total = original_jobs,
         cache_artifacts_sent = body.cache_artifacts.len(),
         cache_artifacts_total = original_artifacts,
         max_bytes,
-        "managed james report trimmed to fit request budget"
+        "managed nest report trimmed to fit request budget"
     );
     Ok((body, body_bytes))
 }
 
-fn trim_workstation_multicast_reports(body: &mut JamesAgentReportRequest, max_bytes: usize) {
-    while !james_report_body_fits(body, max_bytes) {
+fn trim_workstation_multicast_reports(body: &mut NestAgentReportRequest, max_bytes: usize) {
+    while !nest_report_body_fits(body, max_bytes) {
         let Some(report) = body.workstation_multicast.as_mut() else {
             break;
         };
@@ -1848,22 +1848,22 @@ fn trim_workstation_multicast_reports(body: &mut JamesAgentReportRequest, max_by
     }
 }
 
-fn terminal_build_job_removal_index(jobs: &[JamesBuildJobReport]) -> Option<usize> {
+fn terminal_build_job_removal_index(jobs: &[NestBuildJobReport]) -> Option<usize> {
     jobs.iter()
-        .rposition(|job| james_build_job_is_terminal(job) && job.rejection_code.is_none())
+        .rposition(|job| nest_build_job_is_terminal(job) && job.rejection_code.is_none())
 }
 
-fn active_build_job_removal_index(jobs: &[JamesBuildJobReport]) -> Option<usize> {
+fn active_build_job_removal_index(jobs: &[NestBuildJobReport]) -> Option<usize> {
     jobs.iter()
-        .rposition(|job| !james_build_job_is_terminal(job))
+        .rposition(|job| !nest_build_job_is_terminal(job))
 }
 
-fn rejected_build_job_removal_index(jobs: &[JamesBuildJobReport]) -> Option<usize> {
+fn rejected_build_job_removal_index(jobs: &[NestBuildJobReport]) -> Option<usize> {
     jobs.iter().rposition(|job| job.rejection_code.is_some())
 }
 
-fn trim_ordinary_terminal_reports(body: &mut JamesAgentReportRequest, max_bytes: usize) {
-    while !james_report_body_fits(body, max_bytes) {
+fn trim_ordinary_terminal_reports(body: &mut NestAgentReportRequest, max_bytes: usize) {
+    while !nest_report_body_fits(body, max_bytes) {
         let Some(index) = terminal_build_job_removal_index(&body.build_jobs) else {
             break;
         };
@@ -1871,8 +1871,8 @@ fn trim_ordinary_terminal_reports(body: &mut JamesAgentReportRequest, max_bytes:
     }
 }
 
-fn trim_active_build_reports(body: &mut JamesAgentReportRequest, max_bytes: usize) {
-    while !james_report_body_fits(body, max_bytes) {
+fn trim_active_build_reports(body: &mut NestAgentReportRequest, max_bytes: usize) {
+    while !nest_report_body_fits(body, max_bytes) {
         let Some(index) = active_build_job_removal_index(&body.build_jobs) else {
             break;
         };
@@ -1880,8 +1880,8 @@ fn trim_active_build_reports(body: &mut JamesAgentReportRequest, max_bytes: usiz
     }
 }
 
-fn trim_rejected_build_reports(body: &mut JamesAgentReportRequest, max_bytes: usize) {
-    while !james_report_body_fits(body, max_bytes) {
+fn trim_rejected_build_reports(body: &mut NestAgentReportRequest, max_bytes: usize) {
+    while !nest_report_body_fits(body, max_bytes) {
         let Some(index) = rejected_build_job_removal_index(&body.build_jobs) else {
             break;
         };
@@ -1889,15 +1889,15 @@ fn trim_rejected_build_reports(body: &mut JamesAgentReportRequest, max_bytes: us
     }
 }
 
-fn trim_cache_artifact_reports(body: &mut JamesAgentReportRequest, max_bytes: usize) {
-    if james_report_body_fits(body, max_bytes) || body.cache_artifacts.is_empty() {
+fn trim_cache_artifact_reports(body: &mut NestAgentReportRequest, max_bytes: usize) {
+    if nest_report_body_fits(body, max_bytes) || body.cache_artifacts.is_empty() {
         return;
     }
     let fitting = max_fitting_prefix_len(body.cache_artifacts.len(), |count| {
         let tail = body.cache_artifacts.split_off(count);
         let complete = body.cache_artifacts_complete;
         body.cache_artifacts_complete = false;
-        let fits = james_report_body_fits(body, max_bytes);
+        let fits = nest_report_body_fits(body, max_bytes);
         body.cache_artifacts.extend(tail);
         body.cache_artifacts_complete = complete;
         fits
@@ -1906,18 +1906,18 @@ fn trim_cache_artifact_reports(body: &mut JamesAgentReportRequest, max_bytes: us
     body.cache_artifacts_complete = false;
 }
 
-struct JamesReportSizeWriter {
+struct NestReportSizeWriter {
     written: usize,
     max_bytes: usize,
 }
 
-impl Write for JamesReportSizeWriter {
+impl Write for NestReportSizeWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let Some(next) = self.written.checked_add(bytes.len()) else {
-            return Err(io::Error::other("James report size overflow"));
+            return Err(io::Error::other("Nest report size overflow"));
         };
         if next > self.max_bytes {
-            return Err(io::Error::other("James report size limit exceeded"));
+            return Err(io::Error::other("Nest report size limit exceeded"));
         }
         self.written = next;
         Ok(bytes.len())
@@ -1928,16 +1928,16 @@ impl Write for JamesReportSizeWriter {
     }
 }
 
-fn james_report_body_fits(body: &JamesAgentReportRequest, max_bytes: usize) -> bool {
-    let mut writer = JamesReportSizeWriter {
+fn nest_report_body_fits(body: &NestAgentReportRequest, max_bytes: usize) -> bool {
+    let mut writer = NestReportSizeWriter {
         written: 0,
         max_bytes,
     };
     serde_json::to_writer(&mut writer, body).is_ok()
 }
 
-fn serialize_james_report_body(body: &JamesAgentReportRequest) -> Result<Vec<u8>> {
-    serde_json::to_vec(body).context("serialize managed james report")
+fn serialize_nest_report_body(body: &NestAgentReportRequest) -> Result<Vec<u8>> {
+    serde_json::to_vec(body).context("serialize managed nest report")
 }
 
 fn fit_boot_report_body(
@@ -2489,11 +2489,11 @@ async fn signed_request_for_config(
     let signature = URL_SAFE_NO_PAD.encode(signing.sign(canonical.as_bytes()).to_bytes());
     let request = http_client_for_config(config)?
         .request(method, endpoint)
-        .header("x-cybex-organization", organization_header(config)?)
-        .header("x-cybex-device-id", device_id)
-        .header("x-cybex-request-id", request_id)
-        .header("x-cybex-timestamp", timestamp)
-        .header("x-cybex-signature", signature);
+        .header("x-tiaris-organization", organization_header(config)?)
+        .header("x-tiaris-device-id", device_id)
+        .header("x-tiaris-request-id", request_id)
+        .header("x-tiaris-timestamp", timestamp)
+        .header("x-tiaris-signature", signature);
     Ok(if body.is_empty() {
         request
     } else {
@@ -2501,15 +2501,15 @@ async fn signed_request_for_config(
     })
 }
 
-fn james_capabilities(config: &AppConfig, peer_supports_scheduling: bool) -> Vec<&'static str> {
-    james_capabilities_for_mode(
+fn nest_capabilities(config: &AppConfig, peer_supports_scheduling: bool) -> Vec<&'static str> {
+    nest_capabilities_for_mode(
         config,
         peer_supports_scheduling,
         crate::appliance::nixos::is_nixos(),
     )
 }
 
-fn james_capabilities_for_mode(
+fn nest_capabilities_for_mode(
     config: &AppConfig,
     peer_supports_scheduling: bool,
     nixos: bool,
@@ -2525,7 +2525,7 @@ fn james_capabilities_for_mode(
         CAPABILITY_CACHE_REPLICA_V1,
         CAPABILITY_WORKSTATION_NETBOOT_V1,
         CAPABILITY_WORKSTATION_NETBOOT_TRANSPORT_V1,
-        CAPABILITY_JAMES_BOOT_GRANT_V1,
+        CAPABILITY_NEST_BOOT_GRANT_V1,
         CAPABILITY_WAKE_ON_LAN_V1,
     ];
     capabilities.push(crate::pxe_discovery::CAPABILITY);
@@ -2570,19 +2570,19 @@ fn signing_key_from_b64(value: &str) -> Result<SigningKey> {
     Ok(SigningKey::from_bytes(&bytes))
 }
 
-pub(crate) struct JamesBootIdentity {
+pub(crate) struct NestBootIdentity {
     pub device_id: String,
     pub signing_key: SigningKey,
 }
 
 /// Load the already-adopted node identity for short-lived boot-grant signing.
 /// This never creates or rotates key material: PXE must fail closed until the
-/// same identity Manage has adopted is durable on disk.
-pub(crate) fn james_boot_identity(config: &AppConfig) -> Result<JamesBootIdentity> {
+/// same identity Tiaris has adopted is durable on disk.
+pub(crate) fn nest_boot_identity(config: &AppConfig) -> Result<NestBootIdentity> {
     let managed = load_managed_state_from_config(config)?;
     let device_id = managed_device_id(&managed)?.to_string();
     let signing_key = signing_key(&managed)?;
-    Ok(JamesBootIdentity {
+    Ok(NestBootIdentity {
         device_id,
         signing_key,
     })
@@ -2941,7 +2941,7 @@ fn canonical_agent_payload(
     body_sha256: &str,
 ) -> String {
     format!(
-        "CYBEX-AGENT-V1\n{}\n{}\n{}\n{}\n{}",
+        "TIARIS-AGENT-V1\n{}\n{}\n{}\n{}\n{}",
         method.to_uppercase(),
         path_and_query,
         timestamp,
@@ -3076,18 +3076,18 @@ fn validate_component_compatibility(
 ) -> Result<()> {
     let contract =
         contract.ok_or_else(|| anyhow!("managed protocol-4 compatibility is required"))?;
-    if !(CYBEX_MINIMUM_MANAGE_PROTOCOL_VERSION..=CYBEX_MAXIMUM_MANAGE_PROTOCOL_VERSION)
+    if !(TIARIS_MINIMUM_MANAGE_PROTOCOL_VERSION..=TIARIS_MAXIMUM_MANAGE_PROTOCOL_VERSION)
         .contains(&contract.protocol_version)
-        || !(contract.minimum_james_protocol..=contract.maximum_james_protocol)
-            .contains(&CYBEX_COMPONENT_PROTOCOL_VERSION)
+        || !(contract.minimum_nest_protocol..=contract.maximum_nest_protocol)
+            .contains(&TIARIS_COMPONENT_PROTOCOL_VERSION)
         || contract.workstation_runtime_epoch == Some(0)
     {
         bail!(
-            "incompatible Manage protocol {} (James protocol {}, supported James range {} through {}, Manage version {}, release {})",
+            "incompatible Tiaris protocol {} (Nest protocol {}, supported Nest range {} through {}, Tiaris version {}, release {})",
             contract.protocol_version,
-            CYBEX_COMPONENT_PROTOCOL_VERSION,
-            contract.minimum_james_protocol,
-            contract.maximum_james_protocol,
+            TIARIS_COMPONENT_PROTOCOL_VERSION,
+            contract.minimum_nest_protocol,
+            contract.maximum_nest_protocol,
             clean_string(&contract.manage_version),
             clean_string(&contract.manage_release),
         );
@@ -3236,7 +3236,7 @@ fn validate_assignable_profile(profile: &ManagedBootProfile, field: &str) -> Res
 
 fn managed_profile_has_boot_action(profile: &ManagedBootProfile) -> bool {
     match profile.profile_type.as_str() {
-        "local_disk" | "james_installer" => true,
+        "local_disk" | "nest_installer" => true,
         "custom_ipxe" => profile
             .raw_script
             .as_deref()
@@ -3305,7 +3305,7 @@ fn load_reliability_state() -> Option<Value> {
         warn!(
             path = RELIABILITY_STATE_PATH,
             bytes = bytes.len(),
-            "ignoring oversized James reliability state"
+            "ignoring oversized Nest reliability state"
         );
         return None;
     }
@@ -3314,12 +3314,12 @@ fn load_reliability_state() -> Option<Value> {
         Ok(_) => {
             warn!(
                 path = RELIABILITY_STATE_PATH,
-                "ignoring non-object James reliability state"
+                "ignoring non-object Nest reliability state"
             );
             None
         }
         Err(err) => {
-            warn!(path = RELIABILITY_STATE_PATH, error = %err, "ignoring invalid James reliability state");
+            warn!(path = RELIABILITY_STATE_PATH, error = %err, "ignoring invalid Nest reliability state");
             None
         }
     }
@@ -3418,14 +3418,14 @@ mod tests {
     async fn signed_requests_canonicalize_the_final_prefixed_path_and_query() {
         let signing = SigningKey::from_bytes(&[11_u8; 32]);
         let managed = ManagedState {
-            device_id: Some("james-123".to_string()),
+            device_id: Some("nest-123".to_string()),
             private_key_b64: Some(STANDARD.encode(signing.to_bytes())),
             ..ManagedState::default()
         };
         let mut config = AppConfig::default();
         config.manage.api_url = "https://manage.example.invalid/api".to_string();
         config.manage.organization_id = "org-123".to_string();
-        let relative = "/v1/agent/devices/james-123/config?cursor=a%2Fb";
+        let relative = "/v1/agent/devices/nest-123/config?cursor=a%2Fb";
         let body = br#"{"status":"ready"}"#.to_vec();
         let request =
             signed_request_for_config(&config, &managed, Method::POST, relative, body.clone())
@@ -3436,13 +3436,13 @@ mod tests {
         let signed_path = request_path_and_query(request.url().as_str()).unwrap();
         assert_eq!(
             signed_path,
-            "/api/v1/agent/devices/james-123/config?cursor=a%2Fb"
+            "/api/v1/agent/devices/nest-123/config?cursor=a%2Fb"
         );
-        let timestamp = request.headers()["x-cybex-timestamp"].to_str().unwrap();
-        let request_id = request.headers()["x-cybex-request-id"].to_str().unwrap();
+        let timestamp = request.headers()["x-tiaris-timestamp"].to_str().unwrap();
+        let request_id = request.headers()["x-tiaris-request-id"].to_str().unwrap();
         let signature = Signature::from_slice(
             &URL_SAFE_NO_PAD
-                .decode(request.headers()["x-cybex-signature"].to_str().unwrap())
+                .decode(request.headers()["x-tiaris-signature"].to_str().unwrap())
                 .unwrap(),
         )
         .unwrap();
@@ -3701,8 +3701,8 @@ mod tests {
         let settings = ManagedBootSettings {
             public_base_url: " http://boot.example/// ".to_string(),
             listen_addr: "127.0.0.1:9080".to_string(),
-            tftp_root: "/srv/cybex-james/tftp-managed".to_string(),
-            http_root: "/srv/cybex-james/www-managed".to_string(),
+            tftp_root: "/srv/tiaris-nest/tftp-managed".to_string(),
+            http_root: "/srv/tiaris-nest/www-managed".to_string(),
             bootloader_filename: " ipxe.efi ".to_string(),
             menu_timeout_ms: 1_000,
         };
@@ -3761,16 +3761,16 @@ mod tests {
         let invalid_url = ManagedBootSettings {
             public_base_url: "http://boot.example/path?debug=true".to_string(),
             listen_addr: "127.0.0.1:8080".to_string(),
-            tftp_root: "/srv/cybex-james/tftp".to_string(),
-            http_root: "/srv/cybex-james/www".to_string(),
+            tftp_root: "/srv/tiaris-nest/tftp".to_string(),
+            http_root: "/srv/tiaris-nest/www".to_string(),
             bootloader_filename: "snponly.efi".to_string(),
             menu_timeout_ms: 10_000,
         };
         let invalid_loader = ManagedBootSettings {
             public_base_url: "http://boot.example".to_string(),
             listen_addr: "127.0.0.1:8080".to_string(),
-            tftp_root: "/srv/cybex-james/tftp".to_string(),
-            http_root: "/srv/cybex-james/www".to_string(),
+            tftp_root: "/srv/tiaris-nest/tftp".to_string(),
+            http_root: "/srv/tiaris-nest/www".to_string(),
             bootloader_filename: "../snponly.efi".to_string(),
             menu_timeout_ms: 10_000,
         };
@@ -4455,10 +4455,10 @@ mod tests {
     }
 
     #[test]
-    fn james_capabilities_report_build_and_cache() {
+    fn nest_capabilities_report_build_and_cache() {
         let config = AppConfig::default();
         assert_eq!(
-            james_capabilities_for_mode(&config, true, false),
+            nest_capabilities_for_mode(&config, true, false),
             vec![
                 "boot_v1",
                 "builder_v1",
@@ -4470,7 +4470,7 @@ mod tests {
                 "cache_replica_v1",
                 "workstation_netboot_v1",
                 "workstation_netboot_transport_v1",
-                "james_boot_grant_v1",
+                "nest_boot_grant_v1",
                 "wake_on_lan_v1",
                 "pxe_proxy_v1"
             ]
@@ -4479,12 +4479,12 @@ mod tests {
 
     #[test]
     fn scheduling_capability_requires_explicit_manage_support() {
-        let older: AgentJamesConfigResponse = serde_json::from_value(json!({})).unwrap();
-        let newer: AgentJamesConfigResponse =
+        let older: AgentNestConfigResponse = serde_json::from_value(json!({})).unwrap();
+        let newer: AgentNestConfigResponse =
             serde_json::from_value(json!({"update_schedule_supported":true})).unwrap();
         let config = AppConfig::default();
-        let legacy = james_capabilities_for_mode(&config, older.update_schedule_supported, true);
-        let modern = james_capabilities_for_mode(&config, newer.update_schedule_supported, true);
+        let legacy = nest_capabilities_for_mode(&config, older.update_schedule_supported, true);
+        let modern = nest_capabilities_for_mode(&config, newer.update_schedule_supported, true);
         assert!(!legacy.contains(&crate::appliance::schedule::CAPABILITY));
         assert!(modern.contains(&crate::appliance::schedule::CAPABILITY));
         assert_eq!(
@@ -4497,12 +4497,12 @@ mod tests {
     }
 
     #[test]
-    fn james_build_reports_serialize_required_rejection_code_for_normal_and_rejected_jobs() {
-        let normal = serde_json::to_value(JamesBuildJobReport::from(sample_build_job(""))).unwrap();
+    fn nest_build_reports_serialize_required_rejection_code_for_normal_and_rejected_jobs() {
+        let normal = serde_json::to_value(NestBuildJobReport::from(sample_build_job(""))).unwrap();
         let normal = normal.as_object().unwrap();
         assert_eq!(normal.get("rejection_code"), Some(&Value::Null));
 
-        let rejected = serde_json::to_value(JamesBuildJobReport::from(sample_build_job(
+        let rejected = serde_json::to_value(NestBuildJobReport::from(sample_build_job(
             "protected_material",
         )))
         .unwrap();
@@ -4510,18 +4510,18 @@ mod tests {
     }
 
     #[test]
-    fn james_report_size_trimming_preserves_required_rejection_code_shape() {
-        let mut normal = JamesBuildJobReport::from(sample_build_job(""));
+    fn nest_report_size_trimming_preserves_required_rejection_code_shape() {
+        let mut normal = NestBuildJobReport::from(sample_build_job(""));
         normal.logs = "normal build log".repeat(256);
-        let mut rejected = JamesBuildJobReport::from(sample_build_job("protected_material"));
+        let mut rejected = NestBuildJobReport::from(sample_build_job("protected_material"));
         rejected.logs = "rejected build log".repeat(256);
-        let report = sample_james_report(vec![normal, rejected]);
-        let original_bytes = serialize_james_report_body(&report).unwrap();
+        let report = sample_nest_report(vec![normal, rejected]);
+        let original_bytes = serialize_nest_report_body(&report).unwrap();
 
-        let (trimmed, trimmed_bytes) = fit_james_report_body(
+        let (trimmed, trimmed_bytes) = fit_nest_report_body(
             report,
             original_bytes.len() - 1,
-            JamesReportPriority::ActiveBuilds,
+            NestReportPriority::ActiveBuilds,
         )
         .unwrap();
 
@@ -4538,23 +4538,23 @@ mod tests {
 
     #[test]
     fn pathological_cache_inventory_cannot_starve_terminal_build_evidence() {
-        let mut succeeded = JamesBuildJobReport::from(sample_build_job(""));
+        let mut succeeded = NestBuildJobReport::from(sample_build_job(""));
         succeeded.status = "succeeded".to_string();
         succeeded.progress_percent = Some(100);
         succeeded.completed_at = Some("2026-08-10T18:01:00Z".to_string());
-        let rejected = JamesBuildJobReport::from(sample_build_job("protected_material"));
-        let mut report = sample_james_report(vec![succeeded, rejected]);
+        let rejected = NestBuildJobReport::from(sample_build_job("protected_material"));
+        let mut report = sample_nest_report(vec![succeeded, rejected]);
         report.cache_artifacts = vec![sample_cache_artifact("x".repeat(64 * 1024))];
 
         let mut terminal_evidence_only = report.clone();
         terminal_evidence_only.cache_artifacts.clear();
         terminal_evidence_only.cache_artifacts_complete = false;
-        let terminal_evidence_bytes = serialize_james_report_body(&terminal_evidence_only).unwrap();
+        let terminal_evidence_bytes = serialize_nest_report_body(&terminal_evidence_only).unwrap();
 
-        let (trimmed, trimmed_bytes) = fit_james_report_body(
+        let (trimmed, trimmed_bytes) = fit_nest_report_body(
             report,
             terminal_evidence_bytes.len(),
-            JamesReportPriority::TerminalBuilds,
+            NestReportPriority::TerminalBuilds,
         )
         .unwrap();
 
@@ -4566,20 +4566,20 @@ mod tests {
 
     #[test]
     fn oversized_build_reports_drop_ordinary_terminal_evidence_before_rejections() {
-        let mut succeeded = JamesBuildJobReport::from(sample_build_job(""));
+        let mut succeeded = NestBuildJobReport::from(sample_build_job(""));
         succeeded.status = "succeeded".to_string();
         succeeded.progress_percent = Some(100);
         succeeded.completed_at = Some("2026-08-10T18:01:00Z".to_string());
         succeeded.cache_metadata = json!({"oversized": "x".repeat(64 * 1024)});
-        let rejected = JamesBuildJobReport::from(sample_build_job("protected_material"));
-        let rejection_only = sample_james_report(vec![rejected.clone()]);
-        let rejection_only_bytes = serialize_james_report_body(&rejection_only).unwrap();
-        let report = sample_james_report(vec![succeeded, rejected]);
+        let rejected = NestBuildJobReport::from(sample_build_job("protected_material"));
+        let rejection_only = sample_nest_report(vec![rejected.clone()]);
+        let rejection_only_bytes = serialize_nest_report_body(&rejection_only).unwrap();
+        let report = sample_nest_report(vec![succeeded, rejected]);
 
-        let (trimmed, trimmed_bytes) = fit_james_report_body(
+        let (trimmed, trimmed_bytes) = fit_nest_report_body(
             report,
             rejection_only_bytes.len(),
-            JamesReportPriority::ActiveBuilds,
+            NestReportPriority::ActiveBuilds,
         )
         .unwrap();
 
@@ -4593,16 +4593,16 @@ mod tests {
 
     #[test]
     fn accepted_oversized_reports_rotate_terminal_and_cache_evidence_to_convergence() {
-        let mut active = JamesBuildJobReport::from(sample_build_job(""));
+        let mut active = NestBuildJobReport::from(sample_build_job(""));
         active.local_id = 800;
         active.status = "running".to_string();
-        let mut rejected = JamesBuildJobReport::from(sample_build_job("protected_material"));
+        let mut rejected = NestBuildJobReport::from(sample_build_job("protected_material"));
         rejected.local_id = 900;
         let protected = vec![active.clone(), rejected.clone()];
 
         let terminals = (1..=3)
             .map(|local_id| {
-                let mut report = JamesBuildJobReport::from(sample_build_job(""));
+                let mut report = NestBuildJobReport::from(sample_build_job(""));
                 report.local_id = local_id;
                 report.status = "succeeded".to_string();
                 report.progress_percent = Some(100);
@@ -4619,7 +4619,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let mut one_terminal = sample_james_report(
+        let mut one_terminal = sample_nest_report(
             protected
                 .iter()
                 .cloned()
@@ -4627,11 +4627,11 @@ mod tests {
                 .collect(),
         );
         one_terminal.cache_artifacts_complete = false;
-        let terminal_budget = serialize_james_report_body(&one_terminal).unwrap().len();
-        let mut one_artifact = sample_james_report(protected.clone());
+        let terminal_budget = serialize_nest_report_body(&one_terminal).unwrap().len();
+        let mut one_artifact = sample_nest_report(protected.clone());
         one_artifact.cache_artifacts = artifacts.iter().take(1).cloned().collect();
         one_artifact.cache_artifacts_complete = false;
-        let artifact_budget = serialize_james_report_body(&one_artifact).unwrap().len();
+        let artifact_budget = serialize_nest_report_body(&one_artifact).unwrap().len();
         let max_bytes = terminal_budget.max(artifact_budget);
 
         let mut managed = ManagedState::default();
@@ -4646,24 +4646,24 @@ mod tests {
                     .cloned()
                     .chain(terminals.iter().cloned())
                     .collect(),
-                managed.james_active_report_cursor,
-                managed.james_rejection_report_cursor,
-                managed.james_terminal_report_cursor,
+                managed.nest_active_report_cursor,
+                managed.nest_rejection_report_cursor,
+                managed.nest_terminal_report_cursor,
                 MAX_REPORT_BUILD_JOBS,
-                JamesReportPriority::from_round(managed.james_report_rotation_round),
+                NestReportPriority::from_round(managed.nest_report_rotation_round),
             )
             .unwrap();
             let cache_artifacts = rotate_report_items_after_cursor(
                 artifacts.clone(),
-                managed.james_cache_artifact_report_cursor,
+                managed.nest_cache_artifact_report_cursor,
                 |artifact| artifact.local_id,
             );
-            let mut report = sample_james_report(build_jobs);
+            let mut report = sample_nest_report(build_jobs);
             report.cache_artifacts = cache_artifacts;
-            let (sent, _) = fit_james_report_body(
+            let (sent, _) = fit_nest_report_body(
                 report,
                 max_bytes,
-                JamesReportPriority::from_round(managed.james_report_rotation_round),
+                NestReportPriority::from_round(managed.nest_report_rotation_round),
             )
             .unwrap();
 
@@ -4678,7 +4678,7 @@ mod tests {
             seen_terminals.extend(
                 sent.build_jobs
                     .iter()
-                    .filter(|job| james_build_job_is_terminal(job) && job.rejection_code.is_none())
+                    .filter(|job| nest_build_job_is_terminal(job) && job.rejection_code.is_none())
                     .map(|job| job.local_id),
             );
             seen_artifacts.extend(
@@ -4689,7 +4689,7 @@ mod tests {
 
             // Cursors advance only after an accepted receipt and survive the
             // managed-state save/load boundary between syncs.
-            advance_james_report_rotation(&mut managed, &sent);
+            advance_nest_report_rotation(&mut managed, &sent);
             managed = serde_json::from_value(serde_json::to_value(managed).unwrap()).unwrap();
         }
 
@@ -4703,7 +4703,7 @@ mod tests {
     fn repeated_over_budget_active_reports_expose_every_managed_job() {
         let active = (1..=8)
             .map(|local_id| {
-                let mut report = JamesBuildJobReport::from(sample_build_job(""));
+                let mut report = NestBuildJobReport::from(sample_build_job(""));
                 report.local_id = local_id;
                 report.status = "running".to_string();
                 report.build_spec = json!({"padding": "b".repeat(64 * 1024)});
@@ -4711,34 +4711,34 @@ mod tests {
                 report
             })
             .collect::<Vec<_>>();
-        let mut rejected = JamesBuildJobReport::from(sample_build_job("protected_material"));
+        let mut rejected = NestBuildJobReport::from(sample_build_job("protected_material"));
         rejected.local_id = 900;
         let mut two_active =
-            sample_james_report(vec![active[0].clone(), active[1].clone(), rejected.clone()]);
+            sample_nest_report(vec![active[0].clone(), active[1].clone(), rejected.clone()]);
         two_active.cache_artifacts_complete = false;
-        let max_bytes = serialize_james_report_body(&two_active).unwrap().len();
+        let max_bytes = serialize_nest_report_body(&two_active).unwrap().len();
         let mut managed = ManagedState::default();
         let mut seen_active = HashSet::new();
         let mut seen_rejected = false;
 
         for _ in 0..8 {
-            let priority = JamesReportPriority::from_round(managed.james_report_rotation_round);
+            let priority = NestReportPriority::from_round(managed.nest_report_rotation_round);
             let selected = select_build_job_reports(
                 active
                     .iter()
                     .cloned()
                     .chain(std::iter::once(rejected.clone()))
                     .collect(),
-                managed.james_active_report_cursor,
-                managed.james_rejection_report_cursor,
-                managed.james_terminal_report_cursor,
+                managed.nest_active_report_cursor,
+                managed.nest_rejection_report_cursor,
+                managed.nest_terminal_report_cursor,
                 MAX_REPORT_BUILD_JOBS,
                 priority,
             )
             .unwrap();
-            let mut report = sample_james_report(selected);
+            let mut report = sample_nest_report(selected);
             report.cache_artifacts_complete = false;
-            let (sent, _) = fit_james_report_body(report, max_bytes, priority).unwrap();
+            let (sent, _) = fit_nest_report_body(report, max_bytes, priority).unwrap();
 
             seen_rejected |= sent
                 .build_jobs
@@ -4747,10 +4747,10 @@ mod tests {
             seen_active.extend(
                 sent.build_jobs
                     .iter()
-                    .filter(|job| !james_build_job_is_terminal(job))
+                    .filter(|job| !nest_build_job_is_terminal(job))
                     .map(|job| job.local_id),
             );
-            advance_james_report_rotation(&mut managed, &sent);
+            advance_nest_report_rotation(&mut managed, &sent);
         }
 
         assert_eq!(seen_active, HashSet::from([1, 2, 3, 4, 5, 6, 7, 8]));
@@ -4761,7 +4761,7 @@ mod tests {
     fn repeated_over_budget_rejection_reports_expose_every_refused_job() {
         let rejected = (1..=8)
             .map(|local_id| {
-                let mut report = JamesBuildJobReport::from(sample_build_job("protected_material"));
+                let mut report = NestBuildJobReport::from(sample_build_job("protected_material"));
                 report.local_id = local_id;
                 // A job accepted into an older queued row can retain these
                 // large fields when later converted into a rejection.
@@ -4770,27 +4770,26 @@ mod tests {
                 report
             })
             .collect::<Vec<_>>();
-        let mut two_rejections =
-            sample_james_report(vec![rejected[0].clone(), rejected[1].clone()]);
+        let mut two_rejections = sample_nest_report(vec![rejected[0].clone(), rejected[1].clone()]);
         two_rejections.cache_artifacts_complete = false;
-        let max_bytes = serialize_james_report_body(&two_rejections).unwrap().len();
+        let max_bytes = serialize_nest_report_body(&two_rejections).unwrap().len();
         let mut managed = ManagedState::default();
         let mut seen = HashSet::new();
 
         for _ in 0..8 {
-            let priority = JamesReportPriority::from_round(managed.james_report_rotation_round);
+            let priority = NestReportPriority::from_round(managed.nest_report_rotation_round);
             let selected = select_build_job_reports(
                 rejected.clone(),
-                managed.james_active_report_cursor,
-                managed.james_rejection_report_cursor,
-                managed.james_terminal_report_cursor,
+                managed.nest_active_report_cursor,
+                managed.nest_rejection_report_cursor,
+                managed.nest_terminal_report_cursor,
                 MAX_REPORT_BUILD_JOBS,
                 priority,
             )
             .unwrap();
-            let mut report = sample_james_report(selected);
+            let mut report = sample_nest_report(selected);
             report.cache_artifacts_complete = false;
-            let (sent, _) = fit_james_report_body(report, max_bytes, priority).unwrap();
+            let (sent, _) = fit_nest_report_body(report, max_bytes, priority).unwrap();
             assert!(!sent.build_jobs.is_empty());
             assert!(
                 sent.build_jobs
@@ -4798,7 +4797,7 @@ mod tests {
                     .all(|job| job.rejection_code.is_some())
             );
             seen.extend(sent.build_jobs.iter().map(|job| job.local_id));
-            advance_james_report_rotation(&mut managed, &sent);
+            advance_nest_report_rotation(&mut managed, &sent);
         }
 
         assert_eq!(seen, HashSet::from([1, 2, 3, 4, 5, 6, 7, 8]));
@@ -4846,11 +4845,11 @@ mod tests {
 
     #[test]
     fn one_build_report_slot_rotates_across_active_rejected_and_terminal_classes() {
-        let mut active = JamesBuildJobReport::from(sample_build_job(""));
+        let mut active = NestBuildJobReport::from(sample_build_job(""));
         active.local_id = 1;
-        let mut rejected = JamesBuildJobReport::from(sample_build_job("protected_material"));
+        let mut rejected = NestBuildJobReport::from(sample_build_job("protected_material"));
         rejected.local_id = 2;
-        let mut terminal = JamesBuildJobReport::from(sample_build_job(""));
+        let mut terminal = NestBuildJobReport::from(sample_build_job(""));
         terminal.local_id = 3;
         terminal.status = "succeeded".to_string();
         let source = vec![active, rejected, terminal];
@@ -4858,19 +4857,19 @@ mod tests {
         let mut selected_ids = Vec::new();
 
         for _ in 0..3 {
-            let priority = JamesReportPriority::from_round(managed.james_report_rotation_round);
+            let priority = NestReportPriority::from_round(managed.nest_report_rotation_round);
             let selected = select_build_job_reports(
                 source.clone(),
-                managed.james_active_report_cursor,
-                managed.james_rejection_report_cursor,
-                managed.james_terminal_report_cursor,
+                managed.nest_active_report_cursor,
+                managed.nest_rejection_report_cursor,
+                managed.nest_terminal_report_cursor,
                 1,
                 priority,
             )
             .unwrap();
             selected_ids.push(selected[0].local_id);
-            let body = sample_james_report(selected);
-            advance_james_report_rotation(&mut managed, &body);
+            let body = sample_nest_report(selected);
+            advance_nest_report_rotation(&mut managed, &body);
         }
 
         assert_eq!(selected_ids, vec![1, 3, 2]);
@@ -4880,7 +4879,7 @@ mod tests {
     fn accepted_over_budget_reports_give_every_evidence_lane_a_turn() {
         let active = (101..=104)
             .map(|local_id| {
-                let mut report = JamesBuildJobReport::from(sample_build_job(""));
+                let mut report = NestBuildJobReport::from(sample_build_job(""));
                 report.local_id = local_id;
                 report.status = "running".to_string();
                 report.build_spec = json!({"padding": "a".repeat(192 * 1024)});
@@ -4890,7 +4889,7 @@ mod tests {
             .collect::<Vec<_>>();
         let terminal = (201..=204)
             .map(|local_id| {
-                let mut report = JamesBuildJobReport::from(sample_build_job(""));
+                let mut report = NestBuildJobReport::from(sample_build_job(""));
                 report.local_id = local_id;
                 report.status = "succeeded".to_string();
                 report.progress_percent = Some(100);
@@ -4902,7 +4901,7 @@ mod tests {
             .collect::<Vec<_>>();
         let rejected = (301..=304)
             .map(|local_id| {
-                let mut report = JamesBuildJobReport::from(sample_build_job("protected_material"));
+                let mut report = NestBuildJobReport::from(sample_build_job("protected_material"));
                 report.local_id = local_id;
                 report.build_spec = json!({"padding": "r".repeat(192 * 1024)});
                 report.cache_metadata = json!({"padding": "r".repeat(192 * 1024)});
@@ -4918,18 +4917,18 @@ mod tests {
             .collect::<Vec<_>>();
 
         let mut single_lane_reports = vec![
-            sample_james_report(vec![active[0].clone()]),
-            sample_james_report(vec![terminal[0].clone()]),
-            sample_james_report(vec![rejected[0].clone()]),
+            sample_nest_report(vec![active[0].clone()]),
+            sample_nest_report(vec![terminal[0].clone()]),
+            sample_nest_report(vec![rejected[0].clone()]),
         ];
-        let mut one_artifact = sample_james_report(Vec::new());
+        let mut one_artifact = sample_nest_report(Vec::new());
         one_artifact.cache_artifacts = vec![artifacts[0].clone()];
         single_lane_reports.push(one_artifact);
         let max_bytes = single_lane_reports
             .iter_mut()
             .map(|report| {
                 report.cache_artifacts_complete = false;
-                serialize_james_report_body(report).unwrap().len()
+                serialize_nest_report_body(report).unwrap().len()
             })
             .max()
             .unwrap();
@@ -4946,30 +4945,30 @@ mod tests {
         let mut seen_rejected = HashSet::new();
         let mut seen_artifacts = HashSet::new();
         for _ in 0..20 {
-            let priority = JamesReportPriority::from_round(managed.james_report_rotation_round);
+            let priority = NestReportPriority::from_round(managed.nest_report_rotation_round);
             let build_jobs = select_build_job_reports(
                 all_jobs.clone(),
-                managed.james_active_report_cursor,
-                managed.james_rejection_report_cursor,
-                managed.james_terminal_report_cursor,
+                managed.nest_active_report_cursor,
+                managed.nest_rejection_report_cursor,
+                managed.nest_terminal_report_cursor,
                 MAX_REPORT_BUILD_JOBS,
                 priority,
             )
             .unwrap();
             let cache_artifacts = rotate_report_items_after_cursor(
                 artifacts.clone(),
-                managed.james_cache_artifact_report_cursor,
+                managed.nest_cache_artifact_report_cursor,
                 |artifact| artifact.local_id,
             );
-            let mut report = sample_james_report(build_jobs);
+            let mut report = sample_nest_report(build_jobs);
             report.cache_artifacts = cache_artifacts;
             report.cache_artifacts_complete = false;
-            let (sent, _) = fit_james_report_body(report, max_bytes, priority).unwrap();
+            let (sent, _) = fit_nest_report_body(report, max_bytes, priority).unwrap();
 
             seen_active.extend(
                 sent.build_jobs
                     .iter()
-                    .filter(|job| !james_build_job_is_terminal(job))
+                    .filter(|job| !nest_build_job_is_terminal(job))
                     .map(|job| job.local_id),
             );
             seen_rejected.extend(
@@ -4981,7 +4980,7 @@ mod tests {
             seen_terminal.extend(
                 sent.build_jobs
                     .iter()
-                    .filter(|job| james_build_job_is_terminal(job) && job.rejection_code.is_none())
+                    .filter(|job| nest_build_job_is_terminal(job) && job.rejection_code.is_none())
                     .map(|job| job.local_id),
             );
             seen_artifacts.extend(
@@ -4989,7 +4988,7 @@ mod tests {
                     .iter()
                     .map(|artifact| artifact.local_id),
             );
-            advance_james_report_rotation(&mut managed, &sent);
+            advance_nest_report_rotation(&mut managed, &sent);
         }
 
         assert_eq!(seen_active, HashSet::from([101, 102, 103, 104]));
@@ -5001,7 +5000,7 @@ mod tests {
     #[test]
     fn cache_inventory_generation_change_resets_an_incomplete_page_cursor() {
         let mut managed = ManagedState::default();
-        let mut first_page = sample_james_report(Vec::new());
+        let mut first_page = sample_nest_report(Vec::new());
         first_page.cache_inventory_instance_id = "inventory-a".to_string();
         first_page.cache_inventory_generation = 7;
         first_page.cache_artifacts_complete = false;
@@ -5013,29 +5012,29 @@ mod tests {
                 artifact
             })
             .collect();
-        advance_james_report_rotation(&mut managed, &first_page);
+        advance_nest_report_rotation(&mut managed, &first_page);
 
         assert_eq!(
-            james_cache_report_cursor(&managed, "inventory-a", 7, true),
+            nest_cache_report_cursor(&managed, "inventory-a", 7, true),
             Some(4)
         );
         assert_eq!(
-            james_cache_report_cursor(&managed, "inventory-a", 8, true),
+            nest_cache_report_cursor(&managed, "inventory-a", 8, true),
             None,
             "a mutation generation must restart the authoritative traversal"
         );
         assert_eq!(
-            james_cache_report_cursor(&managed, "inventory-b", 7, true),
+            nest_cache_report_cursor(&managed, "inventory-b", 7, true),
             None,
             "a replaced inventory instance must restart the traversal"
         );
         assert_eq!(
-            james_cache_report_cursor(&managed, "inventory-a", 7, false),
+            nest_cache_report_cursor(&managed, "inventory-a", 7, false),
             None,
             "an invalid inventory read cannot reuse an authoritative cursor"
         );
 
-        let mut final_page = sample_james_report(Vec::new());
+        let mut final_page = sample_nest_report(Vec::new());
         final_page.cache_inventory_instance_id = "inventory-a".to_string();
         final_page.cache_inventory_generation = 7;
         final_page.cache_artifacts_complete = true;
@@ -5044,14 +5043,14 @@ mod tests {
             artifact.local_id = 3;
             artifact
         }];
-        advance_james_report_rotation(&mut managed, &final_page);
+        advance_nest_report_rotation(&mut managed, &final_page);
         assert_eq!(
-            james_cache_report_cursor(&managed, "inventory-a", 7, true),
+            nest_cache_report_cursor(&managed, "inventory-a", 7, true),
             None,
             "an accepted completing page starts a fresh traversal next time"
         );
 
-        let mut renewal_page = sample_james_report(Vec::new());
+        let mut renewal_page = sample_nest_report(Vec::new());
         renewal_page.cache_inventory_instance_id = "inventory-a".to_string();
         renewal_page.cache_inventory_generation = 7;
         renewal_page.cache_artifacts_complete = false;
@@ -5063,9 +5062,9 @@ mod tests {
                 artifact
             })
             .collect();
-        advance_james_report_rotation(&mut managed, &renewal_page);
+        advance_nest_report_rotation(&mut managed, &renewal_page);
         assert_eq!(
-            james_cache_report_cursor(&managed, "inventory-a", 7, true),
+            nest_cache_report_cursor(&managed, "inventory-a", 7, true),
             Some(4),
             "the same generation begins another recovery traversal after completion"
         );
@@ -5073,7 +5072,7 @@ mod tests {
 
     #[test]
     fn several_large_cache_artifacts_are_bounded_before_final_serialization() {
-        let mut report = sample_james_report(vec![]);
+        let mut report = sample_nest_report(vec![]);
         report.cache_artifacts = (1..=4)
             .map(|local_id| {
                 let mut artifact = sample_cache_artifact("x".repeat(10 * 1024 * 1024));
@@ -5081,22 +5080,19 @@ mod tests {
                 artifact
             })
             .collect();
-        assert!(!james_report_body_fits(
-            &report,
-            MAX_JAMES_REPORT_BODY_BYTES
-        ));
+        assert!(!nest_report_body_fits(&report, MAX_NEST_REPORT_BODY_BYTES));
 
-        let (sent, bytes) = fit_james_report_body(
+        let (sent, bytes) = fit_nest_report_body(
             report,
-            MAX_JAMES_REPORT_BODY_BYTES,
-            JamesReportPriority::CacheArtifacts,
+            MAX_NEST_REPORT_BODY_BYTES,
+            NestReportPriority::CacheArtifacts,
         )
         .unwrap();
 
         assert!(!sent.cache_artifacts.is_empty());
         assert!(sent.cache_artifacts.len() < 4);
         assert!(!sent.cache_artifacts_complete);
-        assert!(bytes.len() <= MAX_JAMES_REPORT_BODY_BYTES);
+        assert!(bytes.len() <= MAX_NEST_REPORT_BODY_BYTES);
     }
 
     #[test]
@@ -5167,9 +5163,9 @@ mod tests {
         AgentBootConfigResponse {
             pxe_discovery: None,
             compatibility: Some(ComponentCompatibilityContract {
-                protocol_version: CYBEX_COMPONENT_PROTOCOL_VERSION,
-                minimum_james_protocol: 1,
-                maximum_james_protocol: CYBEX_COMPONENT_PROTOCOL_VERSION,
+                protocol_version: TIARIS_COMPONENT_PROTOCOL_VERSION,
+                minimum_nest_protocol: 1,
+                maximum_nest_protocol: TIARIS_COMPONENT_PROTOCOL_VERSION,
                 manage_version: "0.1.0".to_string(),
                 manage_release: "test".to_string(),
                 workstation_runtime_epoch: Some(crate::netboot::COMPATIBILITY_EPOCH),
@@ -5177,8 +5173,8 @@ mod tests {
             settings: ManagedBootSettings {
                 public_base_url: "http://127.0.0.1".to_string(),
                 listen_addr: "127.0.0.1:8080".to_string(),
-                tftp_root: "/srv/cybex-james/tftp".to_string(),
-                http_root: "/srv/cybex-james/www".to_string(),
+                tftp_root: "/srv/tiaris-nest/tftp".to_string(),
+                http_root: "/srv/tiaris-nest/www".to_string(),
                 bootloader_filename: "ipxe.efi".to_string(),
                 menu_timeout_ms: 10_000,
             },
@@ -5197,11 +5193,11 @@ mod tests {
             serde_json::from_str(include_str!("../protocol/compatibility.json")).unwrap();
         assert_eq!(
             manifest["protocol_version"].as_u64(),
-            Some(u64::from(CYBEX_COMPONENT_PROTOCOL_VERSION))
+            Some(u64::from(TIARIS_COMPONENT_PROTOCOL_VERSION))
         );
         assert_eq!(
-            manifest["james"]["minimum_manage_protocol"].as_u64(),
-            Some(u64::from(CYBEX_MINIMUM_MANAGE_PROTOCOL_VERSION))
+            manifest["nest"]["minimum_manage_protocol"].as_u64(),
+            Some(u64::from(TIARIS_MINIMUM_MANAGE_PROTOCOL_VERSION))
         );
         #[cfg(not(feature = "resilience-qualification-epoch-2"))]
         assert_eq!(
@@ -5221,9 +5217,9 @@ mod tests {
         assert!(validate_component_compatibility(None).is_err());
 
         let incompatible = ComponentCompatibilityContract {
-            protocol_version: CYBEX_COMPONENT_PROTOCOL_VERSION + 1,
-            minimum_james_protocol: CYBEX_COMPONENT_PROTOCOL_VERSION + 1,
-            maximum_james_protocol: CYBEX_COMPONENT_PROTOCOL_VERSION + 1,
+            protocol_version: TIARIS_COMPONENT_PROTOCOL_VERSION + 1,
+            minimum_nest_protocol: TIARIS_COMPONENT_PROTOCOL_VERSION + 1,
+            maximum_nest_protocol: TIARIS_COMPONENT_PROTOCOL_VERSION + 1,
             manage_version: "future".to_string(),
             manage_release: "future".to_string(),
             workstation_runtime_epoch: Some(crate::netboot::COMPATIBILITY_EPOCH),
@@ -5265,11 +5261,11 @@ mod tests {
     }
 
     #[test]
-    fn james_report_receipt_accepts_old_manage_and_retries_isolated_rejections() {
-        let legacy: JamesReportResponse = serde_json::from_value(json!({"status": "ok"})).unwrap();
-        validate_james_report_response(&legacy).unwrap();
+    fn nest_report_receipt_accepts_old_manage_and_retries_isolated_rejections() {
+        let legacy: NestReportResponse = serde_json::from_value(json!({"status": "ok"})).unwrap();
+        validate_nest_report_response(&legacy).unwrap();
 
-        let rejected: JamesReportResponse = serde_json::from_value(json!({
+        let rejected: NestReportResponse = serde_json::from_value(json!({
             "status": "ok",
             "workstation_netboot": {
                 "state": "rejected",
@@ -5277,25 +5273,25 @@ mod tests {
             }
         }))
         .unwrap();
-        let error = validate_james_report_response(&rejected).unwrap_err();
+        let error = validate_nest_report_response(&rejected).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "Manage did not accept workstation runtime evidence (runtime_report_stale)"
+            "Tiaris did not accept workstation runtime evidence (runtime_report_stale)"
         );
     }
 
     #[test]
     fn isolated_runtime_rejection_advances_other_accepted_report_lanes() {
-        let mut active = JamesBuildJobReport::from(sample_build_job(""));
+        let mut active = NestBuildJobReport::from(sample_build_job(""));
         active.local_id = 41;
-        let mut rejected = JamesBuildJobReport::from(sample_build_job("protected_material"));
+        let mut rejected = NestBuildJobReport::from(sample_build_job("protected_material"));
         rejected.local_id = 42;
-        let mut body = sample_james_report(vec![active, rejected]);
+        let mut body = sample_nest_report(vec![active, rejected]);
         let mut artifact = sample_cache_artifact(String::new());
         artifact.local_id = 43;
         body.cache_artifacts = vec![artifact];
         body.cache_artifacts_complete = false;
-        let response: JamesReportResponse = serde_json::from_value(json!({
+        let response: NestReportResponse = serde_json::from_value(json!({
             "status": "ok",
             "workstation_netboot": {
                 "state": "rejected",
@@ -5305,23 +5301,23 @@ mod tests {
         .unwrap();
         let mut managed = ManagedState::default();
 
-        let error = accept_james_report_response(&response, &mut managed, &body).unwrap_err();
+        let error = accept_nest_report_response(&response, &mut managed, &body).unwrap_err();
 
         assert_eq!(
             error.to_string(),
-            "Manage did not accept workstation runtime evidence (runtime_report_stale)"
+            "Tiaris did not accept workstation runtime evidence (runtime_report_stale)"
         );
-        assert_eq!(managed.james_active_report_cursor, Some(41));
-        assert_eq!(managed.james_rejection_report_cursor, Some(42));
-        assert_eq!(managed.james_cache_artifact_report_cursor, Some(43));
-        assert_eq!(managed.james_report_rotation_round, 1);
+        assert_eq!(managed.nest_active_report_cursor, Some(41));
+        assert_eq!(managed.nest_rejection_report_cursor, Some(42));
+        assert_eq!(managed.nest_cache_artifact_report_cursor, Some(43));
+        assert_eq!(managed.nest_report_rotation_round, 1);
     }
 
     #[test]
-    fn james_report_receipt_bounds_and_classifies_safe_warning_codes() {
+    fn nest_report_receipt_bounds_and_classifies_safe_warning_codes() {
         let mut warning_receipts = vec![
             json!({
-                "diagnostic_code": "james_build_report_invalid",
+                "diagnostic_code": "nest_build_report_invalid",
                 "message": "untrusted top-secret remote prose",
                 "artifact_hash": "untrusted-artifact-identity"
             }),
@@ -5331,10 +5327,10 @@ mod tests {
             }),
         ];
         warning_receipts.extend(
-            (warning_receipts.len()..MAX_JAMES_REPORT_WARNING_RECEIPTS + 3)
-                .map(|_| json!({"diagnostic_code": "james_cache_report_invalid"})),
+            (warning_receipts.len()..MAX_NEST_REPORT_WARNING_RECEIPTS + 3)
+                .map(|_| json!({"diagnostic_code": "nest_cache_report_invalid"})),
         );
-        let response: JamesReportResponse = serde_json::from_value(json!({
+        let response: NestReportResponse = serde_json::from_value(json!({
             "status": "ok",
             "warnings": warning_receipts
         }))
@@ -5342,85 +5338,85 @@ mod tests {
 
         assert_eq!(
             response.warnings.codes.len(),
-            MAX_JAMES_REPORT_WARNING_RECEIPTS
+            MAX_NEST_REPORT_WARNING_RECEIPTS
         );
         assert!(response.warnings.truncated);
         assert_eq!(
             response.warnings.codes[0],
-            JamesReportWarningCode::JamesBuildReportInvalid
+            NestReportWarningCode::NestBuildReportInvalid
         );
-        assert_eq!(response.warnings.codes[1], JamesReportWarningCode::Unknown);
+        assert_eq!(response.warnings.codes[1], NestReportWarningCode::Unknown);
         let debug = format!("{response:?}");
         assert!(!debug.contains("top-secret"));
         assert!(!debug.contains("untrusted-artifact-identity"));
     }
 
     #[test]
-    fn james_report_receipt_treats_null_and_malformed_warnings_as_advisory() {
+    fn nest_report_receipt_treats_null_and_malformed_warnings_as_advisory() {
         for warnings in [
             Value::Null,
-            json!({"diagnostic_code": "james_build_report_invalid"}),
+            json!({"diagnostic_code": "nest_build_report_invalid"}),
             json!("not-a-warning-list"),
             json!(42),
         ] {
-            let response: JamesReportResponse = serde_json::from_value(json!({
+            let response: NestReportResponse = serde_json::from_value(json!({
                 "status": "ok",
                 "warnings": warnings
             }))
             .unwrap();
-            validate_james_report_response(&response).unwrap();
+            validate_nest_report_response(&response).unwrap();
             assert!(response.warnings.codes.is_empty());
         }
 
-        let response: JamesReportResponse = serde_json::from_value(json!({
+        let response: NestReportResponse = serde_json::from_value(json!({
             "status": "ok",
             "warnings": [
                 null,
                 true,
                 {"diagnostic_code": 7},
-                {"diagnostic_code": "james_cache_report_invalid"}
+                {"diagnostic_code": "nest_cache_report_invalid"}
             ]
         }))
         .unwrap();
-        validate_james_report_response(&response).unwrap();
+        validate_nest_report_response(&response).unwrap();
         assert_eq!(
             response.warnings.codes,
             vec![
-                JamesReportWarningCode::Unknown,
-                JamesReportWarningCode::Unknown,
-                JamesReportWarningCode::Unknown,
-                JamesReportWarningCode::JamesCacheReportInvalid,
+                NestReportWarningCode::Unknown,
+                NestReportWarningCode::Unknown,
+                NestReportWarningCode::Unknown,
+                NestReportWarningCode::NestCacheReportInvalid,
             ]
         );
     }
 
     #[test]
-    fn identical_james_report_warning_sets_log_only_on_transitions() {
-        let warnings = JamesReportWarnings {
+    fn identical_nest_report_warning_sets_log_only_on_transitions() {
+        let warnings = NestReportWarnings {
             codes: vec![
-                JamesReportWarningCode::JamesBuildReportInvalid,
-                JamesReportWarningCode::JamesCacheReportInvalid,
+                NestReportWarningCode::NestBuildReportInvalid,
+                NestReportWarningCode::NestCacheReportInvalid,
             ],
             truncated: false,
         };
         let mut managed = ManagedState::default();
 
-        assert!(log_james_report_warnings(&warnings, &mut managed));
-        assert!(!log_james_report_warnings(&warnings, &mut managed));
+        assert!(log_nest_report_warnings(&warnings, &mut managed));
+        assert!(!log_nest_report_warnings(&warnings, &mut managed));
 
-        let changed = JamesReportWarnings {
-            codes: vec![JamesReportWarningCode::JamesDiskReportInvalid],
+        let changed = NestReportWarnings {
+            codes: vec![NestReportWarningCode::NestDiskReportInvalid],
             truncated: false,
         };
-        assert!(log_james_report_warnings(&changed, &mut managed));
-        assert!(!log_james_report_warnings(&changed, &mut managed));
+        assert!(log_nest_report_warnings(&changed, &mut managed));
+        assert!(!log_nest_report_warnings(&changed, &mut managed));
 
-        assert!(!log_james_report_warnings(
-            &JamesReportWarnings::default(),
+        assert!(!log_nest_report_warnings(
+            &NestReportWarnings::default(),
             &mut managed
         ));
-        assert!(managed.james_report_warning_fingerprint.is_none());
-        assert!(log_james_report_warnings(&warnings, &mut managed));
+        assert!(managed.nest_report_warning_fingerprint.is_none());
+        assert!(log_nest_report_warnings(&warnings, &mut managed));
     }
 
     #[test]
@@ -5441,11 +5437,11 @@ mod tests {
     }
 
     #[test]
-    fn james_report_inventory_failures_do_not_suppress_independent_lanes() {
+    fn nest_report_inventory_failures_do_not_suppress_independent_lanes() {
         let source = include_str!("manage.rs");
-        let start = source.find("async fn report_james_state").unwrap();
+        let start = source.find("async fn report_nest_state").unwrap();
         let end = source[start..]
-            .find("\nfn validate_james_report_response")
+            .find("\nfn validate_nest_report_response")
             .map(|offset| start + offset)
             .unwrap();
         let body = &source[start..end];
@@ -5486,12 +5482,12 @@ mod tests {
         assert_eq!(
             cache_inventory_generation_for_peer(41, false, true, false),
             41,
-            "legacy Manage receives its existing non-authoritative incomplete shape"
+            "legacy Tiaris receives its existing non-authoritative incomplete shape"
         );
         assert_eq!(
             cache_inventory_generation_for_peer(0, true, false, false),
             0,
-            "legacy Manage does not receive the isolated-lane sentinel"
+            "legacy Tiaris does not receive the isolated-lane sentinel"
         );
     }
 
@@ -5502,7 +5498,7 @@ mod tests {
             status: "ready".to_string(),
             public_key: "cache.example-1:public-key".to_string(),
             public_key_fingerprint: "sha256:fingerprint".to_string(),
-            base_url: "https://james.example/cache".to_string(),
+            base_url: "https://nest.example/cache".to_string(),
             total_size_bytes: 1234,
             artifact_count: 3,
             error: String::new(),
@@ -5543,8 +5539,8 @@ mod tests {
     }
 
     #[test]
-    fn workstation_runtime_shape_is_isolated_from_the_james_config_envelope() {
-        let config: AgentJamesConfigResponse = serde_json::from_value(json!({
+    fn workstation_runtime_shape_is_isolated_from_the_nest_config_envelope() {
+        let config: AgentNestConfigResponse = serde_json::from_value(json!({
             "workstation_netboot": {
                 "future_runtime_contract": true
             }
@@ -5591,11 +5587,11 @@ mod tests {
             "attempt_id": "d4a17ec8-e854-4bc4-84c7-e490f51640c3",
             "requested_at": "2026-08-12T12:00:00Z",
             "release": {
-                "schema": "cybex.james.appliance-release.v1",
+                "schema": "tiaris.nest.appliance-release.v1",
                 "release_id": "0.2.1-dev.13",
                 "ubuntu_snapshot_id": "20260813T120000Z",
-                "cybex_repository_snapshot": {
-                    "url": "https://releases.example/cybex-james-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst",
+                "tiaris_repository_snapshot": {
+                    "url": "https://releases.example/tiaris-nest-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst",
                     "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "size_bytes": 1024
                 },
@@ -5609,7 +5605,7 @@ mod tests {
             }
         });
 
-        let legacy: AgentJamesConfigResponse =
+        let legacy: AgentNestConfigResponse =
             serde_json::from_value(json!({"appliance_update": update.clone()})).unwrap();
         assert_eq!(
             legacy
@@ -5621,15 +5617,15 @@ mod tests {
 
         let mut qualified = update;
         qualified["qualification_package_transport_url"] = json!(
-            "http://127.0.0.1:18080/cybex-james-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst"
+            "http://127.0.0.1:18080/tiaris-nest-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst"
         );
-        let current: AgentJamesConfigResponse =
+        let current: AgentNestConfigResponse =
             serde_json::from_value(json!({"appliance_update": qualified})).unwrap();
         let current = current.appliance_update.unwrap();
         assert_eq!(
             current.qualification_package_transport_url.as_deref(),
             Some(
-                "http://127.0.0.1:18080/cybex-james-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst"
+                "http://127.0.0.1:18080/tiaris-nest-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst"
             )
         );
         assert_eq!(
@@ -5637,9 +5633,9 @@ mod tests {
                 .release
                 .legacy()
                 .unwrap()
-                .cybex_repository_snapshot
+                .tiaris_repository_snapshot
                 .url,
-            "https://releases.example/cybex-james-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst"
+            "https://releases.example/tiaris-nest-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst"
         );
     }
 
@@ -5655,7 +5651,7 @@ mod tests {
             id: 1,
             managed_job_id: Some("5c3baab7-a204-4c21-a024-0f567d8cf41d".to_string()),
             requested_artifact_type: "nixos_closure".to_string(),
-            build_spec: json!({"schema": "cybex.blueprint-build.v1"}),
+            build_spec: json!({"schema": "tiaris.blueprint-build.v1"}),
             target: "blueprint".to_string(),
             system: "x86_64-linux".to_string(),
             input_revision: "revision-1".to_string(),
@@ -5666,7 +5662,7 @@ mod tests {
             progress_message: Some("Build report fixture".to_string()),
             logs: String::new(),
             error: if rejected {
-                "James rejected this build job".to_string()
+                "Nest rejected this build job".to_string()
             } else {
                 String::new()
             },
@@ -5684,9 +5680,9 @@ mod tests {
         }
     }
 
-    fn sample_james_report(build_jobs: Vec<JamesBuildJobReport>) -> JamesAgentReportRequest {
-        JamesAgentReportRequest {
-            protocol_version: CYBEX_COMPONENT_PROTOCOL_VERSION,
+    fn sample_nest_report(build_jobs: Vec<NestBuildJobReport>) -> NestAgentReportRequest {
+        NestAgentReportRequest {
+            protocol_version: TIARIS_COMPONENT_PROTOCOL_VERSION,
             capabilities: vec![],
             cache: crate::cache::CacheStatusReport {
                 enabled: false,
@@ -5717,14 +5713,14 @@ mod tests {
         }
     }
 
-    fn sample_cache_artifact(large_metadata: String) -> JamesCacheArtifactReport {
-        JamesCacheArtifactReport {
+    fn sample_cache_artifact(large_metadata: String) -> NestCacheArtifactReport {
+        NestCacheArtifactReport {
             local_id: 1,
             managed_artifact_id: Some("6e73fe6d-47c7-433b-bdb0-ccb8bce41baf".to_string()),
             artifact_type: "nixos_closure".to_string(),
             hash: "b".repeat(64),
             size_bytes: 1024,
-            path: "/var/lib/cybex-james/cache/artifact.nar.zst".to_string(),
+            path: "/var/lib/tiaris-nest/cache/artifact.nar.zst".to_string(),
             store_path: "/nix/store/test-workstation".to_string(),
             narinfo_path: "test.narinfo".to_string(),
             nar_url: "nar/test.nar.zst".to_string(),
@@ -5735,7 +5731,7 @@ mod tests {
             closure_file_size_bytes: 1024,
             compression: "zstd".to_string(),
             references: json!([]),
-            serving_url: "https://james.example/cache/test.narinfo".to_string(),
+            serving_url: "https://nest.example/cache/test.narinfo".to_string(),
             source_build_job_id: Some("5c3baab7-a204-4c21-a024-0f567d8cf41d".to_string()),
             cache_metadata: json!({"path_info": large_metadata}),
             created_at: "2026-08-10T18:00:00Z".to_string(),
@@ -5747,7 +5743,7 @@ mod tests {
         let mut random = [0u8; 8];
         OsRng.fill_bytes(&mut random);
         let path = std::env::temp_dir().join(format!(
-            "cybex-james-managed-state-{}-{}",
+            "tiaris-nest-managed-state-{}-{}",
             std::process::id(),
             hex::encode(random)
         ));
@@ -5760,7 +5756,7 @@ mod tests {
             id: id.to_string(),
             name: "Installer".to_string(),
             description: String::new(),
-            profile_type: "james_installer".to_string(),
+            profile_type: "nest_installer".to_string(),
             enabled: true,
             is_default: false,
             one_time: false,

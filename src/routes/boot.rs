@@ -20,7 +20,7 @@ const MAX_BOOT_USER_AGENT_LEN: usize = 256;
 pub struct BootQuery {
     pub mac: Option<String>,
     pub serial: Option<String>,
-    pub cybex_check: Option<String>,
+    pub tiaris_check: Option<String>,
 }
 
 pub async fn boot_root(
@@ -157,7 +157,7 @@ pub async fn boot_kexec(
         .ok_or(AppError::NotFound)?;
     let profile_id = device.one_time_profile_id.ok_or(AppError::NotFound)?;
     let profile = db::get_profile(&state.db, profile_id).await?;
-    if !profile.enabled || profile.profile_type != BootProfileType::JamesInstaller {
+    if !profile.enabled || profile.profile_type != BootProfileType::NestInstaller {
         return Err(AppError::NotFound);
     }
     let launch = create_installer_launch(&state, &profile, &device.mac, Some(&device)).await?;
@@ -204,7 +204,7 @@ async fn build_boot_script(
     let selection_device = if known_device { device.as_ref() } else { None };
     // A first request from a new MAC may enter the sole default enrollment
     // profile automatically. This only starts the signed installer runtime;
-    // destructive installation still requires explicit approval in Manage.
+    // destructive installation still requires explicit approval in Tiaris.
     let allow_automatic_enrollment =
         automatic_enrollment_allowed(checker, known_device, mac.as_deref());
     let selection =
@@ -281,7 +281,7 @@ async fn build_boot_script(
         Ok(selected_script.expect("selected profile has a rendered script"))
     } else {
         let runtime = state.runtime_settings();
-        // James does not need to guess whether installation finished. A real,
+        // Nest does not need to guess whether installation finished. A real,
         // known MAC first boots local drive 0x80; UEFI falls back to its next
         // BootOrder entry if direct chaining fails, while legacy BIOS falls
         // through to the menu. Health checks and MAC-less requests never hand
@@ -313,12 +313,12 @@ async fn render_selected_profile(
     mac: Option<&str>,
     device: Option<&Device>,
 ) -> AppResult<String> {
-    if profile.profile_type != BootProfileType::JamesInstaller {
+    if profile.profile_type != BootProfileType::NestInstaller {
         let runtime = state.runtime_settings();
         return boot_logic::render_profile_script(profile, &runtime.public_base_url);
     }
     let mac = mac.ok_or_else(|| {
-        AppError::Validation("a normalized MAC is required for James installer boot".to_string())
+        AppError::Validation("a normalized MAC is required for Nest installer boot".to_string())
     })?;
     let launch = create_installer_launch(state, profile, mac, device).await?;
     Ok(crate::netboot::render_ipxe_launch(&launch))
@@ -331,7 +331,7 @@ async fn create_installer_launch(
     device: Option<&Device>,
 ) -> AppResult<crate::netboot::BootSessionLaunch> {
     let profile_id = profile.managed_profile_id.as_deref().ok_or_else(|| {
-        AppError::Config("James installer profile has no managed identity".to_string())
+        AppError::Config("Nest installer profile has no managed identity".to_string())
     })?;
     let binding: Option<(Option<String>, Option<String>)> = if let Some(device) = device {
         sqlx::query_as("SELECT managed_device_id, reinstall_request_id FROM devices WHERE id = ?")
@@ -349,7 +349,7 @@ async fn create_installer_launch(
         binding.as_ref().and_then(|value| value.1.as_deref()),
     )
     .await
-    .map_err(|_| AppError::Config("could not create signed James boot session".to_string()))
+    .map_err(|_| AppError::Config("could not create signed Nest boot session".to_string()))
 }
 
 fn normalized_optional_mac(mac: Option<String>) -> AppResult<Option<String>> {
@@ -395,7 +395,7 @@ fn is_local_checker_request(
     headers: &HeaderMap,
     connect: Option<SocketAddr>,
 ) -> bool {
-    if !matches!(query.cybex_check.as_deref(), Some("1")) {
+    if !matches!(query.tiaris_check.as_deref(), Some("1")) {
         return false;
     }
     if !connect.map(|addr| addr.ip().is_loopback()).unwrap_or(false) {
@@ -585,7 +585,7 @@ mod tests {
         let query = BootQuery {
             mac: None,
             serial: None,
-            cybex_check: Some("1".to_string()),
+            tiaris_check: Some("1".to_string()),
         };
         let mut headers = HeaderMap::new();
         let loopback: SocketAddr = "127.0.0.1:50200".parse().unwrap();
@@ -609,7 +609,7 @@ mod tests {
         let query = BootQuery {
             mac: None,
             serial: None,
-            cybex_check: Some("true".to_string()),
+            tiaris_check: Some("true".to_string()),
         };
         let headers = HeaderMap::new();
         let loopback: SocketAddr = "127.0.0.1:50200".parse().unwrap();

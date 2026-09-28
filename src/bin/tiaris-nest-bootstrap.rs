@@ -1,16 +1,16 @@
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use cybex_james::provisioning::{
+use std::path::PathBuf;
+use tiaris_nest::provisioning::{
     FinalizeOptions, NetworkRuntimeOptions, PrepareOptions, REQUIRED_MANAGE_ORIGIN,
     commit_network_change, finalize_target, prepare, reconcile_network_runtime,
     report_install_stage, validate_installed_state, validate_legacy_state_promotion,
     verify_committed_network_change,
 };
-use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "cybex-james-bootstrap",
+    name = "tiaris-nest-bootstrap",
     about = "Fail-closed signed appliance bootstrap",
     version
 )]
@@ -25,20 +25,20 @@ enum Command {
     RequiredManageOrigin,
     /// Claim this provisioned ISO, wait for approval, and prepare Autoinstall.
     Prepare {
-        #[arg(long, default_value = "/cdrom/CYBEX_PROVISIONING.BIN")]
+        #[arg(long, default_value = "/cdrom/TIARIS_PROVISIONING.BIN")]
         envelope: PathBuf,
-        #[arg(long, default_value = "/cdrom/cybex/provisioning-public-keys")]
+        #[arg(long, default_value = "/cdrom/tiaris/provisioning-public-keys")]
         provisioning_keys: PathBuf,
-        #[arg(long, default_value = "/cdrom/cybex/release-public-key")]
+        #[arg(long, default_value = "/cdrom/tiaris/release-public-key")]
         release_public_key: PathBuf,
         #[arg(long, default_value = "/autoinstall.yaml")]
         autoinstall: PathBuf,
-        #[arg(long, default_value = "/run/cybex-state")]
+        #[arg(long, default_value = "/run/tiaris-state")]
         state_mount: PathBuf,
     },
     /// Report a late Subiquity stage using the installed device identity.
     Event {
-        #[arg(long, default_value = "/run/cybex-state")]
+        #[arg(long, default_value = "/run/tiaris-state")]
         state_mount: PathBuf,
         #[arg(long)]
         stage: String,
@@ -53,28 +53,28 @@ enum Command {
     FinalizeTarget {
         #[arg(long, default_value = "/target")]
         target: PathBuf,
-        #[arg(long, default_value = "/run/cybex-state")]
+        #[arg(long, default_value = "/run/tiaris-state")]
         state_mount: PathBuf,
     },
     /// Reconcile the appliance's advertised boot URL with its active wired IPv4 address.
     ReconcileNetworkRuntime {
-        #[arg(long, default_value = "/etc/cybex-james/config.toml")]
+        #[arg(long, default_value = "/etc/tiaris-nest/config.toml")]
         config: PathBuf,
         #[arg(
             long,
-            default_value = "/var/lib/cybex-james/control/netplan-approved.json"
+            default_value = "/var/lib/tiaris-nest/control/netplan-approved.json"
         )]
         network_plan: PathBuf,
     },
     /// Verify recurring installed identity and an acknowledged managed network.
     ValidateInstalledState {
-        #[arg(long, default_value = "/var/lib/cybex-james/state")]
+        #[arg(long, default_value = "/var/lib/tiaris-nest/state")]
         state_mount: PathBuf,
-        #[arg(long, default_value = "/etc/cybex-james/config.toml")]
+        #[arg(long, default_value = "/etc/tiaris-nest/config.toml")]
         config: PathBuf,
         #[arg(
             long,
-            default_value = "/usr/share/cybex-james/provisioning-public-keys"
+            default_value = "/usr/share/tiaris-nest/provisioning-public-keys"
         )]
         provisioning_keys: PathBuf,
     },
@@ -93,13 +93,13 @@ enum Command {
     },
     /// Authenticate a dev.3 flat state migration against installed trust anchors.
     ValidateLegacyStatePromotion {
-        #[arg(long, default_value = "/var/lib/cybex-james/state")]
+        #[arg(long, default_value = "/var/lib/tiaris-nest/state")]
         state_mount: PathBuf,
-        #[arg(long, default_value = "/etc/cybex-james/config.toml")]
+        #[arg(long, default_value = "/etc/tiaris-nest/config.toml")]
         config: PathBuf,
         #[arg(
             long,
-            default_value = "/usr/share/cybex-james/provisioning-public-keys"
+            default_value = "/usr/share/tiaris-nest/provisioning-public-keys"
         )]
         provisioning_keys: PathBuf,
     },

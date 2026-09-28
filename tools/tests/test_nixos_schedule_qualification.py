@@ -57,18 +57,18 @@ def conflict(message, diagnostic=None):
 class FakeAPI:
     def __init__(self, clock):
         self.clock = clock
-        self.node = {'device_id': DEVICE, 'display_name': 'Owned James',
+        self.node = {'device_id': DEVICE, 'display_name': 'Owned Nest',
             'failure_domain': 'default', 'ha_group': 'primary', 'update_hold': False,
             'maintenance_hold': False, 'maintenance_hold_lease_id': None,
             'maintenance_hold_reason': '', 'maintenance_hold_acquired_at': None,
-            'system_generation': '7', 'system_toplevel': '/nix/store/' + 'e' * 32 + '-james',
+            'system_generation': '7', 'system_toplevel': '/nix/store/' + 'e' * 32 + '-nest',
             'system_closure_sha256': 'e' * 64, 'appliance_release': '1.2.3',
             'nixpkgs_revision': 'd' * 40, 'update_status': 'idle',
             'update_attempt_id': '', 'update_target_version': '',
             'appliance_package_update': {'status': 'idle'},
             'appliance_local_health': {'status': 'healthy',
                 'update_schedule': {'revision': 4}},
-            'james_reported_at': (clock.base - datetime.timedelta(seconds=1)).isoformat()}
+            'nest_reported_at': (clock.base - datetime.timedelta(seconds=1)).isoformat()}
         self.expected = {'device_incarnation_id': INCARNATION,
             'current_release': '1.2.3', 'nixpkgs_revision': 'd' * 40,
             'system_toplevel': self.node['system_toplevel'],
@@ -88,13 +88,13 @@ class FakeAPI:
         value = deepcopy(self.node)
         if self.schedule['revision'] > 4:
             tick = max(1, int(self.clock.t))
-            value['james_reported_at'] = (self.clock.base + datetime.timedelta(seconds=tick)).isoformat()
+            value['nest_reported_at'] = (self.clock.base + datetime.timedelta(seconds=tick)).isoformat()
             value['appliance_local_health']['update_schedule']['revision'] = self.schedule['revision']
         if self.queued:
             tick = 1 + 30 * (max(self.clock.t - 1, 0) // 30)
             if self.stale_reports:
                 tick = 1
-            value['james_reported_at'] = (self.clock.base + datetime.timedelta(seconds=tick)).isoformat()
+            value['nest_reported_at'] = (self.clock.base + datetime.timedelta(seconds=tick)).isoformat()
             value.update(update_status='waiting_window', update_stage='waiting_window',
                 update_attempt_id=ATTEMPT, update_target_version=RELEASE)
             value['appliance_package_update'] = {'status': 'waiting_window',
@@ -106,7 +106,7 @@ class FakeAPI:
 
     def __call__(self, path, body=None):
         self.calls.append((path, deepcopy(body)))
-        prefix = f'/v1/james/nodes/{DEVICE}'
+        prefix = f'/v1/nest/nodes/{DEVICE}'
         if path.startswith('/v1/blueprints?'):
             return {'blueprints': [{'id': '1ccedb1f-e880-4b02-92ba-e24142c54f47',
                 'current_revision_id': '81d3d240-2b94-4e9c-b55f-7011e9dcd715'}]}
@@ -128,7 +128,7 @@ class FakeAPI:
             return deepcopy(self.node)
         if path == prefix + '/qualification-updates':
             if self.node['maintenance_hold']:
-                raise conflict('James software updates are paused for operator maintenance')
+                raise conflict('Nest software updates are paused for operator maintenance')
             if body is not None:
                 raise AssertionError('qualification admission belongs to the lifecycle runner')
             value = deepcopy(self.expected)
@@ -137,22 +137,22 @@ class FakeAPI:
             return value
         if path == prefix + '/build/jobs':
             if self.node['maintenance_hold'] and not self.build_bypass:
-                raise conflict('James build admission is paused for maintenance', 'james_maintenance_hold')
+                raise conflict('Nest build admission is paused for maintenance', 'nest_maintenance_hold')
             return {'id': 'build-was-admitted'}
         if path == prefix + '/update-schedule':
             if body is None:
                 return deepcopy(self.schedule)
             if body['expected_revision'] != self.schedule['revision']:
-                raise conflict('James schedule changed; refresh before saving')
+                raise conflict('Nest schedule changed; refresh before saving')
             self.schedule['revision'] += 1
             self.schedule['schedule'] = deepcopy(body['schedule'])
             self.schedule['run_now_attempt_id'] = None
             return deepcopy(self.schedule)
         if path == prefix + '/update-now':
             if self.node['update_hold']:
-                raise conflict('The queued James update changed or is on hold; refresh before updating')
+                raise conflict('The queued Nest update changed or is on hold; refresh before updating')
             if body != {'attempt_id': ATTEMPT, 'expected_revision': self.schedule['revision']}:
-                raise conflict('James schedule changed; refresh before updating')
+                raise conflict('Nest schedule changed; refresh before updating')
             self.schedule['revision'] += 1
             self.schedule['run_now_attempt_id'] = ATTEMPT
             return deepcopy(self.schedule)
@@ -235,7 +235,7 @@ class ScheduleAdmissionTests(unittest.TestCase):
                 super().__init__(clock)
                 self.lost = lost
             def __call__(self, path, body=None):
-                prefix = f'/v1/james/nodes/{DEVICE}'
+                prefix = f'/v1/nest/nodes/{DEVICE}'
                 if (path == prefix + '/qualification-updates' and body is not None
                         and self.node['maintenance_hold']):
                     self.calls.append((path, deepcopy(body)))
@@ -272,7 +272,7 @@ class ScheduleAdmissionTests(unittest.TestCase):
                 super().__init__(clock)
                 self.deferred = False
             def __call__(self, path, body=None):
-                prefix = f'/v1/james/nodes/{DEVICE}'
+                prefix = f'/v1/nest/nodes/{DEVICE}'
                 if (path == prefix + '/qualification-updates' and body is not None
                         and self.node['maintenance_hold']):
                     self.calls.append((path, deepcopy(body)))
@@ -331,7 +331,7 @@ class ScheduleAdmissionTests(unittest.TestCase):
                 super().__init__(clock)
                 self.lost = lost
             def __call__(self, path, body=None):
-                prefix = f'/v1/james/nodes/{DEVICE}'
+                prefix = f'/v1/nest/nodes/{DEVICE}'
                 if path == prefix + '/update-now' and self.node['update_hold']:
                     self.calls.append((path, deepcopy(body)))
                     self.schedule['revision'] += 1
@@ -363,7 +363,7 @@ class ScheduleAdmissionTests(unittest.TestCase):
     def test_newer_exact_authorization_retains_hold_when_containment_is_ambiguous(self):
         class NewerBrokenAPI(FakeAPI):
             def __call__(self, path, body=None):
-                prefix = f'/v1/james/nodes/{DEVICE}'
+                prefix = f'/v1/nest/nodes/{DEVICE}'
                 if path == prefix + '/update-now' and self.node['update_hold']:
                     self.calls.append((path, deepcopy(body)))
                     self.schedule['revision'] += 2
@@ -394,7 +394,7 @@ class ScheduleAdmissionTests(unittest.TestCase):
                 self.deferred = None
                 self.deferred_rejected = False
             def __call__(self, path, body=None):
-                prefix = f'/v1/james/nodes/{DEVICE}'
+                prefix = f'/v1/nest/nodes/{DEVICE}'
                 if path == prefix + '/update-now' and self.node['update_hold']:
                     self.calls.append((path, deepcopy(body)))
                     self.deferred = deepcopy(body)

@@ -28,7 +28,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../protocol/fixtures/james-appliance-v3.json"
+            "../../protocol/fixtures/nest-appliance-v3.json"
         ))
         .unwrap();
         let mut release: NixosRelease =
@@ -65,7 +65,7 @@ impl Fixture {
             );
             let signature = STANDARD.encode(key.sign(fingerprint.as_bytes()).to_bytes());
             let info = format!(
-                "StorePath: {}\nURL: {name}\nCompression: zstd\nFileHash: {}\nFileSize: {}\nNarHash: {}\nNarSize: {}\nReferences: {}\nSig: cybex-james-appliance-1:{signature}\n",
+                "StorePath: {}\nURL: {name}\nCompression: zstd\nFileHash: {}\nFileSize: {}\nNarHash: {}\nNarSize: {}\nReferences: {}\nSig: tiaris-nest-appliance-1:{signature}\n",
                 entry.path,
                 nix_hash(&Sha256::digest(&compressed)),
                 compressed.len(),
@@ -83,7 +83,7 @@ impl Fixture {
             rows.push(entry);
         }
         let manifest = ClosureManifest {
-            schema: "cybex.james.system-closure.v1".into(),
+            schema: "tiaris.nest.system-closure.v1".into(),
             release_id: release.release_id.clone(),
             base_os: release.base_os.clone(),
             base_os_version: release.base_os_version.clone(),
@@ -94,7 +94,7 @@ impl Fixture {
             required_system_versions: release.required_system_versions.clone(),
             sqlite_migrations_sha256: release.sqlite_migrations_sha256.clone(),
             nix_signing_public_key: format!(
-                "cybex-james-appliance-1:{}",
+                "tiaris-nest-appliance-1:{}",
                 STANDARD.encode(key.verifying_key().as_bytes())
             ),
             manage_source: ManageSource {
@@ -165,7 +165,7 @@ impl Fixture {
         );
     }
     fn verify(&self, bytes: &[u8]) -> Result<ClosureManifest> {
-        let dir = std::env::temp_dir().join(format!("james-closure-test-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("nest-closure-test-{}", Uuid::new_v4()));
         fs::create_dir(&dir)?;
         let path = dir.join("closure.tar.zst");
         fs::write(&path, bytes)?;
@@ -186,7 +186,7 @@ fn authenticates_entire_signed_closure_and_inner_source_bytes() {
 #[ignore = "cross-language release gate requires Python 3 and zstd"]
 fn python_packer_archive_verifies_and_extracts_in_rust() {
     let mut fixture = Fixture::new();
-    let root = std::env::temp_dir().join(format!("james-packer-test-{}", Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("nest-packer-test-{}", Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
     let cache = root.join("cache");
     fs::create_dir(&cache).unwrap();
@@ -227,7 +227,7 @@ fn rejects_inner_signature_even_under_authentic_outer_signature() {
         .unwrap();
     let text = String::from_utf8(bytes.clone()).unwrap();
     let sig =
-        text.find("Sig: cybex-james-appliance-1:").unwrap() + "Sig: cybex-james-appliance-1:".len();
+        text.find("Sig: tiaris-nest-appliance-1:").unwrap() + "Sig: tiaris-nest-appliance-1:".len();
     bytes[sig] = if bytes[sig] == b'A' { b'B' } else { b'A' };
     let bytes = f.archive(|_| {});
     assert!(f.verify(&bytes).is_err());

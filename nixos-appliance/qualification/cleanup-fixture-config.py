@@ -18,7 +18,7 @@ def cleanup(directory):
     owner = json.loads(config.read_file(directory / 'owner.json'))
     names = {'config.json', 'tls_certificate', 'tls_private_key', 'provisioning_seed_file'}
     if (set(owner) != {'schema', 'directory', 'source_revision', 'files'}
-            or owner['schema'] != 'cybex.james.fixture-config-owner.v1'
+            or owner['schema'] != 'tiaris.nest.fixture-config-owner.v1'
             or owner['directory'] != str(directory) or set(owner['files']) != names
             or {p.name for p in directory.iterdir()} != names | {'owner.json', 'source'}):
         raise ValueError('fixture config cleanup receipt does not own these inputs')

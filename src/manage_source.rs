@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const MANAGE_SOURCE_URL_TEMPLATE: &str =
-    "tarball+file:///usr/share/cybex-james/manage-source/{revision}.tar";
-pub const MANAGE_SOURCE_METADATA_SCHEMA: &str = "cybex.james.manage-source.v1";
+    "tarball+file:///usr/share/tiaris-nest/manage-source/{revision}.tar";
+pub const MANAGE_SOURCE_METADATA_SCHEMA: &str = "tiaris.nest.manage-source.v1";
 const MAX_METADATA_BYTES: u64 = 16 * 1024;
 const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -40,7 +40,7 @@ pub fn normalize_url_template(value: &str, allow_private_fixture: bool) -> Resul
         return Ok(value.to_string());
     }
     if !allow_private_fixture {
-        bail!("build.manage_source_url_template must use the packaged Manage source archive");
+        bail!("build.manage_source_url_template must use the packaged Tiaris source archive");
     }
     let path = archive_path_from_template(value, &"0".repeat(40))?;
     if path.file_name().and_then(|name| name.to_str()) != Some(&format!("{}.tar", "0".repeat(40))) {
@@ -59,7 +59,7 @@ pub fn verify_revision(
     let archive_path = archive_path_from_template(&template, revision)?;
     let expected_filename = format!("{revision}.tar");
     if archive_path.file_name().and_then(|name| name.to_str()) != Some(&expected_filename) {
-        bail!("packaged Manage source archive filename does not match its revision");
+        bail!("packaged Tiaris source archive filename does not match its revision");
     }
     let metadata_path = archive_path.with_extension("json");
     // The allow flag permits a service-owned development fixture, but it must
@@ -74,7 +74,7 @@ pub fn verify_revision(
     verify_parent_directory(
         archive_path
             .parent()
-            .ok_or_else(|| anyhow!("packaged Manage source archive has no parent directory"))?,
+            .ok_or_else(|| anyhow!("packaged Tiaris source archive has no parent directory"))?,
         owner_uid,
         owner_gid,
     )?;
@@ -86,17 +86,17 @@ pub fn verify_revision(
         .by_ref()
         .take(MAX_METADATA_BYTES + 1)
         .read_to_end(&mut metadata_body)
-        .context("read packaged Manage source metadata")?;
+        .context("read packaged Tiaris source metadata")?;
     if metadata_body.is_empty() || metadata_body.len() as u64 > MAX_METADATA_BYTES {
-        bail!("packaged Manage source metadata size is outside its bound");
+        bail!("packaged Tiaris source metadata size is outside its bound");
     }
     let metadata: ManageSourceMetadata =
-        serde_json::from_slice(&metadata_body).context("parse packaged Manage source metadata")?;
+        serde_json::from_slice(&metadata_body).context("parse packaged Tiaris source metadata")?;
     let mut canonical =
-        serde_json::to_vec(&metadata).context("serialize packaged Manage source metadata")?;
+        serde_json::to_vec(&metadata).context("serialize packaged Tiaris source metadata")?;
     canonical.push(b'\n');
     if canonical != metadata_body {
-        bail!("packaged Manage source metadata is not canonical compact sorted JSON");
+        bail!("packaged Tiaris source metadata is not canonical compact sorted JSON");
     }
     if metadata.schema != MANAGE_SOURCE_METADATA_SCHEMA
         || metadata.revision != revision
@@ -105,22 +105,22 @@ pub fn verify_revision(
         || metadata.size_bytes == 0
         || metadata.size_bytes > MAX_ARCHIVE_BYTES
     {
-        bail!("packaged Manage source metadata does not match the requested revision");
+        bail!("packaged Tiaris source metadata does not match the requested revision");
     }
 
     let mut archive = open_verified_file(&archive_path, owner_uid, owner_gid, MAX_ARCHIVE_BYTES)?;
     let archive_size = archive
         .metadata()
-        .context("inspect packaged Manage source archive")?
+        .context("inspect packaged Tiaris source archive")?
         .len();
     if archive_size != metadata.size_bytes {
-        bail!("packaged Manage source archive size does not match its metadata");
+        bail!("packaged Tiaris source archive size does not match its metadata");
     }
     let mut hasher = Sha256::new();
     let copied =
-        std::io::copy(&mut archive, &mut hasher).context("hash packaged Manage source archive")?;
+        std::io::copy(&mut archive, &mut hasher).context("hash packaged Tiaris source archive")?;
     if copied != metadata.size_bytes || hex::encode(hasher.finalize()) != metadata.sha256 {
-        bail!("packaged Manage source archive SHA-256 does not match its metadata");
+        bail!("packaged Tiaris source archive SHA-256 does not match its metadata");
     }
 
     Ok(VerifiedManageSource {
@@ -170,7 +170,7 @@ fn validate_revision(revision: &str) -> Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
-        bail!("packaged Manage source revision must be exact lowercase 40-hex");
+        bail!("packaged Tiaris source revision must be exact lowercase 40-hex");
     }
     Ok(())
 }
@@ -182,7 +182,7 @@ fn is_private_fixture_template(template: &str) -> bool {
 fn verify_parent_directory(path: &Path, owner_uid: u32, owner_gid: u32) -> Result<()> {
     let metadata = fs::symlink_metadata(path).with_context(|| {
         format!(
-            "inspect packaged Manage source directory {}",
+            "inspect packaged Tiaris source directory {}",
             path.display()
         )
     })?;
@@ -191,7 +191,7 @@ fn verify_parent_directory(path: &Path, owner_uid: u32, owner_gid: u32) -> Resul
         || metadata.gid() != owner_gid
         || metadata.permissions().mode() & 0o777 != 0o755
     {
-        bail!("packaged Manage source directory metadata is unsafe");
+        bail!("packaged Tiaris source directory metadata is unsafe");
     }
     Ok(())
 }
@@ -203,7 +203,7 @@ fn open_verified_file(
     maximum_size: u64,
 ) -> Result<File> {
     let link_metadata = fs::symlink_metadata(path)
-        .with_context(|| format!("inspect packaged Manage source file {}", path.display()))?;
+        .with_context(|| format!("inspect packaged Tiaris source file {}", path.display()))?;
     if !link_metadata.file_type().is_file()
         || link_metadata.uid() != owner_uid
         || link_metadata.gid() != owner_gid
@@ -212,7 +212,7 @@ fn open_verified_file(
         || link_metadata.len() == 0
         || link_metadata.len() > maximum_size
     {
-        bail!("packaged Manage source file metadata is unsafe");
+        bail!("packaged Tiaris source file metadata is unsafe");
     }
     let mut options = OpenOptions::new();
     options
@@ -220,10 +220,10 @@ fn open_verified_file(
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
     let file = options
         .open(path)
-        .with_context(|| format!("open packaged Manage source file {}", path.display()))?;
+        .with_context(|| format!("open packaged Tiaris source file {}", path.display()))?;
     let opened = file
         .metadata()
-        .with_context(|| format!("inspect opened Manage source file {}", path.display()))?;
+        .with_context(|| format!("inspect opened Tiaris source file {}", path.display()))?;
     if opened.dev() != link_metadata.dev()
         || opened.ino() != link_metadata.ino()
         || opened.uid() != owner_uid
@@ -232,7 +232,7 @@ fn open_verified_file(
         || opened.permissions().mode() & 0o777 != 0o444
         || opened.len() != link_metadata.len()
     {
-        bail!("packaged Manage source file changed while it was opened");
+        bail!("packaged Tiaris source file changed while it was opened");
     }
     Ok(file)
 }
@@ -252,7 +252,7 @@ mod tests {
     fn fixture() -> (PathBuf, String, String) {
         let revision = "a".repeat(40);
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-manage-source-{}-{}",
+            "tiaris-nest-manage-source-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -262,7 +262,7 @@ mod tests {
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
         let archive = root.join(format!("{revision}.tar"));
-        let body = b"deterministic Manage source archive";
+        let body = b"deterministic Tiaris source archive";
         fs::write(&archive, body).unwrap();
         fs::set_permissions(&archive, fs::Permissions::from_mode(0o444)).unwrap();
         let metadata = ManageSourceMetadata {
@@ -357,7 +357,7 @@ mod tests {
         assert_eq!(normalized, MANAGE_SOURCE_URL_TEMPLATE);
         assert!(!is_private_fixture_template(&normalized));
 
-        let private = "tarball+file:///tmp/cybex-james-test/{revision}.tar";
+        let private = "tarball+file:///tmp/tiaris-nest-test/{revision}.tar";
         assert!(is_private_fixture_template(
             &normalize_url_template(private, true).unwrap()
         ));

@@ -26,9 +26,9 @@ class PublishPredecessorTests(unittest.TestCase):
         subprocess.run(['bash', '-n'], input=script, text=True, check=True)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            stale = root / 'cybex-james-publish-predecessor'
+            stale = root / 'tiaris-nest-publish-predecessor'
             stale.mkdir()
-            (stale / 'cybex-james-release.json').write_text('stale release')
+            (stale / 'tiaris-nest-release.json').write_text('stale release')
             fake_bin = root / 'bin'
             fake_bin.mkdir()
             fake_python = fake_bin / 'python3'
@@ -51,9 +51,9 @@ exit 1
                     'PATH': f'{fake_bin}:{os.environ["PATH"]}',
                     'RUNNER_TEMP': str(root), 'GITHUB_RUN_ID': '42',
                     'GITHUB_RUN_ATTEMPT': attempt, 'GITHUB_REPOSITORY': 'CybexHQ/james',
-                    'CYBEX_JAMES_HAS_PREDECESSOR': 'true',
-                    'CYBEX_JAMES_RELEASE_VERSION': '0.2.28',
-                    'CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY': 'test-key',
+                    'TIARIS_NEST_HAS_PREDECESSOR': 'true',
+                    'TIARIS_NEST_RELEASE_VERSION': '0.2.28',
+                    'TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY': 'test-key',
                     'TEST_ARGUMENTS': str(arguments),
                     'TEST_PYTHON_STATUS': '7' if attempt == '3' else '0'}
                 result = subprocess.run(['bash'], input=script, text=True,
@@ -63,12 +63,12 @@ exit 1
                 directory = Path(argv[argv.index('--directory') + 1])
                 seen.append(directory)
                 self.assertEqual(directory, Path(argv[argv.index('--output') + 1]).parent)
-                self.assertTrue(directory.name.startswith(f'cybex-james-publish-predecessor-42-{attempt}.'))
+                self.assertTrue(directory.name.startswith(f'tiaris-nest-publish-predecessor-42-{attempt}.'))
                 self.assertIn('--expected-identity', argv)
                 self.assertEqual(argv[argv.index('--expected-identity') + 1],
-                                 'dist/cybex-james-build-predecessor.json')
+                                 'dist/tiaris-nest-build-predecessor.json')
                 self.assertFalse(directory.exists(), 'temporary predecessor must be removed')
-                self.assertEqual((stale / 'cybex-james-release.json').read_text(), 'stale release')
+                self.assertEqual((stale / 'tiaris-nest-release.json').read_text(), 'stale release')
             self.assertNotEqual(seen[0], seen[1])
 
 

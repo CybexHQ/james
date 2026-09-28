@@ -43,7 +43,7 @@ class QualificationEvidenceTests(unittest.TestCase):
             root = Path(temporary)
             evidence = root / 'evidence'
             evidence.mkdir(mode=0o700)
-            old = evidence / 'cybex-james-nixos-update-qualification.json'
+            old = evidence / 'tiaris-nest-nixos-update-qualification.json'
             old.write_text('{"candidate_release":"0.2.19","ok":true}')
             before = old.read_bytes()
             with self.assertRaisesRegex(ValueError, 'new run/attempt directory'):
@@ -73,7 +73,7 @@ class QualificationEvidenceTests(unittest.TestCase):
                 root = Path(temporary)
                 evidence = root / 'evidence'
                 def fail(*_args):
-                    private = evidence / 'cybex-james-partial.json'
+                    private = evidence / 'tiaris-nest-partial.json'
                     private.write_text('private partial diagnostic')
                     private.chmod(0o600)
                     raise error
@@ -84,7 +84,7 @@ class QualificationEvidenceTests(unittest.TestCase):
                 self.assertEqual(self.chown_calls[0].args, (evidence, 1000, 1000))
                 self.assertEqual(self.chown_calls[0].kwargs, {'follow_symlinks': False})
                 self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o700)
-                self.assertEqual(stat.S_IMODE((evidence / 'cybex-james-partial.json').stat().st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE((evidence / 'tiaris-nest-partial.json').stat().st_mode), 0o600)
 
     def test_success_also_returns_directory_ownership(self):
         with tempfile.TemporaryDirectory() as temporary:

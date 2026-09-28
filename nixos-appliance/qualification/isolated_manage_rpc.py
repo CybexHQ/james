@@ -127,22 +127,22 @@ class Server:
             return {key: transports[key] for key in ('package_transport_url', 'installer_iso_transport_url')}
         if operation == 'personalize' and set(value) == {'operation', 'path', 'secret'}:
             import re
-            if not re.fullmatch(r'/v1/james/provisioning-sessions/[0-9a-f-]{36}/personalization-envelope', value['path']):
+            if not re.fullmatch(r'/v1/nest/provisioning-sessions/[0-9a-f-]{36}/personalization-envelope', value['path']):
                 raise ValueError('invalid personalization endpoint')
             receipt = self.owner.verify()
             from isolated_manage_config import read_file
             token = read_file(self.owner.state / 'session').decode().strip()
             response_headers = {}
             body = self.owner.client(receipt).request_bytes(value['path'], token=token,
-                headers={'X-Cybex-James-Provisioning-Secret': value['secret']}, response_headers=response_headers)
+                headers={'X-Tiaris-Nest-Provisioning-Secret': value['secret']}, response_headers=response_headers)
             if len(body) != 8192:
                 raise ValueError('personalization envelope has an invalid length')
-            digest = response_headers.get('x-cybex-james-envelope-sha256')
+            digest = response_headers.get('x-tiaris-nest-envelope-sha256')
             if digest != hashlib.sha256(body).hexdigest():
                 raise ValueError('personalization response does not bind its envelope digest')
             return {'body': base64.b64encode(body).decode(), 'envelope_sha256': digest}
         if operation == 'allow_device' and set(value) == {'operation', 'session_id'}:
-            session = self.owner.api('/v1/james/provisioning-sessions/' + str(__import__('uuid').UUID(value['session_id'])))
+            session = self.owner.api('/v1/nest/provisioning-sessions/' + str(__import__('uuid').UUID(value['session_id'])))
             self.owner.allow_device(session['reserved_device_id'])
             return None
         raise ValueError('unsupported fixture operation')
@@ -181,7 +181,7 @@ def main():
         with args.output.open('xb') as stream:
             stream.write(body)
         with args.headers_output.open('x') as stream:
-            stream.write('x-cybex-james-envelope-sha256: ' + result['envelope_sha256'] + '\n')
+            stream.write('x-tiaris-nest-envelope-sha256: ' + result['envelope_sha256'] + '\n')
     else:
         request(args.state_dir, 'allow_device', session_id=args.session_id)
 

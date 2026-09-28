@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 import shlex
 
-LABEL = 'net.cybex.james.qualification.owner'
-ROLE = 'net.cybex.james.qualification.role'
+LABEL = 'net.tiaris.nest.qualification.owner'
+ROLE = 'net.tiaris.nest.qualification.role'
 DOCKER = ['docker', '--host', 'unix:///var/run/docker.sock']
 
 
@@ -33,26 +33,26 @@ def env_body(values):
 
 def environment(config, secrets, release, transports, db_password, ssh_ca, proxy_url):
     values = {
-        'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/var/lib/cybex',
-        'CYBEX_DATABASE_URL': f'postgres://fixture:{db_password}@db:5432/fixture',
-        'CYBEX_PORT': '8080', 'CYBEX_STATIC_DIR': '/opt/cybex/web/dist',
-        'CYBEX_NIXPKGS_ICON_CACHE_DIR': '/var/lib/cybex/app-icons',
-        'CYBEX_PUBLIC_API_URL': config['manage_origin'],
-        'CYBEX_JAMES_PROVISIONING_MANAGE_ORIGIN': config['manage_origin'],
-        'CYBEX_JAMES_PROVISIONING_PRIVATE_KEY_B64': secrets['seed'],
-        'CYBEX_JAMES_PROVISIONING_EXPECTED_PUBLIC_KEY': secrets['public_key'],
-        'CYBEX_JAMES_SSH_CA_PRIVATE_KEY_B64': ssh_ca,
-        'CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY': config['release_public_key'],
-        'CYBEX_SECRET_ENCRYPTION_KEY': secrets['encryption_key'],
-        'CYBEX_ALLOW_OPEN_ENROLLMENT': 'false', 'CYBEX_BACKGROUND_RECONCILERS': 'enabled',
-        'CYBEX_JAMES_APPLIANCE_AUTOMATIC_ROLLOUTS': 'false',
-        'CYBEX_JAMES_UPDATE_QUALIFICATION_ENABLED': 'false',
-        'CYBEX_JAMES_RELEASE_MANIFEST_URL': release['manifest_url'],
-        'CYBEX_JAMES_RELEASE_MANIFEST_SHA256': release['manifest_sha256'],
-        'CYBEX_JAMES_RELEASE_VERSION': release['version'],
-        'CYBEX_JAMES_COMPATIBILITY_PROJECTION_SHA256': release['compatibility_sha256'],
-        'CYBEX_DEV_JAMES_RELEASE_MANIFEST_TRANSPORT_URL': transports['manifest_transport_url'],
-        'CYBEX_DEV_JAMES_WORKSTATION_TRANSPORT_URL': transports['bundle_transport_url'],
+        'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/var/lib/tiaris',
+        'TIARIS_DATABASE_URL': f'postgres://fixture:{db_password}@db:5432/fixture',
+        'TIARIS_PORT': '8080', 'TIARIS_STATIC_DIR': '/opt/tiaris/web/dist',
+        'TIARIS_NIXPKGS_ICON_CACHE_DIR': '/var/lib/tiaris/app-icons',
+        'TIARIS_PUBLIC_API_URL': config['manage_origin'],
+        'TIARIS_NEST_PROVISIONING_MANAGE_ORIGIN': config['manage_origin'],
+        'TIARIS_NEST_PROVISIONING_PRIVATE_KEY_B64': secrets['seed'],
+        'TIARIS_NEST_PROVISIONING_EXPECTED_PUBLIC_KEY': secrets['public_key'],
+        'TIARIS_NEST_SSH_CA_PRIVATE_KEY_B64': ssh_ca,
+        'TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY': config['release_public_key'],
+        'TIARIS_SECRET_ENCRYPTION_KEY': secrets['encryption_key'],
+        'TIARIS_ALLOW_OPEN_ENROLLMENT': 'false', 'TIARIS_BACKGROUND_RECONCILERS': 'enabled',
+        'TIARIS_NEST_APPLIANCE_AUTOMATIC_ROLLOUTS': 'false',
+        'TIARIS_NEST_UPDATE_QUALIFICATION_ENABLED': 'false',
+        'TIARIS_NEST_RELEASE_MANIFEST_URL': release['manifest_url'],
+        'TIARIS_NEST_RELEASE_MANIFEST_SHA256': release['manifest_sha256'],
+        'TIARIS_NEST_RELEASE_VERSION': release['version'],
+        'TIARIS_NEST_COMPATIBILITY_PROJECTION_SHA256': release['compatibility_sha256'],
+        'TIARIS_DEV_NEST_RELEASE_MANIFEST_TRANSPORT_URL': transports['manifest_transport_url'],
+        'TIARIS_DEV_NEST_WORKSTATION_TRANSPORT_URL': transports['bundle_transport_url'],
     }
     if proxy_url:
         values.update(HTTPS_PROXY=proxy_url, https_proxy=proxy_url,
@@ -82,7 +82,7 @@ http {{
     ssl_certificate_key /run/fixture/tls.key;
     ssl_protocols TLSv1.2 TLSv1.3;
     if ($host != {hostname}) {{ return 444; }}
-    location = /.well-known/cybex-qualification/{receipt['challenge']} {{
+    location = /.well-known/tiaris-qualification/{receipt['challenge']} {{
       default_type application/json;
       return 200 '{challenge}';
     }}
@@ -120,8 +120,8 @@ class Docker:
         labels = config.get('Labels') or {}
         if role == 'app' and (labels.get('org.opencontainers.image.revision') != revision
                              or labels.get('org.opencontainers.image.source') != 'https://github.com/CybexHQ/development'
-                             or labels.get('net.cybex.manage.james-compatibility-projection-sha256') != projection):
-            raise ValueError('Manage fixture image lacks exact reviewed development source labels')
+                             or labels.get('net.tiaris.manage.nest-compatibility-projection-sha256') != projection):
+            raise ValueError('Tiaris fixture image lacks exact reviewed development source labels')
         return value['Id']
 
     def labels(self, role):

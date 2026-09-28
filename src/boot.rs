@@ -21,11 +21,11 @@ pub struct ProfileSelection<'a> {
 }
 
 const IPXE_MENU_BACKGROUND_PATH: &str = "assets/pxe-menu.png";
-const IPXE_MENU_TITLE: &str = "CYBEX";
-const IPXE_MENU_SUBTITLE: &str = "PXE BOOT - JAMES BOOT - X86_64 - UEFI";
+const IPXE_MENU_TITLE: &str = "TIARIS";
+const IPXE_MENU_SUBTITLE: &str = "PXE BOOT - NEST BOOT - X86_64 - UEFI";
 const IPXE_MENU_TIMEOUT_COPY: &str =
     "Booting the highlighted entry automatically - press any key to pause";
-const IPXE_MENU_FOOTER: &str = "cybex-james - pxe - x86_64 - uefi";
+const IPXE_MENU_FOOTER: &str = "tiaris-nest - pxe - x86_64 - uefi";
 
 pub fn choose_profile<'a>(
     device: Option<&Device>,
@@ -78,7 +78,7 @@ fn unambiguous_default_enrollment(profiles: &[BootProfile]) -> Option<&BootProfi
         profile.enabled
             && profile.is_default
             && !profile.one_time
-            && profile.profile_type == BootProfileType::JamesInstaller
+            && profile.profile_type == BootProfileType::NestInstaller
             && profile_has_boot_action(profile)
     });
     let profile = defaults.next()?;
@@ -108,14 +108,14 @@ pub fn render_menu(
         script.push_str("\n:known_menu\n");
     }
     append_ipxe_menu_theme(&mut script, public_base_url);
-    let _ = writeln!(script, "set cybex-title {IPXE_MENU_TITLE}");
-    let _ = writeln!(script, "set cybex-subtitle {IPXE_MENU_SUBTITLE}");
+    let _ = writeln!(script, "set tiaris-title {IPXE_MENU_TITLE}");
+    let _ = writeln!(script, "set tiaris-subtitle {IPXE_MENU_SUBTITLE}");
     if timeout_ms > 0 {
-        let _ = writeln!(script, "set cybex-timeout-copy {IPXE_MENU_TIMEOUT_COPY}");
+        let _ = writeln!(script, "set tiaris-timeout-copy {IPXE_MENU_TIMEOUT_COPY}");
         let _ = writeln!(script, "set menu-timeout {timeout_ms}");
     }
-    script.push_str("menu ${cybex-title}\n");
-    script.push_str("item --gap ${cybex-subtitle}\n");
+    script.push_str("menu ${tiaris-title}\n");
+    script.push_str("item --gap ${tiaris-subtitle}\n");
     script.push_str("item --gap\n");
     script.push_str("item --key l local Boot local disk\n");
 
@@ -130,7 +130,7 @@ pub fn render_menu(
 
     script.push_str("item --gap\n");
     if timeout_ms > 0 {
-        script.push_str("item --gap ${cybex-timeout-copy}\n");
+        script.push_str("item --gap ${tiaris-timeout-copy}\n");
     }
     let _ = writeln!(script, "item --gap {IPXE_MENU_FOOTER}");
     if timeout_ms > 0 {
@@ -157,7 +157,7 @@ pub fn render_menu(
     script.push_str(":local\n");
     script.push_str(&render_local_body());
     script.push_str("\n:failed\n");
-    script.push_str("echo Cybex James failed to load the selected profile\n");
+    script.push_str("echo Tiaris Nest failed to load the selected profile\n");
     script.push_str("sleep 5\n");
     script.push_str("goto local\n\n");
     script.push_str(":end\n");
@@ -189,9 +189,9 @@ fn menu_profiles(profiles: &[BootProfile]) -> Vec<&BootProfile> {
 fn append_ipxe_menu_theme(script: &mut String, public_base_url: &str) {
     let background_url = asset_url(public_base_url, IPXE_MENU_BACKGROUND_PATH)
         .expect("built-in PXE menu background path must be safe");
-    script.push_str("# Cybex boot menu theme, aligned with the ISO GRUB palette.\n");
+    script.push_str("# Tiaris boot menu theme, aligned with the ISO GRUB palette.\n");
     script.push_str(&format!(
-        "console --x 1024 --y 864 --picture {background_url} --left 280 --right 280 --top 260 --bottom 140 --depth 32 || console --x 1024 --y 768 --depth 32 || echo Cybex James: using firmware text console\n"
+        "console --x 1024 --y 864 --picture {background_url} --left 280 --right 280 --top 260 --bottom 140 --depth 32 || console --x 1024 --y 768 --depth 32 || echo Tiaris Nest: using firmware text console\n"
     ));
     script.push_str("colour --basic 0 --rgb 0x0e0f12 0\n");
     script.push_str("colour --basic 3 --rgb 0xeb9b46 1\n");
@@ -213,7 +213,7 @@ fn append_ipxe_menu_theme(script: &mut String, public_base_url: &str) {
 
 pub fn profile_has_boot_action(profile: &BootProfile) -> bool {
     match profile.profile_type {
-        BootProfileType::LocalDisk | BootProfileType::JamesInstaller => true,
+        BootProfileType::LocalDisk | BootProfileType::NestInstaller => true,
         BootProfileType::CustomIpxe => profile
             .raw_script
             .as_ref()
@@ -225,14 +225,14 @@ pub fn profile_has_boot_action(profile: &BootProfile) -> bool {
 pub fn render_profile_script(profile: &BootProfile, _public_base_url: &str) -> AppResult<String> {
     let mut script = String::new();
     script.push_str("#!ipxe\n");
-    script.push_str(&format!("echo Cybex James: {}\n", ipxe_text(&profile.name)));
+    script.push_str(&format!("echo Tiaris Nest: {}\n", ipxe_text(&profile.name)));
 
     match profile.profile_type {
         BootProfileType::LocalDisk => {
             script.push_str(&render_local_body());
         }
-        BootProfileType::JamesInstaller => {
-            script.push_str("echo James installer profiles require a per-client boot session\n");
+        BootProfileType::NestInstaller => {
+            script.push_str("echo Nest installer profiles require a per-client boot session\n");
             script.push_str("sleep 5\n");
             script.push_str("exit 1\n");
         }
@@ -281,7 +281,7 @@ fn append_local_attempt(script: &mut String, label_prefix: &str, failure_label: 
     // is intentional, so it returns immediately instead of retrying. UEFI then
     // advances to the next BootOrder entry (normally NixOS-boot).
     script.push_str("echo Returning control to UEFI for the next boot entry\n");
-    script.push_str("set cybex-local-handoff 1\n");
+    script.push_str("set tiaris-local-handoff 1\n");
     script.push_str("exit 1\n");
     let _ = writeln!(script, ":{label_prefix}_bios");
     let _ = writeln!(
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn unknown_device_automatically_starts_sole_default_enrollment() {
-        let mut enrollment = profile(2, BootProfileType::JamesInstaller);
+        let mut enrollment = profile(2, BootProfileType::NestInstaller);
         enrollment.name = "Default Enrollment".to_string();
         enrollment.is_default = true;
         let profiles = vec![profile(1, BootProfileType::LocalDisk), enrollment];
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn automatic_enrollment_requires_explicit_request_context() {
-        let mut enrollment = profile(2, BootProfileType::JamesInstaller);
+        let mut enrollment = profile(2, BootProfileType::NestInstaller);
         enrollment.is_default = true;
         let profiles = vec![profile(1, BootProfileType::LocalDisk), enrollment];
 
@@ -402,9 +402,9 @@ mod tests {
 
     #[test]
     fn unknown_device_uses_explicit_default_when_other_profiles_exist() {
-        let mut enrollment = profile(2, BootProfileType::JamesInstaller);
+        let mut enrollment = profile(2, BootProfileType::NestInstaller);
         enrollment.is_default = true;
-        let other = profile(3, BootProfileType::JamesInstaller);
+        let other = profile(3, BootProfileType::NestInstaller);
         let profiles = vec![profile(1, BootProfileType::LocalDisk), enrollment, other];
 
         let selection = choose_profile(None, &profiles, true);
@@ -415,9 +415,9 @@ mod tests {
 
     #[test]
     fn unknown_device_gets_menu_when_default_enrollment_is_ambiguous() {
-        let mut first = profile(2, BootProfileType::JamesInstaller);
+        let mut first = profile(2, BootProfileType::NestInstaller);
         first.is_default = true;
-        let mut second = profile(3, BootProfileType::JamesInstaller);
+        let mut second = profile(3, BootProfileType::NestInstaller);
         second.is_default = true;
         let profiles = vec![profile(1, BootProfileType::LocalDisk), first, second];
 
@@ -431,7 +431,7 @@ mod tests {
     fn unknown_device_gets_menu_when_only_enrollment_is_not_default() {
         let profiles = vec![
             profile(1, BootProfileType::LocalDisk),
-            profile(2, BootProfileType::JamesInstaller),
+            profile(2, BootProfileType::NestInstaller),
         ];
 
         let selection = choose_profile(None, &profiles, true);
@@ -455,10 +455,10 @@ mod tests {
 
     #[test]
     fn one_time_profiles_stay_out_of_the_menu_but_boot_via_binding() {
-        let mut reinstall = profile(2, BootProfileType::JamesInstaller);
+        let mut reinstall = profile(2, BootProfileType::NestInstaller);
         reinstall.name = "Reinstall workstation-01".to_string();
         reinstall.one_time = true;
-        let mut enrollment = profile(3, BootProfileType::JamesInstaller);
+        let mut enrollment = profile(3, BootProfileType::NestInstaller);
         enrollment.name = "Default Enrollment".to_string();
         let profiles = vec![
             profile(1, BootProfileType::LocalDisk),
@@ -466,7 +466,7 @@ mod tests {
             enrollment,
         ];
 
-        let menu = render_menu("http://james.local", &profiles, None, None, 10_000, false);
+        let menu = render_menu("http://nest.local", &profiles, None, None, 10_000, false);
         assert!(!menu.contains("Reinstall workstation-01"));
         assert!(menu.contains("Default Enrollment"));
 
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn one_time_profile_wins_over_assigned_default() {
-        let installer = profile(2, BootProfileType::JamesInstaller);
+        let installer = profile(2, BootProfileType::NestInstaller);
         let profiles = vec![profile(1, BootProfileType::LocalDisk), installer];
         let device = device(Some(1), Some(2));
         let selection = choose_profile(Some(&device), &profiles, true);
@@ -490,7 +490,7 @@ mod tests {
     fn assigned_profile_auto_selects() {
         let mut local = profile(1, BootProfileType::LocalDisk);
         local.is_default = true;
-        let installer = profile(2, BootProfileType::JamesInstaller);
+        let installer = profile(2, BootProfileType::NestInstaller);
         let profiles = vec![local, installer];
         let device = device(Some(2), None);
         let selection = choose_profile(Some(&device), &profiles, true);
@@ -501,7 +501,7 @@ mod tests {
     #[test]
     fn known_device_assigned_to_local_disk_stays_local() {
         let local = profile(1, BootProfileType::LocalDisk);
-        let mut enrollment = profile(2, BootProfileType::JamesInstaller);
+        let mut enrollment = profile(2, BootProfileType::NestInstaller);
         enrollment.is_default = true;
         let profiles = vec![local, enrollment];
         let device = device(Some(1), None);
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn known_unassigned_device_gets_menu_instead_of_automatic_enrollment() {
-        let mut installer = profile(2, BootProfileType::JamesInstaller);
+        let mut installer = profile(2, BootProfileType::NestInstaller);
         installer.is_default = true;
         let profiles = vec![profile(1, BootProfileType::LocalDisk), installer];
         let device = device(None, None);
@@ -530,10 +530,10 @@ mod tests {
 
     #[test]
     fn menu_contains_select_chains_and_orders_local_then_default() {
-        let mut installer = profile(2, BootProfileType::JamesInstaller);
+        let mut installer = profile(2, BootProfileType::NestInstaller);
         installer.name = "Default Enrollment".to_string();
         installer.is_default = true;
-        let mut other = profile(3, BootProfileType::JamesInstaller);
+        let mut other = profile(3, BootProfileType::NestInstaller);
         other.name = "Other Installer".to_string();
         let profiles = vec![profile(1, BootProfileType::LocalDisk), other, installer];
         let script = render_menu(
@@ -551,7 +551,7 @@ mod tests {
         assert!(!script.contains("menu-timeout"));
         assert!(script.contains("iseq ${platform} efi && goto local_efi || goto local_bios"));
         assert!(script.contains(
-            ":local_efi\nsanboot --no-describe --drive 0x80 || goto local_efi_handoff\ngoto end\n:local_efi_handoff\necho Returning control to UEFI for the next boot entry\nset cybex-local-handoff 1\nexit 1"
+            ":local_efi\nsanboot --no-describe --drive 0x80 || goto local_efi_handoff\ngoto end\n:local_efi_handoff\necho Returning control to UEFI for the next boot entry\nset tiaris-local-handoff 1\nexit 1"
         ));
         assert!(!script.contains("sanboot --drive 0"));
         assert!(script.contains("sanboot --no-describe --drive 0x80 || goto local_exit"));
@@ -564,12 +564,12 @@ mod tests {
     }
 
     #[test]
-    fn menu_includes_cybex_theme() {
+    fn menu_includes_tiaris_theme() {
         let profiles = vec![profile(1, BootProfileType::LocalDisk)];
         let script = render_menu("http://boot.local:8080", &profiles, None, None, 0, false);
 
-        assert!(script.contains("set cybex-title CYBEX"));
-        assert!(script.contains("set cybex-subtitle PXE BOOT - JAMES BOOT - X86_64 - UEFI"));
+        assert!(script.contains("set tiaris-title TIARIS"));
+        assert!(script.contains("set tiaris-subtitle PXE BOOT - NEST BOOT - X86_64 - UEFI"));
         assert!(script.contains(
             "console --x 1024 --y 864 --picture http://boot.local:8080/files/assets/pxe-menu.png --left 280 --right 280 --top 260 --bottom 140 --depth 32"
         ));
@@ -577,9 +577,9 @@ mod tests {
         assert!(script.contains("colour --basic 3 --rgb 0xeb9b46 1"));
         assert!(script.contains("colour --basic 4 --rgb 0x241a10 4"));
         assert!(script.contains("cpair --foreground 1 --background 4 2"));
-        assert!(script.contains("menu ${cybex-title}\n"));
-        assert!(script.contains("item --gap ${cybex-subtitle}"));
-        assert!(script.contains("item --gap cybex-james - pxe - x86_64 - uefi"));
+        assert!(script.contains("menu ${tiaris-title}\n"));
+        assert!(script.contains("item --gap ${tiaris-subtitle}"));
+        assert!(script.contains("item --gap tiaris-nest - pxe - x86_64 - uefi"));
         assert!(script.contains("choose --default local selected || goto local"));
         assert!(!script.contains("choose --timeout"));
         assert!(!script.contains("iPXE shell"));
@@ -592,7 +592,7 @@ mod tests {
         let script = render_menu("http://boot.local:8080", &profiles, None, None, 8000, false);
 
         assert!(script.contains("set menu-timeout 8000"));
-        assert!(script.contains("item --gap ${cybex-timeout-copy}"));
+        assert!(script.contains("item --gap ${tiaris-timeout-copy}"));
         assert!(
             script.contains(
                 "choose --timeout ${menu-timeout} --default local selected || goto local"
@@ -608,7 +608,7 @@ mod tests {
             profile(1, BootProfileType::LocalDisk),
             raw,
             profile(5, BootProfileType::CustomIpxe),
-            profile(6, BootProfileType::JamesInstaller),
+            profile(6, BootProfileType::NestInstaller),
         ];
 
         let script = render_menu("http://boot.local:8080", &profiles, None, None, 0, false);
@@ -633,7 +633,7 @@ mod tests {
 
     #[test]
     fn menu_sanitizes_control_characters_in_profile_names() {
-        let mut installer = profile(2, BootProfileType::JamesInstaller);
+        let mut installer = profile(2, BootProfileType::NestInstaller);
         installer.name = "Installer\n\x1bshell".to_string();
         let profiles = vec![profile(1, BootProfileType::LocalDisk), installer];
 
@@ -645,7 +645,7 @@ mod tests {
 
     #[test]
     fn known_mac_menu_tries_uefi_local_disk_before_loading_menu_ui() {
-        let mut installer = profile(2, BootProfileType::JamesInstaller);
+        let mut installer = profile(2, BootProfileType::NestInstaller);
         installer.name = "Default Enrollment".to_string();
         installer.is_default = true;
         let profiles = vec![profile(1, BootProfileType::LocalDisk), installer];
@@ -661,11 +661,11 @@ mod tests {
 
         let local_handoff = script
             .find(
-                ":known_local_efi\nsanboot --no-describe --drive 0x80 || goto known_local_efi_handoff\ngoto end\n:known_local_efi_handoff\necho Returning control to UEFI for the next boot entry\nset cybex-local-handoff 1\nexit 1",
+                ":known_local_efi\nsanboot --no-describe --drive 0x80 || goto known_local_efi_handoff\ngoto end\n:known_local_efi_handoff\necho Returning control to UEFI for the next boot entry\nset tiaris-local-handoff 1\nexit 1",
             )
             .unwrap();
         let menu_picture = script.find("console --x 1024").unwrap();
-        let menu = script.find("menu ${cybex-title}").unwrap();
+        let menu = script.find("menu ${tiaris-title}").unwrap();
         assert!(local_handoff < menu_picture);
         assert!(menu_picture < menu);
         assert!(!script.contains("sanboot --drive 0"));
@@ -689,6 +689,6 @@ mod tests {
 
         assert!(!script.contains("known_local"));
         assert!(!script.contains("goto known_menu"));
-        assert!(script.find("menu ${cybex-title}").unwrap() < script.find(":local\n").unwrap());
+        assert!(script.find("menu ${tiaris-title}").unwrap() < script.find(":local\n").unwrap());
     }
 }

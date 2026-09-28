@@ -1,6 +1,6 @@
-//! Host utilization sampling (/proc, /sys) for the periodic James report.
+//! Host utilization sampling (/proc, /sys) for the periodic Nest report.
 //!
-//! Manage validates the reported bounds strictly and rejects the whole report
+//! Tiaris validates the reported bounds strictly and rejects the whole report
 //! on violation, so every value is clamped into the accepted ranges here.
 
 use std::path::Path;
@@ -121,7 +121,7 @@ pub fn parse_meminfo(raw: &str) -> (i64, i64) {
 }
 
 /// Interface of the default IPv4 route (destination 00000000), so throughput
-/// and link speed describe the uplink Manage and devices actually use.
+/// and link speed describe the uplink Tiaris and devices actually use.
 fn primary_interface() -> Option<String> {
     let route = std::fs::read_to_string("/proc/net/route").ok()?;
     parse_default_route_interface(&route)

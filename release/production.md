@@ -1,11 +1,11 @@
 # Production release continuity
 
-Production James uses the fleet Ed25519 release authority and provisioning
+Production Nest uses the fleet Ed25519 release authority and provisioning
 authority configured in `production-release`. Repository public keys must match
 the installed fleet. The protected secret storage names retain the historical
-`CYBEX_FORGE_*` prefix; the workflow uses those exact names. Runtime source is
+`TIARIS_FORGE_*` prefix; the workflow uses those exact names. Runtime source is
 pinned to an exact commit in `CybexHQ/manage`, with a read-only deployment key.
-Manage application deployment is a separate operation.
+Tiaris application deployment is a separate operation.
 
 The one-time `recovery-adoption.json` authorization binds the historical GitHub
 dev.4 publication and recovered production dev.29 manifests, compatibility
@@ -21,14 +21,14 @@ candidate and its original authorization remain unchanged at their tag. The
 qualification phase passed, after review found a cold-artifact digest encoding
 mismatch.
 0.2.4 passed appliance qualification but its immutable prerelease omitted the
-workstation Manage source digest and size, blocking Dock acceptance. 0.2.5 binds
+workstation Tiaris source digest and size, blocking Dock acceptance. 0.2.5 binds
 both values from the exact package metadata and rejects missing or mismatched
 values before signing. Earlier tags, assets and receipts remain unchanged.
 The workstation harness requests a read-only verification after each observed
 managed reboot; it still requires fresh compliance and exact booted identity.
 
 The release workflow builds one candidate inside a disposable Docker container
-on `thebeast-james-production`, then signs it outside the build container. It
+on `thebeast-nest-production`, then signs it outside the build container. It
 retains the signed files locally and uploads only a bounded inventory receipt
 as the Actions candidate artifact. Qualification and publication authenticate
 that artifact's ID, ZIP digest, run and source, then hash the local files against
@@ -38,7 +38,7 @@ The isolated builder and recovery procedure are in [beast/README.md](beast/READM
 The disposable production-image qualification instance has its own database,
 private DNS/TLS, sessions, devices and runtime watermarks. No manually retained
 device ID, evidence variable or long-lived qualification token is required.
-The host setup is documented in Manage's `deploy/qualification/README.md`.
+The host setup is documented in Tiaris's `deploy/qualification/README.md`.
 
 The runner's user service also installs `runner-python.conf` as a drop-in.
 Install `runner-python.sudoers` under `/etc/sudoers.d/` (root, mode 0440), after
@@ -58,14 +58,14 @@ disposes of its database and disks.
 Legacy `legacy_all_debs` updaters cannot use the private package transport;
 they still require canonical HTTPS admission and a qualified bridge.
 
-Manage binds a workstation runtime to the exact appliance release. A fresh
+Tiaris binds a workstation runtime to the exact appliance release. A fresh
 unpublished candidate therefore has no runtime, even when a predecessor exists.
 The prepublication receipt explicitly records absent runtime and deferred
 Blueprint delivery; it cannot pass the cold-delivery gate. Upgrade qualification
 still proves retention of the predecessor's real installed runtime.
 
 Before building, the resolver authenticates the predecessor's signed manifest,
-package snapshot and exact Debian package, and exports every verified Manage
+package snapshot and exact Debian package, and exports every verified Tiaris
 source archive pair. The new package includes these archives alongside its
 current source, so dpkg cannot remove the source required by a retained runtime.
 Identical revisions are deduplicated; conflicting bytes, malformed pairs and
@@ -78,14 +78,14 @@ GitHub first locks the assets as a prerelease with `latest=false`. The pending
 cold-qualification marker excludes this staged release from future predecessor
 resolution. Cold qualification must download the public runtime and prove that
 its active and desired hashes equal the signed candidate.
-The isolated Manage fixture stays offline and serves a private closure transport
+The isolated Tiaris fixture stays offline and serves a private closure transport
 for the appliance lifecycle. A separate host-side cold check uses the exact
-signed public closure URL through James's production downloader, then verifies
+signed public closure URL through Nest's production downloader, then verifies
 the complete signed archive. Its source-, manifest-, URL-, size-, and hash-bound
 receipt is required alongside appliance and workstation evidence for stable
 promotion. The host runner needs direct public HTTPS; proxy settings do not
 alter the downloader's DNS and redirect policy.
-The same private phase then boots an empty workstation through James PXE,
+The same private phase then boots an empty workstation through Nest PXE,
 installs Standard, applies Dock and Tiling, and requires a managed reboot and
 fresh exact compliant evidence for each. It checks the signed runtime descriptor,
 booted Nix generation and preserved workstation identity before canary selection.

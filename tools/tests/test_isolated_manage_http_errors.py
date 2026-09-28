@@ -71,7 +71,7 @@ class HTTPErrorTests(unittest.TestCase):
         })
 
     def test_http_metadata_survives_rpc_even_with_owner_sibling_module_loading(self):
-        spec = importlib.util.spec_from_file_location('_james_transport_for_test', HELPERS / 'isolated_manage_transport.py')
+        spec = importlib.util.spec_from_file_location('_nest_transport_for_test', HELPERS / 'isolated_manage_transport.py')
         sibling = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(sibling)
         original = sibling.ManageHTTPError.from_response(409, json.dumps({'error': BUSY, 'secret': SECRET}).encode())

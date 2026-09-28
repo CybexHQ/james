@@ -5,7 +5,7 @@ let
     network = {
       version = 2;
       renderer = "networkd";
-      ethernets.cybex-james = {
+      ethernets.tiaris-nest = {
         match.macaddress = "52:54:00:12:01:01";
         set-name = "eth1";
         dhcp4 = true;
@@ -14,17 +14,17 @@ let
     };
   });
 in import (nixpkgs + "/nixos/tests/make-test-python.nix") ({ ... }: {
-  name = "cybex-james-network-render-ordering";
+  name = "tiaris-nest-network-render-ordering";
   nodes = {
     machine = { lib, ... }: {
       imports = [ ../module.nix ];
-      services.cybex-james = { enable = true; appliance = common; };
+      services.tiaris-nest = { enable = true; appliance = common; };
       system.stateVersion = "26.05";
       virtualisation.vlans = [ 1 ];
       services.timesyncd.enable = lib.mkForce false;
       system.activationScripts.network-ordering-fixture.text = ''
-        install -d -m0750 -o root -g cybex-james /var/lib/cybex-james/control
-        install -m0600 -o root -g root ${networkPlan} /var/lib/cybex-james/control/netplan-approved.json
+        install -d -m0750 -o root -g tiaris-nest /var/lib/tiaris-nest/control
+        install -m0600 -o root -g root ${networkPlan} /var/lib/tiaris-nest/control/netplan-approved.json
       '';
     };
     router = { ... }: {
@@ -45,14 +45,14 @@ in import (nixpkgs + "/nixos/tests/make-test-python.nix") ({ ... }: {
     machine.wait_for_unit("systemd-networkd.service")
 
     machine.succeed("test $(cat /sys/class/net/eth1/address) = 52:54:00:12:01:01")
-    machine.succeed("test -f /run/systemd/network/10-cybex-james.network")
-    machine.succeed("grep -Fx 'DHCP=ipv4' /run/systemd/network/10-cybex-james.network")
-    machine.succeed("systemctl show systemd-networkd.service -P Requires | tr ' ' '\\n' | grep -Fx cybex-james-network-render.service")
-    machine.succeed("test $(systemctl show cybex-james-network-render.service -P Result) = success")
-    machine.succeed("rendered=$(systemctl show cybex-james-network-render.service -P ExecMainExitTimestampMonotonic); networkd=$(systemctl show systemd-networkd.service -P ExecMainStartTimestampMonotonic); test $rendered -gt 0; test $rendered -le $networkd")
+    machine.succeed("test -f /run/systemd/network/10-tiaris-nest.network")
+    machine.succeed("grep -Fx 'DHCP=ipv4' /run/systemd/network/10-tiaris-nest.network")
+    machine.succeed("systemctl show systemd-networkd.service -P Requires | tr ' ' '\\n' | grep -Fx tiaris-nest-network-render.service")
+    machine.succeed("test $(systemctl show tiaris-nest-network-render.service -P Result) = success")
+    machine.succeed("rendered=$(systemctl show tiaris-nest-network-render.service -P ExecMainExitTimestampMonotonic); networkd=$(systemctl show systemd-networkd.service -P ExecMainStartTimestampMonotonic); test $rendered -gt 0; test $rendered -le $networkd")
     machine.wait_for_unit("systemd-networkd-wait-online.service")
     machine.wait_until_succeeds("ip -4 address show dev eth1 | grep -E '10\\.0\\.0\\.(6[0-9])/24'")
-    machine.succeed("networkctl --no-pager status eth1 | grep -F 'Network File: /run/systemd/network/10-cybex-james.network'")
+    machine.succeed("networkctl --no-pager status eth1 | grep -F 'Network File: /run/systemd/network/10-tiaris-nest.network'")
     machine.succeed("ping -c 1 10.0.0.1")
   '';
 }) { system = "x86_64-linux"; }

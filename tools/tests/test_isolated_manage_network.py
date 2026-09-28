@@ -49,7 +49,7 @@ class Host:
         self.links = []
         self.containers = []
         self.guest = {'name': self.c['bridge'], 'description': '', 'type': 'bridge', 'managed': True, 'used_by': [],
-                      'config': {'user.cybex.nixos-qualification': self.c['owner'],
+                      'config': {'user.tiaris.nixos-qualification': self.c['owner'],
                                  'ipv4.address': self.c['subnet'], 'ipv4.nat': 'true', 'ipv6.address': 'none'}}
         self.backend = {'Id': self.c['network_id'], 'Name': 'jnqm-' + self.c['owner'].replace('-', '') + '-backend',
                         'Driver': 'bridge', 'Internal': True, 'EnableIPv6': False,
@@ -104,7 +104,7 @@ class Host:
         self.commands.append((['incus-cas', network['name'], etag], copy.deepcopy(config)))
         if self.replace_incus_before_put:
             self.replace_incus_before_put = False
-            self.guest['config']['user.cybex.nixos-qualification'] = 'foreign'
+            self.guest['config']['user.tiaris.nixos-qualification'] = 'foreign'
             self.incus_version += 1
         if etag != 'etag-' + str(self.incus_version):
             raise ValueError('Incus compare-and-swap request failed')
@@ -324,7 +324,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(h.commands, [])
 
     def test_existing_resources_and_wrong_ownership_not_adopted(self):
-        for alter in [lambda h: h.guest['config'].update({'user.cybex.nixos-qualification': 'foreign'}),
+        for alter in [lambda h: h.guest['config'].update({'user.tiaris.nixos-qualification': 'foreign'}),
                       lambda h: h.guest['config'].update({'raw.dnsmasq': 'server=public'}),
                       lambda h: h.guest['config'].update({'dns.nameservers': '8.8.8.8'}),
                       lambda h: h.backend.update({'Internal': False}),
@@ -522,7 +522,7 @@ class Tests(unittest.TestCase):
             network.Adapter.check_table(c, live)
 
 
-@unittest.skipUnless(os.environ.get('CYBEX_NIXOS_NETWORK_NAMESPACE') == '1',
+@unittest.skipUnless(os.environ.get('TIARIS_NIXOS_NETWORK_NAMESPACE') == '1',
                      'requires an explicitly disposable root network namespace')
 class KernelTests(unittest.TestCase):
     def setUp(self):

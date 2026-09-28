@@ -13,7 +13,7 @@ use std::{
 };
 use tokio::process::Command;
 
-// Keep this synchronized with Manage's provisioning admission and the
+// Keep this synchronized with Tiaris's provisioning admission and the
 // bootstrap partition layout. The final partition is shared by /nix, runtime
 // bundles, build work, and the delivery cache; 128 GiB leaves too little
 // normal-operating headroom for exact workstation preparation.
@@ -28,7 +28,7 @@ const LIVE_INSTALLER_BUSYBOX: &str = "/usr/bin/busybox";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct JamesProvisioningEthernetInterface {
+pub struct NestProvisioningEthernetInterface {
     pub id: String,
     pub name: String,
     pub mac: String,
@@ -39,7 +39,7 @@ pub struct JamesProvisioningEthernetInterface {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct JamesProvisioningDisk {
+pub struct NestProvisioningDisk {
     pub id: String,
     pub path: String,
     pub model: String,
@@ -56,7 +56,7 @@ pub struct JamesProvisioningDisk {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct JamesProvisioningInventory {
+pub struct NestProvisioningInventory {
     pub manufacturer: String,
     pub model: String,
     pub serial_number: String,
@@ -70,17 +70,17 @@ pub struct JamesProvisioningInventory {
     pub secure_boot: bool,
     pub virtualization: String,
     #[serde(default)]
-    pub ethernet_interfaces: Vec<JamesProvisioningEthernetInterface>,
+    pub ethernet_interfaces: Vec<NestProvisioningEthernetInterface>,
     #[serde(default)]
-    pub disks: Vec<JamesProvisioningDisk>,
+    pub disks: Vec<NestProvisioningDisk>,
 }
 
-pub(crate) async fn collect_inventory() -> Result<JamesProvisioningInventory> {
+pub(crate) async fn collect_inventory() -> Result<NestProvisioningInventory> {
     let mut ethernet_interfaces = collect_ethernet_interfaces().await?;
     ethernet_interfaces.sort_by(|left, right| left.id.cmp(&right.id));
     let mut disks = collect_disks().await?;
     disks.sort_by(|left, right| left.id.cmp(&right.id));
-    Ok(JamesProvisioningInventory {
+    Ok(NestProvisioningInventory {
         manufacturer: clean(&read_trimmed("/sys/class/dmi/id/sys_vendor"), 256),
         model: clean(&read_trimmed("/sys/class/dmi/id/product_name"), 256),
         serial_number: clean(&read_trimmed("/sys/class/dmi/id/product_serial"), 256),
@@ -104,12 +104,12 @@ pub(crate) async fn collect_inventory() -> Result<JamesProvisioningInventory> {
     })
 }
 
-pub(crate) fn inventory_sha256(inventory: &JamesProvisioningInventory) -> Result<String> {
+pub(crate) fn inventory_sha256(inventory: &NestProvisioningInventory) -> Result<String> {
     let bytes = serde_json::to_vec(inventory).context("serialize hardware inventory")?;
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
-pub(crate) fn hardware_digest(inventory: &JamesProvisioningInventory) -> Result<String> {
+pub(crate) fn hardware_digest(inventory: &NestProvisioningInventory) -> Result<String> {
     let value = canonical_json(json!({
         "manufacturer": inventory.manufacturer,
         "model": inventory.model,
@@ -135,7 +135,7 @@ pub(crate) fn hardware_digest(inventory: &JamesProvisioningInventory) -> Result<
 
 pub(crate) fn revalidate_plan_hardware(
     plan: &SignedInstallPlan,
-    inventory: &JamesProvisioningInventory,
+    inventory: &NestProvisioningInventory,
 ) -> Result<()> {
     if hardware_digest(inventory)? != plan.hardware_digest {
         bail!("stable hardware identity changed after approval")
@@ -167,7 +167,7 @@ pub(crate) fn revalidate_plan_hardware(
 
 pub(crate) fn revalidate_durable_plan_hardware(
     plan: &SignedInstallPlan,
-    inventory: &JamesProvisioningInventory,
+    inventory: &NestProvisioningInventory,
 ) -> Result<()> {
     if hardware_digest(inventory)? != plan.hardware_digest || inventory.boot_mode != "uefi" {
         bail!("hardware identity or UEFI boot changed during installation recovery")
@@ -193,7 +193,7 @@ pub(crate) fn revalidate_durable_plan_hardware(
 
 pub(crate) async fn preflight_network(
     plan: &SignedInstallPlan,
-    inventory: &JamesProvisioningInventory,
+    inventory: &NestProvisioningInventory,
     manage_origin: &str,
 ) -> Result<()> {
     let interface = inventory
@@ -255,7 +255,7 @@ pub(crate) async fn preflight_network(
             )
             .await
             .context(
-                "James setup media cannot run its network safety check; create a new James ISO in Cybex Manage and try again",
+                "Nest setup media cannot run its network safety check; create a new Nest ISO in Tiaris and try again",
             )?;
             if !duplicate_free {
                 bail!("static address is already in use or duplicate detection failed")
@@ -357,7 +357,7 @@ pub(crate) async fn preflight_network(
             )
             .await
             .context(
-                "James setup media cannot run its network safety check; create a new James ISO in Cybex Manage and try again",
+                "Nest setup media cannot run its network safety check; create a new Nest ISO in Tiaris and try again",
             )?;
             if !gateway_reachable {
                 bail!("approved static gateway did not answer on the selected interface")
@@ -571,7 +571,7 @@ async fn bounded_command_success(
 }
 
 async fn bounded_live_arping_success(arguments: &[&str], timeout: Duration) -> Result<bool> {
-    if Path::new("/cdrom/cybex/nixos-appliance").is_file() {
+    if Path::new("/cdrom/tiaris/nixos-appliance").is_file() {
         return bounded_command_success("arping", arguments, timeout).await;
     }
     let mut busybox_arguments = Vec::with_capacity(arguments.len() + 1);
@@ -622,7 +622,7 @@ fn ipv4_network(address: Ipv4Addr, prefix: u8) -> Ipv4Addr {
     Ipv4Addr::from(u32::from(address) & mask)
 }
 
-async fn collect_ethernet_interfaces() -> Result<Vec<JamesProvisioningEthernetInterface>> {
+async fn collect_ethernet_interfaces() -> Result<Vec<NestProvisioningEthernetInterface>> {
     let mut interfaces = Vec::new();
     for entry in fs::read_dir("/sys/class/net").context("enumerate network interfaces")? {
         let entry = entry.context("read network interface")?;
@@ -681,7 +681,7 @@ async fn collect_ethernet_interfaces() -> Result<Vec<JamesProvisioningEthernetIn
             .and_then(|route| route.get("gateway"))
             .and_then(Value::as_str)
             .map(|value| clean(value, 128));
-        interfaces.push(JamesProvisioningEthernetInterface {
+        interfaces.push(NestProvisioningEthernetInterface {
             id,
             name: clean(&name, 64),
             mac,
@@ -693,7 +693,7 @@ async fn collect_ethernet_interfaces() -> Result<Vec<JamesProvisioningEthernetIn
     Ok(interfaces)
 }
 
-async fn collect_disks() -> Result<Vec<JamesProvisioningDisk>> {
+async fn collect_disks() -> Result<Vec<NestProvisioningDisk>> {
     let output = Command::new("lsblk")
         .args([
             "--json",
@@ -743,7 +743,7 @@ async fn collect_disks() -> Result<Vec<JamesProvisioningDisk>> {
             blocker_codes.push("disk_too_small".to_string());
         }
         let id = stable_disk_id(Path::new(path))?;
-        disks.push(JamesProvisioningDisk {
+        disks.push(NestProvisioningDisk {
             id,
             path: clean(path, 256),
             model: clean(value_string(row.get("model")), 128),
@@ -954,9 +954,9 @@ fn canonical_json(value: Value) -> Value {
 mod tests {
     use super::*;
 
-    fn stable_inventory_fixture() -> JamesProvisioningInventory {
-        JamesProvisioningInventory {
-            manufacturer: "Cybex".into(),
+    fn stable_inventory_fixture() -> NestProvisioningInventory {
+        NestProvisioningInventory {
+            manufacturer: "Tiaris".into(),
             model: "Qualification VM".into(),
             serial_number: "vm-1".into(),
             asset_tag: "lab".into(),
@@ -968,7 +968,7 @@ mod tests {
             boot_mode: "uefi".into(),
             secure_boot: true,
             virtualization: "kvm".into(),
-            ethernet_interfaces: vec![JamesProvisioningEthernetInterface {
+            ethernet_interfaces: vec![NestProvisioningEthernetInterface {
                 id: "pci-0000:00:03.0".into(),
                 name: "enp0s3".into(),
                 mac: "52:54:00:12:34:56".into(),
@@ -976,7 +976,7 @@ mod tests {
                 addresses: vec!["10.62.52.76/24".into()],
                 gateway: Some("10.62.52.1".into()),
             }],
-            disks: vec![JamesProvisioningDisk {
+            disks: vec![NestProvisioningDisk {
                 id: "scsi-qualification".into(),
                 path: "/dev/sda".into(),
                 model: "QEMU disk".into(),
@@ -1051,7 +1051,7 @@ mod tests {
 
     #[test]
     fn removable_or_small_disks_cannot_be_eligible() {
-        let disk = JamesProvisioningDisk {
+        let disk = NestProvisioningDisk {
             id: "ata-test".into(),
             path: "/dev/sda".into(),
             model: String::new(),

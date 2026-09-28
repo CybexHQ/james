@@ -4,8 +4,8 @@ use chrono::NaiveTime;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
-const INBOX: &str = "/var/lib/cybex-james/state/inbox/update-schedule.json";
-const CONTROL: &str = "/var/lib/cybex-james/control/update-schedule.json";
+const INBOX: &str = "/var/lib/tiaris-nest/state/inbox/update-schedule.json";
+const CONTROL: &str = "/var/lib/tiaris-nest/control/update-schedule.json";
 pub const CAPABILITY: &str = "appliance_update_schedule_v1";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -40,7 +40,7 @@ pub struct SignedPolicy {
 impl SignedPolicy {
     fn verify(&self, state: &crate::provisioning::DurableProvisioningState) -> Result<()> {
         ensure!(
-            self.schema == "cybex.james.update-schedule.v1"
+            self.schema == "tiaris.nest.update-schedule.v1"
                 && self.device_id == state.plan.reserved_device_id
                 && self.provisioning_session_id == state.session_id
                 && !self.device_incarnation_id.is_nil()
@@ -102,7 +102,7 @@ impl SignedPolicy {
             self,
             "signature",
             &self.signature,
-            "CYBEX-JAMES-UPDATE-SCHEDULE-V1",
+            "TIARIS-NEST-UPDATE-SCHEDULE-V1",
             &state.management_signing_public_key_b64,
         )
     }
@@ -174,11 +174,11 @@ mod tests {
     #[test]
     fn signed_schedule_binds_session_incarnation_revision_and_closure() {
         let (value, envelope, _, key) = crate::provisioning::protocol::tests::signed_plan_fixture(
-            "cybex.james.install-plan.v1",
-            "CYBEX-JAMES-INSTALL-PLAN-V1",
+            "tiaris.nest.install-plan.v1",
+            "TIARIS-NEST-INSTALL-PLAN-V1",
         );
         let state = crate::provisioning::DurableProvisioningState {
-            schema: "cybex.james.provisioning-state.v1".into(),
+            schema: "tiaris.nest.provisioning-state.v1".into(),
             session_id: envelope.session_id,
             plan: serde_json::from_value(value).unwrap(),
             manage_origin: envelope.manage_origin,
@@ -194,7 +194,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
         };
         let mut policy = SignedPolicy {
-            schema: "cybex.james.update-schedule.v1".into(),
+            schema: "tiaris.nest.update-schedule.v1".into(),
             device_id: state.plan.reserved_device_id.clone(),
             device_incarnation_id: Uuid::from_bytes([8; 16]),
             provisioning_session_id: state.session_id,
@@ -215,7 +215,7 @@ mod tests {
         };
         let mut value = serde_json::to_value(&policy).unwrap();
         value.as_object_mut().unwrap().remove("signature");
-        let mut bytes = b"CYBEX-JAMES-UPDATE-SCHEDULE-V1\n".to_vec();
+        let mut bytes = b"TIARIS-NEST-UPDATE-SCHEDULE-V1\n".to_vec();
         bytes.extend(serde_json::to_vec(&crate::appliance::canonical_json(value)).unwrap());
         policy.signature = URL_SAFE_NO_PAD.encode(key.sign(&bytes).to_bytes());
         policy.verify(&state).unwrap();

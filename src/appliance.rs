@@ -37,27 +37,27 @@ pub const APPLIANCE_UPDATE_CAPABILITY_V2: &str = "appliance_update_v2";
 /// hint. Older strict wire decoders must never receive that optional field.
 pub const APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_CAPABILITY: &str =
     "appliance_update_qualification_transport_v1";
-const RELEASE_PATH: &str = "/usr/share/cybex-james/appliance-release.json";
-const INSTALLED_STATE_PATH: &str = "/var/lib/cybex-james/control/appliance-release.json";
-const UPDATE_STATUS_PATH: &str = "/var/lib/cybex-james/status/appliance-update-status.json";
-const UPDATE_REQUEST_PATH: &str = "/var/lib/cybex-james/state/inbox/appliance-update-request.json";
-const UPDATE_BUNDLE_ROOT: &str = "/var/lib/cybex-james/state/inbox/appliance-update-bundles";
-const UPDATE_ROOT: &str = "/var/lib/cybex-james/control/appliance-updates";
-const RELEASE_PUBLIC_KEY_PATH: &str = "/usr/share/cybex-james/release-public-key";
-const PROVISIONING_STATE_PATH: &str = "/var/lib/cybex-james/control/provisioning-state.json";
-const INSTALL_PLAN_PATH: &str = "/var/lib/cybex-james/control/install-plan.json";
+const RELEASE_PATH: &str = "/usr/share/tiaris-nest/appliance-release.json";
+const INSTALLED_STATE_PATH: &str = "/var/lib/tiaris-nest/control/appliance-release.json";
+const UPDATE_STATUS_PATH: &str = "/var/lib/tiaris-nest/status/appliance-update-status.json";
+const UPDATE_REQUEST_PATH: &str = "/var/lib/tiaris-nest/state/inbox/appliance-update-request.json";
+const UPDATE_BUNDLE_ROOT: &str = "/var/lib/tiaris-nest/state/inbox/appliance-update-bundles";
+const UPDATE_ROOT: &str = "/var/lib/tiaris-nest/control/appliance-updates";
+const RELEASE_PUBLIC_KEY_PATH: &str = "/usr/share/tiaris-nest/release-public-key";
+const PROVISIONING_STATE_PATH: &str = "/var/lib/tiaris-nest/control/provisioning-state.json";
+const INSTALL_PLAN_PATH: &str = "/var/lib/tiaris-nest/control/install-plan.json";
 const NETWORK_CHANGE_REQUEST_PATH: &str =
-    "/var/lib/cybex-james/state/inbox/appliance-network-change-request.json";
+    "/var/lib/tiaris-nest/state/inbox/appliance-network-change-request.json";
 const NETWORK_CHANGE_STATUS_PATH: &str =
-    "/var/lib/cybex-james/status/appliance-network-change-status.json";
-const NETWORK_PENDING_PATH: &str = "/var/lib/cybex-james/control/netplan-pending.sha256";
-const NETWORK_ACK_PATH: &str = "/var/lib/cybex-james/state/inbox/netplan-acknowledgement.json";
-const APPLIANCE_RELEASE_SIGNATURE_DOMAIN_V1: &str = "CYBEX-JAMES-APPLIANCE-RELEASE-V1";
-const APPLIANCE_RELEASE_SIGNATURE_DOMAIN_V2: &str = "CYBEX-JAMES-APPLIANCE-RELEASE-V2";
-const APPLIANCE_RELEASE_SCHEMA_V1: &str = "cybex.james.appliance-release.v1";
-const APPLIANCE_RELEASE_SCHEMA_V2: &str = "cybex.james.appliance-release.v2";
-const NETWORK_CHANGE_SIGNATURE_DOMAIN: &str = "CYBEX-JAMES-NETWORK-CHANGE-V1";
-const NETWORK_ACK_SIGNATURE_DOMAIN: &str = "CYBEX-JAMES-NETWORK-ACK-V1";
+    "/var/lib/tiaris-nest/status/appliance-network-change-status.json";
+const NETWORK_PENDING_PATH: &str = "/var/lib/tiaris-nest/control/netplan-pending.sha256";
+const NETWORK_ACK_PATH: &str = "/var/lib/tiaris-nest/state/inbox/netplan-acknowledgement.json";
+const APPLIANCE_RELEASE_SIGNATURE_DOMAIN_V1: &str = "TIARIS-NEST-APPLIANCE-RELEASE-V1";
+const APPLIANCE_RELEASE_SIGNATURE_DOMAIN_V2: &str = "TIARIS-NEST-APPLIANCE-RELEASE-V2";
+const APPLIANCE_RELEASE_SCHEMA_V1: &str = "tiaris.nest.appliance-release.v1";
+const APPLIANCE_RELEASE_SCHEMA_V2: &str = "tiaris.nest.appliance-release.v2";
+const NETWORK_CHANGE_SIGNATURE_DOMAIN: &str = "TIARIS-NEST-NETWORK-CHANGE-V1";
+const NETWORK_ACK_SIGNATURE_DOMAIN: &str = "TIARIS-NEST-NETWORK-ACK-V1";
 const MAX_UPDATE_BUNDLE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const SNAPSHOT_ID_MAX_BYTES: u64 = 64;
 const SNAPSHOT_CHECKSUMS_MAX_BYTES: u64 = 8 * 1024 * 1024;
@@ -65,9 +65,9 @@ const SNAPSHOT_PACKAGES_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const THIN_INSTALLER_BOOT_PACKAGES: [&str; 3] =
     ["grub-efi-amd64", "grub-efi-amd64-signed", "shim-signed"];
 const APPLIANCE_UPDATE_ROOT_PACKAGES: [&str; 3] = [
-    "cybex-james",
-    "cybex-james-appliance",
-    "cybex-james-bootstrap",
+    "tiaris-nest",
+    "tiaris-nest-appliance",
+    "tiaris-nest-bootstrap",
 ];
 static UPDATE_QUEUE: Mutex<ApplianceUpdateQueue> = Mutex::new(ApplianceUpdateQueue::new());
 
@@ -96,7 +96,7 @@ pub struct SignedApplianceRelease {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_revision: Option<String>,
     pub ubuntu_snapshot_id: String,
-    pub cybex_repository_snapshot: ApplianceRepositorySnapshot,
+    pub tiaris_repository_snapshot: ApplianceRepositorySnapshot,
     pub required_package_versions: BTreeMap<String, String>,
     pub expected_kernel: String,
     pub minimum_protocol: u32,
@@ -273,9 +273,9 @@ pub async fn store_update_request(update: Option<ManagedApplianceUpdate>) -> Res
         return Ok(());
     };
     if !is_managed_ubuntu() {
-        bail!("received an Ubuntu appliance update on a non-appliance James host")
+        bail!("received an Ubuntu appliance update on a non-appliance Nest host")
     }
-    // Manage continues advertising the desired attempt until it receives the
+    // Tiaris continues advertising the desired attempt until it receives the
     // terminal report. Authenticate that replay, then accept the exact
     // terminal attempt before applying the strictly-newer transition rule: a
     // succeeded update is now equal to the installed release by definition.
@@ -304,13 +304,13 @@ pub async fn store_update_request(update: Option<ManagedApplianceUpdate>) -> Res
     let bundle_path = Path::new(UPDATE_BUNDLE_ROOT).join(format!("{}.tar.zst", update.attempt_id));
     let transport = appliance_update_transport(&update)?;
     download_snapshot_from_transport(
-        &update.release.cybex_repository_snapshot,
+        &update.release.tiaris_repository_snapshot,
         &bundle_path,
         transport,
     )
     .await?;
     let stored = StoredApplianceUpdate {
-        schema: "cybex.james.appliance-update-request.v1".to_string(),
+        schema: "tiaris.nest.appliance-update-request.v1".to_string(),
         attempt_id: update.attempt_id,
         requested_at: update.requested_at,
         release: update.release,
@@ -321,7 +321,7 @@ pub async fn store_update_request(update: Option<ManagedApplianceUpdate>) -> Res
     };
     // Inbox state is untrusted input for a privileged consumer. Only the root
     // updater writes status after independently re-verifying this request and
-    // the exact signed bundle, so James never needs status-directory writes.
+    // the exact signed bundle, so Nest never needs status-directory writes.
     write_atomic_json(Path::new(UPDATE_REQUEST_PATH), &stored, 0o600)
 }
 
@@ -343,7 +343,7 @@ pub fn verify_and_extract_candidate_update() -> Result<PathBuf> {
 
 fn verify_and_extract_stored_update_with_mode(candidate_boot: bool) -> Result<PathBuf> {
     if !is_managed_ubuntu() {
-        bail!("Ubuntu James runtime support has been retired; reinstall with NixOS")
+        bail!("Ubuntu Nest runtime support has been retired; reinstall with NixOS")
     }
     let request_body = read_bounded_snapshot_text(
         Path::new(UPDATE_REQUEST_PATH),
@@ -353,7 +353,7 @@ fn verify_and_extract_stored_update_with_mode(candidate_boot: bool) -> Result<Pa
     let request_sha256 = hex::encode(Sha256::digest(request_body.as_bytes()));
     let request: StoredApplianceUpdate =
         serde_json::from_str(&request_body).context("parse stored appliance update request")?;
-    if request.schema != "cybex.james.appliance-update-request.v1" {
+    if request.schema != "tiaris.nest.appliance-update-request.v1" {
         bail!("stored appliance update request schema is unsupported")
     }
     let managed = ManagedApplianceUpdate {
@@ -376,7 +376,7 @@ fn verify_and_extract_stored_update_with_mode(candidate_boot: bool) -> Result<Pa
     // dev.3 used the persistent mount root for downloads. Accept that one
     // exact spelling during successor migration; either location remains
     // untrusted and is authenticated before root-owned extraction.
-    let legacy_bundle = Path::new("/var/lib/cybex-james/state/appliance-update-bundles")
+    let legacy_bundle = Path::new("/var/lib/tiaris-nest/state/appliance-update-bundles")
         .join(format!("{}.tar.zst", request.attempt_id));
     let request_bundle = Path::new(&request.bundle_path);
     if request_bundle != expected_bundle && request_bundle != legacy_bundle {
@@ -406,8 +406,8 @@ fn verify_and_extract_stored_update_with_mode(candidate_boot: bool) -> Result<Pa
     pin_untrusted_bundle(
         request_bundle,
         &pinned_bundle,
-        request.release.cybex_repository_snapshot.size_bytes,
-        &request.release.cybex_repository_snapshot.sha256,
+        request.release.tiaris_repository_snapshot.size_bytes,
+        &request.release.tiaris_repository_snapshot.sha256,
     )?;
     let mut bundle = fs::OpenOptions::new()
         .read(true)
@@ -450,15 +450,15 @@ fn verify_and_extract_stored_update_with_mode(candidate_boot: bool) -> Result<Pa
     write_atomic_json(
         &release_root.join("verified-update.json"),
         &json!({
-            "schema":"cybex.james.verified-appliance-update.v1",
+            "schema":"tiaris.nest.verified-appliance-update.v1",
             "attempt_id":request.attempt_id,
             "target_release":request.release.release_id,
             "source_revision":request.release.source_revision.as_deref(),
             "request_sha256":request_sha256,
             "descriptor_sha256":descriptor_sha256,
-            "bundle_sha256":request.release.cybex_repository_snapshot.sha256.as_str(),
-            "package_snapshot_sha256":request.release.cybex_repository_snapshot.sha256.as_str(),
-            "bundle_size_bytes":request.release.cybex_repository_snapshot.size_bytes,
+            "bundle_sha256":request.release.tiaris_repository_snapshot.sha256.as_str(),
+            "package_snapshot_sha256":request.release.tiaris_repository_snapshot.sha256.as_str(),
+            "bundle_size_bytes":request.release.tiaris_repository_snapshot.size_bytes,
             "update_package_versions":update_package_versions,
         }),
         0o600,
@@ -477,7 +477,7 @@ fn update_root_package_versions(
                 .get(package)
                 .cloned()
                 .map(|version| (package.to_string(), version))
-                .ok_or_else(|| anyhow!("signed appliance update omitted a Cybex root package"))
+                .ok_or_else(|| anyhow!("signed appliance update omitted a Tiaris root package"))
         })
         .collect()
 }
@@ -584,7 +584,7 @@ fn completed_update_matches(status: &Value, update: &ManagedApplianceUpdate) -> 
                     && status
                         .get("package_snapshot_sha256")
                         .and_then(Value::as_str)
-                        == Some(update.release.cybex_repository_snapshot.sha256.as_str())
+                        == Some(update.release.tiaris_repository_snapshot.sha256.as_str())
             })
 }
 
@@ -640,10 +640,10 @@ fn validate_signed_release_with_policy(
     if version.to_string() != release.release_id {
         bail!("appliance release ID is not canonical SemVer")
     }
-    let snapshot = &release.cybex_repository_snapshot;
+    let snapshot = &release.tiaris_repository_snapshot;
     let url = Url::parse(&snapshot.url).context("parse appliance package snapshot URL")?;
     let expected_filename = format!(
-        "cybex-james-appliance-packages-{}-x86_64-linux.tar.zst",
+        "tiaris-nest-appliance-packages-{}-x86_64-linux.tar.zst",
         release.release_id
     );
     if url.scheme() != "https"
@@ -664,9 +664,9 @@ fn validate_signed_release_with_policy(
         bail!("appliance package snapshot size is invalid")
     }
     let expected_packages = BTreeSet::from([
-        "cybex-james".to_string(),
-        "cybex-james-appliance".to_string(),
-        "cybex-james-bootstrap".to_string(),
+        "tiaris-nest".to_string(),
+        "tiaris-nest-appliance".to_string(),
+        "tiaris-nest-bootstrap".to_string(),
         "linux-firmware".to_string(),
         "linux-generic".to_string(),
         "nix-bin".to_string(),
@@ -761,7 +761,7 @@ struct ApplianceUpdateTransport<'a> {
 fn appliance_update_transport(
     update: &ManagedApplianceUpdate,
 ) -> Result<ApplianceUpdateTransport<'_>> {
-    let snapshot = &update.release.cybex_repository_snapshot;
+    let snapshot = &update.release.tiaris_repository_snapshot;
     let Some(override_url) = update.qualification_package_transport_url.as_deref() else {
         return Ok(ApplianceUpdateTransport {
             url: &snapshot.url,
@@ -1320,8 +1320,8 @@ fn write_atomic_json(path: &Path, value: &impl Serialize, mode: u32) -> Result<(
         file.set_permissions(fs::Permissions::from_mode(mode))?;
         if nixos::is_nixos()
             && unsafe { libc::geteuid() } == 0
-            && (path.starts_with("/var/lib/cybex-james/control")
-                || path.starts_with("/var/lib/cybex-james/status"))
+            && (path.starts_with("/var/lib/tiaris-nest/control")
+                || path.starts_with("/var/lib/tiaris-nest/status"))
         {
             use std::os::fd::AsRawFd;
             if unsafe { libc::fchown(file.as_raw_fd(), 0, 985) } != 0 {
@@ -1409,7 +1409,7 @@ pub fn store_network_change(change: Option<SignedApplianceNetworkChange>) -> Res
         return Ok(());
     };
     if !is_managed_appliance() {
-        bail!("received an appliance network change on a non-appliance James host")
+        bail!("received an appliance network change on a non-appliance Nest host")
     }
     validate_network_change(&change, false)?;
     if read_optional_bounded_json::<Value>(Path::new(NETWORK_CHANGE_STATUS_PATH), 64 * 1024)
@@ -1433,7 +1433,7 @@ pub fn store_network_change(change: Option<SignedApplianceNetworkChange>) -> Res
         bail!("another appliance network change is already durable")
     }
     // The root network-change service creates status after re-verifying this
-    // signed request. Status remains read-only to James.
+    // signed request. Status remains read-only to Nest.
     write_atomic_json(Path::new(NETWORK_CHANGE_REQUEST_PATH), &change, 0o600)
 }
 
@@ -1502,10 +1502,10 @@ fn verify_and_materialize_network_change_with_policy(recovery: bool) -> Result<P
         "network": {
             "version": 2,
             "renderer": "networkd",
-            "ethernets": {"cybex-james": Value::Object(device)},
+            "ethernets": {"tiaris-nest": Value::Object(device)},
         }
     }));
-    let output_root = Path::new("/run/cybex-james-network-change");
+    let output_root = Path::new("/run/tiaris-nest-network-change");
     fs::create_dir_all(output_root)?;
     fs::set_permissions(output_root, fs::Permissions::from_mode(0o700))?;
     let output = output_root.join(format!("{}.yaml", change.id));
@@ -1560,7 +1560,7 @@ fn validate_network_acknowledgement(
     let state = load_provisioning_state()?;
     let pending = pending_network_acknowledgement()?
         .ok_or_else(|| anyhow!("no Netplan candidate is awaiting acknowledgement"))?;
-    if acknowledgement.schema != "cybex.james.network-ack.v1"
+    if acknowledgement.schema != "tiaris.nest.network-ack.v1"
         || acknowledgement.change_id != change.id
         || acknowledgement.change_id != pending.change_id
         || acknowledgement.device_id != state.plan.reserved_device_id
@@ -1586,7 +1586,7 @@ fn validate_network_change(
     allow_expired: bool,
 ) -> Result<()> {
     let state = load_provisioning_state()?;
-    if change.schema != "cybex.james.network-change.v1"
+    if change.schema != "tiaris.nest.network-change.v1"
         || change.id.is_nil()
         || change.device_incarnation_id.is_nil()
         || change.device_id != state.plan.reserved_device_id
@@ -1660,7 +1660,7 @@ fn canonical_url_base64(value: &str, expected_length: usize) -> Result<Vec<u8>> 
 fn load_provisioning_state() -> Result<crate::provisioning::DurableProvisioningState> {
     let state: crate::provisioning::DurableProvisioningState =
         read_bounded_json(Path::new(PROVISIONING_STATE_PATH), 512 * 1024)?;
-    if state.schema != "cybex.james.provisioning-state.v1"
+    if state.schema != "tiaris.nest.provisioning-state.v1"
         || state.management_signing_public_key_b64.is_empty()
         || !state.identity_active
     {
@@ -1777,7 +1777,7 @@ pub async fn report(state: &crate::AppState) -> Result<Option<ApplianceReport>> 
         return Ok(None);
     }
     let release: ApplianceRelease = read_bounded_json(Path::new(RELEASE_PATH), 64 * 1024)?;
-    if release.schema != "cybex.james.appliance-release.v1"
+    if release.schema != "tiaris.nest.appliance-release.v1"
         || release.release_id.is_empty()
         || release.ubuntu_snapshot_id.is_empty()
     {
@@ -1971,7 +1971,7 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("Ubuntu James runtime support has been retired")
+                    .contains("Ubuntu Nest runtime support has been retired")
             );
         }
     }
@@ -1979,9 +1979,9 @@ mod tests {
     fn signed_release_fixture() -> (SignedApplianceRelease, SigningKey) {
         let key = SigningKey::from_bytes(&[7; 32]);
         let required_package_versions = BTreeMap::from([
-            ("cybex-james".to_string(), "0.1.2-1".to_string()),
-            ("cybex-james-appliance".to_string(), "0.1.2-1".to_string()),
-            ("cybex-james-bootstrap".to_string(), "0.1.2-1".to_string()),
+            ("tiaris-nest".to_string(), "0.1.2-1".to_string()),
+            ("tiaris-nest-appliance".to_string(), "0.1.2-1".to_string()),
+            ("tiaris-nest-bootstrap".to_string(), "0.1.2-1".to_string()),
             (
                 "linux-firmware".to_string(),
                 "20260319.git217ca6e4.1ubuntu".to_string(),
@@ -1995,8 +1995,8 @@ mod tests {
             release_id: "0.1.2".to_string(),
             source_revision: None,
             ubuntu_snapshot_id: "20260805T000000Z".to_string(),
-            cybex_repository_snapshot: ApplianceRepositorySnapshot {
-                url: "https://github.com/CybexHQ/james/releases/download/v0.1.2/cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst".to_string(),
+            tiaris_repository_snapshot: ApplianceRepositorySnapshot {
+                url: "https://github.com/CybexHQ/james/releases/download/v0.1.2/tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst".to_string(),
                 sha256: "a".repeat(64),
                 size_bytes: 1024 * 1024 * 1024,
             },
@@ -2049,7 +2049,7 @@ mod tests {
 
     fn test_directory(label: &str) -> PathBuf {
         let path =
-            std::env::temp_dir().join(format!("cybex-james-{label}-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("tiaris-nest-{label}-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&path).unwrap();
         path
     }
@@ -2095,7 +2095,7 @@ mod tests {
         }
         fs::write(directory.join("Packages"), index).unwrap();
         fs::write(directory.join("Packages.gz"), b"fixture packages gzip\n").unwrap();
-        fs::write(directory.join("Release"), b"Origin: Cybex\n").unwrap();
+        fs::write(directory.join("Release"), b"Origin: Tiaris\n").unwrap();
         fs::write(
             directory.join("UBUNTU-SNAPSHOT-ID"),
             format!("{}\n", release.ubuntu_snapshot_id),
@@ -2127,25 +2127,25 @@ mod tests {
     }
 
     #[test]
-    fn appliance_update_solver_receives_only_exact_signed_cybex_roots() {
+    fn appliance_update_solver_receives_only_exact_signed_tiaris_roots() {
         let (mut release, _key) = signed_release_fixture();
         assert_eq!(
             update_root_package_versions(&release).unwrap(),
             BTreeMap::from([
-                ("cybex-james".to_string(), "0.1.2-1".to_string()),
-                ("cybex-james-appliance".to_string(), "0.1.2-1".to_string(),),
-                ("cybex-james-bootstrap".to_string(), "0.1.2-1".to_string(),),
+                ("tiaris-nest".to_string(), "0.1.2-1".to_string()),
+                ("tiaris-nest-appliance".to_string(), "0.1.2-1".to_string(),),
+                ("tiaris-nest-bootstrap".to_string(), "0.1.2-1".to_string(),),
             ])
         );
 
         release
             .required_package_versions
-            .remove("cybex-james-bootstrap");
+            .remove("tiaris-nest-bootstrap");
         assert!(
             update_root_package_versions(&release)
                 .unwrap_err()
                 .to_string()
-                .contains("omitted a Cybex root package")
+                .contains("omitted a Tiaris root package")
         );
     }
 
@@ -2193,7 +2193,7 @@ mod tests {
         assert!(queue.enqueue(update(
             first,
             Some(
-                "http://127.0.0.1:8080/cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst"
+                "http://127.0.0.1:8080/tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst"
                     .to_string(),
             ),
         )));
@@ -2206,7 +2206,7 @@ mod tests {
     #[test]
     fn qualification_update_transport_is_private_ip_literal_and_attempt_local() {
         let (release, _key) = signed_release_fixture();
-        let filename = "cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst";
+        let filename = "tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst";
         for value in [
             format!("http://10.20.30.40:8080/{filename}"),
             format!("http://127.0.0.1:8080/{filename}"),
@@ -2243,7 +2243,7 @@ mod tests {
             format!("http://10.20.30.40:8080/{filename}?token=secret"),
             format!("http://10.20.30.40:8080/{filename}#debug"),
             format!("http://10.20.30.40:8080/path/../{filename}"),
-            release.cybex_repository_snapshot.url.clone(),
+            release.tiaris_repository_snapshot.url.clone(),
         ] {
             let update = ManagedApplianceUpdate {
                 attempt_id: uuid::Uuid::new_v4(),
@@ -2266,7 +2266,7 @@ mod tests {
         assert_eq!(
             appliance_update_transport(&ordinary).unwrap(),
             ApplianceUpdateTransport {
-                url: release.cybex_repository_snapshot.url.as_str(),
+                url: release.tiaris_repository_snapshot.url.as_str(),
                 allow_private_urls: false,
                 follow_redirects: true,
             }
@@ -2283,11 +2283,11 @@ mod tests {
     fn stored_update_never_persists_the_qualification_transport() {
         let (release, _key) = signed_release_fixture();
         let stored = StoredApplianceUpdate {
-            schema: "cybex.james.appliance-update-request.v1".to_string(),
+            schema: "tiaris.nest.appliance-update-request.v1".to_string(),
             attempt_id: uuid::Uuid::new_v4(),
             requested_at: Utc::now(),
             release,
-            bundle_path: "/var/lib/cybex-james/state/inbox/appliance-update-bundles/test.tar.zst"
+            bundle_path: "/var/lib/tiaris-nest/state/inbox/appliance-update-bundles/test.tar.zst"
                 .to_string(),
         };
         let value = serde_json::to_value(stored).unwrap();
@@ -2352,7 +2352,7 @@ mod tests {
         assert_eq!(tampered.len(), expected.len());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let filename = "cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst";
+        let filename = "tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst";
         let transport_url = format!("http://{address}/{filename}");
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -2377,7 +2377,7 @@ mod tests {
             attempt_id: uuid::Uuid::new_v4(),
             requested_at: Utc::now(),
             release: SignedApplianceRelease {
-                cybex_repository_snapshot: snapshot.clone(),
+                tiaris_repository_snapshot: snapshot.clone(),
                 ..signed_release_fixture().0
             },
             qualification_package_transport_url: Some(transport_url),
@@ -2413,9 +2413,9 @@ mod tests {
                 .map(String::as_str)
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([
-                "cybex-james",
-                "cybex-james-appliance",
-                "cybex-james-bootstrap",
+                "tiaris-nest",
+                "tiaris-nest-appliance",
+                "tiaris-nest-bootstrap",
                 "linux-firmware",
                 "linux-generic",
                 "nix-bin",
@@ -2424,7 +2424,7 @@ mod tests {
         );
         validate_install_release(&release, "0.1.2", &key_path, 4 * 1024 * 1024 * 1024).unwrap();
 
-        release.cybex_repository_snapshot.sha256 = "b".repeat(64);
+        release.tiaris_repository_snapshot.sha256 = "b".repeat(64);
         assert!(
             validate_install_release(&release, "0.1.2", &key_path, 4 * 1024 * 1024 * 1024)
                 .unwrap_err()

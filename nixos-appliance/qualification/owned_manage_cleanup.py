@@ -10,7 +10,7 @@ import uuid
 
 from isolated_fixture import API, HTTP, SCOPE
 
-TEARDOWN_SCHEMA = 'cybex.james.qualification-manage-teardown.v1'
+TEARDOWN_SCHEMA = 'tiaris.nest.qualification-manage-teardown.v1'
 
 
 def require_external_development(scope):
@@ -174,7 +174,7 @@ def verify_fixture(state, scope, device_id):
         os.close(fd)
     identity = json.loads(body)
     hardware = SCOPE['hardware_identity'](scope, 'appliance')
-    if (identity.get('schema') != 'cybex.james.qualification-fixture.v1'
+    if (identity.get('schema') != 'tiaris.nest.qualification-fixture.v1'
             or identity.get('device_id') != device_id
             or identity.get('bridge') != scope['bridge']
             or any(identity.get(key) != value for key, value in hardware.items())):
@@ -187,7 +187,7 @@ def retire_owned(state, scope, version, api):
     if SCOPE['read_scope'](state) != scope:
         raise ValueError('qualification run ownership changed before Manage cleanup')
     session_id = session_receipt(state)
-    session = api('/v1/james/provisioning-sessions/' + session_id)
+    session = api('/v1/nest/provisioning-sessions/' + session_id)
     expected_mac = SCOPE['hardware_identity'](scope, 'appliance')['mac']
     if (session.get('id') != session_id or session.get('label') != 'release qualification'
             or session.get('release_version') != version
@@ -208,7 +208,7 @@ def retire_owned(state, scope, version, api):
         if session.get('state') in {'created', 'claimed', 'awaiting_approval', 'approved', 'failed'}:
             if session.get('destructive_started_at') is not None:
                 raise ValueError('unreserved qualification session started destructive work')
-            revoked = api('/v1/james/provisioning-sessions/' + session_id + '/revoke', {})
+            revoked = api('/v1/nest/provisioning-sessions/' + session_id + '/revoke', {})
             if revoked.get('id') != session_id or revoked.get('state') != 'revoked':
                 raise ValueError('owned provisioning session revocation was not confirmed')
             return {'session_id': session_id, 'action': 'revoked'}
@@ -225,15 +225,15 @@ def retire_owned(state, scope, version, api):
             or plan.get('release_version') != version):
         raise ValueError('qualification install plan does not bind the owned device and MAC')
     device = api('/v1/devices/' + device_id)
-    if (device.get('device_id') != device_id or device.get('device_kind') != 'cybex-james'
-            or device.get('enrollment_id') != 'jamesprov_' + uuid.UUID(session_id).hex
-            or device.get('hostname') != 'james-' + uuid.UUID(session_id).hex[:12]
+    if (device.get('device_id') != device_id or device.get('device_kind') != 'tiaris-nest'
+            or device.get('enrollment_id') != 'nestprov_' + uuid.UUID(session_id).hex
+            or device.get('hostname') != 'nest-' + uuid.UUID(session_id).hex[:12]
             or device.get('display_name') != plan.get('display_name')):
         raise ValueError('qualification device does not prove this provisioning session')
     result = api('/v1/devices/' + device_id + '/decommission', {})
     if result != {'status': 'decommissioned'}:
         raise ValueError('owned device decommission was not confirmed')
-    revoked = api('/v1/james/provisioning-sessions/' + session_id)
+    revoked = api('/v1/nest/provisioning-sessions/' + session_id)
     if (revoked.get('id') != session_id or revoked.get('reserved_device_id') != device_id
             or revoked.get('state') != 'revoked'):
         raise ValueError('owned provisioning session was not revoked with device')

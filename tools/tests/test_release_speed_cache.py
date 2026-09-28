@@ -18,8 +18,8 @@ import release_speed_io as I
 
 
 class Verifier:
-    MANIFEST = 'cybex-james-release.json'
-    COMPATIBILITY = 'cybex-james-release-compatibility.json'
+    MANIFEST = 'tiaris-nest-release.json'
+    COMPATIBILITY = 'tiaris-nest-release-compatibility.json'
     canonical = staticmethod(I.canonical)
 
     def __init__(self):
@@ -58,7 +58,7 @@ class Verifier:
         for field, digest in [('system_closure', 'sha256'), ('installer_iso_template_v3', 'template_sha256')]:
             value = manifest['appliance_release_v1'][field] if field == 'system_closure' else manifest[field]
             self.fetch(value['url'], directory / value['url'].rsplit('/', 1)[1], value[digest], value['size_bytes'])
-        return {'schema': 'cybex.james.nixos-qualification-predecessor.v1', 'manifest_sha256': I.digest(snap['manifest_body'])}
+        return {'schema': 'tiaris.nest.nixos-qualification-predecessor.v1', 'manifest_sha256': I.digest(snap['manifest_body'])}
 
 
 class CacheTests(unittest.TestCase):

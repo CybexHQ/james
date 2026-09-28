@@ -56,7 +56,7 @@ def main():
     if total > 32 * 1024 ** 3 or len(rows) * 2 + 3 > 65536:
         raise ValueError("system closure exceeds appliance limits")
     metadata.pop("manage_origin")
-    metadata["schema"] = "cybex.james.system-closure.v1"
+    metadata["schema"] = "tiaris.nest.system-closure.v1"
     metadata["store_paths"] = rows
     metadata["total_nar_bytes"] = total
     (output / "manifest.json").write_bytes(canonical(metadata))

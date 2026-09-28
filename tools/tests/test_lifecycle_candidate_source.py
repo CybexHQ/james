@@ -17,11 +17,11 @@ WORKFLOW = REPOSITORY / ".github/workflows/release.yml"
 
 
 class CandidateSourceContractTests(unittest.TestCase):
-    def test_workflow_signs_the_checked_out_james_revision(self):
+    def test_workflow_signs_the_checked_out_nest_revision(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         manifest_command = workflow.split(
-            "python3 tools/james-release.py manifest \\\n", 1
-        )[1].split("python3 tools/james-release.py compatibility", 1)[0]
+            "python3 tools/nest-release.py manifest \\\n", 1
+        )[1].split("python3 tools/nest-release.py compatibility", 1)[0]
         self.assertIn(
             '--appliance-source-revision "$(git rev-parse HEAD)"',
             manifest_command,
@@ -37,13 +37,13 @@ class CandidateSourceContractTests(unittest.TestCase):
             spec.loader.exec_module(runner)
         source = 'a' * 40
         artifact = {'url': 'https://github.com/example/asset', 'sha256': 'b' * 64, 'size_bytes': 1}
-        manifest = {'appliance_release_v1': {'schema': 'cybex.james.appliance-release.v3',
+        manifest = {'appliance_release_v1': {'schema': 'tiaris.nest.appliance-release.v3',
                     'source_revision': source, 'system_closure': artifact},
                     'installer_iso_template_v3': {**artifact, 'template_sha256': 'b' * 64,
                                                  'manage_origin': 'https://manage.cybex.net'},
                     'workstation_netboot': artifact}
-        for schema, revision in [('cybex.james.appliance-release.v2', source),
-                                  ('cybex.james.appliance-release.v3', 'c' * 40)]:
+        for schema, revision in [('tiaris.nest.appliance-release.v2', source),
+                                  ('tiaris.nest.appliance-release.v3', 'c' * 40)]:
             candidate = {**manifest, 'appliance_release_v1': {**manifest['appliance_release_v1'],
                          'schema': schema, 'source_revision': revision}}
             with patch.object(runner.predecessor, 'verify_pair', return_value=candidate), \

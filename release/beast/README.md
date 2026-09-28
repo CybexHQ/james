@@ -1,9 +1,9 @@
 # Local build and qualification on The Beast
 
-Protected version-tag jobs use the existing runner with the `cybex-james-lab`
+Protected version-tag jobs use the existing runner with the `tiaris-nest-lab`
 label. Pull requests and ordinary main checks remain on GitHub-hosted runners.
 Only trusted release jobs may run on this host. The NixOS qualification jobs use
-the separate protected `james-nixos-development-qualification` environment;
+the separate protected `nest-nixos-development-qualification` environment;
 signing and publication retain `production-release`.
 
 The NixOS production release pipeline is **blocked** pending a separately
@@ -16,8 +16,8 @@ reject development fixtures. Development qualification therefore cannot pass
 as production release evidence. These guards deliberately leave the production
 path unavailable until that missing contract is implemented and verified.
 
-`tools/beast-build.py` creates clean, shallow checkouts of the exact James and
-Manage commits in a temporary directory. It builds the pinned Dockerfile and
+`tools/beast-build.py` creates clean, shallow checkouts of the exact Nest and
+Tiaris commits in a temporary directory. It builds the pinned Dockerfile and
 executes by image ID, as the unprivileged runner UID, with no capabilities,
 no privilege escalation, 12 CPUs, 48 GiB RAM, no swap, and 8192 processes at most.
 The container has ordinary outbound networking for authenticated package sources;
@@ -32,18 +32,18 @@ That shell explicitly supplies cpio, jq and Python instead of depending on
 packages preinstalled on a GitHub runner. Nix uses the container's explicit Bash
 path, so no ambient `nixpkgs` channel is needed.
 
-The dedicated paths below `~/.local/state/cybex-james-build` contain Cargo,
+The dedicated paths below `~/.local/state/tiaris-nest-build` contain Cargo,
 compiled target and Nix caches. These are deliberately separate from
 the host Nix store and its build-user IDs. Docker is the isolation boundary;
 Nix runs in single-user mode inside it. A host file lock serializes cache use.
 Each container and source/scratch directory is removed on success or failure,
 including SIGTERM. After power loss, inspect Docker containers named
-`cybex-james-build-build-*` and temporary `build-*` directories under that state
+`tiaris-nest-build-build-*` and temporary `build-*` directories under that state
 path; remove only an abandoned run, never a running build. Do not clear caches
 during a release. Caches can be removed while the runner is stopped if disk
 reclamation is needed; the next build repopulates them.
 
-Signed candidates live under `~/.local/state/cybex-james-releases/RUN_ID`.
+Signed candidates live under `~/.local/state/tiaris-nest-releases/RUN_ID`.
 An atomic seal records every filename, size and SHA-256, together with repository,
 workflow run, tag and source revision. The corresponding `candidate.json` is
 the only file in the GitHub Actions candidate artifact. All release files must
@@ -54,7 +54,7 @@ continue to identify that exact GitHub artifact, now containing the receipt.
 Consumers authenticate the receipt ZIP against GitHub's digest and workflow
 metadata, then verify every local file before copying it. Existing signature,
 source, predecessor, installation, upgrade, rollback and immutable-publication
-gates remain mandatory. Production qualification uses a fresh, confined Manage fixture with pinned TLS
+gates remain mandatory. Production qualification uses a fresh, confined Tiaris fixture with pinned TLS
 transport and newly owned Incus bridges, TAPs and disposable QEMU disks. See
 [the production contract](../../nixos-appliance/qualification/PRODUCTION.md). It
 never adopts an existing VM or reads a production database. An ownership receipt
@@ -68,7 +68,7 @@ payload from GitHub and verifies the complete receipt inventory before booting.
 The protected warm job can reuse authenticated predecessor transport bytes when
 all of the following are configured: current published ancestry, both explicit
 NixOS predecessor inputs, and
-`CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT`. The cache root is an existing
+`TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT`. The cache root is an existing
 runner-owned mode-0700 directory outside the checkout, on storage large enough
 for retained entries plus a staging copy and an output copy. The wrapper retains
 at most two complete identities and 32 GiB by default.
@@ -78,15 +78,15 @@ The enabled command is:
 ```sh
 python3 -B release/beast/release_speed.py cache \
   --mode github-warm \
-  --cache-root "$CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT" \
+  --cache-root "$TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT" \
   --directory "$NEW_PREDECESSOR_DIRECTORY" \
-  --predecessor-dir "$CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR" \
-  --predecessor-manifest-sha256 "$CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256" \
+  --predecessor-dir "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR" \
+  --predecessor-manifest-sha256 "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256" \
   --expected-identity "$BUILD_ANCESTRY" \
   --authorization release/recovery-adoption.json \
   --repository "$GITHUB_REPOSITORY" \
-  --candidate-version "$CYBEX_JAMES_RELEASE_VERSION" \
-  --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
+  --candidate-version "$TIARIS_NEST_RELEASE_VERSION" \
+  --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
   --timing-dir "$NEW_PRIVATE_TIMING_DIRECTORY"
 ```
 
@@ -156,24 +156,24 @@ zstd, the existing Rust audit tool, KVM/QEMU, OVMF, Incus and the tools used by
 owned bridge/TAP creation; it does not change the host QEMU bridge allowlist.
 Provision these prerequisites independently before enabling the protected jobs.
 After modifying runner configuration, restart its confirmed user unit,
-`cybex-james-runner.service`, only when it is idle.
+`tiaris-nest-runner.service`, only when it is idle.
 
 Production jobs use `production-release-qualification` and the root-private
-isolated Manage configuration described in
+isolated Tiaris configuration described in
 [`PRODUCTION.md`](../../nixos-appliance/qualification/PRODUCTION.md). Configure
 its exact production origin, fixture template, private state root and disjoint
-subnet. The runner builds the candidate's committed Manage source into disposable
+subnet. The runner builds the candidate's committed Tiaris source into disposable
 images and retains the verified Owner for every API and personalization request.
 It does not use an external production session or a development admission helper.
 
 The initial V3 qualification requires
-`CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR` and
-`CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256`: a separately signed
+`TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR` and
+`TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256`: a separately signed
 older NixOS release bound to the production origin. Ubuntu ancestry remains
 historical evidence and cannot supply the upgrade fixture. Development-bound
 NixOS artifacts cannot be relabeled for this purpose.
 
-The optional `CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT` authorizes only
+The optional `TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT` authorizes only
 runner-private warm transport storage. It grants no VM, signing, publication or
 promotion authority. Cold verification independently downloads published bytes.
 
@@ -181,7 +181,7 @@ Digital Brain and the coordinated approval workflow select
 `nixos-appliance/qualification/promote-production-release.py`. Ubuntu helpers
 have been removed from current source; historical tagged workflows are unchanged.
 Signed appliance and workstation evidence must bind the same isolated fixture,
-exact production origin and reviewed Manage revision before promotion.
+exact production origin and reviewed Tiaris revision before promotion.
 
 Historical successful workflow measurements remain exactly 9,911 and 11,500
 seconds. The 3,600-second target, live timing, operator/media/resource readiness,

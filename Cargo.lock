@@ -430,42 +430,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cybex-james"
-version = "0.2.12"
-dependencies = [
- "anyhow",
- "axum",
- "base64",
- "chrono",
- "chrono-tz",
- "clap",
- "ed25519-dalek",
- "hex",
- "libc",
- "maud",
- "mime_guess",
- "rand 0.8.6",
- "reqwest",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "tar",
- "thiserror",
- "tokio",
- "tokio-util",
- "toml",
- "tower",
- "tower-http 0.5.2",
- "tracing",
- "tracing-subscriber",
- "urlencoding",
- "uuid",
- "zstd",
-]
-
-[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2265,6 +2229,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "tiaris-nest"
+version = "0.2.12"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "ed25519-dalek",
+ "hex",
+ "libc",
+ "maud",
+ "mime_guess",
+ "rand 0.8.6",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tar",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tower",
+ "tower-http 0.5.2",
+ "tracing",
+ "tracing-subscriber",
+ "urlencoding",
+ "uuid",
+ "zstd",
 ]
 
 [[package]]

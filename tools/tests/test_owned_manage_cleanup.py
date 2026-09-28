@@ -48,11 +48,11 @@ class OwnedManageCleanupTests(unittest.TestCase):
                                          'reserved_device_id': self.device_id,
                                          'network_interface': {'mac': self.mac},
                                          'release_version': self.version,
-                                         'display_name': 'Owned James'}}
-        self.device = {'device_id': self.device_id, 'device_kind': 'cybex-james',
-                       'enrollment_id': 'jamesprov_' + uuid.UUID(self.session_id).hex,
-                       'hostname': 'james-' + uuid.UUID(self.session_id).hex[:12],
-                       'display_name': 'Owned James'}
+                                         'display_name': 'Owned Nest'}}
+        self.device = {'device_id': self.device_id, 'device_kind': 'tiaris-nest',
+                       'enrollment_id': 'nestprov_' + uuid.UUID(self.session_id).hex,
+                       'hostname': 'nest-' + uuid.UUID(self.session_id).hex[:12],
+                       'display_name': 'Owned Nest'}
         self.scope_patch = patch.dict(C.SCOPE, {
             'read_scope': Mock(return_value=self.scope),
             'hardware_identity': Mock(return_value={'mac': self.mac})})
@@ -62,7 +62,7 @@ class OwnedManageCleanupTests(unittest.TestCase):
     def api(self, session=None, device=None):
         session = session or self.session
         device = device or self.device
-        session_path = '/v1/james/provisioning-sessions/' + self.session_id
+        session_path = '/v1/nest/provisioning-sessions/' + self.session_id
         device_path = '/v1/devices/' + self.device_id
 
         def request(path, body=None):
@@ -111,10 +111,10 @@ class OwnedManageCleanupTests(unittest.TestCase):
         self.assertEqual(C.retire_owned(self.state, self.scope, self.version, api)['action'],
                          'decommissioned')
         self.assertEqual(api.call_args_list, [
-            call('/v1/james/provisioning-sessions/' + self.session_id),
+            call('/v1/nest/provisioning-sessions/' + self.session_id),
             call('/v1/devices/' + self.device_id),
             call('/v1/devices/' + self.device_id + '/decommission', {}),
-            call('/v1/james/provisioning-sessions/' + self.session_id)])
+            call('/v1/nest/provisioning-sessions/' + self.session_id)])
 
     def test_unreserved_created_session_is_revoked_without_device_write(self):
         session = {**self.session, 'state': 'created', 'reserved_device_id': None,
@@ -123,14 +123,14 @@ class OwnedManageCleanupTests(unittest.TestCase):
         self.assertEqual(C.retire_owned(self.state, self.scope, self.version, api)['action'],
                          'revoked')
         self.assertEqual(api.call_args_list[-1],
-                         call('/v1/james/provisioning-sessions/' + self.session_id + '/revoke', {}))
+                         call('/v1/nest/provisioning-sessions/' + self.session_id + '/revoke', {}))
 
     def test_mismatched_or_unproven_ownership_never_mutates_manage(self):
         changes = [({'release_version': 'other'}, {}),
                    ({'recovery_device': {'device_id': self.device_id}}, {}),
                    ({'inventory': {'ethernet_interfaces': [{'mac': '02:ff:ff:ff:ff:ff'}]}}, {}),
                    ({'install_plan': {**self.session['install_plan'], 'session_id': str(uuid.uuid4())}}, {}),
-                   ({}, {'enrollment_id': 'jamesprov_' + uuid.uuid4().hex}),
+                   ({}, {'enrollment_id': 'nestprov_' + uuid.uuid4().hex}),
                    ({}, {'device_kind': 'workstation'}),
                    ({}, {'hostname': 'foreign'})]
         for session_changes, device_changes in changes:
@@ -151,7 +151,7 @@ class OwnedManageCleanupTests(unittest.TestCase):
         fixture = self.state / 'fixture'
         fixture.mkdir(mode=0o700)
         receipt = fixture / 'fixture.json'
-        receipt.write_text(json.dumps({'schema': 'cybex.james.qualification-fixture.v1',
+        receipt.write_text(json.dumps({'schema': 'tiaris.nest.qualification-fixture.v1',
                                        'device_id': self.device_id, 'bridge': self.scope['bridge'],
                                        'mac': '02:ff:ff:ff:ff:ff'}))
         receipt.chmod(0o600)
@@ -244,7 +244,7 @@ class OwnedManageCleanupTests(unittest.TestCase):
 
         def response(path, body=None):
             nonlocal failures
-            if original.decommissioned and path == '/v1/james/provisioning-sessions/' + self.session_id and failures == 0:
+            if original.decommissioned and path == '/v1/nest/provisioning-sessions/' + self.session_id and failures == 0:
                 failures += 1
                 raise OSError(errno.ETIMEDOUT, 'confirmation timed out')
             return original(path, body)
@@ -309,7 +309,7 @@ class OwnedManageCleanupTests(unittest.TestCase):
         ordinary_response = api.side_effect
 
         def unavailable_confirmation(path, body=None):
-            if ordinary_response.decommissioned and path == '/v1/james/provisioning-sessions/' + self.session_id:
+            if ordinary_response.decommissioned and path == '/v1/nest/provisioning-sessions/' + self.session_id:
                 raise OSError(errno.ETIMEDOUT, 'confirmation unavailable')
             return ordinary_response(path, body)
 

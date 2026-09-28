@@ -57,11 +57,11 @@ def addresses(origin):
 def target(fixture):
     """Select an authenticated endpoint; isolated production never uses public DNS."""
     scope = fixture.scope
-    if scope['schema'] == 'cybex.james.nixos-development-scope.v1':
+    if scope['schema'] == 'tiaris.nest.nixos-development-scope.v1':
         return {'owner': scope['owner'], 'bridge': scope['bridge'],
                 'origin': scope['manage_origin'], 'destinations': addresses(scope['manage_origin']),
                 'certificate_sha256': None}
-    if scope['schema'] != 'cybex.james.nixos-isolated-scope.v1':
+    if scope['schema'] != 'tiaris.nest.nixos-isolated-scope.v1':
         raise ValueError('rollback gate requires a known owned scope')
     from isolated_manage_rpc import request
     value = request(fixture.state, 'rollback_gate_target')
@@ -126,7 +126,7 @@ def tables():
 
 
 def intent(scope, tap, mac, guest, destinations, script):
-    return {'schema': 'cybex.james.rollback-transport-gate.v2', 'owner': scope['owner'],
+    return {'schema': 'tiaris.nest.rollback-transport-gate.v2', 'owner': scope['owner'],
             'bridge': scope['bridge'], 'table': name(scope),
             'tap': tap, 'mac': mac, 'guest': guest, 'destinations': destinations,
             'script_sha256': hashlib.sha256(script.encode()).hexdigest()}
@@ -158,7 +158,7 @@ def read_intent(path, scope):
         value = json.loads(os.read(fd, 4097))
     finally:
         os.close(fd)
-    if (value.get('schema') != 'cybex.james.rollback-transport-gate.v2'
+    if (value.get('schema') != 'tiaris.nest.rollback-transport-gate.v2'
             or value.get('owner') != scope['owner'] or value.get('bridge') != scope['bridge']
             or value.get('table') != name(scope)
             or not re.fullmatch(r'[0-9a-f]{64}', value.get('script_sha256', ''))):

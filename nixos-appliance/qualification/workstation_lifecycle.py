@@ -26,7 +26,7 @@ def descriptor_digest(descriptor):
     # Same field order and absent-option handling as the signed Rust descriptor.
     fields = ('schema', 'runtime_version', 'manage_source_revision', 'nixpkgs_revision',
               'manage_source_sha256', 'manage_source_size_bytes', 'architecture', 'format',
-              'required_james_protocol', 'url', 'sha256', 'size_bytes', 'manifest_sha256',
+              'required_nest_protocol', 'url', 'sha256', 'size_bytes', 'manifest_sha256',
               'components', 'signature')
     value = {k: descriptor[k] for k in fields if k in descriptor}
     value['components'] = {name: {k: descriptor['components'][name][k] for k in ('sha256', 'size_bytes')}
@@ -36,14 +36,14 @@ def descriptor_digest(descriptor):
 
 def require_runtime(status, descriptor):
     if status.get('state') != 'ready' or not status.get('operational') or not status.get('converged'):
-        raise ValueError('Private James runtime is not ready and converged')
+        raise ValueError('Private Nest runtime is not ready and converged')
     for field in ('active', 'desired'):
         runtime = status.get(field) or {}
         if (runtime.get('bundle_sha256') != descriptor['sha256']
                 or runtime.get('runtime_version') != descriptor['runtime_version']
                 or runtime.get('manage_source_revision') != descriptor['manage_source_revision']
                 or runtime.get('compatibility_epoch') != 1):
-            raise ValueError('Private James is not serving the exact signed runtime')
+            raise ValueError('Private Nest is not serving the exact signed runtime')
 
 
 def require_workstation(device, descriptor, blueprint, previous=None, verified_after=None):
@@ -177,20 +177,20 @@ class Workstation:
             self.tap = None
 
 
-def run(api, state, james, manifest, catalog, output):
+def run(api, state, nest, manifest, catalog, output):
     descriptor = manifest['workstation_netboot']
-    runtime_path = f'/v1/james/nodes/{james.device}/workstation-netboot'
+    runtime_path = f'/v1/nest/nodes/{nest.device}/workstation-netboot'
     require_runtime(api(runtime_path), descriptor)
-    policy = api('/v1/james/delivery-policy')
-    if policy['allow_james_source_builds'] or policy['source_builds_allowed']:
+    policy = api('/v1/nest/delivery-policy')
+    if policy['allow_nest_source_builds'] or policy['source_builds_allowed']:
         raise ValueError('Workstation qualification requires the source-free delivery policy')
     blueprints = {v['slug']: v for v in catalog['blueprints']}
     first = blueprints['standard_workstation']
-    boot_base = f'/v1/boot/servers/{james.device}'
+    boot_base = f'/v1/boot/servers/{nest.device}'
     profiles = api(boot_base + '/profiles?limit=100&offset=0')
-    enabled = [v for v in profiles['profiles'] if v['enabled'] and v['profile_type'] == 'james_installer']
+    enabled = [v for v in profiles['profiles'] if v['enabled'] and v['profile_type'] == 'nest_installer']
     if profiles['total'] > 100 or len(enabled) != 1:
-        raise ValueError('New private James must have exactly one enabled installer profile')
+        raise ValueError('New private Nest must have exactly one enabled installer profile')
     started = now()
     checks = []
     with Workstation(state) as workstation:
@@ -290,13 +290,13 @@ def run(api, state, james, manifest, catalog, output):
                 'boot_id_before': before['facts_json']['boot_id'], 'boot_id_after': after['facts_json']['boot_id'],
                 'system': after['facts_json']['blueprint_generation']['booted_system']})
         require_runtime(api(runtime_path), descriptor)
-        policy = api('/v1/james/delivery-policy')
-        if policy['allow_james_source_builds'] or policy['source_builds_allowed']:
+        policy = api('/v1/nest/delivery-policy')
+        if policy['allow_nest_source_builds'] or policy['source_builds_allowed']:
             raise ValueError('Source-free delivery policy changed during workstation qualification')
-    output.write_text(json.dumps({'schema': 'cybex.james.published-workstation-qualification.v1', 'ok': True,
+    output.write_text(json.dumps({'schema': 'tiaris.nest.published-workstation-qualification.v1', 'ok': True,
         'release_version': manifest['version'], 'runtime_version': descriptor['runtime_version'],
         'bundle_sha256': descriptor['sha256'], 'descriptor_sha256': descriptor_digest(descriptor),
-        'manage_source_revision': descriptor['manage_source_revision'], 'james_device_id': james.device,
+        'manage_source_revision': descriptor['manage_source_revision'], 'nest_device_id': nest.device,
         'workstation_device_id': device_id, 'pxe_boot_observed': True, 'fresh_install_completed': True,
         'source_builds_allowed': False, 'blueprints': checks, 'completed_at': now().isoformat()}, indent=2) + '\n')
     output.chmod(0o644)

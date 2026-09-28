@@ -26,7 +26,7 @@ def allowed(policy, request, now):
 def main():
     if not (INBOX / 'update-schedule.json').exists() and not (CONTROL / 'update-schedule.json').exists():
         return 75
-    verified = run('/usr/bin/cybex-james', 'verify-appliance-update-policy')
+    verified = run('/usr/bin/tiaris-nest', 'verify-appliance-update-policy')
     if verified != str(CONTROL / 'update-schedule.json'):
         raise ValueError('invalid verified policy path')
     policy = load(Path(verified), maximum=64 * 1024)

@@ -10,8 +10,8 @@ def render(content, existing):
     addresses = [ipaddress.ip_network(line.strip(), strict=True) for line in content.splitlines() if line.strip()]
     if len(addresses) > 128:
         raise ValueError('too many management CIDRs')
-    rules = ['delete table inet cybex_james'] if existing else []
-    rules += ['table inet cybex_james {', 'chain input {', 'type filter hook input priority -10; policy accept;']
+    rules = ['delete table inet tiaris_nest'] if existing else []
+    rules += ['table inet tiaris_nest {', 'chain input {', 'type filter hook input priority -10; policy accept;']
     for version, family in ((4, 'ip'), (6, 'ip6')):
         selected = [str(address) for address in addresses if address.version == version]
         if selected:
@@ -21,8 +21,8 @@ def render(content, existing):
 
 
 def main():
-    content = read(Path('/var/lib/cybex-james/control/management-cidrs.txt'), maximum=16384).decode('ascii')
-    existing = subprocess.run(['nft', 'list', 'table', 'inet', 'cybex_james'], capture_output=True).returncode == 0
+    content = read(Path('/var/lib/tiaris-nest/control/management-cidrs.txt'), maximum=16384).decode('ascii')
+    existing = subprocess.run(['nft', 'list', 'table', 'inet', 'tiaris_nest'], capture_output=True).returncode == 0
     rules = render(content, existing)
     subprocess.run(['nft', '--check', '-f', '-'], input=rules, text=True, check=True)
     subprocess.run(['nft', '-f', '-'], input=rules, text=True, check=True)

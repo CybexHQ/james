@@ -3,9 +3,9 @@ use super::*;
 use chrono::{Datelike, Timelike};
 
 pub const CAPABILITY: &str = "appliance_update_schedule_v1";
-const DOMAIN: &str = "CYBEX-JAMES-UPDATE-SCHEDULE-V1";
-const INBOX: &str = "/var/lib/cybex-james/state/inbox/update-schedule.json";
-const CONTROL: &str = "/var/lib/cybex-james/control/update-schedule.json";
+const DOMAIN: &str = "TIARIS-NEST-UPDATE-SCHEDULE-V1";
+const INBOX: &str = "/var/lib/tiaris-nest/state/inbox/update-schedule.json";
+const CONTROL: &str = "/var/lib/tiaris-nest/control/update-schedule.json";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -83,7 +83,7 @@ fn validate(
     public_key: &str,
 ) -> Result<()> {
     policy.schedule.validate()?;
-    if policy.schema != "cybex.james.update-schedule.v1"
+    if policy.schema != "tiaris.nest.update-schedule.v1"
         || policy.device_id != device
         || policy.provisioning_session_id != session
         || policy.device_incarnation_id.is_nil()
@@ -167,7 +167,7 @@ pub fn apply() -> Result<()> {
         .truncate(false)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open("/run/lock/cybex-james/update-schedule.lock")?;
+        .open("/run/lock/tiaris-nest/update-schedule.lock")?;
     let metadata = lock.metadata()?;
     if !metadata.is_file()
         || metadata.uid() != 0
@@ -216,7 +216,7 @@ pub fn readiness(now: DateTime<Utc>) -> Result<&'static str> {
         allow.matches(
             request.attempt_id,
             &request.release.release_id,
-            &request.release.cybex_repository_snapshot.sha256,
+            &request.release.tiaris_repository_snapshot.sha256,
         )
     });
     if immediate || policy.schedule.includes(now)? {
@@ -278,7 +278,7 @@ mod tests {
         let key = SigningKey::from_bytes(&[19; 32]);
         let session = uuid::Uuid::new_v4();
         let mut policy = SignedPolicy {
-            schema: "cybex.james.update-schedule.v1".into(),
+            schema: "tiaris.nest.update-schedule.v1".into(),
             device_id: "dev_example".into(),
             device_incarnation_id: uuid::Uuid::new_v4(),
             provisioning_session_id: session,

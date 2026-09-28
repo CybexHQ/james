@@ -37,12 +37,12 @@ use crate::{
 #[path = "netboot_transport.rs"]
 mod transport;
 
-pub const DESCRIPTOR_SCHEMA: &str = "cybex.james.workstation-netboot.v1";
-pub const MANIFEST_SCHEMA: &str = "cybex.james.workstation-netboot-manifest.v1";
-pub const SIGNATURE_DOMAIN: &str = "CYBEX-JAMES-WORKSTATION-NETBOOT-V1";
+pub const DESCRIPTOR_SCHEMA: &str = "tiaris.nest.workstation-netboot.v1";
+pub const MANIFEST_SCHEMA: &str = "tiaris.nest.workstation-netboot-manifest.v1";
+pub const SIGNATURE_DOMAIN: &str = "TIARIS-NEST-WORKSTATION-NETBOOT-V1";
 pub const ARCHITECTURE: &str = "x86_64-linux";
 pub const FORMAT: &str = "split-squashfs-v1";
-pub const REQUIRED_JAMES_PROTOCOL: u32 = 4;
+pub const REQUIRED_NEST_PROTOCOL: u32 = 4;
 #[cfg(not(feature = "resilience-qualification-epoch-2"))]
 pub const COMPATIBILITY_EPOCH: u32 = 1;
 #[cfg(feature = "resilience-qualification-epoch-2")]
@@ -63,7 +63,7 @@ const BOOT_GRANT_LIFETIME_SECONDS: i64 = 10 * 60;
 const BOOT_SESSION_RETENTION_SECONDS: i64 = 24 * 60 * 60;
 const BOOT_CONTEXT_MAX_BYTES: usize = 64 * 1024;
 const BUNDLE_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
-// Renew verified evidence with headroom before Manage's 24-hour freshness gate.
+// Renew verified evidence with headroom before Tiaris's 24-hour freshness gate.
 const SCRUB_INTERVAL_SECONDS: i64 = 12 * 60 * 60;
 const MAINTENANCE_INTERVAL_SECONDS: u64 = 60 * 60;
 const RECONCILE_RETRY_BASE_SECONDS: i64 = 30;
@@ -73,7 +73,7 @@ const MAX_RECONCILE_ATTEMPT_ROWS: i64 = 128;
 // continuous SQLite writer. Persist each newly reached percentage and also a
 // heartbeat for very slow links; a forced exact checkpoint follows fsync.
 const DOWNLOAD_PROGRESS_MAX_INTERVAL: Duration = Duration::from_secs(5);
-const BOOT_GRANT_DOMAIN: &str = "CYBEX-JAMES-BOOT-GRANT-V1";
+const BOOT_GRANT_DOMAIN: &str = "TIARIS-NEST-BOOT-GRANT-V1";
 const COMPONENT_NAMES: [&str; 3] = ["bzImage", "initrd", "nix-store.squashfs"];
 static RECONCILE_QUEUE: Mutex<RuntimeReconcileQueue> = Mutex::new(RuntimeReconcileQueue::new());
 
@@ -118,7 +118,7 @@ pub struct WorkstationNetbootDescriptor {
     pub nixpkgs_revision: String,
     pub architecture: String,
     pub format: String,
-    pub required_james_protocol: u32,
+    pub required_nest_protocol: u32,
     pub url: String,
     pub sha256: String,
     pub size_bytes: u64,
@@ -134,7 +134,7 @@ struct WorkstationNetbootManifest {
     runtime_version: String,
     architecture: String,
     format: String,
-    required_james_protocol: u32,
+    required_nest_protocol: u32,
     manage_source_revision: String,
     nixpkgs_revision: String,
     source_date_epoch: u64,
@@ -147,7 +147,7 @@ struct WorkstationNetbootManifest {
 #[derive(Clone, Debug, Serialize)]
 pub struct BootGrantClaims {
     pub schema: &'static str,
-    pub james_device_id: String,
+    pub nest_device_id: String,
     pub organization_id: String,
     pub organization_slug: String,
     pub manage_api_url: String,
@@ -162,7 +162,7 @@ pub struct BootGrantClaims {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct JamesBootGrant {
+struct NestBootGrant {
     claims: BootGrantClaims,
     signature: String,
 }
@@ -174,7 +174,7 @@ struct BootContext {
     organization_slug: String,
     bundle_sha256: String,
     profile_id: Option<String>,
-    james_boot_grant: JamesBootGrant,
+    nest_boot_grant: NestBootGrant,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -225,7 +225,7 @@ pub struct WorkstationNetbootReport {
 const fn default_compatibility_epoch() -> u32 {
     // A missing field is the legacy epoch-one envelope. It must never inherit
     // the current binary's epoch, otherwise an epoch upgrade would silently
-    // relabel desired state sent by an older Manage.
+    // relabel desired state sent by an older Tiaris.
     1
 }
 
@@ -326,7 +326,7 @@ fn validate_compatibility_epoch(compatibility_epoch: u32) -> Result<()> {
         return Err(coded_runtime_failure(
             FAILURE_COMPATIBILITY_EPOCH_UNSUPPORTED,
             format!(
-                "workstation runtime compatibility epoch {compatibility_epoch} is unsupported; this James supports epoch {COMPATIBILITY_EPOCH}"
+                "workstation runtime compatibility epoch {compatibility_epoch} is unsupported; this Nest supports epoch {COMPATIBILITY_EPOCH}"
             ),
         ));
     }
@@ -373,7 +373,7 @@ pub fn signature_message(descriptor: &WorkstationNetbootDescriptor) -> String {
         descriptor.nixpkgs_revision,
         descriptor.architecture,
         descriptor.format,
-        descriptor.required_james_protocol,
+        descriptor.required_nest_protocol,
         descriptor.components.bz_image.size_bytes,
         descriptor.components.bz_image.sha256,
         descriptor.components.initrd.size_bytes,
@@ -404,24 +404,24 @@ fn validate_descriptor_with_policy(
     }
     Version::parse(&descriptor.runtime_version)
         .context("workstation netboot runtime version is not canonical SemVer")?;
-    validate_revision(&descriptor.manage_source_revision, "Manage source revision")?;
+    validate_revision(&descriptor.manage_source_revision, "Tiaris source revision")?;
     match (
         descriptor.manage_source_sha256.as_deref(),
         descriptor.manage_source_size_bytes,
     ) {
         (None, None) => {}
         (Some(sha256), Some(size_bytes)) => {
-            validate_sha256(sha256, "Manage source SHA-256")?;
+            validate_sha256(sha256, "Tiaris source SHA-256")?;
             if size_bytes == 0 || size_bytes > MAX_MANAGE_SOURCE_ARCHIVE_BYTES {
-                bail!("Manage source archive size is outside its bound");
+                bail!("Tiaris source archive size is outside its bound");
             }
         }
-        _ => bail!("Manage source archive identity is incomplete"),
+        _ => bail!("Tiaris source archive identity is incomplete"),
     }
     validate_revision(&descriptor.nixpkgs_revision, "nixpkgs revision")?;
     if descriptor.architecture != ARCHITECTURE
         || descriptor.format != FORMAT
-        || descriptor.required_james_protocol != REQUIRED_JAMES_PROTOCOL
+        || descriptor.required_nest_protocol != REQUIRED_NEST_PROTOCOL
     {
         bail!("workstation netboot descriptor target contract is incompatible");
     }
@@ -448,7 +448,7 @@ fn validate_descriptor_with_policy(
         bail!("workstation netboot URL must be an uncredentialed public HTTPS URL");
     }
     let expected_name = format!(
-        "cybex-workstation-netboot-{}-{}-{ARCHITECTURE}.tar.zst",
+        "tiaris-workstation-netboot-{}-{}-{ARCHITECTURE}.tar.zst",
         descriptor.runtime_version,
         &descriptor.manage_source_revision[..12]
     );
@@ -866,7 +866,7 @@ async fn reconcile_desired_inner(
         &desired.descriptor.manage_source_revision,
         allow_private_manage_source,
     )
-    .context("verify packaged Manage source for workstation runtime")?;
+    .context("verify packaged Tiaris source for workstation runtime")?;
     let descriptor_json = serde_json::to_string(&desired.descriptor)?;
     let descriptor_sha256 = sha256_bytes(descriptor_json.as_bytes());
     admit_reconcile_identity(
@@ -982,7 +982,7 @@ async fn admit_reconcile_identity(
     );
     // Acquire SQLite's writer reservation before reading the causal ledgers.
     // This bounded metadata-only transaction then cannot fail later while
-    // upgrading a stale DEFERRED snapshot under concurrent James writers.
+    // upgrading a stale DEFERRED snapshot under concurrent Nest writers.
     let mut transaction = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let stored_generation: Option<(i64, String)> = sqlx::query_as(
         "SELECT reconcile_generation, descriptor_sha256
@@ -1684,7 +1684,7 @@ fn validate_manifest(
         || manifest.runtime_version != descriptor.runtime_version
         || manifest.architecture != descriptor.architecture
         || manifest.format != descriptor.format
-        || manifest.required_james_protocol != descriptor.required_james_protocol
+        || manifest.required_nest_protocol != descriptor.required_nest_protocol
         || manifest.manage_source_revision != descriptor.manage_source_revision
         || manifest.nixpkgs_revision != descriptor.nixpkgs_revision
         || manifest.components != descriptor.components
@@ -1950,7 +1950,7 @@ fn enforce_watermark_precedence(
 pub fn boot_grant_message(claims: &BootGrantClaims) -> String {
     format!(
         "{BOOT_GRANT_DOMAIN}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
-        claims.james_device_id,
+        claims.nest_device_id,
         claims.organization_id,
         claims.organization_slug,
         claims.manage_api_url,
@@ -2020,9 +2020,9 @@ pub async fn create_boot_session(
     let manifest = parse_canonical_manifest(&manifest_body)?;
     validate_manifest(&manifest, &descriptor)?;
 
-    let identity = crate::manage::james_boot_identity(&state.config)?;
+    let identity = crate::manage::nest_boot_identity(&state.config)?;
     if !is_safe_control_plane_id(&identity.device_id) {
-        bail!("adopted James device identity is invalid");
+        bail!("adopted Nest device identity is invalid");
     }
     let issued_at = Utc::now().timestamp();
     let expires_at = issued_at + BOOT_GRANT_LIFETIME_SECONDS;
@@ -2035,8 +2035,8 @@ pub async fn create_boot_session(
     let multicast_join_token_sha256 = crate::netboot_multicast::stored_join_token_hash(&nonce);
     let session_id = URL_SAFE_NO_PAD.encode(session_bytes);
     let claims = BootGrantClaims {
-        schema: "cybex.james.boot-grant.v1",
-        james_device_id: identity.device_id,
+        schema: "tiaris.nest.boot-grant.v1",
+        nest_device_id: identity.device_id,
         organization_id: state.config.manage.organization_id.clone(),
         organization_slug: state.config.manage.organization_slug.clone(),
         manage_api_url: state.config.manage.api_url.clone(),
@@ -2053,27 +2053,27 @@ pub async fn create_boot_session(
         .signing_key
         .sign(boot_grant_message(&claims).as_bytes());
     let context = BootContext {
-        schema: "cybex.james.boot-context.v1",
+        schema: "tiaris.nest.boot-context.v1",
         api_url: claims.manage_api_url.clone(),
         organization_slug: claims.organization_slug.clone(),
         bundle_sha256: bundle_sha256.clone(),
         profile_id: claims.profile_id.clone(),
-        james_boot_grant: JamesBootGrant {
+        nest_boot_grant: NestBootGrant {
             claims,
             signature: URL_SAFE_NO_PAD.encode(signature.to_bytes()),
         },
     };
-    let context_body = serde_json::to_vec(&context).context("serialize James boot context")?;
+    let context_body = serde_json::to_vec(&context).context("serialize Nest boot context")?;
     let context_archive = newc_context_archive(&context_body, issued_at)?;
     if context_archive.len() > BOOT_CONTEXT_MAX_BYTES {
-        bail!("James boot context archive exceeded 64 KiB");
+        bail!("Nest boot context archive exceeded 64 KiB");
     }
 
     let sessions_root = state.config.paths.data_dir.join("netboot/sessions");
     let session_root = sessions_root.join(&session_id);
-    fs::create_dir_all(&sessions_root).context("create James boot sessions root")?;
+    fs::create_dir_all(&sessions_root).context("create Nest boot sessions root")?;
     fs::set_permissions(&sessions_root, fs::Permissions::from_mode(0o700))?;
-    fs::create_dir(&session_root).context("create James boot session directory")?;
+    fs::create_dir(&session_root).context("create Nest boot session directory")?;
     fs::set_permissions(&session_root, fs::Permissions::from_mode(0o700))?;
     let context_path = session_root.join("context.cpio");
     // iPXE's magic-initrd support wraps this bounded JSON body in the cpio
@@ -2086,7 +2086,7 @@ pub async fn create_boot_session(
     }
 
     let insert_result = sqlx::query(
-        "INSERT INTO james_boot_sessions
+        "INSERT INTO nest_boot_sessions
          (session_id, nonce_sha256, multicast_join_token_sha256,
           normalized_mac, profile_id, managed_device_id,
           reinstall_request_id, bundle_sha256, context_path, issued_at, expires_at,
@@ -2122,7 +2122,7 @@ pub async fn create_boot_session(
         .kernel_cmdline_template
         .replace("{squashfs_url}", &squashfs_url);
     Ok(BootSessionLaunch {
-        schema: "cybex.james.kexec.v1",
+        schema: "tiaris.nest.kexec.v1",
         bundle_sha256,
         kernel_url,
         initrd_url,
@@ -2144,7 +2144,7 @@ fn is_safe_control_plane_id(value: &str) -> bool {
 
 pub fn render_ipxe_launch(launch: &BootSessionLaunch) -> String {
     format!(
-        "#!ipxe\necho Cybex James: loading signed workstation installer runtime\nkernel {} {} || goto failed\ninitrd {} || goto failed\ninitrd --name context.json {} /etc/cybex-installer/boot-context.json mode=600 mkdir=1 || goto failed\nboot || goto failed\n:failed\necho Cybex James could not stage the installer runtime\nsleep 5\nexit 1\n",
+        "#!ipxe\necho Tiaris Nest: loading signed workstation installer runtime\nkernel {} {} || goto failed\ninitrd {} || goto failed\ninitrd --name context.json {} /etc/tiaris-installer/boot-context.json mode=600 mkdir=1 || goto failed\nboot || goto failed\n:failed\necho Tiaris Nest could not stage the installer runtime\nsleep 5\nexit 1\n",
         launch.kernel_url, launch.command_line, launch.initrd_url, launch.context_url,
     )
 }
@@ -2158,7 +2158,7 @@ pub async fn serve_context(
         return Err(AppError::NotFound);
     }
     let row: Option<(String, i64)> = sqlx::query_as(
-        "SELECT context_path, expires_at FROM james_boot_sessions WHERE session_id = ?",
+        "SELECT context_path, expires_at FROM nest_boot_sessions WHERE session_id = ?",
     )
     .bind(&session_id)
     .fetch_optional(&state.db)
@@ -2181,7 +2181,7 @@ pub async fn serve_context(
         assets::serve_file_from_root(&expected_root, "context.cpio", &headers).await?;
     response.headers_mut().insert(
         header::CONTENT_TYPE,
-        "application/vnd.cybex.boot-context"
+        "application/vnd.tiaris.boot-context"
             .parse()
             .map_err(|_| AppError::Config("invalid context content type".to_string()))?,
     );
@@ -2197,7 +2197,7 @@ pub async fn serve_context(
 pub async fn cleanup_expired_sessions(state: &AppState) -> Result<usize> {
     let now_unix = Utc::now().timestamp();
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT session_id, context_path FROM james_boot_sessions
+        "SELECT session_id, context_path FROM nest_boot_sessions
          WHERE cleanup_after < ? ORDER BY cleanup_after LIMIT 256",
     )
     .bind(now_unix)
@@ -2215,13 +2215,13 @@ pub async fn cleanup_expired_sessions(state: &AppState) -> Result<usize> {
         }
         match fs::symlink_metadata(&root) {
             Ok(metadata) if metadata.file_type().is_dir() => {
-                fs::remove_dir_all(&root).context("remove expired James boot session")?;
+                fs::remove_dir_all(&root).context("remove expired Nest boot session")?;
             }
             Ok(_) => continue,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        sqlx::query("DELETE FROM james_boot_sessions WHERE session_id = ? AND cleanup_after < ?")
+        sqlx::query("DELETE FROM nest_boot_sessions WHERE session_id = ? AND cleanup_after < ?")
             .bind(&session_id)
             .bind(now_unix)
             .execute(&state.db)
@@ -2422,7 +2422,7 @@ async fn update_runtime_after_active_quarantine(
     let active = fallback.unwrap_or_default();
     // A verified fallback remains bootable, but it is not the desired runtime.
     // Report genuine degradation while retaining the LKG identity for service;
-    // calling this ready would violate Manage's desired==active invariant.
+    // calling this ready would violate Tiaris's desired==active invariant.
     sqlx::query(
         "UPDATE workstation_netboot_runtime
          SET state = 'failed', active_bundle_sha256 = ?, previous_bundle_sha256 = '',
@@ -2552,7 +2552,7 @@ async fn prune_expired_bundles(state: &AppState) -> Result<usize> {
            AND bundle.bundle_sha256 <> runtime.active_bundle_sha256
            AND bundle.bundle_sha256 <> runtime.previous_bundle_sha256
            AND NOT EXISTS (
-             SELECT 1 FROM james_boot_sessions session
+             SELECT 1 FROM nest_boot_sessions session
              WHERE session.bundle_sha256 = bundle.bundle_sha256 AND session.expires_at >= ?
            )
            AND NOT EXISTS (
@@ -2667,12 +2667,12 @@ fn write_private_file(path: &Path, body: &[u8]) -> Result<()> {
 
 fn newc_context_archive(body: &[u8], mtime: i64) -> Result<Vec<u8>> {
     if mtime < 0 || body.is_empty() {
-        bail!("James boot context archive inputs are invalid");
+        bail!("Nest boot context archive inputs are invalid");
     }
     let mut archive = Vec::with_capacity(body.len() + 512);
     append_newc_entry(
         &mut archive,
-        "etc/cybex-installer/boot-context.json",
+        "etc/tiaris-installer/boot-context.json",
         0o100600,
         mtime as u32,
         body,
@@ -2897,7 +2897,7 @@ pub async fn serve_component(
                    AND (bundle.bundle_sha256 = active_bundle_sha256
                         OR bundle.bundle_sha256 = previous_bundle_sha256)
                ) OR EXISTS(
-                 SELECT 1 FROM james_boot_sessions session
+                 SELECT 1 FROM nest_boot_sessions session
                  WHERE session.bundle_sha256 = bundle.bundle_sha256 AND session.expires_at >= ?
                )
              )
@@ -2919,9 +2919,9 @@ pub async fn serve_component(
         .join(&bundle_sha256);
     let mut response = assets::serve_file_from_root(&root, &component, &headers).await?;
     let content_type = match component.as_str() {
-        "bzImage" => "application/vnd.cybex.kernel",
-        "initrd" => "application/vnd.cybex.initrd",
-        "nix-store.squashfs" => "application/vnd.cybex.squashfs",
+        "bzImage" => "application/vnd.tiaris.kernel",
+        "initrd" => "application/vnd.tiaris.initrd",
+        "nix-store.squashfs" => "application/vnd.tiaris.squashfs",
         _ => unreachable!("component was allowlisted"),
     };
     response.headers_mut().insert(
@@ -3020,10 +3020,10 @@ fn now() -> String {
 }
 
 fn runtime_verification_timestamp(value: DateTime<Utc>) -> String {
-    // This evidence crosses the James/Manage boundary. Preserve PostgreSQL's
-    // microsecond precision so an older Manage release that still compares it
+    // This evidence crosses the Nest/Tiaris boundary. Preserve PostgreSQL's
+    // microsecond precision so an older Tiaris release that still compares it
     // with `desired_changed_at` does not misclassify a same-second successful
-    // reconciliation as stale. New Manage releases use causal generation and
+    // reconciliation as stale. New Tiaris releases use causal generation and
     // descriptor identity instead of cross-host wall-clock ordering.
     value.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
 }
@@ -3139,31 +3139,31 @@ mod tests {
 
     #[test]
     fn boot_context_overlay_is_a_bounded_newc_member() {
-        let body = br#"{"schema":"cybex.james.boot-context.v1"}"#;
+        let body = br#"{"schema":"tiaris.nest.boot-context.v1"}"#;
         let cpio = newc_context_archive(body, 1_700_000_000).unwrap();
         assert!(cpio.len() <= BOOT_CONTEXT_MAX_BYTES);
         assert!(
-            cpio.windows(b"etc/cybex-installer/boot-context.json".len())
-                .any(|window| window == b"etc/cybex-installer/boot-context.json")
+            cpio.windows(b"etc/tiaris-installer/boot-context.json".len())
+                .any(|window| window == b"etc/tiaris-installer/boot-context.json")
         );
     }
 
     #[test]
     fn ipxe_launch_uses_magic_initrd_context_injection() {
         let launch = BootSessionLaunch {
-            schema: "cybex.james.kexec.v1",
+            schema: "tiaris.nest.kexec.v1",
             bundle_sha256: "a".repeat(64),
-            kernel_url: "http://james.test/kernel".to_string(),
-            initrd_url: "http://james.test/initrd".to_string(),
-            context_url: "http://james.test/context.cpio".to_string(),
-            squashfs_url: "http://james.test/rootfs".to_string(),
+            kernel_url: "http://nest.test/kernel".to_string(),
+            initrd_url: "http://nest.test/initrd".to_string(),
+            context_url: "http://nest.test/context.cpio".to_string(),
+            squashfs_url: "http://nest.test/rootfs".to_string(),
             command_line: "init=/nix/store/system/init".to_string(),
             expires_at: 1_700_000_600,
         };
         let script = render_ipxe_launch(&launch);
-        assert!(script.contains("initrd http://james.test/initrd"));
+        assert!(script.contains("initrd http://nest.test/initrd"));
         assert!(script.contains(
-            "http://james.test/context.cpio /etc/cybex-installer/boot-context.json mode=600 mkdir=1"
+            "http://nest.test/context.cpio /etc/tiaris-installer/boot-context.json mode=600 mkdir=1"
         ));
     }
 
@@ -3171,8 +3171,8 @@ mod tests {
     fn signature_message_contract_is_exact() {
         let descriptor = fixture_descriptor();
         let message = signature_message(&descriptor);
-        assert!(message.starts_with("CYBEX-JAMES-WORKSTATION-NETBOOT-V1\n1.0.0\n"));
-        assert!(message.ends_with("https://releases.example.test/cybex-workstation-netboot-1.0.0-aaaaaaaaaaaa-x86_64-linux.tar.zst\n"));
+        assert!(message.starts_with("TIARIS-NEST-WORKSTATION-NETBOOT-V1\n1.0.0\n"));
+        assert!(message.ends_with("https://releases.example.test/tiaris-workstation-netboot-1.0.0-aaaaaaaaaaaa-x86_64-linux.tar.zst\n"));
         assert_eq!(message.lines().count(), 17);
 
         let mut source_bound = descriptor;
@@ -4295,15 +4295,15 @@ mod tests {
     impl RuntimeFilesystemFixture {
         async fn new() -> Self {
             let root = std::env::temp_dir().join(format!(
-                "cybex-james-netboot-runtime-test-{}",
+                "tiaris-nest-netboot-runtime-test-{}",
                 uuid::Uuid::new_v4().simple()
             ));
             fs::create_dir_all(&root).unwrap();
             let signing_key = SigningKey::from_bytes(&[23_u8; 32]);
             let mut config = crate::config::AppConfig::default();
-            config.server.public_base_url = "http://james.test".to_string();
+            config.server.public_base_url = "http://nest.test".to_string();
             config.paths.data_dir = root.join("data");
-            config.paths.database_path = root.join("cybex-james.sqlite");
+            config.paths.database_path = root.join("tiaris-nest.sqlite");
             config.paths.boot_assets_dir = root.join("www");
             config.paths.static_dir = root.join("static");
             config.paths.tftp_dir = root.join("tftp");
@@ -4316,12 +4316,12 @@ mod tests {
             let manage_source_dir = root.join("manage-source");
             fs::create_dir(&manage_source_dir).unwrap();
             fs::set_permissions(&manage_source_dir, fs::Permissions::from_mode(0o755)).unwrap();
-            let manage_archive_body = b"deterministic Manage source fixture";
+            let manage_archive_body = b"deterministic Tiaris source fixture";
             let manage_archive = manage_source_dir.join(format!("{manage_revision}.tar"));
             fs::write(&manage_archive, manage_archive_body).unwrap();
             fs::set_permissions(&manage_archive, fs::Permissions::from_mode(0o444)).unwrap();
             let manage_metadata = format!(
-                "{{\"filename\":\"{manage_revision}.tar\",\"revision\":\"{manage_revision}\",\"schema\":\"cybex.james.manage-source.v1\",\"sha256\":\"{}\",\"size_bytes\":{}}}\n",
+                "{{\"filename\":\"{manage_revision}.tar\",\"revision\":\"{manage_revision}\",\"schema\":\"tiaris.nest.manage-source.v1\",\"sha256\":\"{}\",\"size_bytes\":{}}}\n",
                 sha256_bytes(manage_archive_body),
                 manage_archive_body.len()
             );
@@ -4339,7 +4339,7 @@ mod tests {
                 serde_json::to_vec(&serde_json::json!({
                     "private_key_b64": STANDARD.encode(signing_key.to_bytes()),
                     "public_key_b64": STANDARD.encode(signing_key.verifying_key().to_bytes()),
-                    "device_id": "james-runtime-test"
+                    "device_id": "nest-runtime-test"
                 }))
                 .unwrap(),
             )
@@ -4387,9 +4387,9 @@ mod tests {
                 nixpkgs_revision: "c".repeat(40),
                 architecture: ARCHITECTURE.to_string(),
                 format: FORMAT.to_string(),
-                required_james_protocol: REQUIRED_JAMES_PROTOCOL,
+                required_nest_protocol: REQUIRED_NEST_PROTOCOL,
                 url: format!(
-                    "http://127.0.0.1:9/cybex-workstation-netboot-{runtime_version}-aaaaaaaaaaaa-{ARCHITECTURE}.tar.zst"
+                    "http://127.0.0.1:9/tiaris-workstation-netboot-{runtime_version}-aaaaaaaaaaaa-{ARCHITECTURE}.tar.zst"
                 ),
                 sha256: bundle_sha256.to_string(),
                 size_bytes: 1,
@@ -4514,7 +4514,7 @@ mod tests {
             let mut descriptor = fixture_descriptor();
             descriptor.runtime_version = runtime_version.to_string();
             descriptor.url = format!(
-                "{release_base_url}/cybex-workstation-netboot-{runtime_version}-aaaaaaaaaaaa-{ARCHITECTURE}.tar.zst"
+                "{release_base_url}/tiaris-workstation-netboot-{runtime_version}-aaaaaaaaaaaa-{ARCHITECTURE}.tar.zst"
             );
             descriptor.sha256 = bundle_sha256.to_string();
             descriptor.size_bytes = size_bytes;
@@ -4590,12 +4590,12 @@ mod tests {
             runtime_version: descriptor.runtime_version.clone(),
             architecture: descriptor.architecture.clone(),
             format: descriptor.format.clone(),
-            required_james_protocol: descriptor.required_james_protocol,
+            required_nest_protocol: descriptor.required_nest_protocol,
             manage_source_revision: descriptor.manage_source_revision.clone(),
             nixpkgs_revision: descriptor.nixpkgs_revision.clone(),
             source_date_epoch: 1,
             toplevel: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system".to_string(),
-            kernel_cmdline_template: "init=/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system/init cybex.squashfs_url={squashfs_url}".to_string(),
+            kernel_cmdline_template: "init=/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system/init tiaris.squashfs_url={squashfs_url}".to_string(),
             components: descriptor.components.clone(),
             provenance: BTreeMap::from([("agent".to_string(), "f".repeat(64))]),
         }
@@ -4623,8 +4623,8 @@ mod tests {
             nixpkgs_revision: "c".repeat(40),
             architecture: ARCHITECTURE.to_string(),
             format: FORMAT.to_string(),
-            required_james_protocol: REQUIRED_JAMES_PROTOCOL,
-            url: "https://releases.example.test/cybex-workstation-netboot-1.0.0-aaaaaaaaaaaa-x86_64-linux.tar.zst".to_string(),
+            required_nest_protocol: REQUIRED_NEST_PROTOCOL,
+            url: "https://releases.example.test/tiaris-workstation-netboot-1.0.0-aaaaaaaaaaaa-x86_64-linux.tar.zst".to_string(),
             sha256: "d".repeat(64),
             size_bytes: 4,
             manifest_sha256: "e".repeat(64),

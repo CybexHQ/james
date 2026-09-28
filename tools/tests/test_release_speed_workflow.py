@@ -36,16 +36,16 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
 
     def test_cache_is_only_the_explicit_authenticated_warm_branch(self):
         branch = re.search(
-            r'if \[ "\$CYBEX_JAMES_HAS_PREDECESSOR" = true \].*?\n          else\n(.*?)\n          fi',
+            r'if \[ "\$TIARIS_NEST_HAS_PREDECESSOR" = true \].*?\n          else\n(.*?)\n          fi',
             self.warm, re.DOTALL)
         self.assertIsNotNone(branch)
-        cached = self.warm[self.warm.index('if [ "$CYBEX_JAMES_HAS_PREDECESSOR" = true ]',
+        cached = self.warm[self.warm.index('if [ "$TIARIS_NEST_HAS_PREDECESSOR" = true ]',
                                             self.warm.index('Resolve exact predecessor media')):
                            branch.start(1)]
         for value in ('"$explicit_fixture" = true',
-                      '"$CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT"',
+                      '"$TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT"',
                       'release/beast/release_speed.py cache', '--mode github-warm',
-                      '--expected-identity dist/cybex-james-build-predecessor.json',
+                      '--expected-identity dist/tiaris-nest-build-predecessor.json',
                       '--authorization release/recovery-adoption.json',
                       '--predecessor-manifest-sha256'):
             self.assertIn(value, cached)
@@ -83,11 +83,11 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
                 test "$(stat -c %a "$parent")" = 700
                 test "$(stat -c %u "$parent")" = "$(id -u)"
                 install -d -m 0700 "$directory"
-                printf '%s\\n' '{"appliance_release_v1":{"schema":"cybex.james.appliance-release.v3"}}' > "$directory/cybex-james-release.json"
+                printf '%s\\n' '{"appliance_release_v1":{"schema":"tiaris.nest.appliance-release.v3"}}' > "$directory/tiaris-nest-release.json"
             '''))
             fake_python.chmod(0o755)
             fake_jq = tools / 'jq'
-            fake_jq.write_text("#!/bin/sh\nprintf '%s\\n' cybex.james.appliance-release.v3\n")
+            fake_jq.write_text("#!/bin/sh\nprintf '%s\\n' tiaris.nest.appliance-release.v3\n")
             fake_jq.chmod(0o755)
             environment = {
                 **os.environ,
@@ -96,17 +96,17 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
                 'RUNNER_TEMP': str(runner_temp),
                 'GITHUB_RUN_ID': '123',
                 'GITHUB_RUN_ATTEMPT': '2',
-                'GITHUB_REPOSITORY': 'example/james',
-                'CYBEX_JAMES_HAS_PREDECESSOR': 'true',
-                'CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR': str(predecessor_input),
-                'CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256': 'a' * 64,
-                'CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT': str(cache_root),
-                'CYBEX_JAMES_RELEASE_VERSION': '0.2.11',
-                'CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY': 'synthetic-public-key',
+                'GITHUB_REPOSITORY': 'example/nest',
+                'TIARIS_NEST_HAS_PREDECESSOR': 'true',
+                'TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR': str(predecessor_input),
+                'TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256': 'a' * 64,
+                'TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT': str(cache_root),
+                'TIARIS_NEST_RELEASE_VERSION': '0.2.11',
+                'TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY': 'synthetic-public-key',
             }
             subprocess.run(['bash', '-n'], input=script, text=True, check=True)
             subprocess.run(['bash'], input=script, text=True, cwd=ROOT, env=environment, check=True)
-            snapshot_parent = runner_temp / 'cybex-james-predecessor-snapshot-123-2'
+            snapshot_parent = runner_temp / 'tiaris-nest-predecessor-snapshot-123-2'
             self.assertEqual(stat.S_IMODE(snapshot_parent.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(runner_temp.stat().st_mode), 0o755)
             arguments = argv.read_text().splitlines()
@@ -116,7 +116,7 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
             self.assertEqual(arguments[arguments.index('--mode') + 1], 'github-warm')
 
     def test_current_serial_runner_and_lane_contract_are_unchanged(self):
-        self.assertIn('group: james-nixos-production-qualification', self.warm)
+        self.assertIn('group: nest-nixos-production-qualification', self.warm)
         self.assertIn('environment: production-release-qualification', self.warm)
         self.assertEqual(self.warm.count('run-production-qualification.py'), 1)
         self.assertNotIn('release_speed.py run', self.warm)
@@ -126,14 +126,14 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
     def test_acceptance_and_timing_artifacts_are_separate_and_exact(self):
         acceptance = self.warm[self.warm.index('      - name: Upload bounded qualification evidence'):]
         warm_names = re.findall(
-            r'\$\{\{ runner\.temp \}\}/cybex-james-evidence-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/(cybex-james-[a-z0-9-]+\.json)',
+            r'\$\{\{ runner\.temp \}\}/tiaris-nest-evidence-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/(tiaris-nest-[a-z0-9-]+\.json)',
             acceptance)
         self.assertEqual(set(warm_names), {
-            'cybex-james-nixos-qualification.json',
-            'cybex-james-nixos-update-qualification.json',
-            'cybex-james-nixos-rollback-qualification.json',
-            'cybex-james-qualified-predecessor.json',
-            'cybex-james-qualified-predecessor-release.json',
+            'tiaris-nest-nixos-qualification.json',
+            'tiaris-nest-nixos-update-qualification.json',
+            'tiaris-nest-nixos-rollback-qualification.json',
+            'tiaris-nest-qualified-predecessor.json',
+            'tiaris-nest-qualified-predecessor-release.json',
         })
         timing = re.search(r'- name: Upload bounded predecessor-cache timing\n(.*?)\n\n      - name:',
                            self.warm, re.DOTALL).group(1)
@@ -141,33 +141,33 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
         self.assertEqual(timing.count('timing.json'), 1)
         self.assertNotIn('stdout.log', timing)
         self.assertNotIn('stderr.log', timing)
-        self.assertNotIn('cybex-james-evidence', timing)
+        self.assertNotIn('tiaris-nest-evidence', timing)
 
     def test_failure_diagnostic_upload_is_always_exact_and_separate_from_acceptance(self):
         diagnostic = self.warm.split('      - name: Retain bounded rollback failure diagnostic\n', 1)[1].split('\n      - name:', 1)[0]
         self.assertIn('if: always()', diagnostic)
         self.assertIn('if-no-files-found: ignore', diagnostic)
-        self.assertIn('cybex-james-rollback-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}', diagnostic)
+        self.assertIn('tiaris-nest-rollback-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}', diagnostic)
         self.assertEqual(diagnostic.count('path:'), 1)
-        self.assertEqual(diagnostic.count('cybex-james-nixos-rollback-failure.json'), 1)
+        self.assertEqual(diagnostic.count('tiaris-nest-nixos-rollback-failure.json'), 1)
         self.assertNotIn('*', diagnostic)
         self.assertNotIn('.log', diagnostic)
 
     def test_cold_still_downloads_published_bytes_without_warm_cache(self):
         self.assertIn('needs: [release_build, release_publish]', self.cold)
         self.assertIn('tools/local-candidate.py published', self.cold)
-        self.assertIn('cybex-james-published-manifest.json', self.cold)
-        self.assertIn('cargo run --release --locked --bin cybex-james-qualify-public-closure', self.cold)
-        self.assertIn('--public-closure "$RUNNER_TEMP/cybex-james-cold-evidence-', self.cold)
+        self.assertIn('tiaris-nest-published-manifest.json', self.cold)
+        self.assertIn('cargo run --release --locked --bin tiaris-nest-qualify-public-closure', self.cold)
+        self.assertIn('--public-closure "$RUNNER_TEMP/tiaris-nest-cold-evidence-', self.cold)
         self.assertNotIn('release_speed.py cache', self.cold)
         self.assertNotIn('PREDECESSOR_CACHE_ROOT', self.cold)
         cold_names = re.findall(
-            r'\$\{\{ runner\.temp \}\}/cybex-james-cold-evidence-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/(cybex-james-[a-z0-9-]+\.json)',
+            r'\$\{\{ runner\.temp \}\}/tiaris-nest-cold-evidence-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/(tiaris-nest-[a-z0-9-]+\.json)',
             self.cold)
         self.assertEqual(set(cold_names), {
-            'cybex-james-published-cold-qualification.json',
-            'cybex-james-published-workstation-qualification.json',
-            'cybex-james-public-closure-qualification.json',
+            'tiaris-nest-published-cold-qualification.json',
+            'tiaris-nest-published-workstation-qualification.json',
+            'tiaris-nest-public-closure-qualification.json',
         })
 
     def test_protected_chain_and_cold_name_remain_fail_closed(self):
