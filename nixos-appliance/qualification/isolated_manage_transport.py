@@ -21,7 +21,7 @@ def endpoint(receipt):
             or peer.is_loopback or peer.is_link_local
             or not re.fullmatch(r'[0-9a-f]{64}', receipt['certificate_sha256'])
             or not re.fullmatch(r'[0-9a-f]{64}', receipt['challenge'])):
-        raise ValueError('isolated Manage transport receipt is invalid')
+        raise ValueError('isolated Tiaris transport receipt is invalid')
     return origin.hostname, str(peer)
 
 
@@ -49,33 +49,33 @@ class Transport:
         if (len(body) > MAXIMUM or not 200 <= response.status < 300
                 or response.getheader('Location') is not None
                 or response.getheader('Content-Encoding') not in {None, 'identity'}):
-            raise ValueError('isolated Manage refused response, redirect, or oversized body')
+            raise ValueError('isolated Tiaris refused response, redirect, or oversized body')
         return body
 
     def connection(self):
         if self.verify_guard() is not True:
-            raise ValueError('isolated Manage network ownership is not verified')
+            raise ValueError('isolated Tiaris network ownership is not verified')
         raw = self.connector((self.peer, 443), timeout=30)
         connection = None
         try:
             if raw.getpeername()[0] != self.peer:
-                raise ValueError('isolated Manage connection reached a different peer')
+                raise ValueError('isolated Tiaris connection reached a different peer')
             secured = self.context.wrap_socket(raw, server_hostname=self.hostname)
             if (secured.getpeername()[0] != self.peer
                     or hashlib.sha256(secured.getpeercert(binary_form=True)).hexdigest()
                     != self.receipt['certificate_sha256']):
                 secured.close()
-                raise ValueError('isolated Manage TLS peer differs from the owned fixture')
+                raise ValueError('isolated Tiaris TLS peer differs from the owned fixture')
             connection = http.client.HTTPConnection(self.hostname, 443, timeout=30)
             connection.auto_open = 0  # HTTPConnection must never reconnect through DNS.
             connection.sock = secured
             challenge = self.receipt['challenge']
-            connection.request('GET', '/.well-known/cybex-qualification/' + challenge,
+            connection.request('GET', '/.well-known/tiaris-qualification/' + challenge,
                                headers={'Host': self.hostname, 'Connection': 'keep-alive'})
             expected = {'owner': self.receipt['owner'], 'challenge': challenge,
                         'manage_origin': self.receipt['manage_origin']}
             if json.loads(self.read(connection)) != expected or connection.sock is None:
-                raise ValueError('isolated Manage challenge failed before credentials')
+                raise ValueError('isolated Tiaris challenge failed before credentials')
             return connection
         except BaseException:
             if connection is not None:
@@ -86,7 +86,7 @@ class Transport:
     def request(self, path, body=None, token=None):
         if (not isinstance(path, str) or not path.startswith('/v1/') or '\\' in path
                 or any(ord(c) < 33 or ord(c) > 126 for c in path) or '#' in path):
-            raise ValueError('isolated Manage API path is invalid')
+            raise ValueError('isolated Tiaris API path is invalid')
         connection = self.connection()
         try:
             headers = {'Host': self.hostname, 'Content-Type': 'application/json', 'Connection': 'close'}

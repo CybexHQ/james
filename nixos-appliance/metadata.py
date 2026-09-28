@@ -22,7 +22,7 @@ def migrations(directory):
                      "sha256": digest(path), "sqlx_checksum": digest(path, "sha384")})
     if not rows or len({r["version"] for r in rows}) != len(rows):
         raise ValueError("invalid or empty SQLx migration inventory")
-    return {"schema": "cybex.james.sqlite-migrations.v1", "migrations": rows}
+    return {"schema": "tiaris.nest.sqlite-migrations.v1", "migrations": rows}
 
 
 def main():
@@ -32,7 +32,7 @@ def main():
         result = migrations(directory)
     elif mode == "source":
         source, revision, output = args
-        result = {"schema": "cybex.james.manage-source.v1", "revision": revision,
+        result = {"schema": "tiaris.nest.manage-source.v1", "revision": revision,
                   "filename": revision + ".tar", "sha256": digest(source),
                   "size_bytes": Path(source).stat().st_size}
     elif mode == "build":

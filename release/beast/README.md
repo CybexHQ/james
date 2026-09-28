@@ -1,9 +1,9 @@
 # Local build and qualification on The Beast
 
-Protected version-tag jobs use the existing runner with the `cybex-james-lab`
+Protected version-tag jobs use the existing runner with the `tiaris-nest-lab`
 label. Pull requests and ordinary main checks remain on GitHub-hosted runners.
 Only trusted release jobs may run on this host. The NixOS qualification jobs use
-the separate protected `james-nixos-development-qualification` environment;
+the separate protected `nest-nixos-development-qualification` environment;
 signing and publication retain `production-release`.
 
 The NixOS production release pipeline is **blocked** pending a separately
@@ -16,8 +16,8 @@ reject development fixtures. Development qualification therefore cannot pass
 as production release evidence. These guards deliberately leave the production
 path unavailable until that missing contract is implemented and verified.
 
-`tools/beast-build.py` creates clean, shallow checkouts of the exact James and
-Manage commits in a temporary directory. It builds the pinned Dockerfile and
+`tools/beast-build.py` creates clean, shallow checkouts of the exact Nest and
+Tiaris commits in a temporary directory. It builds the pinned Dockerfile and
 executes by image ID, as the unprivileged runner UID, with no capabilities,
 no privilege escalation, 12 CPUs, 48 GiB RAM, no swap, and 8192 processes at most.
 The container has ordinary outbound networking for authenticated package sources;
@@ -32,18 +32,18 @@ That shell explicitly supplies cpio, jq and Python instead of depending on
 packages preinstalled on a GitHub runner. Nix uses the container's explicit Bash
 path, so no ambient `nixpkgs` channel is needed.
 
-The dedicated paths below `~/.local/state/cybex-james-build` contain Cargo,
+The dedicated paths below `~/.local/state/tiaris-nest-build` contain Cargo,
 compiled target and Nix caches. These are deliberately separate from
 the host Nix store and its build-user IDs. Docker is the isolation boundary;
 Nix runs in single-user mode inside it. A host file lock serializes cache use.
 Each container and source/scratch directory is removed on success or failure,
 including SIGTERM. After power loss, inspect Docker containers named
-`cybex-james-build-build-*` and temporary `build-*` directories under that state
+`tiaris-nest-build-build-*` and temporary `build-*` directories under that state
 path; remove only an abandoned run, never a running build. Do not clear caches
 during a release. Caches can be removed while the runner is stopped if disk
 reclamation is needed; the next build repopulates them.
 
-Signed candidates live under `~/.local/state/cybex-james-releases/RUN_ID`.
+Signed candidates live under `~/.local/state/tiaris-nest-releases/RUN_ID`.
 An atomic seal records every filename, size and SHA-256, together with repository,
 workflow run, tag and source revision. The corresponding `candidate.json` is
 the only file in the GitHub Actions candidate artifact. All release files must
@@ -55,7 +55,7 @@ Consumers authenticate the receipt ZIP against GitHub's digest and workflow
 metadata, then verify every local file before copying it. Existing signature,
 source, predecessor, installation, upgrade, rollback and immutable-publication
 gates remain mandatory. Qualification uses the explicitly selected development
-Manage API and newly owned Incus bridges, TAPs and disposable QEMU disks. It
+Tiaris API and newly owned Incus bridges, TAPs and disposable QEMU disks. It
 never adopts an existing VM or reads a production database. An ownership receipt
 binds each run to its exact development origin, bridge and subnet. Cleanup
 verifies that receipt before removing owned resources.
@@ -81,15 +81,15 @@ zstd, the existing Rust audit tool, KVM/QEMU, OVMF, Incus and the tools used by
 owned bridge/TAP creation; it does not change the host QEMU bridge allowlist.
 Provision these prerequisites independently before enabling the protected jobs.
 After modifying runner configuration, restart its confirmed user unit,
-`cybex-james-runner.service`, only when it is idle.
+`tiaris-nest-runner.service`, only when it is idle.
 
 Configure the following **variables** in
-`james-nixos-development-qualification`. File values are absolute host paths,
+`nest-nixos-development-qualification`. File values are absolute host paths,
 not credentials embedded in Actions variables. Both prepublication and cold
 jobs pass every value as an explicit argument through `sudo -n`; they do not
 depend on sudo retaining the runner environment.
 
-| Variable suffix after `CYBEX_JAMES_QUALIFICATION_` | Required value |
+| Variable suffix after `TIARIS_NEST_QUALIFICATION_` | Required value |
 | --- | --- |
 | `MANAGE_ORIGIN` | Canonical HTTPS development origin, equal to the candidate and predecessor ISO descriptors; a `dev.` hostname or `.test` hostname. |
 | `TOKEN_FILE` | Root-owned ordinary single-link file, no group/other permissions, containing a current session for that development API. Never a production session. |
@@ -98,14 +98,14 @@ depend on sudo retaining the runner environment.
 | `ALLOW_DEVICE_HELPER` | Root-owned, protected executable that admits only the session identified by `--state-dir` and `--session-id`, after verifying its development ownership receipt. It must never authorize devices against production. |
 | `MANAGE_CHECKOUT` | Exact development checkout used by the admission helper to validate qualification inputs and deployed source. This is not the production checkout. |
 
-The current Manage checkout and deployed harness identity are separate from
+The current Tiaris checkout and deployed harness identity are separate from
 the exact candidate/predecessor source ancestors encoded in each fixture's
 inputs. Device admission must retain those distinct identities; substituting a
 current revision for a signed predecessor invalidates the qualification.
 
 The initial V3 qualification also requires
-`CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR` and
-`CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256` when published
+`TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR` and
+`TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256` when published
 ancestry is still Ubuntu. Supply a separately signed older NixOS release for
 the same development origin. Ubuntu ancestry is retained as history and never
 used as a NixOS upgrade fixture. Neither this documentation nor the workflow

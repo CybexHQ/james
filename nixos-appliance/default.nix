@@ -8,13 +8,13 @@ let
   pkgs = import nixpkgs { inherit system; };
   lib = pkgs.lib;
   publicKeys = if builtins.isString provisioningPublicKeys then builtins.fromJSON provisioningPublicKeys else provisioningPublicKeys;
-  archiveInput = builtins.path { path = manageSourceArchive; name = "cybex-manage-${manageSourceRevision}.tar"; };
+  archiveInput = builtins.path { path = manageSourceArchive; name = "tiaris-manage-${manageSourceRevision}.tar"; };
   package = import ./package.nix { inherit pkgs manageOrigin; };
-  migrations = pkgs.runCommand "cybex-james-sqlite-migrations" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+  migrations = pkgs.runCommand "tiaris-nest-sqlite-migrations" { nativeBuildInputs = [ pkgs.python3 ]; } ''
     mkdir -p $out
     python3 ${./metadata.py} migrations ${../migrations} $out/sqlite-migrations.json
   '';
-  sourceArchive = pkgs.runCommand "cybex-james-manage-source-${manageSourceRevision}" {
+  sourceArchive = pkgs.runCommand "tiaris-nest-manage-source-${manageSourceRevision}" {
     nativeBuildInputs = [ pkgs.python3 ];
   } ''
     mkdir -p $out
@@ -29,7 +29,7 @@ let
     nixpkgsRevision = pin.revision;
     nixpkgsPath = nixpkgs;
     udpcast = import (builtins.toPath manageRepo + "/deploy/nixos/udpcast-pinned.nix") { inherit pkgs; };
-    themeSource = builtins.path { path = builtins.toPath manageRepo + "/deploy/nixos/cybex-grub-theme"; name = "cybex-grub-theme"; };
+    themeSource = builtins.path { path = builtins.toPath manageRepo + "/deploy/nixos/tiaris-grub-theme"; name = "tiaris-grub-theme"; };
   };
   installed = import (nixpkgs + "/nixos/lib/eval-config.nix") {
     inherit system;
@@ -42,7 +42,7 @@ let
     modules = [ ./iso.nix ];
   };
   metadataBase = {
-    schema = "cybex.james.appliance-closure-build.v1";
+    schema = "tiaris.nest.appliance-closure-build.v1";
     release_id = package.version;
     base_os = "nixos";
     base_os_version = "26.05";
@@ -54,10 +54,10 @@ let
       kernel = installed.config.boot.kernelPackages.kernel.version;
       linux-firmware = pkgs.linux-firmware.version;
       nix = installed.config.nix.package.version;
-      cybex-james = package.version;
+      tiaris-nest = package.version;
       systemd-boot = pkgs.systemd.version;
     };
-    nix_signing_public_key = "cybex-james-appliance-1:${releasePublicKey}";
+    nix_signing_public_key = "tiaris-nest-appliance-1:${releasePublicKey}";
     manage_origin = manageOrigin;
     manage_source = {
       revision = manageSourceRevision;
@@ -66,7 +66,7 @@ let
     };
     microcode_versions = { intel = pkgs.microcode-intel.version; amd = pkgs.microcode-amd.version; };
   };
-  buildMetadata = pkgs.runCommand "cybex-james-system-build.json" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+  buildMetadata = pkgs.runCommand "tiaris-nest-system-build.json" { nativeBuildInputs = [ pkgs.python3 ]; } ''
     python3 ${./metadata.py} build ${pkgs.writeText "metadata.json" (builtins.toJSON metadataBase)} ${migrations}/sqlite-migrations.json ${sourceArchive}/${manageSourceRevision}.tar $out
   '';
   unsignedCache = import ./closure.nix { inherit pkgs buildMetadata sourceDateEpoch; toplevel = installed.config.system.build.toplevel; };

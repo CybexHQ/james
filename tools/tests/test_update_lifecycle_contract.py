@@ -15,19 +15,19 @@ HARNESS = (
     / "run-update-lifecycle.sh"
 )
 
-DEVICE_ID = "james_contract_test"
+DEVICE_ID = "nest_contract_test"
 PREDECESSOR_RELEASE = "0.2.1-dev.11"
 CANDIDATE_RELEASE = "0.2.1-dev.13"
 PREDECESSOR_SNAPSHOT = "20260805T000000Z"
 CANDIDATE_SNAPSHOT = "20260812T000000Z"
-RELEASE_URL = "https://manage.example/james"
+RELEASE_URL = "https://manage.example/nest"
 PUBLISHED_RELEASE = "0.2.1-dev.12"
 PACKAGE_BYTES = b"exact signed candidate package bytes\n"
 PACKAGE_SHA256 = hashlib.sha256(PACKAGE_BYTES).hexdigest()
 PACKAGE_SIZE = len(PACKAGE_BYTES)
 RUNTIME_SHA256 = "b" * 64
 MANAGE_REVISION = "c" * 40
-JAMES_REVISION = subprocess.check_output(
+NEST_REVISION = subprocess.check_output(
     ["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "HEAD"], text=True
 ).strip()
 ATTEMPT_ID = "11111111-2222-4333-8444-555555555555"
@@ -35,43 +35,43 @@ CACHE_FINGERPRINT = "d" * 64
 DEVICE_INCARNATION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 PACKAGE_TRANSPORT_URL = (
     "http://10.0.2.2:18080/"
-    f"cybex-james-appliance-packages-{CANDIDATE_RELEASE}-x86_64-linux.tar.zst"
+    f"tiaris-nest-appliance-packages-{CANDIDATE_RELEASE}-x86_64-linux.tar.zst"
 )
 
 
 def candidate_manifest():
     return {
-        "schema": "cybex.james.release.v1",
+        "schema": "tiaris.nest.release.v1",
         "version": CANDIDATE_RELEASE,
         "release_url": RELEASE_URL,
         "installer_iso_template_v2": {
             "manage_origin": "https://manage.example",
         },
         "appliance_release_v1": {
-            "schema": "cybex.james.appliance-release.v2",
-            "source_revision": JAMES_REVISION,
+            "schema": "tiaris.nest.appliance-release.v2",
+            "source_revision": NEST_REVISION,
             "release_id": CANDIDATE_RELEASE,
             "ubuntu_snapshot_id": CANDIDATE_SNAPSHOT,
-            "cybex_repository_snapshot": {
+            "tiaris_repository_snapshot": {
                 "url": (
                     "https://manage.example/artifacts/"
-                    f"cybex-james-appliance-packages-{CANDIDATE_RELEASE}-"
+                    f"tiaris-nest-appliance-packages-{CANDIDATE_RELEASE}-"
                     "x86_64-linux.tar.zst"
                 ),
                 "sha256": PACKAGE_SHA256,
                 "size_bytes": PACKAGE_SIZE,
             },
             "required_package_versions": {
-                "cybex-james": f"{CANDIDATE_RELEASE}-1",
-                "cybex-james-appliance": f"{CANDIDATE_RELEASE}-1",
-                "cybex-james-bootstrap": f"{CANDIDATE_RELEASE}-1",
+                "tiaris-nest": f"{CANDIDATE_RELEASE}-1",
+                "tiaris-nest-appliance": f"{CANDIDATE_RELEASE}-1",
+                "tiaris-nest-bootstrap": f"{CANDIDATE_RELEASE}-1",
             },
             "minimum_protocol": 4,
             "minimum_state_schema": 2,
             "rollback_compatible": True,
         },
         "workstation_netboot": {
-            "schema": "cybex.james.workstation-netboot.v1",
+            "schema": "tiaris.nest.workstation-netboot.v1",
             "runtime_version": "1.0.18",
             "sha256": RUNTIME_SHA256,
             "manage_source_revision": MANAGE_REVISION,
@@ -82,7 +82,7 @@ def candidate_manifest():
 
 def predecessor_evidence():
     return {
-        "schema": "cybex.james.ubuntu-appliance-qualification.v1",
+        "schema": "tiaris.nest.ubuntu-appliance-qualification.v1",
         "ok": True,
         "final_state": "ready",
         "secure_boot": True,
@@ -129,11 +129,11 @@ def node(state):
         }
     return {
         "device_id": DEVICE_ID,
-        "hostname": "james-test",
+        "hostname": "nest-test",
         "public_base_url": "http://192.0.2.10:8080",
         "connectivity_status": "connected",
         "reported_version": CANDIDATE_RELEASE if candidate else PREDECESSOR_RELEASE,
-        "james_reported_at": (
+        "nest_reported_at": (
             "2026-08-12T10:03:01Z" if candidate else "2026-08-12T10:00:00Z"
         ),
         "host_uptime_seconds": 90 if candidate else 7200,
@@ -278,7 +278,7 @@ if [[ "$url" = "$MOCK_PACKAGE_URL" ]]; then
   exec cat "$MOCK_PACKAGE_BODY"
 fi
 case "$method:$url" in
-  POST:*/v1/james/nodes/*/qualification-updates)
+  POST:*/v1/nest/nodes/*/qualification-updates)
     printf '%s' "$body" > "$MOCK_REQUEST_BODY"
     jq -cn \
       --arg attempt_id "$MOCK_ATTEMPT_ID" \
@@ -298,7 +298,7 @@ case "$method:$url" in
   GET:*/workstation-netboot)
     exec cat "$MOCK_RUNTIME"
     ;;
-  GET:*/v1/james/nodes/*/qualification-updates)
+  GET:*/v1/nest/nodes/*/qualification-updates)
     count=0
     [[ ! -f "$MOCK_NODE_COUNTER" ]] || read -r count < "$MOCK_NODE_COUNTER"
     if ((count >= 3)); then
@@ -319,7 +319,7 @@ case "$method:$url" in
         + (if $ubuntu_snapshot_id == null then {}
            else {ubuntu_snapshot_id:$ubuntu_snapshot_id} end))'
     ;;
-  GET:*/v1/james/nodes/*)
+  GET:*/v1/nest/nodes/*)
     count=0
     [[ ! -f "$MOCK_NODE_COUNTER" ]] || read -r count < "$MOCK_NODE_COUNTER"
     count=$((count + 1))
@@ -355,7 +355,7 @@ esac
         effective_transport_url = transport_url
         if effective_transport_url is None:
             effective_transport_url = candidate_manifest()["appliance_release_v1"][
-                "cybex_repository_snapshot"
+                "tiaris_repository_snapshot"
             ]["url"]
         manifest_sha256 = hashlib.sha256(
             (self.root / "candidate.json").read_bytes()
@@ -364,8 +364,8 @@ esac
         environment.update(
             {
                 "PATH": f"{self.bin}:{environment['PATH']}",
-                "CYBEX_UPDATE_QUALIFICATION_POLL_SECONDS": "0",
-                "CYBEX_UPDATE_QUALIFICATION_MAX_POLLS": "5",
+                "TIARIS_UPDATE_QUALIFICATION_POLL_SECONDS": "0",
+                "TIARIS_UPDATE_QUALIFICATION_MAX_POLLS": "5",
                 "MOCK_CURL_LOG": str(self.curl_log),
                 "MOCK_REQUEST_BODY": str(self.request_body),
                 "MOCK_NODE_COUNTER": str(self.node_counter),
@@ -481,11 +481,11 @@ esac
 
     def test_candidate_schema_and_source_are_checked_before_network_access(self):
         for schema, source in (
-            ("cybex.james.appliance-release.v1", None),
-            ("cybex.james.appliance-release.v2", None),
-            ("cybex.james.appliance-release.v2", "0" * 40),
-            ("cybex.james.appliance-release.v2", "HEAD"),
-            ("cybex.james.appliance-release.v3", JAMES_REVISION),
+            ("tiaris.nest.appliance-release.v1", None),
+            ("tiaris.nest.appliance-release.v2", None),
+            ("tiaris.nest.appliance-release.v2", "0" * 40),
+            ("tiaris.nest.appliance-release.v2", "HEAD"),
+            ("tiaris.nest.appliance-release.v3", NEST_REVISION),
         ):
             with self.subTest(schema=schema, source=source):
                 manifest = candidate_manifest()
@@ -569,7 +569,7 @@ esac
 
     def test_explicit_canonical_https_transport_uses_legacy_three_field_wire(self):
         canonical_url = candidate_manifest()["appliance_release_v1"][
-            "cybex_repository_snapshot"
+            "tiaris_repository_snapshot"
         ]["url"]
         result = self._run(transport_url=canonical_url)
         self.assertEqual(result.returncode, 0, result.stderr)

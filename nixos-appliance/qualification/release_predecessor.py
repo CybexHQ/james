@@ -16,8 +16,8 @@ import tempfile
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST = 'cybex-james-release.json'
-COMPATIBILITY = 'cybex-james-release-compatibility.json'
+MANIFEST = 'tiaris-nest-release.json'
+COMPATIBILITY = 'tiaris-nest-release-compatibility.json'
 
 
 def module(name, path):
@@ -27,7 +27,7 @@ def module(name, path):
     return result
 
 
-release = module('james_release', ROOT / 'tools/james-release.py')
+release = module('nest_release', ROOT / 'tools/nest-release.py')
 
 
 def canonical(value):
@@ -46,7 +46,7 @@ def checked_json(path, limit=1024 * 1024):
 def latest(releases, candidate_tag):
     candidates = []
     for value in releases:
-        if value.get('prerelease') and 'Cybex-Cold-Qualification: required' in (value.get('body') or ''):
+        if value.get('prerelease') and 'Tiaris-Cold-Qualification: required' in (value.get('body') or ''):
             continue
         names = [a['name'] for a in value['assets']]
         if not value['draft'] and value['tag_name'] != candidate_tag and {MANIFEST, COMPATIBILITY} <= set(names):
@@ -104,7 +104,7 @@ def verify_pair_snapshot(directory, trusted_key, manifest_url=None):
     manifest, manifest_body = checked_json(directory / MANIFEST)
     asset, compatibility_body = checked_json(directory / COMPATIBILITY)
     url = manifest_url or asset['release_manifest']['url']
-    with tempfile.TemporaryDirectory(prefix='james-predecessor-contract-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='nest-predecessor-contract-') as temporary:
         snapshot = Path(temporary)
         manifest_path = snapshot / MANIFEST
         compatibility_path = snapshot / COMPATIBILITY
@@ -140,7 +140,7 @@ def advance(candidate, previous):
 
 def identity(directory, manifest, **fields):
     descriptor = manifest['appliance_release_v1']
-    value = {'schema': 'cybex.james.published-predecessor.v3', 'release_id': manifest['version'],
+    value = {'schema': 'tiaris.nest.published-predecessor.v3', 'release_id': manifest['version'],
         'manifest_sha256': sha(directory / MANIFEST), 'compatibility_sha256': sha(directory / COMPATIBILITY),
         'appliance_schema': descriptor['schema'], **fields}
     if descriptor['schema'] == release.appliance_v3.SCHEMA:
@@ -164,13 +164,13 @@ def historical_authority(path, trusted_key, previous, directory, candidate, repo
     old = value.get('published', {})
     if old.get('github_release_id') != previous['id']:
         return trusted_key
-    if (value.get('schema') != 'cybex.james.recovery-adoption.v1' or body != canonical(value)
+    if (value.get('schema') != 'tiaris.nest.recovery-adoption.v1' or body != canonical(value)
             or value.get('repository') != repository or value.get('successor_version') != candidate
             or value.get('public_key') != trusted_key):
         raise ValueError('Historical authority requires exact current-key authorization')
     signature = release._canonical_base64(value['signature'], 'historical authorization', expected_bytes=64)
     release._self_verify(release.ED25519_PUBLIC_DER_PREFIX + release._trusted_public_key(trusted_key), signature,
-        b'CYBEX-JAMES-RECOVERY-ADOPTION-V1\n' + canonical({k: v for k, v in value.items() if k != 'signature'}))
+        b'TIARIS-NEST-RECOVERY-ADOPTION-V1\n' + canonical({k: v for k, v in value.items() if k != 'signature'}))
     if (old['tag_name'] != previous['tag_name'] or old['target_commitish'] != previous['target_commitish']
             or old['manifest_sha256'] != sha(directory / MANIFEST)
             or old['compatibility_sha256'] != sha(directory / COMPATIBILITY)):
@@ -252,7 +252,7 @@ def qualify(directory, candidate, trusted_key, source=None, expected_sha=None):
     inspected = release._inspect_installer_iso_template(inputs, manifest['version'], base_os_version=iso['base_os_version'])
     if inspected != {k: v for k, v in iso.items() if k != 'signature'}:
         raise ValueError('Predecessor ISO immutable identity changed')
-    return identity(directory, manifest, schema='cybex.james.nixos-qualification-predecessor.v1')
+    return identity(directory, manifest, schema='tiaris.nest.nixos-qualification-predecessor.v1')
 
 
 def main():
@@ -272,7 +272,7 @@ def main():
     args.directory.mkdir(parents=True, exist_ok=True)
     # Explicit upgrade fixtures may differ from published ancestry, but they do
     # not bypass reauthentication of the build's published predecessor receipt.
-    with tempfile.TemporaryDirectory(prefix='james-ancestry-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='nest-ancestry-') as temporary:
         ancestry_dir = Path(temporary) if args.qualification_predecessor_dir else args.directory
         value = resolve(args.repository, args.candidate_version, args.trusted_public_key, ancestry_dir, args.authorization)
         if args.expected_identity:

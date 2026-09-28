@@ -47,7 +47,7 @@ def run(api, fixture, manifest_path, evidence_path, transport_url, output):
     manifest = json.loads(manifest_path.read_bytes())
     before = fixture.wait_ready(api)
     device = fixture.device
-    prefix = f'/v1/james/nodes/{device}'
+    prefix = f'/v1/nest/nodes/{device}'
     preflight = api(prefix + '/qualification-updates')
     runtime = runtime_identity(api(prefix + '/workstation-netboot'))
     expected = {k: preflight[k] for k in ('device_incarnation_id', 'current_release', 'ubuntu_snapshot_id', 'root_generation')}
@@ -97,7 +97,7 @@ def run(api, fixture, manifest_path, evidence_path, transport_url, output):
                 verify_rollback(before, node, attempt, manifest['version'])
                 if runtime_identity(api(prefix + '/workstation-netboot')) != runtime:
                     raise ValueError('Rollback changed the retained runtime identity')
-                receipt = {'schema': 'cybex.james.ubuntu-appliance-rollback-qualification.v1', 'ok': True,
+                receipt = {'schema': 'tiaris.nest.ubuntu-appliance-rollback-qualification.v1', 'ok': True,
                     'candidate_manifest_sha256': sha(manifest_path), 'candidate_release': manifest['version'],
                     'predecessor_release': before['appliance_release'], 'predecessor_evidence_sha256': sha(evidence_path),
                     'server_device_id': device, 'attempt_id': attempt, 'automatic_rollback': True,

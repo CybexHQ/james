@@ -1,0 +1,12 @@
+[Unit]
+Description=Check for approved Tiaris Nest appliance updates
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=30s
+RandomizedDelaySec=5s
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

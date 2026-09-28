@@ -1,4 +1,4 @@
-"""Bounded real-API proof for James schedule, hold, and admission policy.
+"""Bounded real-API proof for Nest schedule, hold, and admission policy.
 
 The update-hold API exposes one Boolean rather than a lease or compare-and-set
 identity. This exercise can reject a hold already visible before acquisition
@@ -41,7 +41,7 @@ def _node(api, prefix):
     response = api(prefix)
     node = response.get('node') if isinstance(response, dict) else None
     if not isinstance(node, dict):
-        raise ValueError('Q07 James node response is malformed')
+        raise ValueError('Q07 Nest node response is malformed')
     return node
 
 
@@ -81,7 +81,7 @@ def closed_schedule(now):
     """Return a 15-minute UTC window which ended at least 105 minutes ago."""
     now = now.astimezone(UTC)
     start = now - datetime.timedelta(hours=2)
-    # Manage uses Sunday=0 while datetime.weekday() uses Monday=0.
+    # Tiaris uses Sunday=0 while datetime.weekday() uses Monday=0.
     return {'timezone': 'UTC', 'weekdays': [(start.weekday() + 1) % 7],
             'start': start.strftime('%H:%M'), 'duration_minutes': 15}
 
@@ -142,7 +142,7 @@ class AdmissionExercise:
                  now=lambda: datetime.datetime.now(UTC), timeout=300):
         self.api = api
         self.device = device
-        self.prefix = f'/v1/james/nodes/{device}'
+        self.prefix = f'/v1/nest/nodes/{device}'
         self.clock, self.sleep, self.now, self.timeout = clock, sleep, now, timeout
         self.lease_id = str(uuid.uuid4())
         self.lease_owned = False
@@ -161,7 +161,7 @@ class AdmissionExercise:
         self.queue_started = False
         self.terminal = False
         self.predecessor_projection = None
-        self.evidence = {'schema': 'cybex.james.nixos-q07-admission.v1',
+        self.evidence = {'schema': 'tiaris.nest.nixos-q07-admission.v1',
             'active_build_race_qualified': False, 'space_pressure_qualified': False}
 
     def _mutate_node(self, node, **fields):
@@ -228,7 +228,7 @@ class AdmissionExercise:
             deadline = self.clock() + self.timeout
             while self.clock() < deadline:
                 node = _node(self.api, self.prefix)
-                observed = _timestamp(node.get('james_reported_at'))
+                observed = _timestamp(node.get('nest_reported_at'))
                 applied = node.get('appliance_local_health', {}).get('update_schedule', {})
                 current = {field: node.get(field) for field in self.predecessor_projection}
                 if (observed > applied_after
@@ -266,7 +266,7 @@ class AdmissionExercise:
             self.maintenance_probe_pending = True
             self.queue_started = True
             expect_conflict(self.api, self.prefix + '/qualification-updates', qualification_request,
-                message='James software updates are paused for operator maintenance')
+                message='Nest software updates are paused for operator maintenance')
             admission_after_node = _node(self.api, self.prefix)
             admission_after = attempt_projection(admission_after_node)
             if admission_after != admission_before:
@@ -281,7 +281,7 @@ class AdmissionExercise:
             for probe in probes:
                 try:
                     expect_conflict(self.api, self.prefix + '/build/jobs', probe,
-                        diagnostic='james_maintenance_hold')
+                        diagnostic='nest_maintenance_hold')
                     build_conflict = True
                     break
                 except PolicyBypass:
@@ -315,7 +315,7 @@ class AdmissionExercise:
             if status == 'requested':
                 self.sleep(1)
                 continue
-            observed = _timestamp(node.get('james_reported_at'))
+            observed = _timestamp(node.get('nest_reported_at'))
             if observed <= queued_at or observed > self.now() + datetime.timedelta(seconds=30):
                 self.sleep(1)
                 continue
@@ -361,7 +361,7 @@ class AdmissionExercise:
         # contains the waiting attempt.
         self.conflict_probe_pending = True
         expect_conflict(self.api, self.prefix + '/update-now', request,
-            message='The queued James update changed or is on hold; refresh before updating')
+            message='The queued Nest update changed or is on hold; refresh before updating')
         self.conflict_probe_pending = False
         self.evidence['exact_attempt_update_hold_conflict'] = True
         _log('exact_attempt_update_hold_conflict')

@@ -40,21 +40,21 @@ for command_name in base64 curl date git jq python3 sha256sum; do
   }
 done
 
-poll_seconds="${CYBEX_UPDATE_QUALIFICATION_POLL_SECONDS:-5}"
-maximum_polls="${CYBEX_UPDATE_QUALIFICATION_MAX_POLLS:-1440}"
-qualification_ttl_seconds="${CYBEX_UPDATE_QUALIFICATION_TTL_SECONDS:-900}"
+poll_seconds="${TIARIS_UPDATE_QUALIFICATION_POLL_SECONDS:-5}"
+maximum_polls="${TIARIS_UPDATE_QUALIFICATION_MAX_POLLS:-1440}"
+qualification_ttl_seconds="${TIARIS_UPDATE_QUALIFICATION_TTL_SECONDS:-900}"
 [[ "$poll_seconds" =~ ^[0-9]+$ ]] && ((poll_seconds <= 60))
 [[ "$maximum_polls" =~ ^[1-9][0-9]{0,4}$ ]] && ((maximum_polls <= 10000))
 [[ "$qualification_ttl_seconds" =~ ^[1-9][0-9]{0,3}$ ]]
 ((qualification_ttl_seconds >= 300 && qualification_ttl_seconds <= 3600))
 
-python3 -B "$repository_root/tools/james-release.py" validate-manage-origin \
+python3 -B "$repository_root/tools/nest-release.py" validate-manage-origin \
   --expected-manage-origin "$manage_origin" >/dev/null
 test "$(jq -er '.installer_iso_template_v2.manage_origin' "$candidate_manifest")" = \
   "$manage_origin"
 
 test "$(jq -er '.schema' "$predecessor_evidence")" = \
-  cybex.james.ubuntu-appliance-qualification.v1
+  tiaris.nest.ubuntu-appliance-qualification.v1
 test "$(jq -er '.ok' "$predecessor_evidence")" = true
 test "$(jq -er '.final_state' "$predecessor_evidence")" = ready
 test "$(jq -er '.secure_boot' "$predecessor_evidence")" = true
@@ -67,23 +67,23 @@ predecessor_snapshot="$(jq -er '.ubuntu_snapshot_id' "$predecessor_evidence")"
 candidate_release="$(jq -er '.version' "$candidate_manifest")"
 candidate_release_url="$(jq -er '.release_url' "$candidate_manifest")"
 candidate_snapshot="$(jq -er '.appliance_release_v1.ubuntu_snapshot_id' "$candidate_manifest")"
-candidate_package_url="$(jq -er '.appliance_release_v1.cybex_repository_snapshot.url' "$candidate_manifest")"
-candidate_package_sha256="$(jq -er '.appliance_release_v1.cybex_repository_snapshot.sha256' "$candidate_manifest")"
-candidate_package_size="$(jq -er '.appliance_release_v1.cybex_repository_snapshot.size_bytes' "$candidate_manifest")"
+candidate_package_url="$(jq -er '.appliance_release_v1.tiaris_repository_snapshot.url' "$candidate_manifest")"
+candidate_package_sha256="$(jq -er '.appliance_release_v1.tiaris_repository_snapshot.sha256' "$candidate_manifest")"
+candidate_package_size="$(jq -er '.appliance_release_v1.tiaris_repository_snapshot.size_bytes' "$candidate_manifest")"
 candidate_runtime_version="$(jq -er '.workstation_netboot.runtime_version' "$candidate_manifest")"
 candidate_runtime_sha256="$(jq -er '.workstation_netboot.sha256' "$candidate_manifest")"
 candidate_manage_revision="$(jq -er '.workstation_netboot.manage_source_revision' "$candidate_manifest")"
 candidate_runtime_architecture="$(jq -er '.workstation_netboot.architecture' "$candidate_manifest")"
 
-test "$(jq -er '.schema' "$candidate_manifest")" = cybex.james.release.v1
+test "$(jq -er '.schema' "$candidate_manifest")" = tiaris.nest.release.v1
 # Qualify the same source-bound candidate as the greenfield lifecycle gate.
 source_revision="$(git -C "$repository_root" rev-parse HEAD)"
 jq -e --arg source_revision "$source_revision" '
   .appliance_release_v1
-  | .schema == "cybex.james.appliance-release.v2"
+  | .schema == "tiaris.nest.appliance-release.v2"
     and .source_revision == $source_revision
 ' "$candidate_manifest" >/dev/null || {
-  echo 'error: update qualification requires an appliance-release.v2 candidate bound to this James checkout' >&2
+  echo 'error: update qualification requires an appliance-release.v2 candidate bound to this Nest checkout' >&2
   exit 1
 }
 test "$(jq -er '.appliance_release_v1.release_id' "$candidate_manifest")" = \
@@ -92,14 +92,14 @@ test "$(jq -er '.appliance_release_v1.minimum_protocol' "$candidate_manifest")" 
 test "$(jq -er '.appliance_release_v1.minimum_state_schema' "$candidate_manifest")" = 2
 test "$(jq -er '.appliance_release_v1.rollback_compatible' "$candidate_manifest")" = true
 test "$(jq -er '.workstation_netboot.schema' "$candidate_manifest")" = \
-  cybex.james.workstation-netboot.v1
+  tiaris.nest.workstation-netboot.v1
 test "$candidate_runtime_architecture" = x86_64-linux
 [[ "$candidate_package_sha256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$candidate_runtime_sha256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$candidate_manage_revision" =~ ^[0-9a-f]{40}$ ]]
 [[ "$candidate_package_size" =~ ^[1-9][0-9]*$ ]]
 test "${candidate_package_url##*/}" = \
-  "cybex-james-appliance-packages-$candidate_release-x86_64-linux.tar.zst"
+  "tiaris-nest-appliance-packages-$candidate_release-x86_64-linux.tar.zst"
 qualification_transport_override_supplied=false
 if [[ -z "$qualification_package_transport_url" ]]; then
   # Frozen legacy predecessors deserialize only the original three update
@@ -163,7 +163,7 @@ PY
 if [[ "$transport_kind" = private_ip_literal_http_override ]]; then
   qualification_transport_override_supplied=true
 fi
-for package_name in cybex-james cybex-james-appliance cybex-james-bootstrap; do
+for package_name in tiaris-nest tiaris-nest-appliance tiaris-nest-bootstrap; do
   test -n "$(jq -er --arg package "$package_name" \
     '.appliance_release_v1.required_package_versions[$package]' \
     "$candidate_manifest")"
@@ -290,7 +290,7 @@ PY
 
 fetch_runtime() {
   local destination="$1"
-  api GET "/v1/james/nodes/$server_device_id/workstation-netboot" > "$destination"
+  api GET "/v1/nest/nodes/$server_device_id/workstation-netboot" > "$destination"
   test "$(jq -er '.server_device_id' "$destination")" = "$server_device_id"
 }
 
@@ -316,7 +316,7 @@ runtime_identity() {
 
 fetch_node() {
   local destination="$1"
-  if ! api GET "/v1/james/nodes/$server_device_id" > "$work_dir/node-detail.json"; then
+  if ! api GET "/v1/nest/nodes/$server_device_id" > "$work_dir/node-detail.json"; then
     return 1
   fi
   jq -e --arg device "$server_device_id" \
@@ -329,7 +329,7 @@ fetch_node() {
 # it must never advance the global release or workstation-runtime selection.
 request_candidate_update() {
   local body="$1" destination="$2"
-  api POST "/v1/james/nodes/$server_device_id/qualification-updates" \
+  api POST "/v1/nest/nodes/$server_device_id/qualification-updates" \
     "$body" > "$destination"
 }
 
@@ -372,7 +372,7 @@ assert_healthy_node() {
   test -z "$(jq -er '.cache_error // ""' "$node")"
   [[ "$(jq -er '.cache_public_key_fingerprint' "$node")" =~ ^[0-9a-f]{64}$ ]]
   test -n "$(jq -er '.cache_base_url' "$node")"
-  test -n "$(jq -er '.james_reported_at' "$node")"
+  test -n "$(jq -er '.nest_reported_at' "$node")"
 }
 
 before="$work_dir/before.json"
@@ -391,7 +391,7 @@ test "$(jq -er '.update_active' "$before")" = false
 test "$(jq -er '.update_hold' "$before")" = false
 test "$(jq -er '.maintenance_hold' "$before")" = false
 test "$(jq -er '.appliance_network.network_change.status' "$before")" = acknowledged
-api GET "/v1/james/nodes/$server_device_id/qualification-updates" \
+api GET "/v1/nest/nodes/$server_device_id/qualification-updates" \
   > "$work_dir/qualification-preflight.json"
 device_incarnation_id="$(jq -er '.device_incarnation_id' \
   "$work_dir/qualification-preflight.json")"
@@ -526,7 +526,7 @@ for ((_poll = 1; _poll <= maximum_polls; _poll++)); do
     api_unavailable_observed=true
     consecutive_api_failures=$((consecutive_api_failures + 1))
     if ((consecutive_api_failures > 12)); then
-      echo 'error: Manage API remained unavailable during appliance update qualification' >&2
+      echo 'error: Tiaris API remained unavailable during appliance update qualification' >&2
       exit 1
     fi
     sleep "$poll_seconds"
@@ -618,7 +618,7 @@ cmp --silent -- "$before_identity" "$final_identity"
 test "$(jq -er '.appliance_network.network_change.status' "$final")" = acknowledged
 test "$(jq -er '.available_update_version' "$final")" = "$selected_release_before"
 test "$(jq -er '.available_update_release_url' "$final")" = "$selected_release_url_before"
-api GET "/v1/james/nodes/$server_device_id/qualification-updates" \
+api GET "/v1/nest/nodes/$server_device_id/qualification-updates" \
   > "$work_dir/qualification-postflight.json"
 test "$(jq -er '.device_incarnation_id' \
   "$work_dir/qualification-postflight.json")" = "$device_incarnation_id"
@@ -629,8 +629,8 @@ test "$(jq -er '.ubuntu_snapshot_id' \
 test "$(jq -er '.root_generation | tostring' \
   "$work_dir/qualification-postflight.json")" = 1
 
-before_reported_at="$(jq -er '.james_reported_at' "$before")"
-final_reported_at="$(jq -er '.james_reported_at' "$final")"
+before_reported_at="$(jq -er '.nest_reported_at' "$before")"
+final_reported_at="$(jq -er '.nest_reported_at' "$final")"
 [[ "$final_reported_at" > "$before_reported_at" ]]
 started_at="$(jq -er '.update_started_at' "$final")"
 completed_at="$(jq -er '.update_completed_at' "$final")"
@@ -719,7 +719,7 @@ test -d "$output_parent"
 test ! -L "$output_parent"
 temporary_output="$(mktemp "$output_parent/.update-qualification.XXXXXX")"
 jq -n \
-  --arg schema 'cybex.james.ubuntu-appliance-update-qualification.v1' \
+  --arg schema 'tiaris.nest.ubuntu-appliance-update-qualification.v1' \
   --arg candidate_delivery_precondition 'isolated_exact_signed_appliance_candidate_without_global_selection' \
   --arg server_device_id "$server_device_id" \
   --arg predecessor_release "$predecessor_release" \
@@ -782,7 +782,7 @@ jq -n \
         content_length:$candidate_package_size,
         availability_checked_before_admission:true,
         signed_sha256_verified_before_admission:true,
-        signed_sha256_verified_by_terminal_james_receipt:true}},
+        signed_sha256_verified_by_terminal_nest_receipt:true}},
     candidate_runtime_deferred_until_publication:{runtime_version:$candidate_runtime_version,
       bundle_sha256:$candidate_runtime_sha256,
       manage_source_revision:$candidate_manage_revision,
@@ -815,7 +815,7 @@ jq -n \
     candidate_runtime_activated:false,published_lkg_runtime_continuity:true,
     appliance_projection_healthy:true,secure_boot:true,final_state:"ready",
     claims_not_made:["cache_poison_recovery_injected","manage_restart_injected",
-      "james_service_restart_injected"],
+      "nest_service_restart_injected"],
     completed_at:$completed_evidence_at}' > "$temporary_output"
 chmod 0644 "$temporary_output"
 mv -f -- "$temporary_output" "$output"

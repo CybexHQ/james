@@ -28,14 +28,14 @@ def main():
     enter_namespace(state, args.namespace)
     api = API(state)
     manifest = json.loads(args.candidate_manifest.read_bytes())
-    descriptor = manifest['appliance_release_v1']['cybex_repository_snapshot']
+    descriptor = manifest['appliance_release_v1']['tiaris_repository_snapshot']
     package = args.candidate_manifest.parent / urlsplit(descriptor['url']).path.rsplit('/', 1)[-1]
     with package.open('rb') as stream:
         digest = hashlib.file_digest(stream, 'sha256').hexdigest()
     if package.is_symlink() or package.stat().st_size != descriptor['size_bytes'] or digest != descriptor['sha256']:
         raise ValueError('Candidate package differs from signed descriptor')
     evidence = json.loads(args.predecessor_evidence.read_bytes())
-    subprocess.run([sys.executable, '/opt/cybex-james-qualification/isolated-manage.py', 'allow-device',
+    subprocess.run([sys.executable, '/opt/tiaris-nest-qualification/isolated-manage.py', 'allow-device',
                     '--run', state.name, '--device-id', evidence['device_id']], check=True)
     port_file = state / 'update-package.port'
     port_file.unlink(missing_ok=True)
@@ -62,7 +62,7 @@ def main():
                 temporary = state / 'temporary'
                 temporary.mkdir(mode=0o700, exist_ok=True)
                 subprocess.run(command, env={**os.environ, 'TMPDIR': str(temporary),
-                    'CYBEX_UPDATE_QUALIFICATION_TTL_SECONDS': '3600'}, check=True)
+                    'TIARIS_UPDATE_QUALIFICATION_TTL_SECONDS': '3600'}, check=True)
     finally:
         stop(server)
         port_file.unlink(missing_ok=True)

@@ -18,7 +18,7 @@ import time
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[2]
-loader = importlib.machinery.SourceFileLoader('pxe', str(ROOT / 'ubuntu-appliance/rootfs/usr/lib/cybex-james/cybex-james-pxe'))
+loader = importlib.machinery.SourceFileLoader('pxe', str(ROOT / 'ubuntu-appliance/rootfs/usr/lib/tiaris-nest/tiaris-nest-pxe'))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 pxe = importlib.util.module_from_spec(spec)
 loader.exec_module(pxe)
@@ -55,7 +55,7 @@ class Handler(BaseHTTPRequestHandler):
  def do_GET(self):
   if self.path.startswith('/boot/'):
    Path(sys.argv[1]).write_text(sys.argv[2] + self.path)
-   body=b'#!ipxe\necho Cybex PXE qualification passed\nsleep 2\npoweroff\n'
+   body=b'#!ipxe\necho Tiaris PXE qualification passed\nsleep 2\npoweroff\n'
    self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
   else:self.send_error(404)
  def log_message(self,*args):pass
@@ -70,8 +70,8 @@ def main():
     if os.geteuid() != 0: parser.error('run as root')
     if not args.bootloader.is_file(): parser.error('provide the appliance snponly.efi with --bootloader')
     namespaces, processes = [], []
-    label = f'cybex-pxe-{os.getpid()}'
-    hub, server, client = label+'-lan', label+'-james', label+'-client'
+    label = f'tiaris-pxe-{os.getpid()}'
+    hub, server, client = label+'-lan', label+'-nest', label+'-client'
     def run(command):
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode: raise RuntimeError(result.stderr)
@@ -81,7 +81,7 @@ def main():
         stream = open(log, 'w')
         process = subprocess.Popen(['ip','netns','exec',name,*command], stdout=stream, stderr=subprocess.STDOUT)
         stream.close(); processes.append(process); return process
-    with tempfile.TemporaryDirectory(prefix='cybex-pxe-qualification-') as directory:
+    with tempfile.TemporaryDirectory(prefix='tiaris-pxe-qualification-') as directory:
         work = Path(directory); work.chmod(0o755)
         try:
             for name in (hub, server, client):
@@ -103,7 +103,7 @@ def main():
             start(hub,['/usr/sbin/dnsmasq','--keep-in-foreground',f'--conf-file={main_config}'],work/'dhcp.log')
             target={'address':'192.0.2.2','bootloader_filename':'snponly.efi'}
             owner={'address':'192.0.2.4','bootloader_filename':'snponly.efi'}
-            config=pxe.dnsmasq_config({'interface':'eth0','cidr':'192.0.2.0/24'},target,{'james':target,'owner':owner},[{'mac':'02:00:00:00:10:ff','server_device_id':None},{'mac':'02:00:00:00:20:02','server_device_id':'owner'}])
+            config=pxe.dnsmasq_config({'interface':'eth0','cidr':'192.0.2.0/24'},target,{'nest':target,'owner':owner},[{'mac':'02:00:00:00:10:ff','server_device_id':None},{'mac':'02:00:00:00:20:02','server_device_id':'owner'}])
             proxy_config=work/'proxy.conf';proxy_config.write_text(config)
             proxy = start(server,['/usr/sbin/dnsmasq','--keep-in-foreground',f'--conf-file={proxy_config}'],work/'proxy.log')
             time.sleep(1)
@@ -119,7 +119,7 @@ def main():
                 print(f'PASS: {case}',flush=True)
             tftp=work/'tftp';tftp.mkdir(mode=0o755);tftp.chmod(0o755)
             shutil.copyfile(args.bootloader,tftp/'snponly.efi');(tftp/'snponly.efi').chmod(0o644)
-            shutil.copyfile(ROOT/'ubuntu-appliance/rootfs/usr/share/cybex-james/autoexec.ipxe',tftp/'autoexec.ipxe');(tftp/'autoexec.ipxe').chmod(0o644)
+            shutil.copyfile(ROOT/'ubuntu-appliance/rootfs/usr/share/tiaris-nest/autoexec.ipxe',tftp/'autoexec.ipxe');(tftp/'autoexec.ipxe').chmod(0o644)
             tftp_config=work/'tftp.conf';tftp_config.write_text(f'port=0\nbind-interfaces\ninterface=eth0\nenable-tftp\ntftp-root={tftp}\nlog-facility=-\npid-file=\n')
             start(server,['/usr/sbin/dnsmasq','--keep-in-foreground',f'--conf-file={tftp_config}'],work/'tftp.log')
             boot_receipt=work/'http-boot-receipt'
@@ -143,7 +143,7 @@ def main():
                 checks[case]=True
                 print(f'PASS: {case}: OVMF → ProxyDHCP → TFTP iPXE → HTTP {target_ip}',flush=True)
                 vm.terminate(); vm.wait(timeout=5)
-            receipt={'schema':'cybex.james.pxe-qualification.v1','checks':checks,'dhcp_boot_options':False}
+            receipt={'schema':'tiaris.nest.pxe-qualification.v1','checks':checks,'dhcp_boot_options':False}
             if args.receipt:
                 args.receipt.parent.mkdir(parents=True,exist_ok=True)
                 args.receipt.write_text(json.dumps(receipt,indent=2)+'\n')

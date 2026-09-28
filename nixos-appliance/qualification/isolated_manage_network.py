@@ -3,7 +3,7 @@
 Integration prerequisites: Docker.create must pass --dns <peer_ipv4> explicitly
 (and verify HostConfig.Dns); stop all owned VMs before cleanup. Docker's
 127.0.0.11 resolver otherwise forwards on the HOST, which bridge firewall rules
-cannot confine. Public artifact URLs deliberately fail offline; the Manage
+cannot confine. Public artifact URLs deliberately fail offline; the Tiaris
 downloader bypasses environment proxies. Do not solve that integration gap by
 opening egress or weakening artifact/TLS verification.
 
@@ -32,8 +32,8 @@ from urllib.parse import quote, urlsplit
 _spec = importlib.util.spec_from_file_location('isolated_manage_network_rules', Path(__file__).with_name('isolated_manage_network_rules.py'))
 rules = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rules)
-LABEL = 'net.cybex.james.qualification.owner'
-ROLE = 'net.cybex.james.qualification.role'
+LABEL = 'net.tiaris.nest.qualification.owner'
+ROLE = 'net.tiaris.nest.qualification.role'
 DOCKER = ['docker', '--host', 'unix:///var/run/docker.sock']
 INCUS_SOCKET = '/var/lib/incus/unix.socket'
 DNSMASQ = '/usr/sbin/dnsmasq'
@@ -258,7 +258,7 @@ class Adapter:
         incus, etag = self.incus.get(c['bridge'])
         cfg = incus.get('config', {})
         expected_config = {
-            'user.cybex.nixos-qualification': c['owner'],
+            'user.tiaris.nixos-qualification': c['owner'],
             'ipv4.address': c['subnet'],
             'ipv4.nat': 'true',
             'ipv6.address': 'none',

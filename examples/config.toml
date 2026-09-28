@@ -1,18 +1,18 @@
 [server]
 listen_addr = "127.0.0.1:8080"
-public_base_url = "http://CYBEX_JAMES_IP"
+public_base_url = "http://TIARIS_NEST_IP"
 
 [paths]
-data_dir = "/var/lib/cybex-james"
-database_path = "/var/lib/cybex-james/cybex-james.sqlite"
-boot_assets_dir = "/srv/cybex-james/www"
-iso_dir = "/srv/cybex-james/www/isos"
-static_dir = "/srv/cybex-james/www/assets"
-tftp_dir = "/srv/cybex-james/tftp"
+data_dir = "/var/lib/tiaris-nest"
+database_path = "/var/lib/tiaris-nest/tiaris-nest.sqlite"
+boot_assets_dir = "/srv/tiaris-nest/www"
+iso_dir = "/srv/tiaris-nest/www/isos"
+static_dir = "/srv/tiaris-nest/www/assets"
+tftp_dir = "/srv/tiaris-nest/tftp"
 
 [auth]
 admin_token = "replace-with-a-long-random-token"
-cookie_name = "cybex_admin"
+cookie_name = "tiaris_admin"
 
 [boot]
 bootloader_filename = "snponly.efi"
@@ -29,10 +29,10 @@ cancel_grace_seconds = 10
 max_log_bytes = 65536
 max_artifact_size_bytes = 21474836480
 allowed_systems = ["x86_64-linux"]
-work_dir = "/var/lib/cybex-james/build"
-output_dir = "/var/lib/cybex-james/build-outputs"
+work_dir = "/var/lib/tiaris-nest/build"
+output_dir = "/var/lib/tiaris-nest/build-outputs"
 nix_binary = "/nix/var/nix/profiles/default/bin/nix"
-manage_source_url_template = "tarball+file:///usr/share/cybex-james/manage-source/{revision}.tar"
+manage_source_url_template = "tarball+file:///usr/share/tiaris-nest/manage-source/{revision}.tar"
 
 # Add one or more allowlisted Nix targets before queueing production jobs.
 # For generated Blueprint closure builds, flake is the nixpkgs input
@@ -46,10 +46,10 @@ manage_source_url_template = "tarball+file:///usr/share/cybex-james/manage-sourc
 
 [cache]
 enabled = true
-root_dir = "/srv/cybex-james/www/cache"
-signing_key_name = "cybex-james-cache"
-private_key_path = "/var/lib/cybex-james/cache/cache-priv-key.pem"
-public_key_path = "/var/lib/cybex-james/cache/cache-pub-key.pem"
+root_dir = "/srv/tiaris-nest/www/cache"
+signing_key_name = "tiaris-nest-cache"
+private_key_path = "/var/lib/tiaris-nest/cache/cache-priv-key.pem"
+public_key_path = "/var/lib/tiaris-nest/cache/cache-pub-key.pem"
 max_bytes = 68719476736
 retain_recent_builds = 50
 
@@ -67,6 +67,6 @@ udp_sender_path = "/usr/bin/udp-sender"
 enabled = false
 api_url = "https://manage.example.com"
 organization_slug = "default"
-state_path = "/var/lib/cybex-james/state/manage-state.json"
+state_path = "/var/lib/tiaris-nest/state/manage-state.json"
 sync_interval_seconds = 30
 http_timeout_seconds = 30

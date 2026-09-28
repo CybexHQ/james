@@ -39,17 +39,17 @@ class LegacyBridgeGateTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.packages = self.root / "packages"
         self.packages.mkdir()
-        (self.packages / "cybex-james_2_all.deb").write_bytes(
+        (self.packages / "tiaris-nest_2_all.deb").write_bytes(
             b"!<arch>\nexact candidate bytes"
         )
         for name, body in (
-            ("Packages", b"Package: cybex-james\nVersion: 2\n"),
+            ("Packages", b"Package: tiaris-nest\nVersion: 2\n"),
             ("Packages.gz", b"deterministic gzip fixture"),
             ("Release", b"Suite: resolute\n"),
         ):
             (self.packages / name).write_bytes(body)
         checksum_names = [
-            "cybex-james_2_all.deb",
+            "tiaris-nest_2_all.deb",
             "Packages",
             "Packages.gz",
             "Release",
@@ -65,7 +65,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
             "20260813T120000Z\n", encoding="ascii"
         )
         self.snapshot_bundle = self.write(
-            "cybex-james-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst",
+            "tiaris-nest-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst",
             b"exact deterministic package snapshot bundle fixture",
         )
         snapshot_body = self.snapshot_bundle.read_bytes()
@@ -73,7 +73,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
             "snapshot-metadata.json",
             canonical(
                 {
-                    "schema": "cybex.james.appliance-package-snapshot.v1",
+                    "schema": "tiaris.nest.appliance-package-snapshot.v1",
                     "release_id": "0.2.1-dev.13",
                     "ubuntu_snapshot_id": "20260813T120000Z",
                     "manage_origin": "https://manage.example.test",
@@ -83,7 +83,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
                     "filename": self.snapshot_bundle.name,
                     "sha256": digest(snapshot_body),
                     "size_bytes": len(snapshot_body),
-                    "required_package_versions": {"cybex-james": "2"},
+                    "required_package_versions": {"tiaris-nest": "2"},
                     "expected_kernel": "7.0.0-1",
                     "minimum_protocol": 4,
                     "minimum_state_schema": 2,
@@ -93,14 +93,14 @@ class LegacyBridgeGateTests(unittest.TestCase):
         )
         self.release = canonical(
             {
-                "schema": "cybex.james.appliance-release.v1",
+                "schema": "tiaris.nest.appliance-release.v1",
                 "release_id": "0.2.1-dev.11",
                 "ubuntu_snapshot_id": "20260811T120000Z",
             }
         )
         self.state = canonical(
             {
-                "schema": "cybex.james.installed-appliance.v1",
+                "schema": "tiaris.nest.installed-appliance.v1",
                 "release": "0.2.1-dev.11",
                 "base_os": "ubuntu",
                 "base_os_version": "26.04",
@@ -108,10 +108,10 @@ class LegacyBridgeGateTests(unittest.TestCase):
                 "at_rest_protection": "none",
             }
         )
-        self.status = b"Package: cybex-james\nStatus: install ok installed\nVersion: 1\n"
+        self.status = b"Package: tiaris-nest\nStatus: install ok installed\nVersion: 1\n"
         self.qualification = canonical(
             {
-                "schema": "cybex.james.ubuntu-appliance-qualification.v1",
+                "schema": "tiaris.nest.ubuntu-appliance-qualification.v1",
                 "ok": True,
                 "release_version": "0.2.1-dev.11",
                 "ubuntu_snapshot_id": "20260811T120000Z",
@@ -121,7 +121,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
             }
         )
         self.identity = {
-            "schema": "cybex.james.published-appliance-predecessor.v1",
+            "schema": "tiaris.nest.published-appliance-predecessor.v1",
             "github_release_id": 111,
             "tag_name": "v0.2.1-dev.11",
             "release_id": "0.2.1-dev.11",
@@ -135,7 +135,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
             "packaged_release_sha256": digest(self.release),
         }
         self.policy = {
-            "schema": "cybex.james.legacy-update-bridge-policy.v1",
+            "schema": "tiaris.nest.legacy-update-bridge-policy.v1",
             "predecessor_update_contract": "legacy_all_debs",
             "predecessor": {
                 "release_id": "0.2.1-dev.11",
@@ -151,7 +151,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
                 "ubuntu_snapshot_id": "20260813T120000Z",
             },
             "allowed_upgrades": [
-                {"package": "cybex-james", "from": "1", "to": "2"}
+                {"package": "tiaris-nest", "from": "1", "to": "2"}
             ],
             "allowed_additions": [],
         }
@@ -165,7 +165,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
         return path
 
     def package_set_sha256(self) -> str:
-        package = self.packages / "cybex-james_2_all.deb"
+        package = self.packages / "tiaris-nest_2_all.deb"
         body = package.read_bytes()
         line = f"{digest(body)} {len(body)} {package.name}\n".encode("ascii")
         return digest(line)
@@ -187,7 +187,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
         )
         policy_body = canonical(selected_policy)
         value = {
-            "schema": "cybex.james.legacy-update-bridge-evidence.v1",
+            "schema": "tiaris.nest.legacy-update-bridge-evidence.v1",
             "ok": True,
             "predecessor_release_id": predecessor_release
             or selected_policy["predecessor"]["release_id"],
@@ -208,7 +208,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
             "published_identity_sha256": digest(canonical(selected_identity)),
             "command_contract": (
                 "apt-get --simulate --no-download --yes install "
-                "/run/cybex-update-packages/*.deb"
+                "/run/tiaris-update-packages/*.deb"
             ),
             "apt_version": "apt 3.1.6 (amd64)",
             "upgrades": upgrades
@@ -289,7 +289,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
         policy = json.loads(canonical(self.policy))
         policy["allowed_upgrades"] = [
             {
-                "package": "cybex-james",
+                "package": "tiaris-nest",
                 "from": "0.2.1-dev.12-1",
                 "to": "0.2.1-1",
             }
@@ -313,9 +313,9 @@ class LegacyBridgeGateTests(unittest.TestCase):
         package_root = self.root / "appliance-package"
         updater = (
             package_root
-            / "usr/lib/cybex-james/cybex-james-appliance-update"
+            / "usr/lib/tiaris-nest/tiaris-nest-appliance-update"
         )
-        packaged_release = package_root / "usr/share/cybex-james/appliance-release.json"
+        packaged_release = package_root / "usr/share/tiaris-nest/appliance-release.json"
         (package_root / "DEBIAN").mkdir(parents=True)
         updater.parent.mkdir(parents=True)
         packaged_release.parent.mkdir(parents=True)
@@ -323,12 +323,12 @@ class LegacyBridgeGateTests(unittest.TestCase):
         (package_root / "DEBIAN").chmod(0o755)
         (package_root / "usr").chmod(0o755)
         (package_root / "usr/lib").chmod(0o755)
-        (package_root / "usr/lib/cybex-james").chmod(0o755)
+        (package_root / "usr/lib/tiaris-nest").chmod(0o755)
         (package_root / "DEBIAN/control").write_text(
-            "Package: cybex-james-appliance\n"
+            "Package: tiaris-nest-appliance\n"
             "Version: 1-1\n"
             "Architecture: amd64\n"
-            "Maintainer: Cybex <support@cybex.net>\n"
+            "Maintainer: Tiaris <support@cybex.net>\n"
             "Description: test fixture\n",
             encoding="ascii",
         )
@@ -336,12 +336,12 @@ class LegacyBridgeGateTests(unittest.TestCase):
             b"#!/usr/bin/env bash\n"
             b"chroot \"$candidate_path\" /bin/sh -c "
             b"'apt-get --no-download --yes install "
-            b"/run/cybex-update-packages/*.deb'\n"
+            b"/run/tiaris-update-packages/*.deb'\n"
         )
         updater.chmod(0o755)
         packaged_release.write_bytes(self.release)
         repository.mkdir()
-        package = repository / "cybex-james-appliance_1-1_amd64.deb"
+        package = repository / "tiaris-nest-appliance_1-1_amd64.deb"
         subprocess.run(
             ["dpkg-deb", "--root-owner-group", "--build", str(package_root), str(package)],
             check=True,
@@ -408,7 +408,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
 
     def test_candidate_byte_drift_is_rejected(self) -> None:
         evidence = self.evidence()
-        with (self.packages / "cybex-james_2_all.deb").open("ab") as package:
+        with (self.packages / "tiaris-nest_2_all.deb").open("ab") as package:
             package.write(b"drift")
         result = self.verify(evidence)
         self.assertNotEqual(result.returncode, 0)
@@ -420,7 +420,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
             self.packages
         )
         names = [package.name for package in packages]
-        with (self.packages / "cybex-james_2_all.deb").open("ab") as package:
+        with (self.packages / "tiaris-nest_2_all.deb").open("ab") as package:
             package.write(b"mutated during solver")
         with self.assertRaisesRegex(
             namespace["GateError"], "package bytes changed during the APT solver run"
@@ -438,11 +438,11 @@ class LegacyBridgeGateTests(unittest.TestCase):
 
     def test_capture_source_hard_codes_the_real_legacy_wildcard_paths(self) -> None:
         source = GATE.read_text(encoding="utf-8")
-        self.assertIn('CANDIDATE_PACKAGES_PATH = Path("/run/cybex-update-packages")', source)
+        self.assertIn('CANDIDATE_PACKAGES_PATH = Path("/run/tiaris-update-packages")', source)
         self.assertIn('APT_GET_PATH = Path("/usr/bin/apt-get")', source)
         self.assertIn('DPKG_STATUS_PATH = Path("/var/lib/dpkg/status")', source)
         self.assertIn(
-            'INSTALLED_STATE_PATH = Path("/var/lib/cybex-james/control/appliance-release.json")',
+            'INSTALLED_STATE_PATH = Path("/var/lib/tiaris-nest/control/appliance-release.json")',
             source,
         )
         self.assertIn(
@@ -493,22 +493,22 @@ class LegacyBridgeGateTests(unittest.TestCase):
 
     def test_publish_recheck_rejects_concurrent_predecessor_drift(self) -> None:
         manifest = {
-            "schema": "cybex.james.release.v1",
+            "schema": "tiaris.nest.release.v1",
             "version": "0.2.1-dev.11",
             "artifact": {
                 "url": (
                     "https://github.example/CybexHQ/forge/releases/download/"
-                    "v0.2.1-dev.11/cybex-james-x86_64-linux"
+                    "v0.2.1-dev.11/tiaris-nest-x86_64-linux"
                 ),
                 "sha256": "7" * 64,
             },
             "appliance_release_v1": {
                 "release_id": "0.2.1-dev.11",
                 "ubuntu_snapshot_id": "20260811T120000Z",
-                "cybex_repository_snapshot": {
+                "tiaris_repository_snapshot": {
                     "url": (
                         "https://github.example/CybexHQ/forge/releases/download/"
-                        "v0.2.1-dev.11/cybex-james-appliance-packages-"
+                        "v0.2.1-dev.11/tiaris-nest-appliance-packages-"
                         "0.2.1-dev.11-x86_64-linux.tar.zst"
                     ),
                     "sha256": "5" * 64,
@@ -518,12 +518,12 @@ class LegacyBridgeGateTests(unittest.TestCase):
         }
         manifest_body = canonical(manifest)
         compatibility = {
-            "schema": "cybex.james.release-compatibility.v1",
-            "james_release_version": "0.2.1-dev.11",
+            "schema": "tiaris.nest.release-compatibility.v1",
+            "nest_release_version": "0.2.1-dev.11",
             "release_manifest": {
                 "url": (
                     "https://github.example/CybexHQ/forge/releases/download/"
-                    "v0.2.1-dev.11/cybex-james-release.json"
+                    "v0.2.1-dev.11/tiaris-nest-release.json"
                 ),
                 "sha256": digest(manifest_body),
             },
@@ -588,22 +588,22 @@ class LegacyBridgeGateTests(unittest.TestCase):
 
     def test_publish_recheck_accepts_the_exact_qualified_predecessor(self) -> None:
         manifest = {
-            "schema": "cybex.james.release.v1",
+            "schema": "tiaris.nest.release.v1",
             "version": "0.2.1-dev.11",
             "artifact": {
                 "url": (
                     "https://github.example/CybexHQ/forge/releases/download/"
-                    "v0.2.1-dev.11/cybex-james-x86_64-linux"
+                    "v0.2.1-dev.11/tiaris-nest-x86_64-linux"
                 ),
                 "sha256": "7" * 64,
             },
             "appliance_release_v1": {
                 "release_id": "0.2.1-dev.11",
                 "ubuntu_snapshot_id": "20260811T120000Z",
-                "cybex_repository_snapshot": {
+                "tiaris_repository_snapshot": {
                     "url": (
                         "https://github.example/CybexHQ/forge/releases/download/"
-                        "v0.2.1-dev.11/cybex-james-appliance-packages-"
+                        "v0.2.1-dev.11/tiaris-nest-appliance-packages-"
                         "0.2.1-dev.11-x86_64-linux.tar.zst"
                     ),
                     "sha256": "5" * 64,
@@ -613,12 +613,12 @@ class LegacyBridgeGateTests(unittest.TestCase):
         }
         manifest_body = canonical(manifest)
         compatibility = {
-            "schema": "cybex.james.release-compatibility.v1",
-            "james_release_version": "0.2.1-dev.11",
+            "schema": "tiaris.nest.release-compatibility.v1",
+            "nest_release_version": "0.2.1-dev.11",
             "release_manifest": {
                 "url": (
                     "https://github.example/CybexHQ/forge/releases/download/"
-                    "v0.2.1-dev.11/cybex-james-release.json"
+                    "v0.2.1-dev.11/tiaris-nest-release.json"
                 ),
                 "sha256": digest(manifest_body),
             },
@@ -668,32 +668,32 @@ class LegacyBridgeGateTests(unittest.TestCase):
         signing = workflow.index("Sign and self-verify release manifests")
         self.assertLess(predecessor, signing)
         self.assertNotIn("legacy-bridge-gate.py", workflow)
-        self.assertNotIn("CYBEX_JAMES_LEGACY_BRIDGE_POLICY_SHA256", workflow)
+        self.assertNotIn("TIARIS_NEST_LEGACY_BRIDGE_POLICY_SHA256", workflow)
         self.assertIn("release_predecessor.py", workflow[predecessor:signing])
         self.assertIn("has_predecessor: ${{ steps.published-predecessor.outputs.exists }}", workflow)
-        self.assertIn("test ! -e dist/cybex-james-build-predecessor.json", workflow)
+        self.assertIn("test ! -e dist/tiaris-nest-build-predecessor.json", workflow)
         publish = workflow.index("release_publish:")
         recheck = workflow.index("release_predecessor.py", publish)
         publish_release = workflow.index('gh release edit "$GITHUB_REF_NAME" --draft=false', publish)
         self.assertLess(recheck, publish_release)
-        self.assertIn("--expected-identity dist/cybex-james-build-predecessor.json", workflow[publish:publish_release])
-        self.assertIn("group: james-release-publish", workflow[publish:recheck])
-        self.assertIn("CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR", workflow)
-        self.assertIn("CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256", workflow)
+        self.assertIn("--expected-identity dist/tiaris-nest-build-predecessor.json", workflow[publish:publish_release])
+        self.assertIn("group: nest-release-publish", workflow[publish:recheck])
+        self.assertIn("TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR", workflow)
+        self.assertIn("TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256", workflow)
         self.assertIn("--qualification-predecessor-manifest-sha256", workflow)
-        self.assertIn("cybex-james-qualified-predecessor-release.json", workflow)
+        self.assertIn("tiaris-nest-qualified-predecessor-release.json", workflow)
         qualification = workflow.index("Qualify fresh installation, real upgrade and automatic rollback")
         upload = workflow.index("Upload bounded qualification evidence", qualification)
         qualification_body = workflow[qualification:upload]
         self.assertIn("run-production-qualification.py", qualification_body)
         self.assertIn("--predecessor-dir", qualification_body)
-        self.assertNotIn("CYBEX_JAMES_UPDATE_PREDECESSOR_DEVICE_ID", workflow)
-        self.assertNotIn("secrets.CYBEX_FORGE_QUALIFICATION_TOKEN", workflow)
-        self.assertIn("cybex-james-nixos-update-qualification.json", workflow)
-        self.assertIn('--phase update --manifest dist/cybex-james-release.json', workflow)
-        self.assertIn('--phase rollback --manifest dist/cybex-james-release.json', workflow)
-        self.assertIn('--phase prepublication --manifest dist/cybex-james-release.json', workflow)
-        self.assertIn('--phase cold --manifest dist/cybex-james-release.json', workflow)
+        self.assertNotIn("TIARIS_NEST_UPDATE_PREDECESSOR_DEVICE_ID", workflow)
+        self.assertNotIn("secrets.TIARIS_FORGE_QUALIFICATION_TOKEN", workflow)
+        self.assertIn("tiaris-nest-nixos-update-qualification.json", workflow)
+        self.assertIn('--phase update --manifest dist/tiaris-nest-release.json', workflow)
+        self.assertIn('--phase rollback --manifest dist/tiaris-nest-release.json', workflow)
+        self.assertIn('--phase prepublication --manifest dist/tiaris-nest-release.json', workflow)
+        self.assertIn('--phase cold --manifest dist/tiaris-nest-release.json', workflow)
         self.assertIn('promote-production-release.py', workflow)
         self.assertIn('needs: [release_build, release_cold_qualify]', workflow)
         self.assertIn('--draft=false --prerelease --latest=false', workflow)
@@ -701,7 +701,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
         lifecycle = (
             REPOSITORY / "ubuntu-appliance/qualification/run-lifecycle.sh"
         ).read_text(encoding="utf-8")
-        self.assertIn('has_predecessor="${CYBEX_JAMES_HAS_PREDECESSOR:', lifecycle)
+        self.assertIn('has_predecessor="${TIARIS_NEST_HAS_PREDECESSOR:', lifecycle)
         self.assertIn("runtime_prepublication_deferred=true", lifecycle)
         self.assertIn("'.state' \"$runtime_status\")\" = absent", lifecycle)
         self.assertIn("--argjson workstation_runtime_operational", lifecycle)
@@ -715,7 +715,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
             / "ubuntu-appliance/qualification/run-update-lifecycle.sh"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            'api POST "/v1/james/nodes/$server_device_id/qualification-updates"',
+            'api POST "/v1/nest/nodes/$server_device_id/qualification-updates"',
             harness,
         )
         self.assertIn("predecessor_evidence_sha256", harness)
@@ -723,7 +723,7 @@ class LegacyBridgeGateTests(unittest.TestCase):
         self.assertIn("reboot_observed:$reboot_observed", harness)
         self.assertIn("release_activated:true", harness)
         self.assertIn("appliance_projection_healthy:true", harness)
-        self.assertIn("cybex.james.ubuntu-appliance-update-qualification.v1", harness)
+        self.assertIn("tiaris.nest.ubuntu-appliance-update-qualification.v1", harness)
 
 
 class LocalPublishedPredecessorTests(unittest.TestCase):
@@ -734,7 +734,7 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
         self.artifacts.mkdir(mode=0o755)
         self.stage_state = self.root / "private-stage-state"
         self.stage_state.mkdir(mode=0o700)
-        self.served_prefix = "https://dev.example.test/james-dev-artifacts"
+        self.served_prefix = "https://dev.example.test/nest-dev-artifacts"
         self.verifier = self.root / "release-verifier.py"
         self.verifier.write_bytes(b"raise SystemExit(0)\n")
         self.namespace = runpy.run_path(str(GATE), run_name="legacy_bridge_gate")
@@ -751,7 +751,7 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
         staged.mkdir(mode=0o755)
         staged_package = (
             staged
-            / "cybex-james-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst"
+            / "tiaris-nest-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst"
         )
         staged_package.write_bytes(b"unpublished candidate package only")
         staged_package.chmod(0o444)
@@ -792,27 +792,27 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
         repository = self.root / f"repository-{version}"
         package_root.mkdir()
         repository.mkdir()
-        updater = package_root / "usr/lib/cybex-james/cybex-james-appliance-update"
-        packaged_release = package_root / "usr/share/cybex-james/appliance-release.json"
+        updater = package_root / "usr/lib/tiaris-nest/tiaris-nest-appliance-update"
+        packaged_release = package_root / "usr/share/tiaris-nest/appliance-release.json"
         control = package_root / "DEBIAN/control"
         updater.parent.mkdir(parents=True)
         packaged_release.parent.mkdir(parents=True)
         control.parent.mkdir(parents=True)
         control.parent.chmod(0o755)
         control.write_text(
-            "Package: cybex-james-appliance\n"
+            "Package: tiaris-nest-appliance\n"
             f"Version: {version}-1\n"
             "Architecture: amd64\n"
-            "Maintainer: Cybex <support@cybex.net>\n"
+            "Maintainer: Tiaris <support@cybex.net>\n"
             "Description: local predecessor fixture\n",
             encoding="ascii",
         )
         if selective:
             updater.write_bytes(
                 b"#!/usr/bin/env bash\n"
-                b"# cybex.james.verified-appliance-update.v1\n"
-                b"package_targets=(cybex-james cybex-james-bootstrap "
-                b"cybex-james-appliance)\n"
+                b"# tiaris.nest.verified-appliance-update.v1\n"
+                b"package_targets=(tiaris-nest tiaris-nest-bootstrap "
+                b"tiaris-nest-appliance)\n"
                 b"# --no-remove --no-allow-downgrades "
                 b"--no-allow-change-held-packages\n"
             )
@@ -821,19 +821,19 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
                 b"#!/usr/bin/env bash\n"
                 b"chroot \"$candidate_path\" /bin/sh -c "
                 b"'apt-get --no-download --yes install "
-                b"/run/cybex-update-packages/*.deb'\n"
+                b"/run/tiaris-update-packages/*.deb'\n"
             )
         updater.chmod(0o755)
         packaged_release.write_bytes(
             canonical(
                 {
-                    "schema": "cybex.james.appliance-release.v1",
+                    "schema": "tiaris.nest.appliance-release.v1",
                     "release_id": version,
                     "ubuntu_snapshot_id": snapshot_id,
                 }
             )
         )
-        deb = repository / f"cybex-james-appliance_{version}-1_amd64.deb"
+        deb = repository / f"tiaris-nest-appliance_{version}-1_amd64.deb"
         subprocess.run(
             [
                 "dpkg-deb",
@@ -846,7 +846,7 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
             stdout=subprocess.DEVNULL,
         )
         for name, body in (
-            ("Packages", b"Package: cybex-james-appliance\n"),
+            ("Packages", b"Package: tiaris-nest-appliance\n"),
             ("Packages.gz", b"deterministic gzip fixture\n"),
             ("Release", b"Suite: resolute\n"),
         ):
@@ -863,7 +863,7 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
             f"{snapshot_id}\n", encoding="ascii"
         )
         package_name = (
-            f"cybex-james-appliance-packages-{version}-x86_64-linux.tar.zst"
+            f"tiaris-nest-appliance-packages-{version}-x86_64-linux.tar.zst"
         )
         package_snapshot = directory / package_name
         subprocess.run(
@@ -880,25 +880,25 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
             check=True,
             stdout=subprocess.DEVNULL,
         )
-        binary = directory / "cybex-james-x86_64-linux"
+        binary = directory / "tiaris-nest-x86_64-linux"
         template_name = (
-            f"cybex-james-appliance-template-{version}-x86_64-linux.iso"
+            f"tiaris-nest-appliance-template-{version}-x86_64-linux.iso"
         )
         template = directory / template_name
         netboot_name = (
-            f"cybex-workstation-netboot-1.0.{version.rsplit('.', 1)[-1]}-"
+            f"tiaris-workstation-netboot-1.0.{version.rsplit('.', 1)[-1]}-"
             f"{digest(version.encode())[:12]}-x86_64-linux.tar.zst"
         )
         netboot = directory / netboot_name
-        binary.write_bytes(f"james binary {version}\n".encode())
+        binary.write_bytes(f"nest binary {version}\n".encode())
         template.write_bytes(f"installer template {version}\n".encode())
         netboot.write_bytes(f"netboot bundle {version}\n".encode())
         artifact_url = lambda name: f"{self.served_prefix}/{version}/{name}"
         manifest = {
-            "schema": "cybex.james.release.v1",
+            "schema": "tiaris.nest.release.v1",
             "version": version,
-            "release_url": "https://dev.example.test/james",
-            "notes_url": "https://dev.example.test/james",
+            "release_url": "https://dev.example.test/nest",
+            "notes_url": "https://dev.example.test/nest",
             "published_at": "2026-08-12T00:00:00Z",
             "artifact": {
                 "url": artifact_url(binary.name),
@@ -912,10 +912,10 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
                 "size_bytes": template.stat().st_size,
             },
             "appliance_release_v1": {
-                "schema": "cybex.james.appliance-release.v1",
+                "schema": "tiaris.nest.appliance-release.v1",
                 "release_id": version,
                 "ubuntu_snapshot_id": snapshot_id,
-                "cybex_repository_snapshot": {
+                "tiaris_repository_snapshot": {
                     "url": artifact_url(package_snapshot.name),
                     "sha256": digest(package_snapshot.read_bytes()),
                     "size_bytes": package_snapshot.stat().st_size,
@@ -927,18 +927,18 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
                 "size_bytes": netboot.stat().st_size,
             },
         }
-        manifest_path = directory / "cybex-james-release.json"
+        manifest_path = directory / "tiaris-nest-release.json"
         manifest_path.write_bytes(canonical(manifest))
         compatibility = {
-            "schema": "cybex.james.release-compatibility.v1",
-            "james_release_version": version,
+            "schema": "tiaris.nest.release-compatibility.v1",
+            "nest_release_version": version,
             "release_manifest": {
                 "url": artifact_url(manifest_path.name),
                 "sha256": digest(manifest_path.read_bytes()),
             },
             "compatibility": {},
         }
-        compatibility_path = directory / "cybex-james-release-compatibility.json"
+        compatibility_path = directory / "tiaris-nest-release-compatibility.json"
         compatibility_path.write_bytes(canonical(compatibility))
         checksum_order = [
             binary.name,
@@ -965,7 +965,7 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
     ) -> Path:
         url = f"{self.served_prefix}/{release_id}/{package.name}"
         journal = {
-            "schema": "cybex.james.canonical-package-stage.v1",
+            "schema": "tiaris.nest.canonical-package-stage.v1",
             "owner": owner,
             "manifest_sha256": "a" * 64,
             "release_id": release_id,
@@ -1000,7 +1000,7 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
         identity, identity_path = self.identify()
         self.assertEqual(
             identity["schema"],
-            "cybex.james.local-published-appliance-predecessor.v1",
+            "tiaris.nest.local-published-appliance-predecessor.v1",
         )
         self.assertEqual(identity["release_id"], "0.2.1-dev.12")
         self.assertEqual(identity["ubuntu_snapshot_id"], "20260805T000000Z")
@@ -1016,23 +1016,23 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
         current = self.artifacts / "0.2.1-dev.12"
         previous = self.artifacts / "0.2.1-dev.11"
         current.chmod(0o700)
-        manifest_path = current / "cybex-james-release.json"
+        manifest_path = current / "tiaris-nest-release.json"
         manifest = json.loads(manifest_path.read_bytes())
         (current / manifest["workstation_netboot"]["url"].rsplit("/", 1)[1]).unlink()
         manifest["workstation_netboot"] = json.loads(
-            (previous / "cybex-james-release.json").read_bytes()
+            (previous / "tiaris-nest-release.json").read_bytes()
         )["workstation_netboot"]
         manifest_path.chmod(0o600)
         manifest_path.write_bytes(canonical(manifest))
-        compatibility_path = current / "cybex-james-release-compatibility.json"
+        compatibility_path = current / "tiaris-nest-release-compatibility.json"
         compatibility = json.loads(compatibility_path.read_bytes())
         compatibility["release_manifest"]["sha256"] = digest(manifest_path.read_bytes())
         compatibility_path.chmod(0o600)
         compatibility_path.write_bytes(canonical(compatibility))
         checksum_order = [
-            "cybex-james-x86_64-linux",
-            "cybex-james-appliance-template-0.2.1-dev.12-x86_64-linux.iso",
-            "cybex-james-appliance-packages-0.2.1-dev.12-x86_64-linux.tar.zst",
+            "tiaris-nest-x86_64-linux",
+            "tiaris-nest-appliance-template-0.2.1-dev.12-x86_64-linux.iso",
+            "tiaris-nest-appliance-packages-0.2.1-dev.12-x86_64-linux.tar.zst",
             manifest_path.name, compatibility_path.name,
         ]
         (current / "SHA256SUMS").chmod(0o600)
@@ -1058,9 +1058,9 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
                                  for p in current.iterdir()})
         sealed = arguments.prepared_release / "0.2.1-dev.12"
         self.assertEqual(len(list(sealed.iterdir())), 7)
-        self.assertEqual((sealed / "cybex-james-release.json").read_bytes(),
-                         (current / "cybex-james-release.json").read_bytes())
-        self.assertEqual((sealed / "cybex-james-release.json").stat().st_nlink, 1)
+        self.assertEqual((sealed / "tiaris-nest-release.json").read_bytes(),
+                         (current / "tiaris-nest-release.json").read_bytes())
+        self.assertEqual((sealed / "tiaris-nest-release.json").stat().st_nlink, 1)
         arguments.qualified_identity = arguments.output
         self.namespace["recheck_local_predecessor"](arguments)
 
@@ -1104,7 +1104,7 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
 
     def test_snapshot_rejects_sealed_file_tampering_and_hardlinks(self):
         arguments = self.prepared_arguments()
-        binary = arguments.prepared_release / "0.2.1-dev.12/cybex-james-x86_64-linux"
+        binary = arguments.prepared_release / "0.2.1-dev.12/tiaris-nest-x86_64-linux"
         original = binary.read_bytes()
         binary.chmod(0o755)
         binary.write_bytes(b"tampered")
@@ -1162,7 +1162,7 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
     def test_snapshot_rejects_symlinked_reused_runtime(self):
         self.historical_release()
         previous = self.artifacts / "0.2.1-dev.11"
-        runtime = next(previous.glob("cybex-workstation-netboot-*.tar.zst"))
+        runtime = next(previous.glob("tiaris-workstation-netboot-*.tar.zst"))
         saved = self.root / "outside-runtime"
         saved.write_bytes(runtime.read_bytes())
         previous.chmod(0o755)
@@ -1176,7 +1176,7 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
 
     def test_local_runtime_reference_requires_canonical_same_or_older_origin(self):
         validate = self.namespace["require_local_runtime_url"]
-        filename = "cybex-workstation-netboot-1.0.61-aaaaaaaaaaaa-x86_64-linux.tar.zst"
+        filename = "tiaris-workstation-netboot-1.0.61-aaaaaaaaaaaa-x86_64-linux.tar.zst"
         for version in ("0.2.1-dev.11", "0.2.1-dev.12"):
             url = f"{self.served_prefix}/{version}/{filename}"
             self.assertEqual(validate(url, self.served_prefix, "0.2.1-dev.12", filename), url)
@@ -1221,7 +1221,7 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
         ):
             self.namespace["build_local_predecessor_identity"](self.arguments())
         self.assertEqual(set(path.name for path in staged.iterdir()), {
-            "cybex-james-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst"
+            "tiaris-nest-appliance-packages-0.2.1-dev.13-x86_64-linux.tar.zst"
         })
 
     def test_lower_excluded_semver_metadata_is_bound_by_recheck(self) -> None:
@@ -1251,16 +1251,16 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
             self.namespace["build_local_predecessor_identity"](self.arguments())
         selected.chmod(0o755)
         extra.unlink()
-        manifest_path = selected / "cybex-james-release.json"
+        manifest_path = selected / "tiaris-nest-release.json"
         manifest_path.chmod(0o644)
         manifest = json.loads(manifest_path.read_bytes())
         manifest["artifact"]["url"] = (
-            "https://other.example.test/james-dev-artifacts/0.2.1-dev.12/"
-            "cybex-james-x86_64-linux"
+            "https://other.example.test/nest-dev-artifacts/0.2.1-dev.12/"
+            "tiaris-nest-x86_64-linux"
         )
         manifest_path.write_bytes(canonical(manifest))
         manifest_path.chmod(0o444)
-        compatibility_path = selected / "cybex-james-release-compatibility.json"
+        compatibility_path = selected / "tiaris-nest-release-compatibility.json"
         compatibility_path.chmod(0o644)
         compatibility = json.loads(compatibility_path.read_bytes())
         compatibility["release_manifest"]["sha256"] = digest(
@@ -1271,10 +1271,10 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
         checksum_path = selected / "SHA256SUMS"
         checksum_path.chmod(0o644)
         lines = checksum_path.read_text(encoding="ascii").splitlines()
-        lines[-2] = f"{digest(manifest_path.read_bytes())} *cybex-james-release.json"
+        lines[-2] = f"{digest(manifest_path.read_bytes())} *tiaris-nest-release.json"
         lines[-1] = (
             f"{digest(compatibility_path.read_bytes())} "
-            "*cybex-james-release-compatibility.json"
+            "*tiaris-nest-release-compatibility.json"
         )
         checksum_path.write_text("\n".join(lines) + "\n", encoding="ascii")
         checksum_path.chmod(0o444)
@@ -1393,9 +1393,9 @@ class LocalPublishedPredecessorTests(unittest.TestCase):
         # selection must use that same fail-closed implementation.
         self.assertIn("never rebuild or re-sign", (REPOSITORY / "tools/local-candidate.py").read_text())
         publish = workflow[workflow.index("  release_publish:"):]
-        self.assertIn("group: james-release-publish", publish)
+        self.assertIn("group: nest-release-publish", publish)
         self.assertLess(publish.index("release_predecessor.py"), publish.index('gh release edit "$GITHUB_REF_NAME" --draft=false'))
-        self.assertIn("--expected-identity dist/cybex-james-build-predecessor.json", publish)
+        self.assertIn("--expected-identity dist/tiaris-nest-build-predecessor.json", publish)
         self.assertIn("verify-successor", publish)
 
 

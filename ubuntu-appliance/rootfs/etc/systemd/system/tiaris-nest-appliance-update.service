@@ -1,0 +1,13 @@
+[Unit]
+Description=Apply a signed Tiaris Nest Ubuntu root generation
+After=network-online.target tiaris-nest.service
+Wants=network-online.target
+ConditionPathExists=/var/lib/tiaris-nest/state/inbox/appliance-update-request.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/tiaris-nest/tiaris-nest-appliance-update
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=4h

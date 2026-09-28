@@ -28,7 +28,7 @@ def main():
     parser.add_argument('--manifest', type=Path, required=True)
     args = parser.parse_args()
     value = json.loads(args.inputs.read_text())
-    if value.get('schema') == 'cybex.james.resolved-predecessor-fixture.v1':
+    if value.get('schema') == 'tiaris.nest.resolved-predecessor-fixture.v1':
         fields = {'schema', 'identity', 'directory', 'trusted_public_key', 'candidate_version', 'repository', 'authorization'}
         if set(value) != fields or not all(isinstance(v, str) and v for v in value.values()):
             raise ValueError('Invalid resolved predecessor fixture inputs')
@@ -54,7 +54,7 @@ def main():
             manifest_url = f"https://github.com/{value['repository']}/releases/download/{identity['tag_name']}/{predecessor.MANIFEST}"
             predecessor.gate.verify_published_predecessor_descriptors(
                 compatibility_path=directory / predecessor.COMPATIBILITY, manifest_path=args.manifest,
-                trusted_public_key=value['trusted_public_key'], release_verifier=predecessor.ROOT / 'tools/james-release.py',
+                trusted_public_key=value['trusted_public_key'], release_verifier=predecessor.ROOT / 'tools/nest-release.py',
                 github_release_id=identity['github_release_id'], tag_name=identity['tag_name'])
         else:
             raise ValueError('Unsupported authenticated predecessor identity')
@@ -72,7 +72,7 @@ def main():
                'recheck-local-predecessor']
     for key, item in value.items():
         command += ['--' + key.replace('_', '-'), item]
-    command += ['--release-verifier', str(root / 'tools/james-release.py')]
+    command += ['--release-verifier', str(root / 'tools/nest-release.py')]
     subprocess.run(command, check=True)
     identity = json.loads(Path(value['qualified_identity']).read_text())
     match_manifest(identity, args.manifest)

@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
-LOADER = SourceFileLoader("packaged_service", str(ROOT / "ubuntu-appliance/rootfs/usr/lib/cybex-james/cybex-james-packaged-service"))
+LOADER = SourceFileLoader("packaged_service", str(ROOT / "ubuntu-appliance/rootfs/usr/lib/tiaris-nest/tiaris-nest-packaged-service"))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 service = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(service)
@@ -82,8 +82,8 @@ class PackagedServiceTests(unittest.TestCase):
             self.assertTrue(binary.exists())
 
     def test_postinst_adopts_packaged_service_before_reloading_systemd(self):
-        source = (ROOT / "ubuntu-appliance/package/cybex-james-appliance.postinst").read_text()
-        self.assertLess(source.index("/usr/lib/cybex-james/cybex-james-packaged-service"),
+        source = (ROOT / "ubuntu-appliance/package/tiaris-nest-appliance.postinst").read_text()
+        self.assertLess(source.index("/usr/lib/tiaris-nest/tiaris-nest-packaged-service"),
                         source.index("systemctl daemon-reload"))
 
     def test_older_pxe_layers_cannot_resurface_after_retiring_newer_override(self):

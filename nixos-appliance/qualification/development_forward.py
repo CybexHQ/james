@@ -3,7 +3,7 @@
 A new Incus bridge cannot override Docker's FORWARD policy through its independent
 nftables table. Install one early jump matching only this bridge in each direction,
 with a uniquely owned chain. Never change a global policy or an existing lab rule.
-This is development transport, not the offline isolated-Manage firewall adapter.
+This is development transport, not the offline isolated-Tiaris firewall adapter.
 """
 import ipaddress
 import json
@@ -15,7 +15,7 @@ import stat
 import subprocess
 import uuid
 
-SCHEMA = 'cybex.james.development-forward.v1'
+SCHEMA = 'tiaris.nest.development-forward.v1'
 COMMAND_ENV = {
     'LC_ALL': 'C',
     'PATH': '/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
@@ -41,7 +41,7 @@ def chain(scope):
 
 def rules(scope, ipv6=False):
     name, bridge = chain(scope), scope['bridge']
-    mark = ['-m', 'comment', '--comment', 'cybex-qualification:' + scope['owner']]
+    mark = ['-m', 'comment', '--comment', 'tiaris-qualification:' + scope['owner']]
     def rule(*args):
         return ['-A', name, *args[:-2], *mark, *args[-2:]]
     if ipv6:
@@ -67,7 +67,7 @@ def rules(scope, ipv6=False):
 
 def anchors(scope):
     return [['-A', 'FORWARD', direction, scope['bridge'], '-m', 'comment', '--comment',
-             'cybex-qualification:' + scope['owner'], '-j', chain(scope)]
+             'tiaris-qualification:' + scope['owner'], '-j', chain(scope)]
             for direction in ('-o', '-i')]
 
 
@@ -106,7 +106,7 @@ def check(scope, ipv6, execute, *, missing=False, require_priority=True):
 def qualification_resources(rows):
     return [row for row in rows
             if (row[:1] == ['-N'] and len(row) == 2 and row[1].startswith('JNQF_'))
-            or any(value.startswith('cybex-qualification:') for value in row)]
+            or any(value.startswith('tiaris-qualification:') for value in row)]
 
 
 def transaction(ipv6, lines, execute):

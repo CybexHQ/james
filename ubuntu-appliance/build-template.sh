@@ -73,14 +73,14 @@ for command_name in curl gpgv jq sha256sum stat xorriso sed cmp awk python3 unsq
   }
 done
 
-python3 -B "$repository_root/tools/james-release.py" validate-manage-origin \
+python3 -B "$repository_root/tools/nest-release.py" validate-manage-origin \
   --expected-manage-origin "$expected_manage_origin" >/dev/null
 bootstrap_manage_origin="$("$bootstrap_binary" required-manage-origin)"
 test "$bootstrap_manage_origin" = "$expected_manage_origin" || {
   echo "error: bootstrap requires $bootstrap_manage_origin but the explicit expected Management origin is $expected_manage_origin" >&2
   exit 1
 }
-python3 -B "$repository_root/tools/james-release.py" validate-public-key \
+python3 -B "$repository_root/tools/nest-release.py" validate-public-key \
   --trusted-public-key "$release_public_key" >/dev/null
 
 mapfile -t sorted_keys < <(printf '%s\n' "${provisioning_keys[@]}" | LC_ALL=C sort -u)
@@ -93,7 +93,7 @@ for index in "${!sorted_keys[@]}"; do
     echo "error: provisioning public keys must be supplied in sorted order" >&2
     exit 1
   }
-  python3 -B "$repository_root/tools/james-release.py" validate-public-key \
+  python3 -B "$repository_root/tools/nest-release.py" validate-public-key \
     --trusted-public-key "${sorted_keys[$index]}" >/dev/null
 done
 
@@ -111,7 +111,7 @@ base_sha256="$(jq -er '.sha256' "$lock_file")"
 base_size="$(jq -er '.size_bytes' "$lock_file")"
 checksums_url="$(jq -er '.checksums_url' "$lock_file")"
 signature_url="$(jq -er '.checksums_signature_url' "$lock_file")"
-test "$(jq -er '.schema' "$lock_file")" = "cybex.james.ubuntu-base-iso.v1"
+test "$(jq -er '.schema' "$lock_file")" = "tiaris.nest.ubuntu-base-iso.v1"
 test "$(jq -er '.version' "$lock_file")" = "26.04"
 test "$(jq -er '.architecture' "$lock_file")" = "amd64"
 [[ "$base_sha256" =~ ^[0-9a-f]{64}$ ]]
@@ -200,19 +200,19 @@ test -x "$live_busybox" || {
 rm -rf -- "$iso_tree/pool" "$iso_tree/dists"
 test ! -e "$iso_tree/pool" && test ! -e "$iso_tree/dists"
 
-mkdir -p -- "$iso_tree/nocloud" "$iso_tree/cybex/bootstrap"
+mkdir -p -- "$iso_tree/nocloud" "$iso_tree/tiaris/bootstrap"
 install -m 0644 "$repository_root/ubuntu-appliance/nocloud/user-data" "$iso_tree/nocloud/user-data"
 install -m 0644 "$repository_root/ubuntu-appliance/nocloud/meta-data" "$iso_tree/nocloud/meta-data"
-install -m 0755 "$bootstrap_binary" "$iso_tree/cybex/bootstrap/cybex-james-bootstrap"
-printf '%s\n' "${provisioning_keys[@]}" > "$iso_tree/cybex/provisioning-public-keys"
-printf '%s\n' "$release_public_key" > "$iso_tree/cybex/release-public-key"
-chmod 0644 "$iso_tree/cybex/provisioning-public-keys" "$iso_tree/cybex/release-public-key"
-truncate -s 8192 "$iso_tree/CYBEX_PROVISIONING.BIN"
+install -m 0755 "$bootstrap_binary" "$iso_tree/tiaris/bootstrap/tiaris-nest-bootstrap"
+printf '%s\n' "${provisioning_keys[@]}" > "$iso_tree/tiaris/provisioning-public-keys"
+printf '%s\n' "$release_public_key" > "$iso_tree/tiaris/release-public-key"
+chmod 0644 "$iso_tree/tiaris/provisioning-public-keys" "$iso_tree/tiaris/release-public-key"
+truncate -s 8192 "$iso_tree/TIARIS_PROVISIONING.BIN"
 
-# Reuse the Cybex USB/netboot visual language while keeping Canonical's signed
+# Reuse the Tiaris USB/netboot visual language while keeping Canonical's signed
 # EFI binaries and hidden El Torito image byte-for-byte unchanged. The theme
 # and external grub.cfg are ordinary ISO data loaded after signed GRUB starts.
-grub_theme_dir="$iso_tree/boot/grub/themes/cybex-james"
+grub_theme_dir="$iso_tree/boot/grub/themes/tiaris-nest"
 mkdir -p -- "$grub_theme_dir"
 install -m 0644 "$repository_root/assets/pxe-menu.png" "$grub_theme_dir/background.png"
 install -m 0644 "$repository_root/ubuntu-appliance/grub-theme/theme.txt" "$grub_theme_dir/theme.txt"
@@ -228,7 +228,7 @@ while IFS= read -r -d '' grub_config; do
 done < <(find "$iso_tree" -type f \( -name 'grub.cfg' -o -name 'loopback.cfg' -o -name 'txt.cfg' \) -print0)
 
 while IFS= read -r -d '' grub_config; do
-  sed -i 's/Try or Install Ubuntu Server/Boot Cybex James Setup/g' "$grub_config"
+  sed -i 's/Try or Install Ubuntu Server/Boot Tiaris Nest Setup/g' "$grub_config"
 done < <(find "$iso_tree" -type f \( -name 'grub.cfg' -o -name 'loopback.cfg' -o -name 'txt.cfg' \) -print0)
 
 main_grub_config="$iso_tree/boot/grub/grub.cfg"
@@ -239,17 +239,17 @@ insmod all_video\
 insmod gfxterm\
 insmod png\
 terminal_output gfxterm\
-set theme=/boot/grub/themes/cybex-james/theme.txt\
+set theme=/boot/grub/themes/tiaris-nest/theme.txt\
 export theme' "$main_grub_config"
-grep -F 'menuentry "Boot Cybex James Setup"' "$main_grub_config" >/dev/null
-grep -Fx 'set theme=/boot/grub/themes/cybex-james/theme.txt' "$main_grub_config" >/dev/null
+grep -F 'menuentry "Boot Tiaris Nest Setup"' "$main_grub_config" >/dev/null
+grep -Fx 'set theme=/boot/grub/themes/tiaris-nest/theme.txt' "$main_grub_config" >/dev/null
 
 find "$iso_tree" -type f -iname '*.efi' -print0 \
   | LC_ALL=C sort -z \
   | xargs -0 -r sha256sum > "$work_dir/efi-after.sha256"
 cmp "$work_dir/efi-before.sha256" "$work_dir/efi-after.sha256"
 
-output_iso="$output_dir/cybex-james-appliance-template-$version-x86_64-linux.iso"
+output_iso="$output_dir/tiaris-nest-appliance-template-$version-x86_64-linux.iso"
 test ! -e "$output_iso" || {
   echo "error: refusing to overwrite existing release candidate $output_iso" >&2
   exit 1
@@ -271,9 +271,9 @@ test "$output_hidden_efi_sha256" = "$base_hidden_efi_sha256" || {
 # Re-open the completed ISO and prove that its embedded bootstrap is exactly
 # the binary whose compiled Management origin was checked above. This closes
 # the gap between the build input and the bytes covered by template_sha256.
-embedded_bootstrap="$work_dir/embedded-cybex-james-bootstrap"
+embedded_bootstrap="$work_dir/embedded-tiaris-nest-bootstrap"
 xorriso -osirrox on -indev "$output_iso" \
-  -extract /cybex/bootstrap/cybex-james-bootstrap "$embedded_bootstrap" \
+  -extract /tiaris/bootstrap/tiaris-nest-bootstrap "$embedded_bootstrap" \
   > "$work_dir/extract-bootstrap.txt" 2>&1
 cmp "$bootstrap_binary" "$embedded_bootstrap" || {
   echo "error: completed ISO does not contain the origin-verified bootstrap binary" >&2
@@ -283,7 +283,7 @@ cmp "$bootstrap_binary" "$embedded_bootstrap" || {
 iso_top_level="$work_dir/iso-top-level.txt"
 xorriso -indev "$output_iso" -find / -maxdepth 2 -exec echo -- \
   2>/dev/null | sed -E "s/^'(.*)'$/\1/" > "$iso_top_level"
-if grep -E '^/(pool|dists)(/|$)|^/cybex/apt(/|$)' "$iso_top_level" >/dev/null; then
+if grep -E '^/(pool|dists)(/|$)|^/tiaris/apt(/|$)' "$iso_top_level" >/dev/null; then
   echo "error: thin installer ISO retained a target package repository" >&2
   exit 1
 fi
@@ -295,7 +295,7 @@ for live_path in "${required_casper_paths[@]}"; do
 done
 
 lba_report="$work_dir/personalization-lba.txt"
-xorriso -indev "$output_iso" -find /CYBEX_PROVISIONING.BIN -exec report_lba -- \
+xorriso -indev "$output_iso" -find /TIARIS_PROVISIONING.BIN -exec report_lba -- \
   > "$lba_report" 2>&1
 personalization_lba="$(sed -n -E 's/.*File data lba:[[:space:]]*[0-9]+[[:space:]]*,[[:space:]]*([0-9]+)[[:space:]]*,.*/\1/p' "$lba_report")"
 [[ "$personalization_lba" =~ ^[1-9][0-9]*$ ]] || {
@@ -309,9 +309,9 @@ test "$placeholder_sha256" = "$expected_placeholder_sha256"
 template_sha256="$(sha256sum "$output_iso" | awk '{print $1}')"
 template_size="$(stat -c '%s' "$output_iso")"
 
-metadata="$output_dir/cybex-james-appliance-template-$version-x86_64-linux.json"
+metadata="$output_dir/tiaris-nest-appliance-template-$version-x86_64-linux.json"
 jq -n \
-  --arg schema 'cybex.james.installer-template-build.v1' \
+  --arg schema 'tiaris.nest.installer-template-build.v1' \
   --arg version "$version" \
   --arg package_delivery 'network-snapshot-v1' \
   --arg manage_origin "$expected_manage_origin" \
@@ -324,5 +324,5 @@ jq -n \
   --argjson provisioning_public_keys "$(printf '%s\n' "${provisioning_keys[@]}" | jq -R . | jq -s .)" \
   '{schema:$schema,version:$version,architecture:"x86_64-linux",base_os:"ubuntu",base_os_version:"26.04",manage_origin:$manage_origin,package_delivery:$package_delivery,size_bytes:$size_bytes,template_sha256:$template_sha256,personalization_offset:$personalization_offset,personalization_size:$personalization_size,placeholder_sha256:$placeholder_sha256,ubuntu_snapshot_id:$ubuntu_snapshot_id,provisioning_public_keys:$provisioning_public_keys}' \
   > "$metadata"
-echo "built provisionable Ubuntu James ISO template: $output_iso"
+echo "built provisionable Ubuntu Nest ISO template: $output_iso"
 echo "personalization_offset=$personalization_offset"

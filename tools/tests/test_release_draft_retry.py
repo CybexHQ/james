@@ -10,21 +10,21 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 REVISION = '2' * 40
-BUNDLE = 'cybex-workstation-netboot-1.0.67-9bc0d5862bc1-x86_64-linux.tar.zst'
+BUNDLE = 'tiaris-workstation-netboot-1.0.67-9bc0d5862bc1-x86_64-linux.tar.zst'
 ASSETS = [
-    'cybex-james-x86_64-linux',
-    'cybex-james-appliance-template-0.2.2-x86_64-linux.iso',
-    'cybex-james-appliance-closure-0.2.2-x86_64-linux.tar.zst',
-    BUNDLE, 'cybex-james-release.json', 'cybex-james-release-compatibility.json',
-    'SHA256SUMS', 'cybex-james-nixos-qualification.json',
-    'cybex-james-build-predecessor.json', 'cybex-james-nixos-update-qualification.json',
-    'cybex-james-nixos-rollback-qualification.json',
-    'cybex-james-qualified-predecessor.json', 'cybex-james-qualified-predecessor-release.json',
+    'tiaris-nest-x86_64-linux',
+    'tiaris-nest-appliance-template-0.2.2-x86_64-linux.iso',
+    'tiaris-nest-appliance-closure-0.2.2-x86_64-linux.tar.zst',
+    BUNDLE, 'tiaris-nest-release.json', 'tiaris-nest-release-compatibility.json',
+    'SHA256SUMS', 'tiaris-nest-nixos-qualification.json',
+    'tiaris-nest-build-predecessor.json', 'tiaris-nest-nixos-update-qualification.json',
+    'tiaris-nest-nixos-rollback-qualification.json',
+    'tiaris-nest-qualified-predecessor.json', 'tiaris-nest-qualified-predecessor-release.json',
 ]
 BODY = '\n'.join([
-    'Cybex-Release-Workflow: https://github.com/CybexHQ/james/actions/runs/42',
-    'Cybex-Candidate-Artifact-ID: 100',
-    'Cybex-Candidate-Artifact-SHA256: ' + 'a' * 64,
+    'Tiaris-Release-Workflow: https://github.com/CybexHQ/james/actions/runs/42',
+    'Tiaris-Candidate-Artifact-ID: 100',
+    'Tiaris-Candidate-Artifact-SHA256: ' + 'a' * 64,
 ])
 FAKE_GH = """#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -47,7 +47,7 @@ class DraftRetryTests(unittest.TestCase):
     def setUp(self):
         self.data = {'revision': REVISION,
             'release': {'id': 123, 'tag_name': 'v0.2.2', 'draft': True,
-                'immutable': False, 'name': 'Cybex James v0.2.2', 'body': BODY},
+                'immutable': False, 'name': 'Tiaris Nest v0.2.2', 'body': BODY},
             'assets': [{'name': name} for name in ASSETS]}
 
     def cleanup(self, data):
@@ -66,10 +66,10 @@ class DraftRetryTests(unittest.TestCase):
                     'RUNNER_TEMP': str(root), 'GITHUB_SHA': REVISION,
                     'GITHUB_SERVER_URL': 'https://github.com', 'GITHUB_REPOSITORY': 'CybexHQ/james',
                     'GITHUB_REF_NAME': 'v0.2.2', 'GITHUB_RUN_ID': '42',
-                    'CYBEX_JAMES_RELEASE_VERSION': '0.2.2',
-                    'CYBEX_JAMES_RELEASE_ARTIFACT_ID': '100',
-                    'CYBEX_JAMES_RELEASE_ARTIFACT_DIGEST': 'a' * 64,
-                    'CYBEX_JAMES_WORKSTATION_BUNDLE_NAME': BUNDLE})
+                    'TIARIS_NEST_RELEASE_VERSION': '0.2.2',
+                    'TIARIS_NEST_RELEASE_ARTIFACT_ID': '100',
+                    'TIARIS_NEST_RELEASE_ARTIFACT_DIGEST': 'a' * 64,
+                    'TIARIS_NEST_WORKSTATION_BUNDLE_NAME': BUNDLE})
             return result, (root / 'deleted').exists()
 
     def test_owned_complete_or_partial_draft_can_be_retried(self):

@@ -15,7 +15,7 @@ class ApplianceDependencyPinTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / 'source'; source.mkdir()
-            tool = runpy.run_path(str(REPOSITORY / 'tools/james-release.py'))
+            tool = runpy.run_path(str(REPOSITORY / 'tools/nest-release.py'))
             for name in tool['MANAGE_SOURCE_INSTALLER_REQUIRED_PATHS']:
                 path = source / name; path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('test source archive fixture' + chr(10))
@@ -27,14 +27,14 @@ class ApplianceDependencyPinTests(unittest.TestCase):
             binary = root / 'binary'; binary.write_text('#!/bin/sh' + chr(10) + 'exit 0' + chr(10)); binary.chmod(0o755)
             public = '11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo='
             args = ['bash', str(BUILDER), '--output', str(root / 'out'),
-                    '--james-binary', str(binary), '--bootstrap-binary', str(binary),
+                    '--nest-binary', str(binary), '--bootstrap-binary', str(binary),
                     '--version', '1.2.3', '--ubuntu-snapshot-id', '20260901T000000Z',
                     '--manage-source-dir', str(source), '--manage-source-revision', revision,
                     '--release-public-key', public, '--provisioning-public-key', public]
             for name, version in PINS.items(): args += ['--dependency-version', name + '=' + version]
             result = subprocess.run(args, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            package = root / 'out/cybex-james-appliance_1.2.3-1_amd64.deb'
+            package = root / 'out/tiaris-nest-appliance_1.2.3-1_amd64.deb'
             dependencies = subprocess.check_output(['dpkg-deb', '-f', str(package), 'Depends'], text=True)
             for name, version in PINS.items():
                 self.assertIn(name + ' (= ' + version + ')', dependencies)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render a James Ubuntu snapshot ID as a deterministic Debian Release date."""
+"""Render a Nest Ubuntu snapshot ID as a deterministic Debian Release date."""
 
 from __future__ import annotations
 

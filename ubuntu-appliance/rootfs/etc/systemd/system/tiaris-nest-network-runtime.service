@@ -1,0 +1,11 @@
+[Unit]
+Description=Reconcile the Tiaris Nest advertised boot address
+After=network-online.target tiaris-nest-first-boot.service
+Wants=network-online.target
+Requires=tiaris-nest-first-boot.service
+Before=tiaris-nest.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/tiaris-nest/tiaris-nest-network-runtime
+TimeoutStartSec=30s

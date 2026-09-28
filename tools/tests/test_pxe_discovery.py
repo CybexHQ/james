@@ -13,7 +13,7 @@ import sys
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[2]
-HELPER = ROOT / 'ubuntu-appliance/rootfs/usr/lib/cybex-james/cybex-james-pxe'
+HELPER = ROOT / 'ubuntu-appliance/rootfs/usr/lib/tiaris-nest/tiaris-nest-pxe'
 loader = importlib.machinery.SourceFileLoader('pxe', str(HELPER))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 pxe = importlib.util.module_from_spec(spec)
@@ -24,8 +24,8 @@ def peer(name, suffix):
 
 def desired():
     return {'received_at': 1000, 'desired': {'schema': pxe.SCHEMA, 'complete': True,
-            'server_device_id':'james-b', 'peers':[peer('james-a', 2), peer('james-b', 3)],
-            'clients':[{'mac':'02:00:00:00:10:01', 'server_device_id':'james-a'},
+            'server_device_id':'nest-b', 'peers':[peer('nest-a', 2), peer('nest-b', 3)],
+            'clients':[{'mac':'02:00:00:00:10:01', 'server_device_id':'nest-a'},
                        {'mac':'02:00:00:00:10:02', 'server_device_id':None}]}}
 
 def network():
@@ -55,23 +55,23 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_only_live_direct_peers_can_win_and_failover_is_deterministic(self):
         inventory = desired()['desired']
-        local = {'james-b': {'ready':True, 'eligible':True}}
-        self.assertEqual(pxe.choose(inventory, network(), local)[0], 'james-b')
-        both = dict(local, **{'james-a':{'ready':True,'eligible':True}})
-        self.assertEqual(pxe.choose(inventory, network(), both)[0], 'james-a')
-        both['james-a']['eligible'] = False
-        self.assertEqual(pxe.choose(inventory, network(), both)[0], 'james-b')
-        self.assertIn('james-a', pxe.choose(inventory, network(), both)[2])
+        local = {'nest-b': {'ready':True, 'eligible':True}}
+        self.assertEqual(pxe.choose(inventory, network(), local)[0], 'nest-b')
+        both = dict(local, **{'nest-a':{'ready':True,'eligible':True}})
+        self.assertEqual(pxe.choose(inventory, network(), both)[0], 'nest-a')
+        both['nest-a']['eligible'] = False
+        self.assertEqual(pxe.choose(inventory, network(), both)[0], 'nest-b')
+        self.assertIn('nest-a', pxe.choose(inventory, network(), both)[2])
 
     def test_address_change_uses_current_approved_address(self):
         item = network(); item['address'] = '192.0.2.44'
-        observations = {'james-b': {'ready':True, 'eligible':True}}
+        observations = {'nest-b': {'ready':True, 'eligible':True}}
         _, default, _ = pxe.choose(desired()['desired'], item, observations)
         self.assertEqual(default['address'], '192.0.2.44')
 
-    def test_unknown_clients_use_elected_james_and_known_clients_never_fall_back(self):
+    def test_unknown_clients_use_elected_nest_and_known_clients_never_fall_back(self):
         inventory = desired()['desired']; target = inventory['peers'][1]
-        config = pxe.dnsmasq_config(network(), target, {'james-b':target}, inventory['clients'])
+        config = pxe.dnsmasq_config(network(), target, {'nest-b':target}, inventory['clients'])
         self.assertIn('dhcp-boot=tag:!known,snponly.efi,,192.0.2.3', config)
         self.assertIn('dhcp-host=02:00:00:00:10:01,set:known,set:blocked', config)
         self.assertIn('dhcp-host=02:00:00:00:10:02,set:known,set:blocked', config)
@@ -94,17 +94,17 @@ class DiscoveryTests(unittest.TestCase):
     def test_peer_with_same_ip_but_wrong_identity_cannot_win(self):
         routes = json.dumps([{'dev':'eth0'}]).encode()
         with patch.object(pxe, 'run', return_value=routes), patch.object(pxe, 'http_json', return_value={'ready':True,'eligible':True,'identity':'wrong'}):
-            _, result = pxe.peer_probe(peer('james-a', 2), network())
+            _, result = pxe.peer_probe(peer('nest-a', 2), network())
         self.assertFalse(result['eligible'])
 
     def test_routed_peer_is_never_treated_as_same_vlan(self):
         routes = json.dumps([{'dev':'eth0','gateway':'192.0.2.1'}]).encode()
         with patch.object(pxe, 'run', return_value=routes), patch.object(pxe, 'http_json') as probe:
-            _, result = pxe.peer_probe(peer('james-a', 2), network())
+            _, result = pxe.peer_probe(peer('nest-a', 2), network())
         self.assertFalse(result['eligible']); probe.assert_not_called()
 
     def test_network_requires_approved_nic_and_unique_primary_ipv4(self):
-        plan = {'network': {'version':2,'renderer':'networkd','ethernets': {'cybex-james': {'set-name':'eth0','match':{'macaddress':'02:00:00:00:00:03'},'dhcp4':True}}}}
+        plan = {'network': {'version':2,'renderer':'networkd','ethernets': {'tiaris-nest': {'set-name':'eth0','match':{'macaddress':'02:00:00:00:00:03'},'dhcp4':True}}}}
         interfaces = [{'ifname':'eth0','flags':['UP','LOWER_UP'],'addr_info':[{'family':'inet','scope':'global','local':'192.0.2.3','prefixlen':24}]}]
         self.assertEqual(pxe.network_from(plan, interfaces, '02:00:00:00:00:03'), network())
         with self.assertRaisesRegex(pxe.Unavailable, 'interface_identity_changed'):
@@ -116,7 +116,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_failed_responder_withdraws_long_enough_for_peer_takeover(self):
         supervisor = pxe.Supervisor()
-        supervisor.winner = 'james-b'
+        supervisor.winner = 'nest-b'
         with patch.object(supervisor, 'status') as status, patch.object(pxe.time, 'monotonic', return_value=100):
             supervisor.failed(pxe.Unavailable('proxy_process_failed'))
             status.assert_called_once_with('unavailable', 'proxy_process_failed')

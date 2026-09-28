@@ -1,5 +1,5 @@
 {
-  "schema": "cybex.james.ubuntu-base-iso.v1",
+  "schema": "tiaris.nest.ubuntu-base-iso.v1",
   "version": "26.04",
   "build_id": "20260826",
   "architecture": "amd64",

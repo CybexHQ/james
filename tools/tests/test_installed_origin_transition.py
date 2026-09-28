@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-LOADER = SourceFileLoader('origin_transition', str(ROOT / 'ubuntu-appliance/rootfs/usr/lib/cybex-james/cybex-james-origin-transition'))
+LOADER = SourceFileLoader('origin_transition', str(ROOT / 'ubuntu-appliance/rootfs/usr/lib/tiaris-nest/tiaris-nest-origin-transition'))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 transition = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(transition)
@@ -18,18 +18,18 @@ TARGET = 'https://manage.cybex.net'
 
 class InstalledOriginTransitionTests(unittest.TestCase):
     def prepare(self, root):
-        control = root / 'var/lib/cybex-james/control'
-        share = root / 'usr/share/cybex-james'
+        control = root / 'var/lib/tiaris-nest/control'
+        share = root / 'usr/share/tiaris-nest'
         staging = control / 'origin-transitions/0.2.1-dev.26'
         receipt = control / 'appliance-updates/0.2.1-dev.26/verified-update.json'
-        for path in (staging, receipt.parent, share, root / 'etc/cybex-james'):
+        for path in (staging, receipt.parent, share, root / 'etc/tiaris-nest'):
             path.mkdir(parents=True, exist_ok=True)
         key = root / 'key.pem'
         subprocess.run(['openssl', 'genpkey', '-algorithm', 'ED25519', '-out', str(key)], check=True, capture_output=True)
         der = subprocess.check_output(['openssl', 'pkey', '-in', str(key), '-pubout', '-outform', 'DER'])
         public = base64.b64encode(der[-32:]).decode()
         (share / 'release-public-key').write_text(public + '\n')
-        (root / 'etc/cybex-james/config.toml').write_text('[manage]\napi_url = "' + TARGET + '"\n')
+        (root / 'etc/tiaris-nest/config.toml').write_text('[manage]\napi_url = "' + TARGET + '"\n')
         plan = {'schema': 'fixture-plan', 'session_id': 'unchanged-session', 'signature': 'unchanged-signature'}
         state = {'manage_origin': SOURCE, 'identity_active': True, 'installation_complete': True,
                  'plan': plan, 'device_private_key_b64': 'unchanged-device-identity', 'next_event_sequence': 9}
@@ -42,11 +42,11 @@ class InstalledOriginTransitionTests(unittest.TestCase):
         save(share / 'appliance-release.json', {'release_id': '0.2.1-dev.26'})
         manifest = {'version': '0.2.1-dev.26', 'installer_iso_template_v2': {'manage_origin': TARGET},
                     'appliance_release_v1': {'release_id': '0.2.1-dev.26', 'source_revision': 'a' * 40,
-                                             'cybex_repository_snapshot': {'sha256': 'b' * 64}}}
+                                             'tiaris_repository_snapshot': {'sha256': 'b' * 64}}}
         save(staging / 'manifest.json', manifest)
-        save(receipt, {'schema': 'cybex.james.verified-appliance-update.v1', 'target_release': '0.2.1-dev.26',
+        save(receipt, {'schema': 'tiaris.nest.verified-appliance-update.v1', 'target_release': '0.2.1-dev.26',
                        'source_revision': 'a' * 40, 'package_snapshot_sha256': 'b' * 64})
-        payload = {'schema': 'cybex.james.origin-transition.v1', 'public_key': public, 'reason': 'fixture transition',
+        payload = {'schema': 'tiaris.nest.origin-transition.v1', 'public_key': public, 'reason': 'fixture transition',
                    'source': {'manage_origin': SOURCE, 'release_version': '0.2.1-dev.21'},
                    'target': {'manage_origin': TARGET, 'release_version': '0.2.1-dev.26',
                               'manifest': {'sha256': hashlib.sha256((staging / 'manifest.json').read_bytes()).hexdigest()}}}
@@ -76,7 +76,7 @@ class InstalledOriginTransitionTests(unittest.TestCase):
                 before = (control / 'provisioning-state.json').read_bytes()
                 path = {'signature': staging / 'authorization.json', 'manifest': staging / 'manifest.json',
                         'receipt': receipt, 'predecessor': control / 'appliance-release.json',
-                        'plan': control / 'install-plan.json', 'config': root / 'etc/cybex-james/config.toml'}[kind]
+                        'plan': control / 'install-plan.json', 'config': root / 'etc/tiaris-nest/config.toml'}[kind]
                 if kind == 'config':
                     path.write_text('[manage]\napi_url = "' + SOURCE + '"\n')
                 else:

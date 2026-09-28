@@ -6,7 +6,7 @@ let
   installed = configurations.installed.nix.settings;
   setup = configurations.setup.nix.settings;
   cacheKey = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=";
-  releaseKey = "cybex-james-appliance-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  releaseKey = "tiaris-nest-appliance-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 in
 assert installed.substituters == [ "https://cache.nixos.org" ];
 assert builtins.elem cacheKey installed.trusted-public-keys;
@@ -16,4 +16,4 @@ assert installed.trusted-users != [] && builtins.all (user: user == "root") inst
 assert installed.sandbox;
 assert setup.substituters == [];
 assert setup.trusted-public-keys == [ releaseKey ];
-pkgs.runCommand "james-blueprint-cache-policy" {} "touch $out"
+pkgs.runCommand "nest-blueprint-cache-policy" {} "touch $out"

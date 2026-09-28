@@ -1,4 +1,4 @@
-# James releases
+# Nest releases
 
 Current appliance builds use NixOS from the same non-flake nixpkgs pin as the
 workstation runtime. Ubuntu appliances require human reinstall; they are never
@@ -6,29 +6,29 @@ an update predecessor for a NixOS candidate.
 
 ## Signed artifacts
 
-The outer `cybex.james.release.v1` remains stable:
+The outer `tiaris.nest.release.v1` remains stable:
 
-- `artifact`: the James service binary.
+- `artifact`: the Nest service binary.
 - `installer_iso_template_v3`: immutable x86-64 UEFI/USB ISO, exact 8192-byte
   zero personalization slot, `system-closure-v1`, public provisioning keys,
   canonical HTTPS `manage_origin` and its separate V3 signature.
-- `appliance_release_v1`: inner `cybex.james.appliance-release.v3`, signing the
-  closure URL/size/SHA-256, system toplevel, NixOS release, James/Manage/nixpkgs
+- `appliance_release_v1`: inner `tiaris.nest.appliance-release.v3`, signing the
+  closure URL/size/SHA-256, system toplevel, NixOS release, Nest/Tiaris/nixpkgs
   revisions, SQLite migration inventory and five system version anchors.
 - `workstation_netboot`: the signed kernel, bootstrap initrd and store squashfs.
 
 The closure filename is
-`cybex-james-appliance-closure-VERSION-x86_64-linux.tar.zst`. Installer admission
+`tiaris-nest-appliance-closure-VERSION-x86_64-linux.tar.zst`. Installer admission
 caps it at 4 GiB compressed; publication assets must each remain below 2 GiB.
 The bounded canonical USTAR contains its manifest, cache metadata, NARInfos,
 `nar/` and signed NARs. Regular tar members are root-owned mode 0644; the directory
-is mode 0755. NAR integrity, signatures, graph closure and actual embedded Manage
+is mode 0755. NAR integrity, signatures, graph closure and actual embedded Tiaris
 source bytes are checked independently by both release tooling and Rust.
 
-The companion `cybex.james.release-compatibility.v1` asset keeps its historical
+The companion `tiaris.nest.release-compatibility.v1` asset keeps its historical
 `appliance_package_snapshot` identity slot for the system closure. Canonical
 UTF-8 sorted compact JSON plus one LF is signed with
-`CYBEX-JAMES-RELEASE-COMPATIBILITY-V1\n`. It binds the exact main manifest,
+`TIARIS-NEST-RELEASE-COMPATIBILITY-V1\n`. It binds the exact main manifest,
 component compatibility contract, and all artifact identities. Protocol 4 and
 workstation runtime epoch 1 / `split-squashfs-v1` remain unchanged. The additive
 `workstation_netboot_transport_v1` capability permits an unsigned fixture endpoint
@@ -40,8 +40,8 @@ See [the exact V3 protocol](protocol/appliance-v3.md) and the
 
 ## Build, sign and verify
 
-Build clean committed James and Manage sources. `release/workstation-netboot-source.json`
-pins the development repository and exact Manage revision. Both appliance and
+Build clean committed Nest and Tiaris sources. `release/workstation-netboot-source.json`
+pins the development repository and exact Tiaris revision. Both appliance and
 workstation evaluate the one `release/nixpkgs.nix` pin. The unsigned builder never
 receives private signing credentials. `build-closure.sh --unsigned-output-dir`
 exports cache plus `build-metadata.json`; `tools/pack-system-closure.py` verifies,
@@ -51,20 +51,20 @@ public keys, one branded boot entry and contiguous zero slot.
 ```sh
 python3 -B -m unittest discover -s tools/tests -v
 cargo test --locked python_packer_archive_verifies_and_extracts_in_rust -- --ignored
-python3 tools/james-release.py verify \
-  --manifest dist/cybex-james-release.json \
-  --artifact dist/cybex-james-x86_64-linux \
-  --installer-iso-template dist/cybex-james-appliance-template-VERSION-x86_64-linux.iso \
-  --appliance-system-closure dist/cybex-james-appliance-closure-VERSION-x86_64-linux.tar.zst \
+python3 tools/nest-release.py verify \
+  --manifest dist/tiaris-nest-release.json \
+  --artifact dist/tiaris-nest-x86_64-linux \
+  --installer-iso-template dist/tiaris-nest-appliance-template-VERSION-x86_64-linux.iso \
+  --appliance-system-closure dist/tiaris-nest-appliance-closure-VERSION-x86_64-linux.tar.zst \
   --workstation-netboot-bundle "$WORKSTATION_BUNDLE" \
   --workstation-netboot-tree "$WORKSTATION_TREE" \
-  --expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" \
-  --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY"
+  --expected-manage-origin "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" \
+  --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
 ```
 
 Signer-side build metadata is additional local provenance, not a published
 artifact. Verification remains self-contained from signed descriptors and
-artifact bytes. The embedded plain-file Manage source store root must match
+artifact bytes. The embedded plain-file Tiaris source store root must match
 both the exact Git revision and workstation source digest/size. Source archives
 from historical releases remain available with those releases; the new closure
 contains its exact current source.
@@ -78,14 +78,14 @@ compatibility and again immediately before immutable publication.
 ## Qualification and publication
 
 Published ancestry and the upgrade fixture are separate identities. Keep
-`cybex-james-build-predecessor.json` as published ancestry. A historical old-key
+`tiaris-nest-build-predecessor.json` as published ancestry. A historical old-key
 publication requires an exact current-key signed authorization; no general trust
 in that old key or historical recovery URL is introduced.
 
 Every V3 release, including the first, requires real fresh installation, a
 strictly lower-version signed NixOS predecessor, real update, and automatic
-rollback. Supply both `CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR` and
-`CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256` when the latest
+rollback. Supply both `TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR` and
+`TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256` when the latest
 publication is Ubuntu. Never relabel Ubuntu or fake a same-version update.
 The qualified predecessor receipt binds the separately retained predecessor
 manifest by `manifest_sha256`.
@@ -96,14 +96,14 @@ It creates its own bridge, TAPs and disposable QEMU disks; it refuses existing
 lab adoption. Despite its retained workflow filename,
 `run-production-qualification.py` does not contact production or copy a
 production database. Required environment inputs are
-`CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN`, `CYBEX_JAMES_QUALIFICATION_TOKEN_FILE`,
-`CYBEX_JAMES_QUALIFICATION_STATE_ROOT` and `CYBEX_JAMES_QUALIFICATION_SUBNET`.
-The workflow also requires `CYBEX_JAMES_QUALIFICATION_MANAGE_CHECKOUT` and a
-root-owned `CYBEX_JAMES_QUALIFICATION_ALLOW_DEVICE_HELPER`. It captures fresh
+`TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN`, `TIARIS_NEST_QUALIFICATION_TOKEN_FILE`,
+`TIARIS_NEST_QUALIFICATION_STATE_ROOT` and `TIARIS_NEST_QUALIFICATION_SUBNET`.
+The workflow also requires `TIARIS_NEST_QUALIFICATION_MANAGE_CHECKOUT` and a
+root-owned `TIARIS_NEST_QUALIFICATION_ALLOW_DEVICE_HELPER`. It captures fresh
 inventory before disk approval, pauses the owned guest, admits only the newly
 reserved fixture ID, then resumes the guest. Cleanup removes only its recorded
 allowlist addition. These six inputs belong to the protected
-`james-nixos-development-qualification` environment.
+`nest-nixos-development-qualification` environment.
 
 Acceptance binds closure, toplevel, generation, source, permanent identity and
 observed reboot. Rollback must be appliance-initiated; a host reset never counts.

@@ -3,14 +3,14 @@ set -Eeuo pipefail
 umask 022
 
 usage() {
-  echo "usage: $0 --output DIR --james-binary FILE --bootstrap-binary FILE --version SEMVER --ubuntu-snapshot-id ID --manage-source-dir DIR --manage-source-revision 40_HEX [--retained-manage-source-dir DIR] --release-public-key BASE64 --provisioning-public-key BASE64 [--provisioning-public-key BASE64 ...] --dependency-version NAME=VERSION (repeat for linux-generic, linux-firmware, nix-bin, python3)" >&2
+  echo "usage: $0 --output DIR --nest-binary FILE --bootstrap-binary FILE --version SEMVER --ubuntu-snapshot-id ID --manage-source-dir DIR --manage-source-revision 40_HEX [--retained-manage-source-dir DIR] --release-public-key BASE64 --provisioning-public-key BASE64 [--provisioning-public-key BASE64 ...] --dependency-version NAME=VERSION (repeat for linux-generic, linux-firmware, nix-bin, python3)" >&2
   exit 2
 }
 
 repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly udpcast_version=20120424-2build2
 output=""
-james_binary=""
+nest_binary=""
 bootstrap_binary=""
 version=""
 snapshot_id=""
@@ -23,7 +23,7 @@ declare -A dependency_versions=()
 while (($#)); do
   case "$1" in
     --output) output="${2:-}"; shift 2 ;;
-    --james-binary) james_binary="${2:-}"; shift 2 ;;
+    --nest-binary) nest_binary="${2:-}"; shift 2 ;;
     --bootstrap-binary) bootstrap_binary="${2:-}"; shift 2 ;;
     --version) version="${2:-}"; shift 2 ;;
     --ubuntu-snapshot-id) snapshot_id="${2:-}"; shift 2 ;;
@@ -55,18 +55,18 @@ for name in linux-generic linux-firmware nix-bin python3; do
     exit 2
   }
 done
-test -n "$output" && test -n "$james_binary" && test -n "$bootstrap_binary"
+test -n "$output" && test -n "$nest_binary" && test -n "$bootstrap_binary"
 test -n "$version" && test -n "$snapshot_id" && test -n "$release_public_key"
 test -n "$manage_source_dir" && test -n "$manage_source_revision"
 test "${#provisioning_public_keys[@]}" -ge 1 && test "${#provisioning_public_keys[@]}" -le 8
-test -x "$james_binary" && test -x "$bootstrap_binary"
-python3 -B "$repository_root/tools/james-release.py" validate-public-key \
+test -x "$nest_binary" && test -x "$bootstrap_binary"
+python3 -B "$repository_root/tools/nest-release.py" validate-public-key \
   --trusted-public-key "$release_public_key" >/dev/null
 mapfile -t sorted_provisioning_keys < <(printf '%s\n' "${provisioning_public_keys[@]}" | LC_ALL=C sort -u)
 test "${#sorted_provisioning_keys[@]}" -eq "${#provisioning_public_keys[@]}"
 for index in "${!provisioning_public_keys[@]}"; do
   test "${provisioning_public_keys[$index]}" = "${sorted_provisioning_keys[$index]}"
-  python3 -B "$repository_root/tools/james-release.py" validate-public-key \
+  python3 -B "$repository_root/tools/nest-release.py" validate-public-key \
     --trusted-public-key "${provisioning_public_keys[$index]}" >/dev/null
 done
 [[ "$snapshot_id" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]
@@ -89,84 +89,84 @@ build_package() {
   dpkg-deb --info "$output/${package}_${version}-1_amd64.deb" >/dev/null
 }
 
-james_root="$work_dir/cybex-james"
+nest_root="$work_dir/tiaris-nest"
 mkdir -p -- \
-  "$james_root/DEBIAN" \
-  "$james_root/usr/bin" \
-  "$james_root/usr/share/cybex-james/manage-source"
-install -m 0755 "$james_binary" "$james_root/usr/bin/cybex-james"
+  "$nest_root/DEBIAN" \
+  "$nest_root/usr/bin" \
+  "$nest_root/usr/share/tiaris-nest/manage-source"
+install -m 0755 "$nest_binary" "$nest_root/usr/bin/tiaris-nest"
 "$repository_root/ubuntu-appliance/build-manage-source-archive.sh" \
   --source-dir "$manage_source_dir" \
   --revision "$manage_source_revision" \
-  --output-dir "$james_root/usr/share/cybex-james/manage-source" \
+  --output-dir "$nest_root/usr/share/tiaris-nest/manage-source" \
   >/dev/null
 declare -a catalog_arguments=()
 if [[ "${#retained_source_arguments[@]}" -gt 0 ]]; then
   catalog_arguments=(--retained-source-dir "${retained_source_arguments[1]}")
 fi
 python3 -B "$repository_root/ubuntu-appliance/manage-source-catalog.py" \
-  --output-dir "$james_root/usr/share/cybex-james/manage-source" \
+  --output-dir "$nest_root/usr/share/tiaris-nest/manage-source" \
   "${catalog_arguments[@]}"
-cat > "$james_root/DEBIAN/control" <<EOF
-Package: cybex-james
+cat > "$nest_root/DEBIAN/control" <<EOF
+Package: tiaris-nest
 Version: ${version}-1
 Section: admin
 Priority: optional
 Architecture: amd64
-Maintainer: Cybex <support@cybex.net>
+Maintainer: Tiaris <support@cybex.net>
 Depends: libc6, libgcc-s1, ca-certificates, udpcast (= ${udpcast_version})
-Description: Cybex James build and network-boot service
+Description: Tiaris Nest build and network-boot service
 EOF
-build_package "$james_root" cybex-james
+build_package "$nest_root" tiaris-nest
 
-bootstrap_root="$work_dir/cybex-james-bootstrap"
-mkdir -p -- "$bootstrap_root/DEBIAN" "$bootstrap_root/usr/lib/cybex-james"
-install -m 0755 "$bootstrap_binary" "$bootstrap_root/usr/lib/cybex-james/cybex-james-bootstrap"
+bootstrap_root="$work_dir/tiaris-nest-bootstrap"
+mkdir -p -- "$bootstrap_root/DEBIAN" "$bootstrap_root/usr/lib/tiaris-nest"
+install -m 0755 "$bootstrap_binary" "$bootstrap_root/usr/lib/tiaris-nest/tiaris-nest-bootstrap"
 cat > "$bootstrap_root/DEBIAN/control" <<EOF
-Package: cybex-james-bootstrap
+Package: tiaris-nest-bootstrap
 Version: ${version}-1
 Section: admin
 Priority: optional
 Architecture: amd64
-Maintainer: Cybex <support@cybex.net>
+Maintainer: Tiaris <support@cybex.net>
 Depends: libc6, libgcc-s1, ca-certificates, iproute2, util-linux, gdisk, e2fsprogs, efibootmgr, parted, iputils-arping, systemd
-Description: Fail-closed Cybex James provisioned-media bootstrap
+Description: Fail-closed Tiaris Nest provisioned-media bootstrap
 EOF
-build_package "$bootstrap_root" cybex-james-bootstrap
+build_package "$bootstrap_root" tiaris-nest-bootstrap
 
-appliance_root="$work_dir/cybex-james-appliance"
-mkdir -p -- "$appliance_root/DEBIAN" "$appliance_root/usr/share/cybex-james"
+appliance_root="$work_dir/tiaris-nest-appliance"
+mkdir -p -- "$appliance_root/DEBIAN" "$appliance_root/usr/share/tiaris-nest"
 cp -a "$repository_root/ubuntu-appliance/rootfs/." "$appliance_root/"
 # The repository rootfs contains public package data only. Normalize checkout
 # permissions so a restrictive checkout umask cannot break service assets.
 # Node credentials are provisioned later into separate protected state.
 chmod -R u=rwX,go=rX "$appliance_root"
 install -D -m 0644 "$repository_root/assets/pxe-menu.png" \
-  "$appliance_root/usr/share/cybex-james/assets/pxe-menu.png"
-printf '%s\n' "$release_public_key" > "$appliance_root/usr/share/cybex-james/release-public-key"
+  "$appliance_root/usr/share/tiaris-nest/assets/pxe-menu.png"
+printf '%s\n' "$release_public_key" > "$appliance_root/usr/share/tiaris-nest/release-public-key"
 printf '%s\n' "${provisioning_public_keys[@]}" \
-  > "$appliance_root/usr/share/cybex-james/provisioning-public-keys"
-chmod 0644 "$appliance_root/usr/share/cybex-james/release-public-key" \
-  "$appliance_root/usr/share/cybex-james/provisioning-public-keys"
-install -m 0755 "$repository_root/ubuntu-appliance/package/cybex-james-appliance.postinst" "$appliance_root/DEBIAN/postinst"
+  > "$appliance_root/usr/share/tiaris-nest/provisioning-public-keys"
+chmod 0644 "$appliance_root/usr/share/tiaris-nest/release-public-key" \
+  "$appliance_root/usr/share/tiaris-nest/provisioning-public-keys"
+install -m 0755 "$repository_root/ubuntu-appliance/package/tiaris-nest-appliance.postinst" "$appliance_root/DEBIAN/postinst"
 jq -n \
-  --arg schema 'cybex.james.appliance-release.v1' \
+  --arg schema 'tiaris.nest.appliance-release.v1' \
   --arg release_id "$version" \
   --arg ubuntu_snapshot_id "$snapshot_id" \
   '{schema:$schema,release_id:$release_id,ubuntu_snapshot_id:$ubuntu_snapshot_id,root_generation:"0"}' \
-  > "$appliance_root/usr/share/cybex-james/appliance-release.json"
-chmod 0644 "$appliance_root/usr/share/cybex-james/appliance-release.json"
+  > "$appliance_root/usr/share/tiaris-nest/appliance-release.json"
+chmod 0644 "$appliance_root/usr/share/tiaris-nest/appliance-release.json"
 cat > "$appliance_root/DEBIAN/control" <<EOF
-Package: cybex-james-appliance
+Package: tiaris-nest-appliance
 Version: ${version}-1
 Section: admin
 Priority: optional
 Architecture: amd64
-Maintainer: Cybex <support@cybex.net>
-Depends: cybex-james (= ${version}-1), cybex-james-bootstrap (= ${version}-1), systemd, nginx-core, tftpd-hpa, dnsmasq-base, ipxe, iproute2, openssh-server, nftables, netplan.io, btrfs-progs, watchdog, nix-bin (= ${dependency_versions[nix-bin]}), nix-setup-systemd, curl, dnsutils, jq, python3 (= ${dependency_versions[python3]}), udpcast (= ${udpcast_version}), mokutil, sbsigntool, shim-signed, grub-efi-amd64-signed, secureboot-db, linux-generic (= ${dependency_versions[linux-generic]}), linux-firmware (= ${dependency_versions[linux-firmware]}), intel-microcode, amd64-microcode
-Description: Managed Ubuntu host integration for Cybex James
+Maintainer: Tiaris <support@cybex.net>
+Depends: tiaris-nest (= ${version}-1), tiaris-nest-bootstrap (= ${version}-1), systemd, nginx-core, tftpd-hpa, dnsmasq-base, ipxe, iproute2, openssh-server, nftables, netplan.io, btrfs-progs, watchdog, nix-bin (= ${dependency_versions[nix-bin]}), nix-setup-systemd, curl, dnsutils, jq, python3 (= ${dependency_versions[python3]}), udpcast (= ${udpcast_version}), mokutil, sbsigntool, shim-signed, grub-efi-amd64-signed, secureboot-db, linux-generic (= ${dependency_versions[linux-generic]}), linux-firmware (= ${dependency_versions[linux-firmware]}), intel-microcode, amd64-microcode
+Description: Managed Ubuntu host integration for Tiaris Nest
 EOF
-printf '%s\n' /etc/cybex-james/pxe-discovery.json > "$appliance_root/DEBIAN/conffiles"
-build_package "$appliance_root" cybex-james-appliance
+printf '%s\n' /etc/tiaris-nest/pxe-discovery.json > "$appliance_root/DEBIAN/conffiles"
+build_package "$appliance_root" tiaris-nest-appliance
 
-sha256sum "$output"/*.deb | LC_ALL=C sort -k2 > "$output/CYBEX-PACKAGES.sha256"
+sha256sum "$output"/*.deb | LC_ALL=C sort -k2 > "$output/TIARIS-PACKAGES.sha256"

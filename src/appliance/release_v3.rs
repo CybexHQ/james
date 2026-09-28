@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, path::Path};
 
-pub const SCHEMA: &str = "cybex.james.appliance-release.v3";
-pub const DOMAIN: &str = "CYBEX-JAMES-APPLIANCE-RELEASE-V3";
+pub const SCHEMA: &str = "tiaris.nest.appliance-release.v3";
+pub const DOMAIN: &str = "TIARIS-NEST-APPLIANCE-RELEASE-V3";
 pub const MAX_ARCHIVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub fn pinned_nixpkgs_revision() -> &'static str {
     include_str!("../../release/nixpkgs.nix")
@@ -97,7 +97,7 @@ impl NixosRelease {
             bail!("closure size is outside the signed archive limit")
         }
         let expected = format!(
-            "cybex-james-appliance-closure-{}-x86_64-linux.tar.zst",
+            "tiaris-nest-appliance-closure-{}-x86_64-linux.tar.zst",
             self.release_id
         );
         let url = canonical_https(&self.system_closure.url)?;
@@ -116,13 +116,13 @@ impl NixosRelease {
             .collect();
         if keys
             != [
-                "cybex-james",
                 "kernel",
                 "linux-firmware",
                 "nix",
                 "systemd-boot",
+                "tiaris-nest",
             ]
-            || self.required_system_versions["cybex-james"] != self.release_id
+            || self.required_system_versions["tiaris-nest"] != self.release_id
             || self
                 .required_system_versions
                 .values()
@@ -312,7 +312,7 @@ impl<'de> Deserialize<'de> for ReleaseDescriptor {
             Some(SCHEMA) => serde_json::from_value(value)
                 .map(Self::Nixos)
                 .map_err(serde::de::Error::custom),
-            Some("cybex.james.appliance-release.v1" | "cybex.james.appliance-release.v2") => {
+            Some("tiaris.nest.appliance-release.v1" | "tiaris.nest.appliance-release.v2") => {
                 serde_json::from_value(value)
                     .map(Self::Legacy)
                     .map_err(serde::de::Error::custom)
@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn shared_golden_descriptor_verifies_exact_bytes_and_rejects_mutations() {
         let fixture: Value = serde_json::from_str(include_str!(
-            "../../protocol/fixtures/james-appliance-v3.json"
+            "../../protocol/fixtures/nest-appliance-v3.json"
         ))
         .unwrap();
         let release: NixosRelease =

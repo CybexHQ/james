@@ -1,0 +1,94 @@
+#!/bin/sh
+set -eu
+
+if ! getent group tiaris-nest >/dev/null 2>&1; then
+  addgroup --system tiaris-nest
+fi
+if ! getent passwd tiaris-nest >/dev/null 2>&1; then
+  adduser --system --ingroup tiaris-nest --home /var/lib/tiaris-nest \
+    --no-create-home --disabled-login --shell /usr/sbin/nologin tiaris-nest
+fi
+if getent group nix-users >/dev/null 2>&1; then
+  adduser tiaris-nest nix-users >/dev/null
+fi
+if ! getent passwd tiaris-support >/dev/null 2>&1; then
+  adduser --disabled-password --gecos 'Tiaris short-lived certificate support' \
+    --home /var/lib/tiaris-support --shell /bin/bash tiaris-support
+fi
+passwd -l tiaris-support >/dev/null 2>&1 || true
+
+legacy_state=false
+if [ -f /etc/tiaris-nest/config.toml ] \
+  && grep -F 'database_path = "/var/lib/tiaris-nest/state/tiaris-nest.sqlite"' /etc/tiaris-nest/config.toml >/dev/null \
+  && grep -F 'state_path = "/var/lib/tiaris-nest/state/manage-state.json"' /etc/tiaris-nest/config.toml >/dev/null
+then
+  legacy_state=true
+  install -m 0644 -o root -g root /dev/null /etc/tiaris-nest/legacy-state-layout
+fi
+nest_root=/var/lib/tiaris-nest
+if [ -e "$nest_root" ] || [ -L "$nest_root" ]; then
+  [ -d "$nest_root" ] && [ ! -L "$nest_root" ] || exit 1
+else
+  mkdir "$nest_root"
+fi
+chown root:tiaris-nest "$nest_root"
+chmod 0750 "$nest_root"
+for protected in "$nest_root/control" "$nest_root/status"; do
+  if [ -e "$protected" ] || [ -L "$protected" ]; then
+    [ -d "$protected" ] && [ ! -L "$protected" ] || exit 1
+    [ "$(stat -c '%U:%G:%a' "$protected")" = root:tiaris-nest:750 ] || exit 1
+  else
+    mkdir "$protected"
+  fi
+  chown root:tiaris-nest "$protected"
+  chmod 0750 "$protected"
+done
+if [ "$legacy_state" = false ]; then
+  install -d -m 0750 -o root -g tiaris-nest /var/lib/tiaris-nest/state
+  install -d -m 0700 -o tiaris-nest -g tiaris-nest /var/lib/tiaris-nest/state/agent
+fi
+install -d -m 0700 -o tiaris-nest -g tiaris-nest /var/lib/tiaris-nest/state/inbox
+install -d -m 0755 -o root -g root /var/cache/tiaris-nest
+install -d -m 0755 -o root -g root /var/cache/tiaris-nest/nix
+# HOME cannot be the root-owned appliance trust boundary: Nix creates
+# per-client evaluator state below HOME/XDG paths before it can evaluate a
+# Blueprint. Keep the path names root-controlled and expose only these private
+# leaves to the unprivileged service.
+agent_cache=/var/cache/tiaris-nest/agent
+if [ -e "$agent_cache" ] || [ -L "$agent_cache" ]; then
+  [ -d "$agent_cache" ] && [ ! -L "$agent_cache" ] || exit 1
+fi
+install -d -m 0750 -o root -g tiaris-nest "$agent_cache"
+for private in home cache config state tmp; do
+  path="$agent_cache/$private"
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    [ -d "$path" ] && [ ! -L "$path" ] || exit 1
+  fi
+  install -d -m 0700 -o tiaris-nest -g tiaris-nest "$path"
+done
+install -d -m 0750 -o tiaris-nest -g tiaris-nest /var/cache/tiaris-nest/www
+getent passwd tftp >/dev/null
+getent group tftp >/dev/null
+# tftpd-hpa deliberately applies its public-readability policy after dropping
+# privileges. The TFTP root contains only immutable package-provided EFI
+# launchers and their credential-free iPXE handoff script, so make that narrow
+# tree traversable/readable while retaining root-only mutation. Runtime and
+# secret-bearing state remain private above.
+if [ -e /var/cache/tiaris-nest/tftp ] || [ -L /var/cache/tiaris-nest/tftp ]; then
+  [ -d /var/cache/tiaris-nest/tftp ] && [ ! -L /var/cache/tiaris-nest/tftp ] || exit 1
+fi
+install -d -m 0755 -o root -g root /var/cache/tiaris-nest/tftp
+install -d -m 0755 /etc/tiaris-nest /etc/ssh/sshd_config.d
+
+/usr/lib/tiaris-nest/tiaris-nest-packaged-service
+/usr/lib/tiaris-nest/tiaris-nest-origin-transition
+
+systemctl mask apt-daily.service apt-daily-upgrade.service \
+  apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service >/dev/null 2>&1 || true
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl enable tiaris-nest-first-boot.service tiaris-nest-firewall.service tiaris-nest.service \
+  tiaris-nest-generation-commit.service tiaris-nest-appliance-update.timer tiaris-nest-update-schedule.timer \
+  tiaris-nest-network-change.path tiaris-nest-network-runtime.timer tiaris-nest-pxe.service \
+  getty@tty1.service nginx tftpd-hpa nix-daemon ssh >/dev/null 2>&1 || true
+
+exit 0

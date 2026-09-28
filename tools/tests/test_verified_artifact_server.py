@@ -25,7 +25,7 @@ spec.loader.exec_module(V)
 
 class ArtifactServerTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix='cybex-artifact-server-test-')
+        self.temporary = tempfile.TemporaryDirectory(prefix='tiaris-artifact-server-test-')
         self.root = Path(self.temporary.name)
         self.body = bytes(range(256)) * 17
         self.source = self.root / 'bundle.tar.zst'

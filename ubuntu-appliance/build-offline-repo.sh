@@ -3,14 +3,14 @@ set -Eeuo pipefail
 umask 022
 
 usage() {
-  echo "usage: $0 --output DIR --james-binary FILE --bootstrap-binary FILE --version SEMVER --ubuntu-snapshot-id ID --manage-source-dir DIR --manage-source-revision 40_HEX [--retained-manage-source-dir DIR] --release-public-key BASE64 --provisioning-public-key BASE64 [--provisioning-public-key BASE64 ...] [--previous-package-snapshot FILE]" >&2
+  echo "usage: $0 --output DIR --nest-binary FILE --bootstrap-binary FILE --version SEMVER --ubuntu-snapshot-id ID --manage-source-dir DIR --manage-source-revision 40_HEX [--retained-manage-source-dir DIR] --release-public-key BASE64 --provisioning-public-key BASE64 [--provisioning-public-key BASE64 ...] [--previous-package-snapshot FILE]" >&2
   exit 2
 }
 
 repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly udpcast_expected_version=20120424-2build2
 output=""
-james_binary=""
+nest_binary=""
 bootstrap_binary=""
 version=""
 snapshot_id=""
@@ -23,7 +23,7 @@ previous_package_snapshot=""
 while (($#)); do
   case "$1" in
     --output) output="${2:-}"; shift 2 ;;
-    --james-binary) james_binary="${2:-}"; shift 2 ;;
+    --nest-binary) nest_binary="${2:-}"; shift 2 ;;
     --bootstrap-binary) bootstrap_binary="${2:-}"; shift 2 ;;
     --version) version="${2:-}"; shift 2 ;;
     --ubuntu-snapshot-id) snapshot_id="${2:-}"; shift 2 ;;
@@ -46,7 +46,7 @@ while (($#)); do
     *) usage ;;
   esac
 done
-test -n "$output" && test -n "$james_binary" && test -n "$bootstrap_binary"
+test -n "$output" && test -n "$nest_binary" && test -n "$bootstrap_binary"
 test -n "$version" && test -n "$release_public_key"
 test -n "$manage_source_dir" && test -n "$manage_source_revision"
 test "${#provisioning_public_keys[@]}" -ge 1 && test "${#provisioning_public_keys[@]}" -le 8
@@ -61,7 +61,7 @@ if [[ -n "$previous_package_snapshot" ]]; then
     exit 1
   fi
 fi
-python3 -B "$repository_root/tools/james-release.py" validate-public-key \
+python3 -B "$repository_root/tools/nest-release.py" validate-public-key \
   --trusted-public-key "$release_public_key" >/dev/null
 mkdir -p -- "$output"
 output="$(cd -- "$output" && pwd -P)"
@@ -91,7 +91,7 @@ deb-src [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $snapshot_bas
 deb-src [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $snapshot_base/ resolute-updates main restricted universe multiverse
 deb-src [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] $snapshot_base/ resolute-security main restricted universe multiverse
 EOF
-cat > "$apt_root/etc/apt/apt.conf.d/99cybex-snapshot" <<'EOF'
+cat > "$apt_root/etc/apt/apt.conf.d/99tiaris-snapshot" <<'EOF'
 Acquire::Check-Valid-Until "false";
 Acquire::Languages "none";
 APT::Install-Recommends "false";
@@ -112,7 +112,7 @@ declare -a apt_options=(
 apt-get "${apt_options[@]}" update
 
 # Resolve the exact signed OS anchors from authenticated snapshot indexes before
-# building the three Cybex roots. Frozen selective updaters request only these
+# building the three Tiaris roots. Frozen selective updaters request only these
 # roots, so their dependencies must force the kernel/runtime versions promised
 # by the descriptor instead of silently retaining an older installed anchor.
 declare -a dependency_version_arguments=()
@@ -129,7 +129,7 @@ local_packages="$work_dir/local"
 mkdir -p -- "$local_packages"
 "$repository_root/ubuntu-appliance/build-packages.sh" \
   --output "$local_packages" \
-  --james-binary "$james_binary" \
+  --nest-binary "$nest_binary" \
   --bootstrap-binary "$bootstrap_binary" \
   --version "$version" \
   --ubuntu-snapshot-id "$snapshot_id" \
@@ -285,9 +285,9 @@ jq -S -n \
     spdxVersion:"SPDX-2.3",
     dataLicense:"CC0-1.0",
     SPDXID:"SPDXRef-DOCUMENT",
-    name:("cybex-james-udpcast-" + $version),
-    documentNamespace:("https://cybex.net/spdx/james/" + $snapshot_id + "/udpcast/" + $sha256),
-    creationInfo:{created:($snapshot_id[0:4] + "-" + $snapshot_id[4:6] + "-" + $snapshot_id[6:11] + ":" + $snapshot_id[11:13] + ":" + $snapshot_id[13:15] + "Z"),creators:["Tool: Cybex James appliance snapshot builder"]},
+    name:("tiaris-nest-udpcast-" + $version),
+    documentNamespace:("https://cybex.net/spdx/nest/" + $snapshot_id + "/udpcast/" + $sha256),
+    creationInfo:{created:($snapshot_id[0:4] + "-" + $snapshot_id[4:6] + "-" + $snapshot_id[6:11] + ":" + $snapshot_id[11:13] + ":" + $snapshot_id[13:15] + "Z"),creators:["Tool: Tiaris Nest appliance snapshot builder"]},
     packages:[{
       name:"udpcast",SPDXID:"SPDXRef-Package-udpcast",versionInfo:$version,
       downloadLocation:"NOASSERTION",filesAnalyzed:false,
@@ -300,8 +300,8 @@ jq -S -n \
       externalRefs:[{referenceCategory:"PACKAGE-MANAGER",referenceType:"purl",referenceLocator:("pkg:deb/ubuntu/udpcast@" + ($version|@uri) + "?arch=amd64")}]
     }],
     relationships:[{spdxElementId:"SPDXRef-DOCUMENT",relationshipType:"DESCRIBES",relatedSpdxElement:"SPDXRef-Package-udpcast"}],
-    annotations:[{annotationType:"OTHER",annotator:"Tool: Cybex James appliance snapshot builder",annotationDate:($snapshot_id[0:4] + "-" + $snapshot_id[4:6] + "-" + $snapshot_id[6:11] + ":" + $snapshot_id[11:13] + ":" + $snapshot_id[13:15] + "Z"),comment:("Corresponding source files: " + ($source_files|tojson))}]
-  }' > "$output/CYBEX-SBOM.spdx.json"
+    annotations:[{annotationType:"OTHER",annotator:"Tool: Tiaris Nest appliance snapshot builder",annotationDate:($snapshot_id[0:4] + "-" + $snapshot_id[4:6] + "-" + $snapshot_id[6:11] + ":" + $snapshot_id[11:13] + ":" + $snapshot_id[13:15] + "Z"),comment:("Corresponding source files: " + ($source_files|tojson))}]
+  }' > "$output/TIARIS-SBOM.spdx.json"
 
 # Installed snapshot parsers accept only APT metadata and .deb files. Preserve
 # the complete corresponding source and SPDX in a normal authenticated package,
@@ -315,8 +315,8 @@ python3 -B "$repository_root/ubuntu-appliance/package-source-offer.py" \
   dpkg-scanpackages --multiversion . /dev/null > Packages
   gzip -n -9 -c Packages > Packages.gz
   apt-ftparchive \
-    -o APT::FTPArchive::Release::Origin='Cybex' \
-    -o APT::FTPArchive::Release::Label='Cybex James Offline' \
+    -o APT::FTPArchive::Release::Origin='Tiaris' \
+    -o APT::FTPArchive::Release::Label='Tiaris Nest Offline' \
     -o APT::FTPArchive::Release::Suite='resolute' \
     -o APT::FTPArchive::Release::Codename='resolute' \
     -o APT::FTPArchive::Release::Architectures='amd64' \

@@ -39,7 +39,7 @@ def run(*args, **kwargs):
 
 
 def snapshot(directory, version, packages):
-    path = directory / f"cybex-james-appliance-packages-{version}-x86_64-linux.tar"
+    path = directory / f"tiaris-nest-appliance-packages-{version}-x86_64-linux.tar"
     with tarfile.open(path, "w", format=tarfile.USTAR_FORMAT) as archive:
         for package in packages:
             entry = tarfile.TarInfo(package.name)
@@ -82,7 +82,7 @@ class RetentionTests(unittest.TestCase):
     def build(cls, name, version, revision, retained=None):
         output = cls.root / name
         arguments = [ROOT / "ubuntu-appliance/build-packages.sh", "--output", output,
-                     "--james-binary", cls.binary, "--bootstrap-binary", cls.binary,
+                     "--nest-binary", cls.binary, "--bootstrap-binary", cls.binary,
                      "--version", version, "--ubuntu-snapshot-id", SNAPSHOT,
                      "--manage-source-dir", cls.source, "--manage-source-revision", revision,
                      "--release-public-key", KEY, "--provisioning-public-key", KEY]
@@ -92,7 +92,7 @@ class RetentionTests(unittest.TestCase):
         if retained:
             arguments.extend(["--retained-manage-source-dir", retained])
         run(*arguments)
-        return output / f"cybex-james_{version}-1_amd64.deb"
+        return output / f"tiaris-nest_{version}-1_amd64.deb"
 
     def test_real_dpkg_upgrade_preserves_old_runtime_source_and_new_source(self):
         privileged = []
@@ -108,7 +108,7 @@ class RetentionTests(unittest.TestCase):
                     run(*privileged, "dpkg", "--root", root, "--log", root / "dpkg.log",
                         "--force-depends", "--install", package,
                         env={**os.environ, "PATH": "/usr/sbin:/sbin:" + os.environ["PATH"]})
-                catalog = root / "usr/share/cybex-james/manage-source"
+                catalog = root / "usr/share/tiaris-nest/manage-source"
                 self.assertEqual(set(C.inspect(catalog)), {self.old_revision, self.new_revision})
                 for suffix in ("tar", "json"):
                     retained = catalog / f"{self.old_revision}.{suffix}"
@@ -117,7 +117,7 @@ class RetentionTests(unittest.TestCase):
                     self.assertEqual(retained.read_bytes(),
                                      (self.retained / retained.name).read_bytes())
                 installed = run("dpkg-query", "--admindir", root / "var/lib/dpkg", "--show",
-                                "--showformat=${Version}", "cybex-james")
+                                "--showformat=${Version}", "tiaris-nest")
                 self.assertEqual(installed.stdout, b"1.2.4-1")
             finally:
                 if privileged:
@@ -134,7 +134,7 @@ class RetentionTests(unittest.TestCase):
             self.assertEqual(self.new.read_bytes(), repeated.read_bytes())
             with self.assertRaisesRegex(R.ReleaseError, "exact selected revision"):
                 R._inspect_packaged_manage_source(self.new_snapshot, "1.2.4")
-            with self.assertRaisesRegex(R.ReleaseError, "selected Manage source revision"):
+            with self.assertRaisesRegex(R.ReleaseError, "selected Tiaris source revision"):
                 R._inspect_packaged_manage_source(self.new_snapshot, "1.2.4", "0" * 40)
 
     def test_source_tampering_links_incomplete_pairs_and_bounds_fail_closed(self):
@@ -196,7 +196,7 @@ class RetentionTests(unittest.TestCase):
             root = Path(temporary)
             package_root = root / "unpacked"
             run("dpkg-deb", "--raw-extract", self.new, package_root)
-            archive = package_root / f"usr/share/cybex-james/manage-source/{self.old_revision}.tar"
+            archive = package_root / f"usr/share/tiaris-nest/manage-source/{self.old_revision}.tar"
             archive.chmod(0o644)
             archive.write_bytes(b"invalid inherited archive")
             archive.chmod(0o444)
@@ -231,7 +231,7 @@ class RetentionTests(unittest.TestCase):
             bundle = snapshot(root, "1.2.3", sorted(repository.iterdir()))
             source = json.loads((self.retained / f"{self.old_revision}.json").read_bytes())
             manifest = {"version": "1.2.3", "appliance_release_v1": {
-                "ubuntu_snapshot_id": SNAPSHOT, "cybex_repository_snapshot": {
+                "ubuntu_snapshot_id": SNAPSHOT, "tiaris_repository_snapshot": {
                     "url": "https://github.com/CybexHQ/james/releases/download/v1.2.3/" + bundle.name,
                     "sha256": P.sha(bundle), "size_bytes": bundle.stat().st_size}},
                 "workstation_netboot": {"manage_source_revision": self.old_revision,

@@ -1,5 +1,5 @@
 //! Server-authorized recovery before a random permanent identity is durable.
-use super::{JamesProvisioningInventory, SignedInstallPlan, inventory, protocol};
+use super::{NestProvisioningInventory, SignedInstallPlan, inventory, protocol};
 use anyhow::{Context, Result, bail};
 use ed25519_dalek::SigningKey;
 
@@ -8,7 +8,7 @@ use ed25519_dalek::SigningKey;
 pub(super) fn durable_plan(
     durable: &super::DurableProvisioningState,
     verified: &protocol::VerifiedEnvelope,
-    inventory: &JamesProvisioningInventory,
+    inventory: &NestProvisioningInventory,
 ) -> Result<SignedInstallPlan> {
     if durable.session_id != verified.envelope.session_id
         || durable.manage_origin != verified.envelope.manage_origin
@@ -51,7 +51,7 @@ pub(super) async fn initial_session(
     client: &protocol::ProvisioningClient,
     verified: &protocol::VerifiedEnvelope,
     key: &SigningKey,
-    inventory: &JamesProvisioningInventory,
+    inventory: &NestProvisioningInventory,
     hardware_digest: &str,
 ) -> Result<(protocol::AgentSessionResponse, bool)> {
     match client.poll_plan(key).await {
@@ -81,7 +81,7 @@ pub(super) async fn initial_session(
 pub(super) fn active_plan(
     session: &protocol::AgentSessionResponse,
     verified: &protocol::VerifiedEnvelope,
-    inventory: &JamesProvisioningInventory,
+    inventory: &NestProvisioningInventory,
 ) -> Result<SignedInstallPlan> {
     if session.session_id != verified.envelope.session_id
         || !matches!(session.state.as_str(), "approved" | "installing")
@@ -92,7 +92,7 @@ pub(super) fn active_plan(
         .plan
         .clone()
         .context("active recovery session omitted its signed plan")?;
-    // Expiry may pass after acknowledgement. Manage's exact seq1/seq2 replay
+    // Expiry may pass after acknowledgement. Tiaris's exact seq1/seq2 replay
     // fences below still reject expired unacknowledged or superseded authority.
     let plan = protocol::verify_durable_install_plan(
         value,

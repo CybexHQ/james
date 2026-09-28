@@ -1,7 +1,7 @@
-# Cybex James appliance setup — GRUB gfxmenu theme.
+# Tiaris Nest appliance setup — GRUB gfxmenu theme.
 #
-# This carries forward the dark Cybex USB installer presentation and reuses
-# the James PXE background asset. GRUB is deliberately limited to one primary
+# This carries forward the dark Tiaris USB installer presentation and reuses
+# the Nest PXE background asset. GRUB is deliberately limited to one primary
 # setup action; firmware escape entries remain available beneath it.
 
 title-text: ""
@@ -21,7 +21,7 @@ terminal-height: "84%"
     align = "center"
     color = "#747984"
     font = "GNU Unifont Regular 16"
-    text = "CYBEX JAMES · APPLIANCE SETUP"
+    text = "TIARIS NEST · APPLIANCE SETUP"
 }
 
 + boot_menu {
@@ -68,5 +68,5 @@ terminal-height: "84%"
     align = "right"
     color = "#747984"
     font = "GNU Unifont Regular 16"
-    text = "Cybex James Setup"
+    text = "Tiaris Nest Setup"
 }

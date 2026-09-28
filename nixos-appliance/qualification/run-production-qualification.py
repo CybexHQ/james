@@ -88,9 +88,9 @@ def write_release_inputs(state, selected, manage_checkout, origin):
     """Bind selected fixture bytes separately from the reviewed running harness."""
     manifest, body = predecessor.checked_json(selected)
     descriptor = manifest['appliance_release_v1']
-    james_checkout = HELPERS.parents[1]
-    inputs = {'schema': 'cybex.qualification-release-inputs.v2',
-              'james_repository': str(james_checkout),
+    nest_checkout = HELPERS.parents[1]
+    inputs = {'schema': 'tiaris.qualification-release-inputs.v2',
+              'nest_repository': str(nest_checkout),
               'manage_repository': str(manage_checkout),
               'version': manifest['version'], 'manage_origin': origin,
               'candidate_manifest': str(selected),
@@ -100,7 +100,7 @@ def write_release_inputs(state, selected, manage_checkout, origin):
               'nixpkgs_revision': descriptor['nixpkgs_revision'],
               'system_toplevel': descriptor['system_toplevel'],
               'system_closure_sha256': descriptor['system_closure']['sha256']}
-    for component in ('james', 'manage'):
+    for component in ('nest', 'manage'):
         inputs[component + '_revision'] = subprocess.check_output(
             ['git', '-C', inputs[component + '_repository'], 'rev-parse', 'HEAD'], text=True).strip()
     with (state / 'release-inputs.json').open('xb') as stream:
@@ -118,19 +118,19 @@ def main():
     parser.add_argument('--evidence-dir', type=Path, required=True)
     parser.add_argument('--trusted-public-key', required=True)
     parser.add_argument('--published-cold', action='store_true')
-    parser.add_argument('--manage-origin', default=os.environ.get('CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN'))
-    parser.add_argument('--token-file', type=Path, default=os.environ.get('CYBEX_JAMES_QUALIFICATION_TOKEN_FILE'))
-    parser.add_argument('--subnet', default=os.environ.get('CYBEX_JAMES_QUALIFICATION_SUBNET'))
-    parser.add_argument('--state-root', type=Path, default=os.environ.get('CYBEX_JAMES_QUALIFICATION_STATE_ROOT'))
-    parser.add_argument('--allow-device-helper', type=Path, default=os.environ.get('CYBEX_JAMES_QUALIFICATION_ALLOW_DEVICE_HELPER'))
-    parser.add_argument('--manage-checkout', type=Path, default=os.environ.get('CYBEX_JAMES_QUALIFICATION_MANAGE_CHECKOUT'))
+    parser.add_argument('--manage-origin', default=os.environ.get('TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN'))
+    parser.add_argument('--token-file', type=Path, default=os.environ.get('TIARIS_NEST_QUALIFICATION_TOKEN_FILE'))
+    parser.add_argument('--subnet', default=os.environ.get('TIARIS_NEST_QUALIFICATION_SUBNET'))
+    parser.add_argument('--state-root', type=Path, default=os.environ.get('TIARIS_NEST_QUALIFICATION_STATE_ROOT'))
+    parser.add_argument('--allow-device-helper', type=Path, default=os.environ.get('TIARIS_NEST_QUALIFICATION_ALLOW_DEVICE_HELPER'))
+    parser.add_argument('--manage-checkout', type=Path, default=os.environ.get('TIARIS_NEST_QUALIFICATION_MANAGE_CHECKOUT'))
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,22}', args.run)
             or not all((args.manage_origin, args.token_file, args.subnet, args.state_root))):
         raise ValueError('Root, bounded run ID and explicit development origin/session/subnet/state-root are required')
     SCOPE['development_origin'](args.manage_origin)
     if args.allow_device_helper and args.manage_checkout is None:
-        raise ValueError('Device admission requires the explicit reviewed development Manage checkout')
+        raise ValueError('Device admission requires the explicit reviewed development Tiaris checkout')
     if args.manage_checkout:
         args.manage_checkout = args.manage_checkout.resolve(strict=True)
     os.umask(0o077)
@@ -154,9 +154,9 @@ def main():
         previous_manifest = predecessor.checked_json(args.predecessor_dir / predecessor.MANIFEST)[0]
         if previous_manifest['installer_iso_template_v3']['manage_origin'] != args.manage_origin:
             raise ValueError('Predecessor origin must equal the development candidate origin')
-        (args.evidence_dir / 'cybex-james-qualified-predecessor.json').write_bytes(predecessor.canonical(previous))
+        (args.evidence_dir / 'tiaris-nest-qualified-predecessor.json').write_bytes(predecessor.canonical(previous))
         shutil.copyfile(args.predecessor_dir / predecessor.MANIFEST,
-                        args.evidence_dir / 'cybex-james-qualified-predecessor-release.json')
+                        args.evidence_dir / 'tiaris-nest-qualified-predecessor-release.json')
         phases = ['update', 'rollback', 'fresh']
     else:
         phases = ['cold']
@@ -175,12 +175,12 @@ def main():
                 if (not stat.S_ISREG(helper_info.st_mode) or helper_info.st_uid != 0
                         or helper_info.st_mode & 0o022 or not helper_info.st_mode & 0o100):
                     raise ValueError('Device-admission helper must be an ordinary root-owned protected executable')
-                environment['CYBEX_JAMES_QUALIFICATION_ALLOW_DEVICE_HELPER'] = str(args.allow_device_helper)
+                environment['TIARIS_NEST_QUALIFICATION_ALLOW_DEVICE_HELPER'] = str(args.allow_device_helper)
             selected = args.predecessor_dir / predecessor.MANIFEST if phase in {'update', 'rollback'} else candidate_manifest
             if args.allow_device_helper:
                 write_release_inputs(state, selected, args.manage_checkout, args.manage_origin)
             fresh = args.evidence_dir / (f'predecessor-{phase}.json' if phase in {'update', 'rollback'} else
-                'cybex-james-nixos-qualification.json' if phase == 'fresh' else 'cybex-james-published-cold-qualification.json')
+                'tiaris-nest-nixos-qualification.json' if phase == 'fresh' else 'tiaris-nest-published-cold-qualification.json')
             command = [sys.executable, '-B', HELPERS / 'run-isolated-lifecycle.py', '--state-dir', state,
                        '--manifest', selected, '--output', fresh]
             if phase in {'update', 'rollback', 'cold'}:
@@ -197,14 +197,14 @@ def main():
                 command = [sys.executable, '-B', HELPERS / 'run-isolated-update.py', '--state-dir', state,
                     '--fixture', state / 'fixture', '--predecessor-evidence', fresh,
                     '--predecessor-manifest', selected, '--candidate-manifest', candidate_manifest,
-                    '--output', args.evidence_dir / f'cybex-james-nixos-{phase}-qualification.json']
+                    '--output', args.evidence_dir / f'tiaris-nest-nixos-{phase}-qualification.json']
                 if phase == 'rollback':
                     command += ['--rollback']
                 execute(*command, env=environment)
             elif phase == 'cold':
                 execute(sys.executable, '-B', HELPERS / 'run-isolated-workstation.py', '--state-dir', state,
-                    '--fixture', state / 'fixture', '--james-evidence', fresh, '--manifest', candidate_manifest,
-                    '--output', args.evidence_dir / 'cybex-james-published-workstation-qualification.json', env=environment)
+                    '--fixture', state / 'fixture', '--nest-evidence', fresh, '--manifest', candidate_manifest,
+                    '--output', args.evidence_dir / 'tiaris-nest-published-workstation-qualification.json', env=environment)
             successful = True
         finally:
             try:
@@ -224,7 +224,7 @@ def main():
     if 'SUDO_UID' in os.environ and 'SUDO_GID' in os.environ:
         os.chown(args.evidence_dir, int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID']))
     # Only bounded acceptance documents are made readable to the artifact runner.
-    for path in args.evidence_dir.glob('cybex-james-*.json'):
+    for path in args.evidence_dir.glob('tiaris-nest-*.json'):
         path.chmod(0o644)
     print('Requested development qualification phases passed; owned VM disks and networks cleaned')
 

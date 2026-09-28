@@ -22,11 +22,11 @@ import tempfile
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST = "cybex-james-release.json"
-COMPATIBILITY = "cybex-james-release-compatibility.json"
-DOMAIN = b"CYBEX-JAMES-RECOVERY-ADOPTION-V1\n"
-SCHEMA = "cybex.james.recovery-adoption.v1"
-IDENTITY_SCHEMA = "cybex.james.recovery-appliance-predecessor.v1"
+MANIFEST = "tiaris-nest-release.json"
+COMPATIBILITY = "tiaris-nest-release-compatibility.json"
+DOMAIN = b"TIARIS-NEST-RECOVERY-ADOPTION-V1\n"
+SCHEMA = "tiaris.nest.recovery-adoption.v1"
+IDENTITY_SCHEMA = "tiaris.nest.recovery-appliance-predecessor.v1"
 
 
 def module(name, path):
@@ -36,7 +36,7 @@ def module(name, path):
     return result
 
 
-release = module("james_release", ROOT / "tools/james-release.py")
+release = module("nest_release", ROOT / "tools/nest-release.py")
 gate = module("legacy_bridge_gate", Path(__file__).with_name("legacy-bridge-gate.py"))
 
 
@@ -80,7 +80,7 @@ def authorization(path, trusted_key, candidate_version, repository):
     if release._compare_semver(candidate_version, recovery["release_id"]) <= 0:
         raise ValueError("Recovery successor must advance the installed release")
     for field, name in [("manifest_url", MANIFEST), ("compatibility_url", COMPATIBILITY)]:
-        expected = f"https://manage.cybex.net/james-dev-artifacts/{recovery['release_id']}/{name}"
+        expected = f"https://manage.cybex.net/nest-dev-artifacts/{recovery['release_id']}/{name}"
         if recovery[field] != expected:
             raise ValueError("Recovery URL is outside the exact production retention namespace")
     return value
@@ -92,7 +92,7 @@ def latest(releases, candidate_tag):
         # An immutable prerelease is staged for cold acceptance, not a usable
         # predecessor. Historical prereleases without this marker keep their
         # original resolution behavior and exact recovery authorization.
-        if value.get('prerelease') and 'Cybex-Cold-Qualification: required' in (value.get('body') or ''):
+        if value.get('prerelease') and 'Tiaris-Cold-Qualification: required' in (value.get('body') or ''):
             continue
         names = [a["name"] for a in value["assets"]]
         if not value["draft"] and value["tag_name"] != candidate_tag and MANIFEST in names and COMPATIBILITY in names:
@@ -150,7 +150,7 @@ def fetch(url, target, expected_sha=None, expected_size=None, maximum=4 * 1024**
 
 def verify_pair(directory, trusted_key, manifest_url):
     asset, _ = checked_json(directory / COMPATIBILITY)
-    with tempfile.TemporaryDirectory(prefix="james-predecessor-contract-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="nest-predecessor-contract-") as temporary:
         contract = Path(temporary) / "compatibility.json"
         contract.write_bytes(canonical(asset["compatibility"]))
         release._verify_release_compatibility_command(argparse.Namespace(
@@ -161,12 +161,12 @@ def verify_pair(directory, trusted_key, manifest_url):
 
 def inspect_package(directory, manifest, retain_to=None):
     descriptor = manifest["appliance_release_v1"]
-    package = descriptor["cybex_repository_snapshot"]
+    package = descriptor["tiaris_repository_snapshot"]
     name = urlsplit(package["url"]).path.rsplit("/", 1)[-1]
-    if name != f"cybex-james-appliance-packages-{manifest['version']}-x86_64-linux.tar.zst":
+    if name != f"tiaris-nest-appliance-packages-{manifest['version']}-x86_64-linux.tar.zst":
         raise ValueError("Predecessor package filename is not release-bound")
     path = fetch(package["url"], directory / name, package["sha256"], package["size_bytes"])
-    with tempfile.TemporaryDirectory(prefix="james-predecessor-package-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="nest-predecessor-package-") as temporary:
         tree = Path(temporary)
         gate.extract_repository_snapshot(path, tree)
         gate.validate_repository_checksums(tree)
@@ -182,7 +182,7 @@ def inspect_package(directory, manifest, retain_to=None):
             if "manage_source_sha256" in workstation and (
                     source["sha256"] != workstation["manage_source_sha256"]
                     or source["size_bytes"] != workstation["manage_source_size_bytes"]):
-                raise ValueError("Retained Manage source differs from the signed workstation descriptor")
+                raise ValueError("Retained Tiaris source differs from the signed workstation descriptor")
             # copytree refuses an existing destination, including a symlink.
             shutil.copytree(retained, retain_to)
     return {"release_id": manifest["version"], "ubuntu_snapshot_id": descriptor["ubuntu_snapshot_id"],
@@ -229,7 +229,7 @@ def resolve(repository, candidate, trusted_key, directory, recovery_path, retain
             raise ValueError("Historical signed publication bytes changed")
         gate.verify_published_predecessor_descriptors(compatibility_path=publication / COMPATIBILITY,
             manifest_path=publication / MANIFEST, trusted_public_key=old["public_key"],
-            release_verifier=ROOT / "tools/james-release.py", github_release_id=previous["id"], tag_name=tag)
+            release_verifier=ROOT / "tools/nest-release.py", github_release_id=previous["id"], tag_name=tag)
         recovered = adoption["recovery"]
         for name, prefix in [(MANIFEST, "manifest"), (COMPATIBILITY, "compatibility")]:
             fetch(recovered[prefix + "_url"], directory / name, recovered[prefix + "_sha256"], maximum=1024**2)
@@ -241,7 +241,7 @@ def resolve(repository, candidate, trusted_key, directory, recovery_path, retain
     else:
         gate.verify_published_predecessor_descriptors(compatibility_path=publication / COMPATIBILITY,
             manifest_path=publication / MANIFEST, trusted_public_key=trusted_key,
-            release_verifier=ROOT / "tools/james-release.py", github_release_id=previous["id"], tag_name=tag)
+            release_verifier=ROOT / "tools/nest-release.py", github_release_id=previous["id"], tag_name=tag)
         for name in (MANIFEST, COMPATIBILITY):
             (directory / name).write_bytes((publication / name).read_bytes())
         manifest = verify_pair(directory, trusted_key, base + MANIFEST)

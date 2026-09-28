@@ -15,9 +15,9 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-STATE = Path.home() / '.local/state/cybex-james-build'
-PUBLIC_ENV = ('CYBEX_JAMES_BUILD_MANAGE_ORIGIN', 'CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY',
-              'CYBEX_JAMES_PROVISIONING_PUBLIC_KEYS',
+STATE = Path.home() / '.local/state/tiaris-nest-build'
+PUBLIC_ENV = ('TIARIS_NEST_BUILD_MANAGE_ORIGIN', 'TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY',
+              'TIARIS_NEST_PROVISIONING_PUBLIC_KEYS',
               'GITHUB_REF_NAME', 'BUILD_VERSION', 'BUILD_BUNDLE', 'BUILD_RUNTIME',
               'BUILD_MANAGE_REVISION', 'BUILD_NIXPKGS_REVISION', 'BUILD_HAS_PREDECESSOR')
 
@@ -30,7 +30,7 @@ def checkout(source, destination):
     revision = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
     origin = subprocess.check_output(['git', '-C', str(source), 'remote', 'get-url', 'origin'], text=True).strip()
     if origin.removesuffix('.git') not in ('https://github.com/CybexHQ/james', 'https://github.com/CybexHQ/development'):
-        raise ValueError('The isolated NixOS build requires James and development source origins')
+        raise ValueError('The isolated NixOS build requires Nest and development source origins')
     run('git', 'init', '-q', destination)
     run('git', '-C', destination, 'remote', 'add', 'origin', origin)
     run('git', '-C', destination, 'fetch', '-q', '--depth=1', source, revision)
@@ -68,7 +68,7 @@ def main():
         for directory in ('cache/home', 'cache/cargo', 'nix', 'target'):
             (STATE / directory).mkdir(parents=True, exist_ok=True)
         dockerfile = ROOT / 'release/beast/Dockerfile'
-        tag = 'cybex/james-release-builder:' + hashlib.sha256(dockerfile.read_bytes()).hexdigest()[:20]
+        tag = 'tiaris/nest-release-builder:' + hashlib.sha256(dockerfile.read_bytes()).hexdigest()[:20]
         run('docker', 'build', '--tag', tag, dockerfile.parent)
         image = subprocess.check_output(['docker', 'image', 'inspect', '--format={{.Id}}', tag], text=True).strip()
         with tempfile.TemporaryDirectory(prefix='build-', dir=STATE) as temporary:
@@ -81,7 +81,7 @@ def main():
                 exclusions.write('\n/manage-source/\n/dist/\n/result-workstation-netboot\n')
             scratch.mkdir()
             runner_temp = Path(os.environ['RUNNER_TEMP'])
-            retained = runner_temp / 'cybex-james-retained-manage-source'
+            retained = runner_temp / 'tiaris-nest-retained-manage-source'
             if retained.exists():
                 shutil.copytree(retained, scratch / retained.name)
             (scratch / 'build.sh').write_text(
@@ -90,17 +90,17 @@ def main():
             # or arbitrary runner scratch (which may contain signing material).
             output = ROOT / 'dist'
             output.mkdir(exist_ok=True)
-            name = 'cybex-james-build-' + directory.name
+            name = 'tiaris-nest-build-' + directory.name
             try:
                 run(*command(image, name, source, scratch, output, STATE, os.environ))
-                for filename in ('cybex-james-bootstrap', 'cybex-james-appliance-template-metadata.json'):
+                for filename in ('tiaris-nest-bootstrap', 'tiaris-nest-appliance-template-metadata.json'):
                     shutil.copyfile(scratch / filename, runner_temp / filename)
-                shutil.copytree(scratch / 'cybex-workstation-netboot-tree', runner_temp / 'cybex-workstation-netboot-tree')
+                shutil.copytree(scratch / 'tiaris-workstation-netboot-tree', runner_temp / 'tiaris-workstation-netboot-tree')
                 # This tree contains unsigned public cache bytes only. The release
                 # key is consumed by pack-system-closure.py after the sandbox exits.
-                shutil.copytree(scratch / 'cybex-james-unsigned-closure', runner_temp / 'cybex-james-unsigned-closure')
-                (runner_temp / 'cybex-james-bootstrap').chmod(0o700)
-                (runner_temp / 'cybex-james-builder-image').write_text(image + '\n')
+                shutil.copytree(scratch / 'tiaris-nest-unsigned-closure', runner_temp / 'tiaris-nest-unsigned-closure')
+                (runner_temp / 'tiaris-nest-bootstrap').chmod(0o700)
+                (runner_temp / 'tiaris-nest-builder-image').write_text(image + '\n')
             finally:
                 # Clean only the container we named, including cancellation.
                 subprocess.run(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL,

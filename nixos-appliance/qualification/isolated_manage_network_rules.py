@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 FIELDS = {'owner', 'bridge', 'subnet', 'manage_origin', 'peer_ipv4', 'network_id',
           'backend_subnet', 'egress_hosts'}
-SCHEMA = 'cybex.james.isolated-manage-network.v1'
+SCHEMA = 'tiaris.nest.isolated-manage-network.v1'
 
 
 def validate(c):
@@ -46,7 +46,7 @@ def names(c):
 
 def dns_config(c):
     validate(c)
-    return ('# cybex qualification owner ' + c['owner'] + '\nno-resolv\nno-hosts\nlocal=/#/\n'
+    return ('# tiaris qualification owner ' + c['owner'] + '\nno-resolv\nno-hosts\nlocal=/#/\n'
             + 'host-record=' + urlsplit(c['manage_origin']).hostname + ',' + c['peer_ipv4'] + '\n')
 
 

@@ -26,7 +26,7 @@ use std::{
 };
 use tracing::warn;
 
-pub use inventory::{JamesProvisioningDisk, JamesProvisioningInventory};
+pub use inventory::{NestProvisioningDisk, NestProvisioningInventory};
 pub use network_runtime::{
     NetworkRuntimeOptions, NetworkRuntimeOutcome, network_fallback_active,
     reconcile_network_runtime,
@@ -34,17 +34,17 @@ pub use network_runtime::{
 pub use protocol::{ProvisioningEnvelope, SignedInstallPlan};
 
 pub const PRODUCTION_MANAGE_ORIGIN: &str = "https://manage.cybex.net";
-pub const REQUIRED_MANAGE_ORIGIN: &str = match option_env!("CYBEX_JAMES_BUILD_MANAGE_ORIGIN") {
+pub const REQUIRED_MANAGE_ORIGIN: &str = match option_env!("TIARIS_NEST_BUILD_MANAGE_ORIGIN") {
     Some(origin) => origin,
     None => PRODUCTION_MANAGE_ORIGIN,
 };
-pub const DEFAULT_ENVELOPE_PATH: &str = "/cdrom/CYBEX_PROVISIONING.BIN";
-pub const DEFAULT_PROVISIONING_KEYS_PATH: &str = "/cdrom/cybex/provisioning-public-keys";
+pub const DEFAULT_ENVELOPE_PATH: &str = "/cdrom/TIARIS_PROVISIONING.BIN";
+pub const DEFAULT_PROVISIONING_KEYS_PATH: &str = "/cdrom/tiaris/provisioning-public-keys";
 pub const DEFAULT_RELEASE_PUBLIC_KEY_PATH: &str = packages::RELEASE_PUBLIC_KEY_PATH;
 pub const DEFAULT_AUTOINSTALL_PATH: &str = "/autoinstall.yaml";
-pub const DEFAULT_STATE_MOUNT: &str = "/run/cybex-state";
+pub const DEFAULT_STATE_MOUNT: &str = "/run/tiaris-state";
 pub const INSTALLED_PROVISIONING_KEYS_PATH: &str =
-    "/usr/share/cybex-james/provisioning-public-keys";
+    "/usr/share/tiaris-nest/provisioning-public-keys";
 
 #[derive(Clone, Debug)]
 pub struct PrepareOptions {
@@ -139,8 +139,8 @@ fn validate_installed_state_inner(
     provisioning_keys_path: &Path,
     allow_network_changes: bool,
 ) -> Result<()> {
-    let control = Path::new("/var/lib/cybex-james/control");
-    let agent = if Path::new("/etc/cybex-james/legacy-state-layout").is_file() {
+    let control = Path::new("/var/lib/tiaris-nest/control");
+    let agent = if Path::new("/etc/tiaris-nest/legacy-state-layout").is_file() {
         state_mount.to_path_buf()
     } else {
         state_mount.join("agent")
@@ -152,7 +152,7 @@ fn validate_installed_state_inner(
     )?;
     let durable: DurableProvisioningState =
         serde_json::from_slice(&durable_body).context("parse promoted provisioning state")?;
-    if durable.schema != "cybex.james.provisioning-state.v1"
+    if durable.schema != "tiaris.nest.provisioning-state.v1"
         || !durable.identity_active
         || !durable.installation_complete
         || durable.session_id != durable.plan.session_id
@@ -189,17 +189,17 @@ fn validate_installed_state_inner(
         bail!("promoted state does not match immutable Management configuration")
     }
     let principal = read_bounded_nofollow(
-        Path::new("/etc/ssh/cybex-james-principals"),
+        Path::new("/etc/ssh/tiaris-nest-principals"),
         1024,
-        "installed James SSH principal",
+        "installed Nest SSH principal",
     )?;
     if principal != format!("{}\n", plan.reserved_device_id).as_bytes() {
         bail!("promoted state does not match the immutable appliance device identity")
     }
     let ssh_ca = read_bounded_nofollow(
-        Path::new("/etc/ssh/cybex-james-ca.pub"),
+        Path::new("/etc/ssh/tiaris-nest-ca.pub"),
         4096,
-        "installed James SSH CA trust",
+        "installed Nest SSH CA trust",
     )?;
     if ssh_ca != format!("{}\n", plan.ssh_ca_public_keys.join("\n")).as_bytes() {
         bail!("promoted state does not match immutable SSH CA trust")
@@ -208,12 +208,12 @@ fn validate_installed_state_inner(
     let managed: serde_json::Value = serde_json::from_slice(&read_bounded_nofollow(
         &agent.join("manage-state.json"),
         2 * 1024 * 1024,
-        "promoted James agent identity",
+        "promoted Nest agent identity",
     )?)?;
     let private = managed
         .get("private_key_b64")
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("promoted James agent private key is missing"))?;
+        .ok_or_else(|| anyhow::anyhow!("promoted Nest agent private key is missing"))?;
     let key = protocol::signing_key_from_standard_base64(private)?;
     let public = protocol::standard_base64(key.verifying_key().to_bytes());
     let fingerprint = protocol::sha256_hex(key.verifying_key().to_bytes());
@@ -231,7 +231,7 @@ fn validate_installed_state_inner(
         || durable.device_public_key_b64 != public
         || durable.device_public_key_fingerprint != fingerprint
     {
-        bail!("promoted James agent identity is inconsistent")
+        bail!("promoted Nest agent identity is inconsistent")
     }
 
     let committed_network =
@@ -250,7 +250,7 @@ fn validate_installed_state_inner(
             )
         }
     }
-    let fallback_plan = protocol::JamesProvisioningNetworkPlan {
+    let fallback_plan = protocol::NestProvisioningNetworkPlan {
         mode: "dhcp".to_string(),
         interface_id: plan.network.interface_id.clone(),
         address_cidr: None,
@@ -399,7 +399,7 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
             .await?;
     let device_key = SigningKey::generate(&mut OsRng);
     let mut durable = DurableProvisioningState {
-        schema: "cybex.james.provisioning-state.v1".to_string(),
+        schema: "tiaris.nest.provisioning-state.v1".to_string(),
         session_id: verified.envelope.session_id,
         plan: signed_plan.clone(),
         manage_origin: verified.envelope.manage_origin.clone(),
@@ -501,20 +501,20 @@ async fn prepare_approved_plan(
     release_public_key_path: &Path,
     manage_origin: &str,
 ) -> std::result::Result<
-    (packages::PackageDelivery, JamesProvisioningInventory),
+    (packages::PackageDelivery, NestProvisioningInventory),
     PreDestructiveFailure,
 > {
     let fresh_inventory = inventory::collect_inventory().await.map_err(|error| {
         PreDestructiveFailure::new(
             "hardware_revalidation_failed",
-            "James could not confirm the approved server hardware before disk preparation.",
+            "Nest could not confirm the approved server hardware before disk preparation.",
             error,
         )
     })?;
     inventory::revalidate_plan_hardware(plan, &fresh_inventory).map_err(|error| {
         PreDestructiveFailure::new(
             "hardware_revalidation_failed",
-            "James could not confirm the approved server hardware before disk preparation.",
+            "Nest could not confirm the approved server hardware before disk preparation.",
             error,
         )
     })?;
@@ -522,7 +522,7 @@ async fn prepare_approved_plan(
         packages::validate_plan_delivery(plan, media_layout).map_err(|error| {
             PreDestructiveFailure::new(
                 "installation_media_validation_failed",
-                "James could not validate this installation media against the approved plan.",
+                "Nest could not validate this installation media against the approved plan.",
                 error,
             )
         })?;
@@ -531,7 +531,7 @@ async fn prepare_approved_plan(
         .map_err(|error| {
             PreDestructiveFailure::new(
                 "network_preflight_failed",
-                "James could not verify the approved wired network before disk preparation.",
+                "Nest could not verify the approved wired network before disk preparation.",
                 error,
             )
         })?;
@@ -541,7 +541,7 @@ async fn prepare_approved_plan(
             .map_err(|error| {
                 PreDestructiveFailure::new(
                     "system_closure_verification_failed",
-                    "James could not download and verify its approved system closure.",
+                    "Nest could not download and verify its approved system closure.",
                     error,
                 )
             })?;
@@ -552,7 +552,7 @@ async fn prepare_approved_plan(
             .map_err(|error| {
                 PreDestructiveFailure::new(
                     "package_snapshot_download_failed",
-                    "James could not download and verify its approved installation files.",
+                    "Nest could not download and verify its approved installation files.",
                     error,
                 )
             })?;
@@ -560,14 +560,14 @@ async fn prepare_approved_plan(
     let fresh_inventory = inventory::collect_inventory().await.map_err(|error| {
         PreDestructiveFailure::new(
             "hardware_revalidation_failed",
-            "James could not confirm the approved server hardware before disk preparation.",
+            "Nest could not confirm the approved server hardware before disk preparation.",
             error,
         )
     })?;
     inventory::revalidate_plan_hardware(plan, &fresh_inventory).map_err(|error| {
         PreDestructiveFailure::new(
             "hardware_revalidation_failed",
-            "James could not confirm the approved server hardware before disk preparation.",
+            "Nest could not confirm the approved server hardware before disk preparation.",
             error,
         )
     })?;
@@ -576,7 +576,7 @@ async fn prepare_approved_plan(
         .map_err(|error| {
             PreDestructiveFailure::new(
                 "network_preflight_failed",
-                "James could not verify the approved wired network before disk preparation.",
+                "Nest could not verify the approved wired network before disk preparation.",
                 error,
             )
         })?;
@@ -587,14 +587,14 @@ async fn report_failure_and_wait_for_retry(
     client: &protocol::ProvisioningClient,
     provisioning_key: &SigningKey,
     verified: &protocol::VerifiedEnvelope,
-    inventory: &JamesProvisioningInventory,
+    inventory: &NestProvisioningInventory,
     failed_plan: &SignedInstallPlan,
     failure: PreDestructiveFailure,
 ) -> Result<SignedInstallPlan> {
     warn!(
         failure_code = failure.code,
         error = %failure.source,
-        "James setup stopped safely before disk preparation"
+        "Nest setup stopped safely before disk preparation"
     );
     let mut reported = false;
     loop {
@@ -615,7 +615,7 @@ async fn report_failure_and_wait_for_retry(
                 Err(error) => warn!(
                     failure_code = failure.code,
                     error = %error,
-                    "could not report the safe James setup failure; retrying"
+                    "could not report the safe Nest setup failure; retrying"
                 ),
             }
         }
@@ -635,13 +635,13 @@ async fn report_failure_and_wait_for_retry(
                 warn!(
                     failure_code = failure.code,
                     error = %error,
-                    "James is waiting for Management connectivity to recover"
+                    "Nest is waiting for Management connectivity to recover"
                 );
                 continue;
             }
         };
         if matches!(next.state.as_str(), "revoked" | "expired") {
-            bail!("this provisioned James installation was revoked or expired")
+            bail!("this provisioned Nest installation was revoked or expired")
         }
         if next.state == "approved" {
             if let Some(plan) = next.plan.take() {
@@ -663,7 +663,7 @@ async fn wait_for_approved_plan(
     client: &protocol::ProvisioningClient,
     provisioning_key: &SigningKey,
     verified: &protocol::VerifiedEnvelope,
-    inventory: &JamesProvisioningInventory,
+    inventory: &NestProvisioningInventory,
     session: &mut protocol::AgentSessionResponse,
     previous_plan_id: Option<uuid::Uuid>,
 ) -> Result<SignedInstallPlan> {
@@ -684,7 +684,7 @@ async fn wait_for_approved_plan(
         match session.state.as_str() {
             "created" | "awaiting_approval" | "approved" => {}
             "revoked" | "expired" | "failed" => {
-                bail!("this provisioned James media can no longer install")
+                bail!("this provisioned Nest media can no longer install")
             }
             state => bail!("provisioning session entered unsupported state {state}"),
         }
@@ -805,7 +805,7 @@ async fn resume_prepare(
     )
 }
 
-/// Send one late-install event using the device key on CYBEX_STATE.
+/// Send one late-install event using the device key on TIARIS_STATE.
 pub async fn report_install_stage(
     state_mount: &Path,
     stage: &str,
@@ -842,7 +842,7 @@ pub fn finalize_target(options: FinalizeOptions) -> Result<()> {
     }
     state.installation_complete = true;
     storage::materialize_target(&options.target, &options.state_mount, &state)
-        .context("materialize installed James appliance")?;
+        .context("materialize installed Nest appliance")?;
     storage::save_durable_state(&options.state_mount, &state)
 }
 
@@ -859,7 +859,7 @@ mod tests {
     fn pre_destructive_failure_keeps_raw_diagnostics_local() {
         let failure = PreDestructiveFailure::new(
             "network_preflight_failed",
-            "James could not verify the approved wired network before disk preparation.",
+            "Nest could not verify the approved wired network before disk preparation.",
             anyhow::anyhow!("run arping with secret token should stay local"),
         );
         assert!(

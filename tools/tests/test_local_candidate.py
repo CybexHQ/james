@@ -80,7 +80,7 @@ class LocalCandidateTests(unittest.TestCase):
         body = stream.getvalue()
         sha = hashlib.sha256(body).hexdigest()
         metadata = {'expired': False, 'size_in_bytes': len(body),
-                    'name': 'cybex-james-release-candidate-42', 'digest': 'sha256:' + sha,
+                    'name': 'tiaris-nest-release-candidate-42', 'digest': 'sha256:' + sha,
                     'workflow_run': {'id': 42, 'head_sha': 'a' * 40}}
         output = self.path / 'downloaded.json'
         with patch.object(candidate.subprocess, 'check_output', side_effect=[json.dumps(metadata), body]):

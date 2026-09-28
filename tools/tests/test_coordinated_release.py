@@ -33,21 +33,21 @@ QUALIFICATION_INPUTS = {
 class DevelopmentQualificationWorkflowTests(unittest.TestCase):
     def environment(self):
         return {**os.environ,
-            **{'CYBEX_JAMES_QUALIFICATION_' + k: v for k, v in QUALIFICATION_INPUTS.items()},
-            'CYBEX_JAMES_BUILD_MANAGE_ORIGIN': QUALIFICATION_INPUTS['MANAGE_ORIGIN']}
+            **{'TIARIS_NEST_QUALIFICATION_' + k: v for k, v in QUALIFICATION_INPUTS.items()},
+            'TIARIS_NEST_BUILD_MANAGE_ORIGIN': QUALIFICATION_INPUTS['MANAGE_ORIGIN']}
 
     def test_actual_scope_guards_require_all_inputs_and_matching_development_origin(self):
         for job in ('release_qualify', 'release_cold_qualify'):
             script = step_script(job, 'Require explicit development qualification scope')
             result = subprocess.run(['bash', '-c', script], cwd=ROOT, env=self.environment(), capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            invalid = [{k: v for k, v in self.environment().items() if k != 'CYBEX_JAMES_QUALIFICATION_' + name}
+            invalid = [{k: v for k, v in self.environment().items() if k != 'TIARIS_NEST_QUALIFICATION_' + name}
                        for name in QUALIFICATION_INPUTS]
             for value in ('https://console.example.com', 'https://dev.example.test/', 'http://dev.example.test'):
-                invalid.append({**self.environment(), 'CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN': value,
-                                'CYBEX_JAMES_BUILD_MANAGE_ORIGIN': value})
-            invalid.append({**self.environment(), 'CYBEX_JAMES_BUILD_MANAGE_ORIGIN': 'https://console.example.com'})
-            invalid.append({**self.environment(), 'CYBEX_JAMES_QUALIFICATION_TOKEN_FILE': 'relative/session'})
+                invalid.append({**self.environment(), 'TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN': value,
+                                'TIARIS_NEST_BUILD_MANAGE_ORIGIN': value})
+            invalid.append({**self.environment(), 'TIARIS_NEST_BUILD_MANAGE_ORIGIN': 'https://console.example.com'})
+            invalid.append({**self.environment(), 'TIARIS_NEST_QUALIFICATION_TOKEN_FILE': 'relative/session'})
             for environment in invalid:
                 with self.subTest(job=job, changed={k: v for k, v in environment.items() if self.environment().get(k) != v}):
                     rejected = subprocess.run(['bash', '-c', script], cwd=ROOT, env=environment, capture_output=True, text=True)
@@ -72,7 +72,7 @@ class DevelopmentQualificationWorkflowTests(unittest.TestCase):
                 fake_sudo.chmod(0o755)
                 environment = {**self.environment(), 'PATH': temporary + os.pathsep + os.environ['PATH'],
                     'GITHUB_RUN_ID': '42', 'GITHUB_RUN_ATTEMPT': '2', 'GITHUB_WORKSPACE': '/workspace',
-                    'RUNNER_TEMP': '/run temporary', 'CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY': 'test-public-key', 'TRUSTED_KEY': 'test-public-key'}
+                    'RUNNER_TEMP': '/run temporary', 'TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY': 'test-public-key', 'TRUSTED_KEY': 'test-public-key'}
                 result = subprocess.run(['bash', '-c', '\n'.join(command)], env=environment, text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 arguments = json.loads(result.stdout)
@@ -90,17 +90,17 @@ class DevelopmentQualificationWorkflowTests(unittest.TestCase):
                                      ('https://manage.cybex.net/', False), ('https://manage.cybex.net', True)]:
                 with self.subTest(job=job, origin=origin):
                     result = subprocess.run(['bash', '-c', script], env={**os.environ,
-                        'CYBEX_JAMES_BUILD_MANAGE_ORIGIN': origin}, text=True, capture_output=True)
+                        'TIARIS_NEST_BUILD_MANAGE_ORIGIN': origin}, text=True, capture_output=True)
                     self.assertEqual(result.returncode == 0, accepted, result.stderr)
             self.assertLess(workflow_job(job).index('Require production-bound artifacts'), workflow_job(job).index('uses: actions/checkout'))
 
     def test_new_environment_and_nixos_consumer_paths_keep_legacy_helpers_available(self):
         for job in ('release_qualify', 'release_cold_qualify'):
             body = workflow_job(job)
-            self.assertIn('environment: james-nixos-development-qualification', body)
-            self.assertIn('group: james-nixos-development-qualification', body)
+            self.assertIn('environment: nest-nixos-development-qualification', body)
+            self.assertIn('group: nest-nixos-development-qualification', body)
             for key in QUALIFICATION_INPUTS:
-                self.assertIn('${{ vars.CYBEX_JAMES_QUALIFICATION_' + key + ' }}', body)
+                self.assertIn('${{ vars.TIARIS_NEST_QUALIFICATION_' + key + ' }}', body)
             self.assertLess(body.index('Require explicit development qualification scope'), body.index('Download '))
         approval = (ROOT / '.github/workflows/approve-coordinated-release.yml').read_text()
         self.assertIn('nixos-appliance/qualification/promote-production-release.py', approval)
@@ -113,8 +113,8 @@ class CoordinatedReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'release').mkdir()
-            (root / 'Cargo.toml').write_text('[package]\nname="cybex-james"\nversion = "0.2.5"\n')
-            (root / 'Cargo.lock').write_text('[[package]]\nname = "cybex-james"\nversion = "0.2.5"\n')
+            (root / 'Cargo.toml').write_text('[package]\nname="tiaris-nest"\nversion = "0.2.5"\n')
+            (root / 'Cargo.lock').write_text('[[package]]\nname = "tiaris-nest"\nversion = "0.2.5"\n')
             self.assertFalse(module['validate'](root))
             module['pin'](root, 'a' * 40, '1.0.68', '0.2.6', '20260920T120000Z')
             self.assertTrue(module['validate'](root))
@@ -139,4 +139,4 @@ class CoordinatedReleaseTests(unittest.TestCase):
         self.assertIn('--source-revision "$(git rev-parse HEAD)"', workflow)
         self.assertIn('--manage-source-revision "$BUILD_MANAGE_REVISION"', workflow)
         self.assertIn('[[ "$repository" = "CybexHQ/development" ]]', workflow)
-        self.assertNotIn('CYBEX_JAMES_UBUNTU_SNAPSHOT_ID', workflow)
+        self.assertNotIn('TIARIS_NEST_UBUNTU_SNAPSHOT_ID', workflow)

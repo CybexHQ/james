@@ -1,0 +1,13 @@
+[Unit]
+Description=Restrict Tiaris support SSH to Management-approved CIDRs
+Before=ssh.service
+After=network-pre.target
+ConditionPathExists=/var/lib/tiaris-nest/control/management-cidrs.txt
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/tiaris-nest/tiaris-nest-firewall
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -6,14 +6,14 @@ let
   checks = import ./console-evaluation.nix { inherit nixpkgs; };
 in assert builtins.all (value: value) (builtins.attrValues checks);
 import (nixpkgs + "/nixos/tests/make-test-python.nix") ({ pkgs, ... }: {
-  name = "cybex-james-tty1-consoles";
+  name = "tiaris-nest-tty1-consoles";
   nodes = {
     setup = { ... }: {
       system.stateVersion = "26.05";
       systemd.services = {
         "getty@tty1".enable = configurations.setup.systemd.services."getty@tty1".enable;
         "autovt@tty1".enable = configurations.setup.systemd.services."autovt@tty1".enable;
-        cybex-james-setup-console = { inherit (configurations.setup.systemd.services.cybex-james-setup-console) wantedBy serviceConfig; };
+        tiaris-nest-setup-console = { inherit (configurations.setup.systemd.services.tiaris-nest-setup-console) wantedBy serviceConfig; };
       };
       environment.systemPackages = [ pkgs.kbd ];
     };
@@ -21,9 +21,9 @@ import (nixpkgs + "/nixos/tests/make-test-python.nix") ({ pkgs, ... }: {
       system.stateVersion = "26.05";
       systemd.services."autovt@tty1".enable = configurations.installed.systemd.services."autovt@tty1".enable;
       systemd.services."getty@tty1".enable = configurations.installed.systemd.services."getty@tty1".enable;
-      systemd.services.cybex-james-console = { inherit (configurations.installed.systemd.services.cybex-james-console) wantedBy conflicts before serviceConfig; };
+      systemd.services.tiaris-nest-console = { inherit (configurations.installed.systemd.services.tiaris-nest-console) wantedBy conflicts before serviceConfig; };
       # No enrollment: exercise the real safe Starting -> Attention screen.
-      systemd.services.cybex-james-first-boot.serviceConfig = {
+      systemd.services.tiaris-nest-first-boot.serviceConfig = {
         Type = "oneshot";
         ExecStart = "${pkgs.coreutils}/bin/false";
       };
@@ -32,9 +32,9 @@ import (nixpkgs + "/nixos/tests/make-test-python.nix") ({ pkgs, ... }: {
   };
   testScript = ''
     start_all()
-    setup.wait_for_unit("cybex-james-setup-console.service")
-    installed.wait_for_unit("cybex-james-console.service")
-    setup.wait_until_succeeds("grep -aF 'Cybex James Setup' /dev/vcs1")
+    setup.wait_for_unit("tiaris-nest-setup-console.service")
+    installed.wait_for_unit("tiaris-nest-console.service")
+    setup.wait_until_succeeds("grep -aF 'Tiaris Nest Setup' /dev/vcs1")
     installed.wait_until_succeeds("grep -aF 'Starting' /dev/vcs1", timeout=30)
     for node in (setup, installed):
         node.succeed("test $(systemctl show -p LoadState --value autovt@tty1.service) = masked")
@@ -47,10 +47,10 @@ import (nixpkgs + "/nixos/tests/make-test-python.nix") ({ pkgs, ... }: {
     # Model a late framebuffer reset after both screens have already rendered.
     for node in (setup, installed):
         node.succeed("printf '\\033c' > /dev/tty1")
-    setup.wait_until_succeeds("grep -aF 'Continue in Cybex Manage.' /dev/vcs1", timeout=30)
+    setup.wait_until_succeeds("grep -aF 'Continue in Tiaris.' /dev/vcs1", timeout=30)
     installed.wait_until_succeeds("grep -aF 'Starting' /dev/vcs1", timeout=30)
-    installed.fail("systemctl start cybex-james-first-boot.service")
+    installed.fail("systemctl start tiaris-nest-first-boot.service")
     installed.wait_until_succeeds("grep -aF 'Attention needed' /dev/vcs1")
-    installed.succeed("grep -aF 'Managed by Cybex Manage' /dev/vcs1")
+    installed.succeed("grep -aF 'Managed by Tiaris' /dev/vcs1")
   '';
 }) { system = "x86_64-linux"; }

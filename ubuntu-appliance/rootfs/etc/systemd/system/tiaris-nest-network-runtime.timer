@@ -1,0 +1,12 @@
+[Unit]
+Description=Keep the Tiaris Nest advertised boot address current
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+Persistent=true
+Unit=tiaris-nest-network-runtime.service
+
+[Install]
+WantedBy=timers.target

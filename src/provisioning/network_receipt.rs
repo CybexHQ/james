@@ -8,8 +8,8 @@ use serde_json::Value;
 use std::{fs, os::unix::fs::MetadataExt, path::Path};
 use uuid::Uuid;
 
-const CONTROL: &str = "/var/lib/cybex-james/control";
-const SCHEMA: &str = "cybex.james.network-committed.v1";
+const CONTROL: &str = "/var/lib/tiaris-nest/control";
+const SCHEMA: &str = "tiaris.nest.network-committed.v1";
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -59,13 +59,13 @@ fn validate(
     let change = &receipt.change;
     let ack = &receipt.acknowledgement;
     if receipt.schema != SCHEMA
-        || change.schema != "cybex.james.network-change.v1"
+        || change.schema != "tiaris.nest.network-change.v1"
         || change.id.is_nil()
         || change.device_incarnation_id.is_nil()
         || change.revision <= 0
         || change.device_id != state.plan.reserved_device_id
         || ack.device_id != change.device_id
-        || ack.schema != "cybex.james.network-ack.v1"
+        || ack.schema != "tiaris.nest.network-ack.v1"
         || ack.change_id != change.id
         || change.expires_at <= change.issued_at
         || change.expires_at - change.issued_at > chrono::Duration::minutes(5)
@@ -86,14 +86,14 @@ fn validate(
         change,
         "signature",
         &change.signature,
-        "CYBEX-JAMES-NETWORK-CHANGE-V1",
+        "TIARIS-NEST-NETWORK-CHANGE-V1",
         &state.management_signing_public_key_b64,
     )?;
     appliance::verify_management_signature(
         ack,
         "signature",
         &ack.signature,
-        "CYBEX-JAMES-NETWORK-ACK-V1",
+        "TIARIS-NEST-NETWORK-ACK-V1",
         &state.management_signing_public_key_b64,
     )?;
     let hash = protocol::sha256_hex(receipt.candidate.as_bytes());
@@ -103,7 +103,7 @@ fn validate(
     let mut bound_plan = state.plan.clone();
     bound_plan.network_interface.name = interface.0.clone();
     bound_plan.network_interface.mac = interface.1.clone();
-    let network = protocol::JamesProvisioningNetworkPlan {
+    let network = protocol::NestProvisioningNetworkPlan {
         mode: change.network.mode.clone(),
         interface_id: change.network.interface_id.clone(),
         address_cidr: change.network.address_cidr.clone(),
@@ -126,9 +126,9 @@ pub fn commit_network_change(candidate: &Path) -> Result<String> {
     let control = Path::new(CONTROL);
     let state = installed_state(control)?;
     let request =
-        Path::new("/var/lib/cybex-james/state/inbox/appliance-network-change-request.json");
+        Path::new("/var/lib/tiaris-nest/state/inbox/appliance-network-change-request.json");
     let acknowledgement =
-        Path::new("/var/lib/cybex-james/state/inbox/netplan-acknowledgement.json");
+        Path::new("/var/lib/tiaris-nest/state/inbox/netplan-acknowledgement.json");
     protected(candidate)?;
     let receipt = Receipt {
         schema: SCHEMA.to_owned(),
@@ -141,7 +141,7 @@ pub fn commit_network_change(candidate: &Path) -> Result<String> {
         )?)?,
     };
     if candidate
-        != Path::new("/run/cybex-james-network-change").join(format!("{}.yaml", receipt.change.id))
+        != Path::new("/run/tiaris-nest-network-change").join(format!("{}.yaml", receipt.change.id))
     {
         bail!("network candidate path differs from the signed transaction")
     }
@@ -206,7 +206,7 @@ fn restore_derived_profiles(
     let mut bound_plan = state.plan.clone();
     bound_plan.network_interface.name = interface.0.clone();
     bound_plan.network_interface.mac = interface.1.clone();
-    let fallback = protocol::JamesProvisioningNetworkPlan {
+    let fallback = protocol::NestProvisioningNetworkPlan {
         mode: "dhcp".into(),
         interface_id: receipt.change.network.interface_id.clone(),
         address_cidr: None,

@@ -1,5 +1,5 @@
 [Unit]
-Description=Cybex James appliance status console
+Description=Tiaris Nest appliance status console
 After=systemd-user-sessions.service plymouth-quit-wait.service getty-pre.target
 Before=getty.target rescue.service
 IgnoreOnIsolate=yes
@@ -10,7 +10,7 @@ ConditionPathExists=/dev/tty0
 # Match the normal virtual-console scheduling behavior so boot output settles
 # before the appliance screen is drawn.
 Type=idle
-ExecStart=/usr/lib/cybex-james/cybex-james-console
+ExecStart=/usr/lib/tiaris-nest/tiaris-nest-console
 Restart=always
 RestartSec=2s
 StandardInput=tty

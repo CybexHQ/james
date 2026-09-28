@@ -26,8 +26,8 @@ use crate::{
     redact::redact_sensitive_key_values,
 };
 
-const CACHE_MUTATION_LOCK_FILENAME: &str = ".cybex-cache-mutation.lock";
-const CLOSURE_MANIFEST_SCHEMA: &str = "cybex.james.closure-manifest.v1";
+const CACHE_MUTATION_LOCK_FILENAME: &str = ".tiaris-cache-mutation.lock";
+const CLOSURE_MANIFEST_SCHEMA: &str = "tiaris.nest.closure-manifest.v1";
 const CLOSURE_MANIFEST_VALIDATION_LEVEL: &str = "compressed_file_hash";
 /// NAR compression requested from `nix copy` for every new export.
 const CACHE_EXPORT_NAR_COMPRESSION: &str = "zstd";
@@ -37,10 +37,10 @@ const NIX_BASE32_ALPHABET: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
 /// Cross-process lease for the cache filesystem and its artifact inventory.
 ///
-/// A process-local mutex would still let an overlapping James process (for
+/// A process-local mutex would still let an overlapping Nest process (for
 /// example during a service restart) sweep files that `nix copy` is publishing.
 /// Keep this descriptor open for the complete filesystem + SQLite mutation so
-/// all James processes agree on the same serialization boundary.
+/// all Nest processes agree on the same serialization boundary.
 #[derive(Debug)]
 struct CacheMutationLock(fs::File);
 
@@ -153,7 +153,7 @@ pub struct CacheStatusReport {
     pub artifact_count: usize,
     pub error: String,
     /// `/cache/*` egress since process start (see `cache_egress`). Wire names
-    /// are fixed by Manage's `JamesAgentCacheReport`.
+    /// are fixed by Tiaris's `NestAgentCacheReport`.
     pub served_bytes_total: u64,
     pub served_requests_total: u64,
     pub missing_requests_total: u64,
@@ -227,7 +227,7 @@ struct NixCacheInfo {
     priority: Option<u64>,
 }
 
-/// Egress totals are taken by value so a report can never leave for Manage
+/// Egress totals are taken by value so a report can never leave for Tiaris
 /// with a half-filled counter block: the caller snapshots
 /// `AppState::cache_egress` in the same pass that reads the cache state.
 pub async fn status_report(
@@ -346,7 +346,7 @@ pub async fn export_output(
     evaluated_derivation: Option<&str>,
 ) -> Result<CachedNixArtifact> {
     if !config.cache.enabled {
-        bail!("James Cache is disabled");
+        bail!("Nest Cache is disabled");
     }
     let mutation_lock = acquire_cache_mutation_lock(config).await?;
     if db::protected_build_job_remediation_exists(pool, job.id).await? {
@@ -355,7 +355,7 @@ pub async fn export_output(
     crate::disk::ensure_headroom(
         &config.cache.root_dir,
         closure_size_bytes.max(0) as u64,
-        "James cache export",
+        "Nest cache export",
     )?;
     let public_key = ensure_signing_key(config).await?;
     let cache_dir = config.cache.root_dir.clone();
@@ -412,7 +412,7 @@ pub async fn export_output(
             .to_string();
         let narinfo = verified.root_narinfo;
         let metadata = json!({
-            "cache_schema": "cybex.james.cache.v1",
+            "cache_schema": "tiaris.nest.cache.v1",
             "public_key_fingerprint": public_key_fingerprint(&public_key),
             "nix_cache_info": cache_info,
             "narinfo": narinfo_name,
@@ -447,7 +447,7 @@ pub async fn export_output(
     .context("join cache export task")?
 }
 
-/// A verified closure to mirror from an approved sibling James cache.
+/// A verified closure to mirror from an approved sibling Nest cache.
 pub struct ReplicaClosureSource<'a> {
     pub cache_base_url: &'a str,
     pub public_key: &'a str,
@@ -471,14 +471,14 @@ const REPLICA_NARINFO_TIMEOUT: Duration = Duration::from_secs(30);
 const REPLICA_NAR_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const REPLICA_MAX_MEMBERS: usize = 200_000;
 
-/// Mirror a verified closure from an approved sibling James, member for
+/// Mirror a verified closure from an approved sibling Nest, member for
 /// member and byte for byte. Every NARInfo must carry a valid signature by
 /// the origin's key, every NAR file must match its NARInfo FileHash and
 /// FileSize, and this node appends its own signature so the mirrored records
 /// pass the same manifest verification a local export does. Nothing touches
 /// the local Nix store: no Nix trust configuration is involved, and because
 /// the compressed members are identical the resulting closure manifest is
-/// identical to the origin's, which is what Manage requires of a replica.
+/// identical to the origin's, which is what Tiaris requires of a replica.
 pub async fn import_replica_closure(
     pool: &SqlitePool,
     config: &AppConfig,
@@ -486,7 +486,7 @@ pub async fn import_replica_closure(
     source: ReplicaClosureSource<'_>,
 ) -> Result<(CachedNixArtifact, ReplicaClosureSummary)> {
     if !config.cache.enabled {
-        bail!("James Cache is disabled");
+        bail!("Nest Cache is disabled");
     }
     let mutation_lock = acquire_cache_mutation_lock(config).await?;
     if db::protected_build_job_remediation_exists(pool, job.id).await? {
@@ -559,7 +559,7 @@ pub async fn import_replica_closure(
             Err(_) => false,
         };
         if !already_present {
-            crate::disk::ensure_headroom(&cache_dir, file_size, "James replica copy")?;
+            crate::disk::ensure_headroom(&cache_dir, file_size, "Nest replica copy")?;
             fetch_replica_nar(
                 &client,
                 source.cache_base_url,
@@ -634,7 +634,7 @@ pub async fn import_replica_closure(
     let narinfo = verified.root_narinfo;
     let output_sha256 = hex::encode(parse_strong_sha256(&root.nar_hash, "NarHash")?);
     let metadata = json!({
-        "cache_schema": "cybex.james.cache.v1",
+        "cache_schema": "tiaris.nest.cache.v1",
         "public_key_fingerprint": public_key_fingerprint(&public_key),
         "nix_cache_info": cache_info,
         "narinfo": narinfo_name,
@@ -1348,7 +1348,7 @@ fn verify_narinfo_signature(narinfo: &ParsedNarInfo, public_key: &str) -> Result
             .is_ok()
     });
     if !verified {
-        bail!("NARInfo did not carry a valid signature from the active James cache key");
+        bail!("NARInfo did not carry a valid signature from the active Nest cache key");
     }
     Ok(())
 }
@@ -1357,17 +1357,17 @@ pub(crate) fn parse_cache_public_key(public_key: &str) -> Result<(&str, Verifyin
     let (key_name, encoded_key) = public_key
         .split_once(':')
         .filter(|(name, encoded)| !name.is_empty() && !encoded.is_empty())
-        .ok_or_else(|| anyhow!("James cache public key had an invalid shape"))?;
+        .ok_or_else(|| anyhow!("Nest cache public key had an invalid shape"))?;
     let key_bytes = BASE64_STANDARD
         .decode(encoded_key)
-        .context("decode James cache public key")?;
+        .context("decode Nest cache public key")?;
     let key_bytes: [u8; 32] = key_bytes
         .try_into()
-        .map_err(|_| anyhow!("James cache public key was not 256-bit"))?;
+        .map_err(|_| anyhow!("Nest cache public key was not 256-bit"))?;
     let verifying_key =
-        VerifyingKey::from_bytes(&key_bytes).context("parse James cache public key")?;
+        VerifyingKey::from_bytes(&key_bytes).context("parse Nest cache public key")?;
     if verifying_key.is_weak() {
-        bail!("James cache public key must not be a weak Ed25519 key");
+        bail!("Nest cache public key must not be a weak Ed25519 key");
     }
     Ok((key_name, verifying_key))
 }
@@ -1516,7 +1516,7 @@ fn quarantine_narinfo_records(
         // lives on another mount. Archival then uses rename where possible or
         // a no-follow copy across filesystems.
         let hidden = cache_root.join(format!(
-            ".cybex-quarantine-{}-{nonce}-{index}",
+            ".tiaris-quarantine-{}-{nonce}-{index}",
             std::process::id()
         ));
         fs::rename(&path, &hidden).with_context(|| {
@@ -1621,7 +1621,7 @@ pub async fn remediate_protected_build_jobs(
     }
     tracing::warn!(
         remediated_jobs = completed,
-        "withdrew legacy protected build roots and swept unreferenced members from the James static cache; /nix/store GC remains operator-managed"
+        "withdrew legacy protected build roots and swept unreferenced members from the Nest static cache; /nix/store GC remains operator-managed"
     );
     Ok(completed)
 }
@@ -1791,7 +1791,7 @@ pub async fn try_enforce_retention(pool: &SqlitePool, config: &AppConfig) -> Res
 async fn enforce_retention_locked(pool: &SqlitePool, config: &AppConfig) -> Result<()> {
     if config.cache.max_bytes == 0 {
         tracing::warn!(
-            "cache.max_bytes is 0: James Cache retention is disabled and the cache root can grow without bound"
+            "cache.max_bytes is 0: Nest Cache retention is disabled and the cache root can grow without bound"
         );
         return Ok(());
     }
@@ -1861,7 +1861,7 @@ async fn enforce_retention_locked(pool: &SqlitePool, config: &AppConfig) -> Resu
         .map(str::to_string)
         .collect::<HashSet<_>>();
 
-    // Manage-desired artifacts and outputs of active jobs are hard fences.
+    // Tiaris-desired artifacts and outputs of active jobs are hard fences.
     // Recent terminal outputs are a preference: consider every other artifact
     // first, then use the oldest recent outputs if the cache is still too big.
     let hard_protected = |artifact: &crate::models::CacheArtifact| {
@@ -1938,7 +1938,7 @@ async fn enforce_retention_locked(pool: &SqlitePool, config: &AppConfig) -> Resu
             available_disk_evidence = available_bytes.is_some(),
             minimum_available_disk_bytes = minimum_available_bytes,
             remaining_reclaim_bytes = reclaim_bytes,
-            "James Cache cannot restore its size and installer-headroom invariants after evicting every eligible artifact"
+            "Nest Cache cannot restore its size and installer-headroom invariants after evicting every eligible artifact"
         );
     }
     Ok(())
@@ -1967,7 +1967,7 @@ fn retention_reclaim_bytes(
 /// once per day; an invalid root triggers a full safety cascade because a
 /// quarantined shared member can invalidate roots outside the normal batch.
 /// Invalid local rows are removed immediately; the next generation-fenced full
-/// inventory makes the loss visible to Manage, whose desired-state controller
+/// inventory makes the loss visible to Tiaris, whose desired-state controller
 /// queues a repair.
 pub async fn scrub_cache_artifacts(
     pool: &SqlitePool,
@@ -1999,7 +1999,7 @@ async fn scrub_cache_artifacts_locked(
         // Quarantining a corrupt member can make roots outside the bounded
         // sample incomplete. Corruption is exceptional, so pay the one-time
         // cost of checking every remaining root and withdraw every affected
-        // publication before reporting a complete inventory to Manage.
+        // publication before reporting a complete inventory to Tiaris.
         for artifact in db::list_cache_artifacts(pool).await? {
             if scrub_cache_artifact(pool, config, &artifact, &public_key).await? {
                 invalid_count += 1;
@@ -2016,7 +2016,7 @@ async fn scrub_cache_artifacts_locked(
 }
 
 /// Run the bounded integrity scrub only when its mutation lease is immediately
-/// available. This keeps periodic Manage reports live during a long `nix copy`
+/// available. This keeps periodic Tiaris reports live during a long `nix copy`
 /// without weakening the lock used by the scrub itself.
 pub async fn try_scrub_cache_artifacts(
     pool: &SqlitePool,
@@ -2058,7 +2058,7 @@ async fn scrub_cache_artifact(
         artifact_type = %artifact.artifact_type,
         hash = %artifact.hash,
         reason = %verification_error,
-        "removing missing or corrupt James cache artifact for automatic repair"
+        "removing missing or corrupt Nest cache artifact for automatic repair"
     );
     db::delete_cache_artifact(pool, artifact.id).await?;
     Ok(true)
@@ -2606,9 +2606,9 @@ fn narinfo_filename_for_store_path(store_path: &str) -> Result<String> {
 }
 
 fn public_key_fingerprint(public_key: &str) -> String {
-    // Cybex Manage validates this as the full 64-char sha256 hex of the
+    // Tiaris validates this as the full 64-char sha256 hex of the
     // decoded ed25519 key material ("name:base64" -> sha256 of the decoded
-    // 32 bytes), and rejects the whole james report when it differs.
+    // 32 bytes), and rejects the whole nest report when it differs.
     public_key
         .split_once(':')
         .and_then(|(_, material)| BASE64_STANDARD.decode(material).ok())
@@ -2690,7 +2690,7 @@ mod tests {
     #[test]
     fn replica_mirror_appends_this_nodes_signature_and_keeps_the_origins() {
         let (signing, public, secret) = replica_test_keys();
-        let dir = std::env::temp_dir().join(format!("cybex-james-replica-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tiaris-nest-replica-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let key_path = dir.join("secret");
         fs::write(&key_path, &secret).unwrap();
@@ -2734,7 +2734,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "cybex-james-cache-{label}-{}-{nanos}",
+            "tiaris-nest-cache-{label}-{}-{nanos}",
             std::process::id()
         ));
         fs::create_dir_all(&path).unwrap();
@@ -3041,7 +3041,7 @@ mod tests {
         );
         protected_material::validate_cache_metadata(&first.manifest).unwrap();
         let encoded = serde_json::to_string(&first.manifest).unwrap();
-        assert!(!encoded.contains("CYBEX_JAMES_PROTECTED_SENTINEL"));
+        assert!(!encoded.contains("TIARIS_NEST_PROTECTED_SENTINEL"));
         assert!(!encoded.contains("$6$rounds="));
 
         // Reference ordering in NARInfo must not affect the manifest or its
@@ -3392,14 +3392,14 @@ FileSize: 344\n\
 NarHash: sha256:1ikmazsfprwyp4kfg9cgp22if0g08xckkrihiwqmzgqjddk7wxj7\n\
 NarSize: 576\n\
 References: cvy4yl0j7rbcqnrnpj89rqzd0iq8qyci-nixexprs.tar.xz\n\
-Sig: cybex-test:5hs1RwT8NyAcDFKcOYuEufPJXuAVbfMv3XJ7lu9je2cqz0/0QRIFRj2uQPuXkthNe9BNyw2ImzzBOc4EWHSpDQ==\n\
+Sig: tiaris-test:5hs1RwT8NyAcDFKcOYuEufPJXuAVbfMv3XJ7lu9je2cqz0/0QRIFRj2uQPuXkthNe9BNyw2ImzzBOc4EWHSpDQ==\n\
 CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
         let mut narinfo = parse_narinfo_strict(raw).unwrap();
         narinfo.references.sort();
 
         verify_narinfo_signature(
             &narinfo,
-            "cybex-test:4Cm07ebfb3cchJi1+QERxySdvysSmmX1BihUlu5qfL0=",
+            "tiaris-test:4Cm07ebfb3cchJi1+QERxySdvysSmmX1BihUlu5qfL0=",
         )
         .unwrap();
     }
@@ -3749,13 +3749,13 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
         let public = ensure_signing_key_blocking_with_command(
             &private_key,
             &public_key,
-            "cybex-james-cache",
+            "tiaris-nest-cache",
             &fake_nix_store,
         )
         .unwrap();
         release_writer.join().unwrap();
 
-        assert!(public.starts_with("cybex-james-cache:"));
+        assert!(public.starts_with("tiaris-nest-cache:"));
         let fingerprint = public_key_fingerprint(&public);
         assert_eq!(fingerprint.len(), 64);
         assert!(fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()));
@@ -3814,7 +3814,7 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
         fs::write(&config.cache.private_key_path, "private").unwrap();
         fs::write(
             &config.cache.public_key_path,
-            "cybex-james-cache:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+            "tiaris-nest-cache:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
         )
         .unwrap();
         fs::set_permissions(
@@ -3841,7 +3841,7 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
         assert_eq!(report.served_requests_total, 3);
         assert_eq!(report.missing_requests_total, 1);
         assert_eq!(report.counters_since, "2026-09-03T12:00:00Z");
-        assert!(report.public_key.starts_with("cybex-james-cache:"));
+        assert!(report.public_key.starts_with("tiaris-nest-cache:"));
         assert_eq!(report.public_key_fingerprint.len(), 64);
         assert_eq!(
             fs::metadata(&config.cache.private_key_path)
@@ -3942,7 +3942,7 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
                     closure_file_size_bytes: None,
                     compression: Some("xz".to_string()),
                     references: Some(json!([])),
-                    serving_url: Some(format!("http://james.example/cache/nar/{name}.nar.xz")),
+                    serving_url: Some(format!("http://nest.example/cache/nar/{name}.nar.xz")),
                     source_build_job_id: source,
                     cache_metadata: None,
                 },
@@ -4036,7 +4036,7 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
                 references: Some(json!([
                     "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-protected"
                 ])),
-                serving_url: Some("http://james.example/cache/nar/protected.nar.xz".to_string()),
+                serving_url: Some("http://nest.example/cache/nar/protected.nar.xz".to_string()),
                 source_build_job_id: Some("active-job".to_string()),
                 cache_metadata: None,
             },
@@ -4064,7 +4064,7 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
                 references: Some(json!([
                     "/nix/store/cccccccccccccccccccccccccccccccc-unprotected"
                 ])),
-                serving_url: Some("http://james.example/cache/nar/unprotected.nar.xz".to_string()),
+                serving_url: Some("http://nest.example/cache/nar/unprotected.nar.xz".to_string()),
                 source_build_job_id: None,
                 cache_metadata: None,
             },
@@ -4181,7 +4181,7 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
                     closure_file_size_bytes: Some(footprint as i64),
                     compression: Some("xz".to_string()),
                     references: Some(json!([])),
-                    serving_url: Some(format!("http://james.example/cache/nar/{name}.nar.xz")),
+                    serving_url: Some(format!("http://nest.example/cache/nar/{name}.nar.xz")),
                     source_build_job_id: source,
                     cache_metadata: None,
                 },
@@ -4259,7 +4259,7 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
                     closure_file_size_bytes: None,
                     compression: Some("xz".to_string()),
                     references: Some(json!([])),
-                    serving_url: Some(format!("http://james.example/cache/nar/{name}.nar.xz")),
+                    serving_url: Some(format!("http://nest.example/cache/nar/{name}.nar.xz")),
                     source_build_job_id: None,
                     cache_metadata: None,
                 },
@@ -4363,12 +4363,12 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
                     compression: Some(root_narinfo.compression),
                     references: Some(json!(root_narinfo.references)),
                     serving_url: Some(format!(
-                        "http://james.example/cache/{}",
+                        "http://nest.example/cache/{}",
                         root_narinfo.store_path
                     )),
                     source_build_job_id: None,
                     cache_metadata: Some(json!({
-                        "cache_schema": "cybex.james.cache.v1",
+                        "cache_schema": "tiaris.nest.cache.v1",
                         "public_key_fingerprint": public_key_fingerprint(&public_key),
                         "closure_manifest": verified.manifest,
                         "closure_manifest_sha256": verified.manifest_sha256,
@@ -4385,7 +4385,7 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
 
         // Only the first root is in the bounded sample. Once it exposes the
         // shared corrupt member, the scrub must cascade to the second root so
-        // Manage cannot continue to report an incomplete closure as ready.
+        // Tiaris cannot continue to report an incomplete closure as ready.
         assert_eq!(scrub_cache_artifacts(&pool, &config, 1).await.unwrap(), 2);
         assert!(db::list_cache_artifacts(&pool).await.unwrap().is_empty());
         assert!(!root_narinfo_path.exists());
@@ -4460,7 +4460,7 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
         fs::write(
             &affected_narinfo,
             format!(
-                "URL: nar/affected.nar.xz\nReferences: {}\nX-Cybex-Legacy-Protected: {sentinel}\n",
+                "URL: nar/affected.nar.xz\nReferences: {}\nX-Tiaris-Legacy-Protected: {sentinel}\n",
                 shared_store.trim_start_matches("/nix/store/")
             ),
         )
@@ -4525,7 +4525,7 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
         .unwrap();
 
         sqlx::query(
-            "UPDATE james_build_jobs
+            "UPDATE nest_build_jobs
              SET build_spec = ?, status = 'succeeded', output_path = ?, logs = ?, error = ?
              WHERE id = ?",
         )
@@ -4553,7 +4553,7 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
         assert_eq!(ledger.3, "pending_purge");
         let scrubbed: (String, String, String, String, String) = sqlx::query_as(
             "SELECT build_spec, cache_metadata, status, logs, error
-             FROM james_build_jobs WHERE id = ?",
+             FROM nest_build_jobs WHERE id = ?",
         )
         .bind(job.id)
         .fetch_one(&pool)
@@ -4629,7 +4629,7 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
         assert_eq!(purge_status.0, "purged");
         assert!(purge_status.1.is_some());
         let metadata: String =
-            sqlx::query_scalar("SELECT cache_metadata FROM james_build_jobs WHERE id = ?")
+            sqlx::query_scalar("SELECT cache_metadata FROM nest_build_jobs WHERE id = ?")
                 .bind(job.id)
                 .fetch_one(&pool)
                 .await

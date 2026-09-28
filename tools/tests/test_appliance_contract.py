@@ -26,8 +26,8 @@ FIRST_BOOT = (
     / "rootfs"
     / "usr"
     / "lib"
-    / "cybex-james"
-    / "cybex-james-first-boot"
+    / "tiaris-nest"
+    / "tiaris-nest-first-boot"
 )
 SERVICE = (
     REPOSITORY
@@ -36,32 +36,32 @@ SERVICE = (
     / "etc"
     / "systemd"
     / "system"
-    / "cybex-james.service"
+    / "tiaris-nest.service"
 )
-FIRST_BOOT_SERVICE = SERVICE.with_name("cybex-james-first-boot.service")
+FIRST_BOOT_SERVICE = SERVICE.with_name("tiaris-nest-first-boot.service")
 PHYSICAL_CONSOLE_SERVICE = SERVICE.with_name("getty@tty1.service")
-NETWORK_RUNTIME_SERVICE = SERVICE.with_name("cybex-james-network-runtime.service")
-NETWORK_RUNTIME_TIMER = SERVICE.with_name("cybex-james-network-runtime.timer")
-NETWORK_RUNTIME = FIRST_BOOT.with_name("cybex-james-network-runtime")
-PHYSICAL_CONSOLE = FIRST_BOOT.with_name("cybex-james-console")
-STATE_LAYOUT = FIRST_BOOT.with_name("cybex-james-state-layout")
+NETWORK_RUNTIME_SERVICE = SERVICE.with_name("tiaris-nest-network-runtime.service")
+NETWORK_RUNTIME_TIMER = SERVICE.with_name("tiaris-nest-network-runtime.timer")
+NETWORK_RUNTIME = FIRST_BOOT.with_name("tiaris-nest-network-runtime")
+PHYSICAL_CONSOLE = FIRST_BOOT.with_name("tiaris-nest-console")
+STATE_LAYOUT = FIRST_BOOT.with_name("tiaris-nest-state-layout")
 IPXE_AUTOEXEC = (
     REPOSITORY
     / "ubuntu-appliance"
     / "rootfs"
     / "usr"
     / "share"
-    / "cybex-james"
+    / "tiaris-nest"
     / "autoexec.ipxe"
 )
 PXE_MENU_BACKGROUND = REPOSITORY / "assets" / "pxe-menu.png"
 PXE_NGINX_SITE = (
     REPOSITORY
-    / "ubuntu-appliance/rootfs/etc/nginx/sites-available/cybex-james"
+    / "ubuntu-appliance/rootfs/etc/nginx/sites-available/tiaris-nest"
 )
-APPLIANCE_UPDATE = FIRST_BOOT.with_name("cybex-james-appliance-update")
-GENERATION_COMMIT = FIRST_BOOT.with_name("cybex-james-generation-commit")
-POSTINST = REPOSITORY / "ubuntu-appliance" / "package" / "cybex-james-appliance.postinst"
+APPLIANCE_UPDATE = FIRST_BOOT.with_name("tiaris-nest-appliance-update")
+GENERATION_COMMIT = FIRST_BOOT.with_name("tiaris-nest-generation-commit")
+POSTINST = REPOSITORY / "ubuntu-appliance" / "package" / "tiaris-nest-appliance.postinst"
 QUALIFICATION_LIFECYCLE = (
     REPOSITORY / "ubuntu-appliance" / "qualification" / "run-lifecycle.sh"
 )
@@ -74,8 +74,8 @@ NETWORK_CHANGE = (
     / "rootfs"
     / "usr"
     / "lib"
-    / "cybex-james"
-    / "cybex-james-network-change"
+    / "tiaris-nest"
+    / "tiaris-nest-network-change"
 )
 NETPLAN_APPLY = (
     REPOSITORY
@@ -83,10 +83,10 @@ NETPLAN_APPLY = (
     / "rootfs"
     / "usr"
     / "lib"
-    / "cybex-james"
-    / "cybex-james-netplan-apply"
+    / "tiaris-nest"
+    / "tiaris-nest-netplan-apply"
 )
-NETPLAN_ACTIVATE = NETPLAN_APPLY.with_name("cybex-james-netplan-activate")
+NETPLAN_ACTIVATE = NETPLAN_APPLY.with_name("tiaris-nest-netplan-activate")
 BUILD_TEMPLATE = REPOSITORY / "ubuntu-appliance" / "build-template.sh"
 AUTOINSTALL_USER_DATA = REPOSITORY / "ubuntu-appliance" / "nocloud" / "user-data"
 GRUB_THEME = REPOSITORY / "ubuntu-appliance" / "grub-theme" / "theme.txt"
@@ -107,21 +107,21 @@ BUILD_MANAGE_SOURCE_ARCHIVE = (
     REPOSITORY / "ubuntu-appliance" / "build-manage-source-archive.sh"
 )
 MANAGE_INSTALLER_REQUIRED_PATHS = (
-    "agent/cybex-agent/Cargo.toml",
-    "agent/cybex-agent/Cargo.lock",
-    "agent/cybex-agent/src/hardware_inventory.rs",
-    "agent/cybex-agent/src/installer_boot.rs",
-    "agent/cybex-agent/src/lib.rs",
-    "agent/cybex-agent/src/main.rs",
-    "agent/cybex-agent/src/managed_wifi.rs",
-    "deploy/nixos/cybex-agent-module.nix",
-    "deploy/nixos/cybex-apply-blueprint.sh",
-    "deploy/nixos/cybex-authd-packages.nix",
-    "deploy/nixos/cybex-authd.nix",
-    "deploy/nixos/cybex-blueprints.nix",
-    "deploy/nixos/cybex-himmelblau-packages.nix",
-    "deploy/nixos/cybex-himmelblau.nix",
-    "deploy/nixos/cybex-ldap.nix",
+    "agent/tiaris-agent/Cargo.toml",
+    "agent/tiaris-agent/Cargo.lock",
+    "agent/tiaris-agent/src/hardware_inventory.rs",
+    "agent/tiaris-agent/src/installer_boot.rs",
+    "agent/tiaris-agent/src/lib.rs",
+    "agent/tiaris-agent/src/main.rs",
+    "agent/tiaris-agent/src/managed_wifi.rs",
+    "deploy/nixos/tiaris-agent-module.nix",
+    "deploy/nixos/tiaris-apply-blueprint.sh",
+    "deploy/nixos/tiaris-authd-packages.nix",
+    "deploy/nixos/tiaris-authd.nix",
+    "deploy/nixos/tiaris-blueprints.nix",
+    "deploy/nixos/tiaris-himmelblau-packages.nix",
+    "deploy/nixos/tiaris-himmelblau.nix",
+    "deploy/nixos/tiaris-ldap.nix",
 )
 RELEASE_WORKFLOW = REPOSITORY / ".github" / "workflows" / "release.yml"
 RUST_BUILD_SCRIPT = REPOSITORY / "build.rs"
@@ -135,17 +135,17 @@ PACKAGE_SERVER = (
 
 def create_manage_source_fixture(root: Path) -> tuple[Path, str]:
     source = root / "manage-source"
-    (source / "agent/cybex-agent").mkdir(parents=True)
+    (source / "agent/tiaris-agent").mkdir(parents=True)
     (source / "deploy/nixos").mkdir(parents=True)
-    (source / "agent/cybex-agent/Cargo.toml").write_text(
-        "[package]\nname = \"cybex-agent\"\nversion = \"1.0.14\"\n",
+    (source / "agent/tiaris-agent/Cargo.toml").write_text(
+        "[package]\nname = \"tiaris-agent\"\nversion = \"1.0.14\"\n",
         encoding="utf-8",
     )
-    (source / "agent/cybex-agent/Cargo.lock").write_text(
+    (source / "agent/tiaris-agent/Cargo.lock").write_text(
         "# deterministic fixture\nversion = 3\n",
         encoding="utf-8",
     )
-    (source / "agent/cybex-agent/src").mkdir()
+    (source / "agent/tiaris-agent/src").mkdir()
     agent_sources = {
         "hardware_inventory.rs": "pub fn collect() {}\n",
         "installer_boot.rs": "pub fn prepare() {}\n",
@@ -154,37 +154,37 @@ def create_manage_source_fixture(root: Path) -> tuple[Path, str]:
         "managed_wifi.rs": "pub fn reconcile() {}\n",
     }
     for name, body in agent_sources.items():
-        (source / "agent/cybex-agent/src" / name).write_text(body, encoding="utf-8")
+        (source / "agent/tiaris-agent/src" / name).write_text(body, encoding="utf-8")
     installer_sources = {
-        "cybex-agent-module.nix": (
-            "{ ... }: { helper = builtins.readFile ./cybex-apply-blueprint.sh; }\n"
+        "tiaris-agent-module.nix": (
+            "{ ... }: { helper = builtins.readFile ./tiaris-apply-blueprint.sh; }\n"
         ),
-        "cybex-apply-blueprint.sh": "#!/usr/bin/env bash\nexit 0\n",
-        "cybex-authd-packages.nix": "{ pkgs, ... }: { }\n",
-        "cybex-authd.nix": (
-            "{ ... }: let packages = import ./cybex-authd-packages.nix { }; in { }\n"
+        "tiaris-apply-blueprint.sh": "#!/usr/bin/env bash\nexit 0\n",
+        "tiaris-authd-packages.nix": "{ pkgs, ... }: { }\n",
+        "tiaris-authd.nix": (
+            "{ ... }: let packages = import ./tiaris-authd-packages.nix { }; in { }\n"
         ),
-        "cybex-blueprints.nix": (
-            "{ ... }: { imports = [ ./cybex-authd.nix ./cybex-ldap.nix "
-            "./cybex-himmelblau.nix ]; }\n"
+        "tiaris-blueprints.nix": (
+            "{ ... }: { imports = [ ./tiaris-authd.nix ./tiaris-ldap.nix "
+            "./tiaris-himmelblau.nix ]; }\n"
         ),
-        "cybex-himmelblau-packages.nix": "{ pkgs, ... }: { }\n",
-        "cybex-himmelblau.nix": (
-            "{ ... }: let packages = import ./cybex-himmelblau-packages.nix { }; "
+        "tiaris-himmelblau-packages.nix": "{ pkgs, ... }: { }\n",
+        "tiaris-himmelblau.nix": (
+            "{ ... }: let packages = import ./tiaris-himmelblau-packages.nix { }; "
             "in { }\n"
         ),
-        "cybex-ldap.nix": "{ ... }: { }\n",
+        "tiaris-ldap.nix": "{ ... }: { }\n",
     }
     for name, body in installer_sources.items():
         (source / "deploy/nixos" / name).write_text(body, encoding="utf-8")
-    (source / "deploy/nixos/cybex-apply-blueprint.sh").chmod(0o755)
+    (source / "deploy/nixos/tiaris-apply-blueprint.sh").chmod(0o755)
     subprocess.run(["git", "init", "-q", str(source)], check=True)
     subprocess.run(
-        ["git", "-C", str(source), "config", "user.name", "Cybex test"],
+        ["git", "-C", str(source), "config", "user.name", "Tiaris test"],
         check=True,
     )
     subprocess.run(
-        ["git", "-C", str(source), "config", "user.email", "test@cybex.invalid"],
+        ["git", "-C", str(source), "config", "user.email", "test@tiaris.invalid"],
         check=True,
     )
     # Prove the archive helper does not inherit a repository-local tar umask.
@@ -294,14 +294,14 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
         and shutil.which("zstd"),
         "dpkg-deb, git, jq, and zstd are required",
     )
-    def test_local_cybex_packages_are_byte_reproducible(self) -> None:
+    def test_local_tiaris_packages_are_byte_reproducible(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            james = directory / "cybex-james"
-            bootstrap = directory / "cybex-james-bootstrap"
-            james.write_bytes(b"deterministic James fixture\n")
+            nest = directory / "tiaris-nest"
+            bootstrap = directory / "tiaris-nest-bootstrap"
+            nest.write_bytes(b"deterministic Nest fixture\n")
             bootstrap.write_bytes(b"deterministic bootstrap fixture\n")
-            james.chmod(0o755)
+            nest.chmod(0o755)
             bootstrap.chmod(0o755)
             first = directory / "first"
             second = directory / "second"
@@ -309,8 +309,8 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
             second.mkdir()
             manage_source, manage_revision = create_manage_source_fixture(directory)
             arguments = [
-                "--james-binary",
-                str(james),
+                "--nest-binary",
+                str(nest),
                 "--bootstrap-binary",
                 str(bootstrap),
                 "--version",
@@ -364,28 +364,28 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
             appliance = next(
                 package
                 for package in first_packages
-                if package.name.startswith("cybex-james-appliance_")
+                if package.name.startswith("tiaris-nest-appliance_")
             )
-            james_package = next(
+            nest_package = next(
                 package
                 for package in first_packages
-                if package.name.startswith("cybex-james_")
+                if package.name.startswith("tiaris-nest_")
             )
             appliance_data = directory / "appliance-data"
             subprocess.run(["dpkg-deb", "--extract", str(appliance), str(appliance_data)], check=True)
-            public_script = appliance_data / "usr/share/cybex-james/autoexec.ipxe"
+            public_script = appliance_data / "usr/share/tiaris-nest/autoexec.ipxe"
             self.assertEqual(public_script.stat().st_mode & 0o777, 0o644)
-            self.assertTrue((appliance_data / "etc/systemd/system/cybex-james-pxe.service").is_file())
-            self.assertTrue(os.access(appliance_data / "usr/lib/cybex-james/cybex-james-pxe", os.X_OK))
+            self.assertTrue((appliance_data / "etc/systemd/system/tiaris-nest-pxe.service").is_file())
+            self.assertTrue(os.access(appliance_data / "usr/lib/tiaris-nest/tiaris-nest-pxe", os.X_OK))
             depends = subprocess.check_output(["dpkg-deb", "-f", str(appliance), "Depends"], text=True)
             self.assertIn("dnsmasq-base", depends)
-            james_data_root = directory / "james-data"
+            nest_data_root = directory / "nest-data"
             subprocess.run(
-                ["dpkg-deb", "--extract", str(james_package), str(james_data_root)],
+                ["dpkg-deb", "--extract", str(nest_package), str(nest_data_root)],
                 check=True,
             )
             packaged_source_dir = (
-                james_data_root / "usr/share/cybex-james/manage-source"
+                nest_data_root / "usr/share/tiaris-nest/manage-source"
             )
             packaged_archive = packaged_source_dir / f"{manage_revision}.tar"
             packaged_metadata_path = packaged_source_dir / f"{manage_revision}.json"
@@ -418,7 +418,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 self.assertTrue(source_members[required].isreg())
                 expected_mode = (
                     0o755
-                    if required == "deploy/nixos/cybex-apply-blueprint.sh"
+                    if required == "deploy/nixos/tiaris-apply-blueprint.sh"
                     else 0o644
                 )
                 self.assertEqual(source_members[required].mode, expected_mode)
@@ -428,13 +428,13 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
 
             outer_tar = directory / "package-snapshot.tar"
             with tarfile.open(outer_tar, mode="w", format=tarfile.USTAR_FORMAT) as archive:
-                member = tarfile.TarInfo(james_package.name)
-                member.size = james_package.stat().st_size
+                member = tarfile.TarInfo(nest_package.name)
+                member.size = nest_package.stat().st_size
                 member.mode = 0o644
                 member.uid = 0
                 member.gid = 0
                 member.mtime = 0
-                with james_package.open("rb") as package_file:
+                with nest_package.open("rb") as package_file:
                     archive.addfile(member, package_file)
             snapshot = directory / "package-snapshot.tar.zst"
             subprocess.run(
@@ -451,7 +451,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 check=True,
                 stdout=subprocess.DEVNULL,
             )
-            release_tool = runpy.run_path(str(REPOSITORY / "tools/james-release.py"))
+            release_tool = runpy.run_path(str(REPOSITORY / "tools/nest-release.py"))
             inspected = release_tool["_inspect_packaged_manage_source"](
                 snapshot, "1.2.3"
             )
@@ -485,38 +485,38 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 ["dpkg-deb", "--control", str(appliance), str(control_root)],
                 check=True,
             )
-            proxy_helper = data_root / 'usr/lib/cybex-james/cybex-james-pxe'
-            proxy_unit = data_root / 'etc/systemd/system/cybex-james-pxe.service'
-            proxy_policy = data_root / 'etc/cybex-james/pxe-discovery.json'
+            proxy_helper = data_root / 'usr/lib/tiaris-nest/tiaris-nest-pxe'
+            proxy_unit = data_root / 'etc/systemd/system/tiaris-nest-pxe.service'
+            proxy_policy = data_root / 'etc/tiaris-nest/pxe-discovery.json'
             self.assertEqual(proxy_helper.stat().st_mode & 0o777, 0o755)
             self.assertEqual(proxy_unit.stat().st_mode & 0o777, 0o644)
             self.assertEqual(json.loads(proxy_policy.read_text()), {'mode':'automatic'})
             self.assertIn('dnsmasq-base', (control_root / 'control').read_text())
-            self.assertIn('/etc/cybex-james/pxe-discovery.json', (control_root / 'conffiles').read_text())
-            self.assertIn('cybex-james-pxe', (control_root / 'postinst').read_text())
+            self.assertIn('/etc/tiaris-nest/pxe-discovery.json', (control_root / 'conffiles').read_text())
+            self.assertIn('tiaris-nest-pxe', (control_root / 'postinst').read_text())
             packaged_first_boot = (
                 data_root
-                / "usr/lib/cybex-james/cybex-james-first-boot"
+                / "usr/lib/tiaris-nest/tiaris-nest-first-boot"
             ).read_text(encoding="utf-8")
             packaged_netplan_activate = (
                 data_root
-                / "usr/lib/cybex-james/cybex-james-netplan-activate"
+                / "usr/lib/tiaris-nest/tiaris-nest-netplan-activate"
             )
             packaged_physical_console = (
-                data_root / "usr/lib/cybex-james/cybex-james-console"
+                data_root / "usr/lib/tiaris-nest/tiaris-nest-console"
             )
             packaged_physical_console_service = (
                 data_root / "etc/systemd/system/getty@tty1.service"
             )
             packaged_ipxe_autoexec = (
-                data_root / "usr/share/cybex-james/autoexec.ipxe"
+                data_root / "usr/share/tiaris-nest/autoexec.ipxe"
             )
             packaged_pxe_menu_background = (
                 data_root
-                / "usr/share/cybex-james/assets/pxe-menu.png"
+                / "usr/share/tiaris-nest/assets/pxe-menu.png"
             )
             packaged_pxe_nginx_site = (
-                data_root / "etc/nginx/sites-available/cybex-james"
+                data_root / "etc/nginx/sites-available/tiaris-nest"
             )
             packaged_postinst = (control_root / "postinst").read_text(
                 encoding="utf-8"
@@ -524,7 +524,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
             for packaged_script in (packaged_first_boot, packaged_postinst):
                 self.assertIn(
                     "install -d -m 0755 -o root -g root "
-                    "/var/cache/cybex-james/tftp",
+                    "/var/cache/tiaris-nest/tftp",
                     packaged_script,
                 )
             self.assertIn(
@@ -534,7 +534,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
             self.assertEqual(
                 (
                     data_root
-                    / "usr/lib/cybex-james/cybex-james-first-boot"
+                    / "usr/lib/tiaris-nest/tiaris-nest-first-boot"
                 ).stat().st_mode
                 & 0o777,
                 0o755,
@@ -575,7 +575,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 pxe_nginx,
             )
             self.assertIn(
-                "alias /usr/share/cybex-james/assets/pxe-menu.png;",
+                "alias /usr/share/tiaris-nest/assets/pxe-menu.png;",
                 pxe_nginx,
             )
             self.assertIn(
@@ -588,7 +588,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 pxe_nginx,
             )
             self.assertIn(
-                "alias /usr/share/cybex-james/manage-source/$source_file;",
+                "alias /usr/share/tiaris-nest/manage-source/$source_file;",
                 pxe_nginx,
             )
             self.assertIn("limit_except GET { deny all; }", pxe_nginx)
@@ -597,11 +597,11 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                 pxe_nginx,
             )
             self.assertNotIn(
-                "alias /usr/share/cybex-james/manage-source/;",
+                "alias /usr/share/tiaris-nest/manage-source/;",
                 pxe_nginx,
             )
             self.assertIn(
-                "10-netplan-cybex-james.network",
+                "10-netplan-tiaris-nest.network",
                 packaged_netplan_activate.read_text(encoding="utf-8"),
             )
 
@@ -635,7 +635,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
             dirty.unlink()
 
             linked = source / "linked-source"
-            linked.symlink_to("agent/cybex-agent/Cargo.toml")
+            linked.symlink_to("agent/tiaris-agent/Cargo.toml")
             subprocess.run(
                 ["git", "-C", str(source), "add", "linked-source"], check=True
             )
@@ -676,14 +676,14 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            release_tool = runpy.run_path(str(REPOSITORY / "tools/james-release.py"))
+            release_tool = runpy.run_path(str(REPOSITORY / "tools/nest-release.py"))
             self.assertEqual(
                 release_tool["MANAGE_SOURCE_INSTALLER_REQUIRED_PATHS"],
                 frozenset(MANAGE_INSTALLER_REQUIRED_PATHS),
             )
             omitted_paths = (
-                "agent/cybex-agent/src/managed_wifi.rs",
-                "deploy/nixos/cybex-himmelblau-packages.nix",
+                "agent/tiaris-agent/src/managed_wifi.rs",
+                "deploy/nixos/tiaris-himmelblau-packages.nix",
             )
             for case_index, omitted_path in enumerate(omitted_paths):
                 source, revision = create_manage_source_fixture(
@@ -764,7 +764,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
     def test_qualification_package_server_exposes_only_the_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            snapshot = directory / "cybex-james-appliance-packages-1.2.3-x86_64-linux.tar.zst"
+            snapshot = directory / "tiaris-nest-appliance-packages-1.2.3-x86_64-linux.tar.zst"
             snapshot.write_bytes(b"exact unpublished qualification snapshot\0\xff")
             port_file = directory / "port"
             server = subprocess.Popen(
@@ -805,8 +805,8 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
     def test_thin_iso_and_package_snapshot_are_built_separately(self) -> None:
         template = BUILD_TEMPLATE.read_text(encoding="utf-8")
         self.assertNotIn("build-offline-repo.sh", template)
-        self.assertNotIn("$iso_tree/cybex/apt", template)
-        self.assertIn('$iso_tree/cybex/release-public-key', template)
+        self.assertNotIn("$iso_tree/tiaris/apt", template)
+        self.assertIn('$iso_tree/tiaris/release-public-key', template)
         self.assertIn("network-snapshot-v1", template)
         self.assertIn('rm -rf -- "$iso_tree/pool" "$iso_tree/dists"', template)
         self.assertIn("casper/ubuntu-server-minimal.squashfs", template)
@@ -830,8 +830,8 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
         self.assertIn('"$bootstrap_binary" required-manage-origin', template)
         self.assertIn('--expected-manage-origin', template)
         self.assertIn('cmp "$bootstrap_binary" "$embedded_bootstrap"', template)
-        self.assertIn('Boot Cybex James Setup', template)
-        self.assertIn('set theme=/boot/grub/themes/cybex-james/theme.txt', template)
+        self.assertIn('Boot Tiaris Nest Setup', template)
+        self.assertIn('set theme=/boot/grub/themes/tiaris-nest/theme.txt', template)
         self.assertIn('assets/pxe-menu.png', template)
         self.assertTrue(GRUB_THEME.is_file())
 
@@ -843,7 +843,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
 
         snapshot = BUILD_PACKAGE_SNAPSHOT.read_text(encoding="utf-8")
         self.assertIn("build-offline-repo.sh", snapshot)
-        self.assertIn("cybex.james.appliance-package-snapshot.v1", snapshot)
+        self.assertIn("tiaris.nest.appliance-package-snapshot.v1", snapshot)
         self.assertIn("--expected-manage-origin", snapshot)
         self.assertIn('"$bootstrap_binary" required-manage-origin', snapshot)
         self.assertIn("build-manage-source-archive.sh", snapshot)
@@ -851,7 +851,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
 
         package_builder = BUILD_PACKAGES.read_text(encoding="utf-8")
         self.assertIn("build-manage-source-archive.sh", package_builder)
-        self.assertIn("usr/share/cybex-james/manage-source", package_builder)
+        self.assertIn("usr/share/tiaris-nest/manage-source", package_builder)
         self.assertIn("iputils-arping", package_builder)
         self.assertIn("udpcast", package_builder)
         offline_builder = BUILD_OFFLINE_REPOSITORY.read_text(encoding="utf-8")
@@ -864,14 +864,14 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
         self.assertIn("udpcast_expected_version=20120424-2build2", offline_builder)
         self.assertIn('"udpcast=$udpcast_expected_version"', offline_builder)
         self.assertIn("udpcast (= ${udpcast_version})", package_builder)
-        self.assertIn("CYBEX-SBOM.spdx.json", offline_builder)
+        self.assertIn("TIARIS-SBOM.spdx.json", offline_builder)
         self.assertIn("GPL-2.0-only AND BSD-2-Clause", offline_builder)
         self.assertIn("UDPCAST-COPYRIGHT", offline_builder)
         self.assertIn("udpcast", snapshot)
         service = SERVICE.read_text(encoding="utf-8")
         self.assertIn("CapabilityBoundingSet=\n", service)
         self.assertIn("AmbientCapabilities=\n", service)
-        firewall = FIRST_BOOT.with_name("cybex-james-firewall").read_text(
+        firewall = FIRST_BOOT.with_name("tiaris-nest-firewall").read_text(
             encoding="utf-8"
         )
         self.assertIn("policy accept", firewall)
@@ -879,7 +879,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
         source_builder = BUILD_MANAGE_SOURCE_ARCHIVE.read_text(encoding="utf-8")
         self.assertIn("git -c tar.umask=0022", source_builder)
         self.assertIn("git get-tar-commit-id", source_builder)
-        self.assertIn("cybex.james.manage-source.v1", source_builder)
+        self.assertIn("tiaris.nest.manage-source.v1", source_builder)
 
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         closure_build = workflow.index("nixos-appliance/build-closure.sh")
@@ -890,18 +890,18 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            'CYBEX_JAMES_BUILD_MANAGE_ORIGIN="$CYBEX_JAMES_BUILD_MANAGE_ORIGIN"',
+            'TIARIS_NEST_BUILD_MANAGE_ORIGIN="$TIARIS_NEST_BUILD_MANAGE_ORIGIN"',
             workflow,
         )
         self.assertIn(
-            '--expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN"',
+            '--expected-manage-origin "$TIARIS_NEST_BUILD_MANAGE_ORIGIN"',
             workflow,
         )
         self.assertIn('--manage-source-dir "$PWD/manage-source"', workflow)
         self.assertIn("--manage-source-revision", workflow)
         self.assertGreaterEqual(
             workflow.count(
-                '--expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN"'
+                '--expected-manage-origin "$TIARIS_NEST_BUILD_MANAGE_ORIGIN"'
             ),
             4,
         )
@@ -910,21 +910,21 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
             1,
         )
         self.assertIn(
-            '"$RUNNER_TEMP/cybex-james-appliance-closure-metadata.json"',
+            '"$RUNNER_TEMP/tiaris-nest-appliance-closure-metadata.json"',
             workflow,
         )
         self.assertIn('--installer-iso-template-metadata', workflow)
         self.assertNotIn(
-            'CYBEX_JAMES_BUILD_MANAGE_ORIGIN="$("$RUNNER_TEMP/cybex-james-bootstrap"',
+            'TIARIS_NEST_BUILD_MANAGE_ORIGIN="$("$RUNNER_TEMP/tiaris-nest-bootstrap"',
             workflow,
         )
         self.assertNotIn(
-            "ubuntu-appliance/rootfs/usr/lib/cybex-james/*", workflow
+            "ubuntu-appliance/rootfs/usr/lib/tiaris-nest/*", workflow
         )
         self.assertIn("python3 -m py_compile", workflow)
         self.assertIn("squashfs-tools", (REPOSITORY / "release/beast/Dockerfile").read_text())
         self.assertIn(
-            "cargo:rerun-if-env-changed=CYBEX_JAMES_BUILD_MANAGE_ORIGIN",
+            "cargo:rerun-if-env-changed=TIARIS_NEST_BUILD_MANAGE_ORIGIN",
             RUST_BUILD_SCRIPT.read_text(encoding="utf-8"),
         )
 
@@ -950,7 +950,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
             root = Path(temporary)
             output = root / "output"
             output.mkdir()
-            bootstrap = root / "cybex-james-bootstrap"
+            bootstrap = root / "tiaris-nest-bootstrap"
             bootstrap.write_text(
                 "#!/bin/sh\n"
                 "test \"${1:-}\" = required-manage-origin || exit 2\n"
@@ -1018,10 +1018,10 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
             output = root / "output"
             output.mkdir()
             manage_source, manage_revision = create_manage_source_fixture(root)
-            james = root / "cybex-james"
-            james.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            james.chmod(0o755)
-            bootstrap = root / "cybex-james-bootstrap"
+            nest = root / "tiaris-nest"
+            nest.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            nest.chmod(0o755)
+            bootstrap = root / "tiaris-nest-bootstrap"
             bootstrap.write_text(
                 "#!/bin/sh\n"
                 "test \"${1:-}\" = required-manage-origin || exit 2\n"
@@ -1055,8 +1055,8 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
                     str(BUILD_PACKAGE_SNAPSHOT),
                     "--output-dir",
                     str(output),
-                    "--james-binary",
-                    str(james),
+                    "--nest-binary",
+                    str(nest),
                     "--bootstrap-binary",
                     str(bootstrap),
                     "--version",
@@ -1101,8 +1101,8 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
             snapshot_builder,
         )
         self.assertIn("--previous-package-snapshot", offline_builder)
-        self.assertNotIn("CYBEX_JAMES_PREVIOUS_PACKAGE_SNAPSHOT", snapshot_builder)
-        self.assertNotIn("CYBEX_JAMES_PREVIOUS_PACKAGE_SNAPSHOT", offline_builder)
+        self.assertNotIn("TIARIS_NEST_PREVIOUS_PACKAGE_SNAPSHOT", snapshot_builder)
+        self.assertNotIn("TIARIS_NEST_PREVIOUS_PACKAGE_SNAPSHOT", offline_builder)
 
         update = offline_builder.index('apt-get "${apt_options[@]}" update')
         plan = offline_builder.index("--print-uris")
@@ -1126,7 +1126,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
         self.assertNotIn("tarfile.open", extractor)
         self.assertNotIn("dpkg-deb", extractor)
         self.assertIn('snapshot_marker != expected_marker', extractor)
-        self.assertIn('package.name.lower().startswith("cybex-james")', extractor)
+        self.assertIn('package.name.lower().startswith("tiaris-nest")', extractor)
         self.assertLess(
             authenticated_download,
             offline_builder.index('architecture="$(dpkg-deb -f "$package" Architecture)"'),
@@ -1141,18 +1141,18 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
     def test_service_can_read_config_only_after_first_boot_succeeds(self) -> None:
         script = FIRST_BOOT.read_text(encoding="utf-8")
         self.assertIn(
-            "chown root:cybex-james /etc/cybex-james/config.toml\n"
-            "chmod 0640 /etc/cybex-james/config.toml\n",
+            "chown root:tiaris-nest /etc/tiaris-nest/config.toml\n"
+            "chmod 0640 /etc/tiaris-nest/config.toml\n",
             script,
         )
 
         service = SERVICE.read_text(encoding="utf-8")
         self.assertIn(
-            "Requires=cybex-james-first-boot.service "
-            "cybex-james-network-runtime.service\n",
+            "Requires=tiaris-nest-first-boot.service "
+            "tiaris-nest-network-runtime.service\n",
             service,
         )
-        self.assertIn("cybex-james-network-runtime.service", service)
+        self.assertIn("tiaris-nest-network-runtime.service", service)
         self.assertIn("nginx.service tftpd-hpa.service", service)
         self.assertIn(
             "Wants=network-online.target nginx.service tftpd-hpa.service", service
@@ -1165,7 +1165,7 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
 
         self.assertEqual(PHYSICAL_CONSOLE.stat().st_mode & 0o777, 0o755)
         self.assertEqual(PHYSICAL_CONSOLE_SERVICE.stat().st_mode & 0o777, 0o644)
-        self.assertIn("ExecStart=/usr/lib/cybex-james/cybex-james-console", service)
+        self.assertIn("ExecStart=/usr/lib/tiaris-nest/tiaris-nest-console", service)
         self.assertIn("Type=idle", service)
         self.assertIn("TTYPath=/dev/tty1", service)
         self.assertIn("Conflicts=rescue.service", service)
@@ -1174,15 +1174,15 @@ class ApplianceFirstBootContractTests(unittest.TestCase):
         self.assertNotIn("serial-getty", service)
         self.assertNotIn("/bin/login", service)
 
-        self.assertIn("CYBEX JAMES", console)
-        self.assertIn("Managed by Cybex Manage", console)
+        self.assertIn("TIARIS NEST", console)
+        self.assertIn("Managed by Tiaris", console)
         self.assertIn("Starting", console)
         self.assertIn("Ready", console)
         self.assertIn("Attention needed", console)
-        self.assertIn("Check Cybex Manage for status and next steps.", console)
-        self.assertIn("cybex_fresh=1", console)
+        self.assertIn("Check Tiaris for status and next steps.", console)
+        self.assertIn("tiaris_fresh=1", console)
         self.assertIn(".display_name | strings", console)
-        self.assertIn("root:cybex-james:640:1", console)
+        self.assertIn("root:tiaris-nest:640:1", console)
         self.assertNotIn("device_id", console)
         self.assertNotIn("journalctl", console)
         self.assertNotIn("login:", console)
@@ -1203,7 +1203,7 @@ for ((attempt = 0; attempt < attention_after_checks; attempt++)); do
   update_appliance_state
 done
 printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
-unit_failed() {{ [[ "$1" = cybex-james.service ]]; }}
+unit_failed() {{ [[ "$1" = tiaris-nest.service ]]; }}
 update_appliance_state
 printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
 """,
@@ -1227,30 +1227,30 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
     def test_service_nix_client_state_is_private_without_weakening_control(self) -> None:
         service = SERVICE.read_text(encoding="utf-8")
         expected_environment = {
-            "HOME": "/var/cache/cybex-james/agent/home",
-            "XDG_CACHE_HOME": "/var/cache/cybex-james/agent/cache",
-            "XDG_CONFIG_HOME": "/var/cache/cybex-james/agent/config",
-            "XDG_STATE_HOME": "/var/cache/cybex-james/agent/state",
-            "TMPDIR": "/var/cache/cybex-james/agent/tmp",
+            "HOME": "/var/cache/tiaris-nest/agent/home",
+            "XDG_CACHE_HOME": "/var/cache/tiaris-nest/agent/cache",
+            "XDG_CONFIG_HOME": "/var/cache/tiaris-nest/agent/config",
+            "XDG_STATE_HOME": "/var/cache/tiaris-nest/agent/state",
+            "TMPDIR": "/var/cache/tiaris-nest/agent/tmp",
             "NIX_USER_CONF_FILES": "/dev/null",
         }
         for name, value in expected_environment.items():
             self.assertIn(f"Environment={name}={value}\n", service)
         self.assertIn("ProtectHome=true\n", service)
         self.assertIn(
-            "ReadWritePaths=/var/lib/cybex-james /var/cache/cybex-james\n",
+            "ReadWritePaths=/var/lib/tiaris-nest /var/cache/tiaris-nest\n",
             service,
         )
 
         for script_path in (POSTINST, FIRST_BOOT):
             script = script_path.read_text(encoding="utf-8")
             self.assertIn(
-                "install -d -m 0750 -o root -g cybex-james \"$agent_cache\"",
+                "install -d -m 0750 -o root -g tiaris-nest \"$agent_cache\"",
                 script,
             )
             self.assertIn("for private in home cache config state tmp; do", script)
             self.assertIn(
-                "install -d -m 0700 -o cybex-james -g cybex-james \"$path\"",
+                "install -d -m 0700 -o tiaris-nest -g tiaris-nest \"$path\"",
                 script,
             )
             self.assertIn("! -L \"$agent_cache\"", script)
@@ -1259,12 +1259,12 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
         first_boot = FIRST_BOOT.read_text(encoding="utf-8")
         self.assertIn(
             "test \"$(stat -c '%U:%G:%a' \"$agent_cache\")\" = "
-            "root:cybex-james:750",
+            "root:tiaris-nest:750",
             first_boot,
         )
         self.assertIn(
             "test \"$(stat -c '%U:%G:%a' \"$control_dir\")\" = "
-            "root:cybex-james:750",
+            "root:tiaris-nest:750",
             first_boot,
         )
 
@@ -1273,7 +1273,7 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
         self.assertNotIn("systemctl enable --now", script)
         self.assertIn(
             "systemctl enable nix-daemon nginx tftpd-hpa "
-            "cybex-james-pxe cybex-james-firewall ssh\n",
+            "tiaris-nest-pxe tiaris-nest-firewall ssh\n",
             script,
         )
 
@@ -1290,7 +1290,7 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
         self.assertIn('-device ide-cd,drive=installer', script)
         self.assertEqual(script.count("\nstart_qemu\n"), 1)
         self.assertNotIn("start_qemu installed", script)
-        self.assertIn('CYBEX_JAMES_QUALIFICATION_MEMORY_MIB:-32768', script)
+        self.assertIn('TIARIS_NEST_QUALIFICATION_MEMORY_MIB:-32768', script)
         self.assertIn('-m "$memory_mib"', script)
 
     def test_qualification_makes_the_personalized_iso_private_and_writable(self) -> None:
@@ -1313,21 +1313,21 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
         self.assertIn('.ready_replicas == .required_replicas', script)
         self.assertLess(script.index('blueprint-catalog.py'), script.index('package_delivery='))
         self.assertIn(
-            'api GET "/v1/james/nodes/$device_id/workstation-netboot"', script
+            'api GET "/v1/nest/nodes/$device_id/workstation-netboot"', script
         )
         self.assertIn('"$(jq -er \'.operational\' "$runtime_status")" = true', script)
         self.assertIn('"$(jq -er \'.converged\' "$runtime_status")" = true', script)
         self.assertIn(
-            'api GET "/v1/james/nodes/$device_id/build/jobs?limit=200&offset=0"',
+            'api GET "/v1/nest/nodes/$device_id/build/jobs?limit=200&offset=0"',
             script,
         )
         self.assertIn("source_build_candidates:.cache_metadata.source_build_candidates", script)
-        self.assertIn("builtin_blueprints_qualified_on_new_james:$builtins_deliverable", script)
+        self.assertIn("builtin_blueprints_qualified_on_new_nest:$builtins_deliverable", script)
 
-    def test_root_network_helper_shares_handshake_files_with_james(self) -> None:
+    def test_root_network_helper_shares_handshake_files_with_nest(self) -> None:
         change_script = NETWORK_CHANGE.read_text(encoding="utf-8")
         self.assertIn('temporary="$(mktemp "$status_dir/.appliance-network-change-status.XXXXXX")"', change_script)
-        self.assertIn('chown root:cybex-james "$temporary"\n', change_script)
+        self.assertIn('chown root:tiaris-nest "$temporary"\n', change_script)
         self.assertIn('chmod 0640 "$temporary"\n', change_script)
 
         apply_script = NETPLAN_APPLY.read_text(encoding="utf-8")
@@ -1398,10 +1398,10 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
             change_script,
         )
 
-        guard = FIRST_BOOT.with_name("cybex-james-network-guard").read_text(
+        guard = FIRST_BOOT.with_name("tiaris-nest-network-guard").read_text(
             encoding="utf-8"
         )
-        self.assertIn('cybex.james.network-fallback.v1', guard)
+        self.assertIn('tiaris.nest.network-fallback.v1', guard)
         self.assertIn('approved_sha256="$(sha256sum "$approved"', guard)
         self.assertNotIn('origin=https://manage.cybex.net', guard)
         self.assertIn('required-manage-origin', guard)
@@ -1418,7 +1418,7 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
         activation = NETPLAN_ACTIVATE.read_text(encoding="utf-8")
         self.assertIn("umask 0027\n    netplan generate\n    netplan apply", activation)
         self.assertIn("root:systemd-network:640:1", activation)
-        self.assertIn("10-netplan-cybex-james.network", activation)
+        self.assertIn("10-netplan-tiaris-nest.network", activation)
         self.assertNotIn("systemd-escape", activation)
         self.assertIn('generated_files=("$runtime_dir"/10-netplan-*.network)', activation)
         self.assertIn("networkctl --no-pager status", activation)
@@ -1440,17 +1440,17 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            active = root / "90-cybex-james.yaml"
+            active = root / "90-tiaris-nest.yaml"
             runtime = root / "network"
             fake_bin = root / "bin"
             calls = root / "netplan-calls"
             runtime.mkdir()
             fake_bin.mkdir()
-            expected = runtime / "10-netplan-cybex-james.network"
+            expected = runtime / "10-netplan-tiaris-nest.network"
             extra = runtime / "10-netplan-enp5s0.network"
 
             adapted = source.replace(
-                "active=/etc/netplan/90-cybex-james.yaml",
+                "active=/etc/netplan/90-tiaris-nest.yaml",
                 f"active={shlex.quote(str(active))}",
             ).replace(
                 "runtime_dir=/run/systemd/network",
@@ -1494,7 +1494,7 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
                                     "version": 2,
                                     "renderer": "networkd",
                                     "ethernets": {
-                                        "cybex-james": {
+                                        "tiaris-nest": {
                                             "set-name": "enp5s0",
                                             "dhcp4": dhcp4,
                                         }
@@ -1558,8 +1558,8 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
 
     def test_bridge_state_boundary_and_package_staging_are_fail_closed(self) -> None:
         postinst = POSTINST.read_text(encoding="utf-8")
-        harden_parent = postinst.index('chown root:cybex-james "$james_root"')
-        inspect_child = postinst.index('for protected in "$james_root/control" "$james_root/status"')
+        harden_parent = postinst.index('chown root:tiaris-nest "$nest_root"')
+        inspect_child = postinst.index('for protected in "$nest_root/control" "$nest_root/status"')
         create_child = postinst.index('mkdir "$protected"', inspect_child)
         self.assertLess(harden_parent, inspect_child)
         self.assertLess(inspect_child, create_child)
@@ -1573,13 +1573,13 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
         self.assertNotIn('"appliance-network-change-status.json"', layout)
         manage = (REPOSITORY / "src/manage.rs").read_text(encoding="utf-8")
         self.assertIn(
-            '"/var/lib/cybex-james/status/reliability-state.json"', manage
+            '"/var/lib/tiaris-nest/status/reliability-state.json"', manage
         )
         self.assertNotIn(
-            '"/var/lib/cybex-james/reliability-state.json"', manage
+            '"/var/lib/tiaris-nest/reliability-state.json"', manage
         )
         first_boot = FIRST_BOOT.read_text(encoding="utf-8")
-        self.assertNotIn('chown -R cybex-james:cybex-james /var/lib/cybex-james/state', first_boot)
+        self.assertNotIn('chown -R tiaris-nest:tiaris-nest /var/lib/tiaris-nest/state', first_boot)
 
         service = FIRST_BOOT_SERVICE.read_text(encoding="utf-8")
         self.assertIn("TimeoutStartSec=4h", service)
@@ -1595,13 +1595,13 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
             "failure_stage=package_verification", package_apply
         )
         cleanup_call = updater.index("cleanup_update_staging", package_verification)
-        seal = updater.index('candidate_control="$candidate_path/var/lib/cybex-james/control"')
+        seal = updater.index('candidate_control="$candidate_path/var/lib/tiaris-nest/control"')
         self.assertLess(package_plan, package_apply)
         self.assertLess(package_apply, package_verification)
         self.assertLess(package_verification, cleanup_call)
         self.assertLess(cleanup_call, seal)
         self.assertNotIn(
-            "install /run/cybex-update-packages/*.deb", updater
+            "install /run/tiaris-update-packages/*.deb", updater
         )
         self.assertIn(
             'install "${package_targets[@]}"', updater
@@ -1625,7 +1625,7 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
 
         source_seal = updater.index('write_pending_seal "$control_dir"')
         candidate_seal = updater.index('write_pending_seal "$candidate_control"')
-        arm_candidate = updater.index('grub-reboot "cybex-james-generation-$candidate"')
+        arm_candidate = updater.index('grub-reboot "tiaris-nest-generation-$candidate"')
         self.assertLess(source_seal, candidate_seal)
         self.assertLess(candidate_seal, arm_candidate)
         self.assertIn(
@@ -1756,7 +1756,7 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
             request.write_text(
                 json.dumps(
                     {
-                        "schema": "cybex.james.appliance-update-request.v1",
+                        "schema": "tiaris.nest.appliance-update-request.v1",
                         "attempt_id": attempt_id,
                         "bundle_path": str(active),
                     }
@@ -1779,23 +1779,23 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
         self.assertIn("stage_ipxe /usr/lib/ipxe/snponly.efi snponly.efi", first_boot)
         self.assertIn("stage_ipxe /usr/lib/ipxe/ipxe-amd64.efi ipxe.efi", first_boot)
         self.assertIn(
-            "stage_ipxe_script /usr/share/cybex-james/autoexec.ipxe autoexec.ipxe",
+            "stage_ipxe_script /usr/share/tiaris-nest/autoexec.ipxe autoexec.ipxe",
             first_boot,
         )
-        self.assertIn('install -d -m 0755 -o root -g root /var/cache/cybex-james/tftp', first_boot)
+        self.assertIn('install -d -m 0755 -o root -g root /var/cache/tiaris-nest/tftp', first_boot)
         self.assertIn('install -m 0644 -o root -g root "$source"', first_boot)
         self.assertNotIn('install -m 0640 -o root -g tftp "$source"', first_boot)
-        self.assertIn("! -L /var/cache/cybex-james/tftp", first_boot)
+        self.assertIn("! -L /var/cache/tiaris-nest/tftp", first_boot)
         self.assertIn('TFTP_USERNAME="tftp"', first_boot)
-        self.assertIn('TFTP_DIRECTORY="/var/cache/cybex-james/tftp"', first_boot)
+        self.assertIn('TFTP_DIRECTORY="/var/cache/tiaris-nest/tftp"', first_boot)
         self.assertIn('TFTP_OPTIONS="--secure"', first_boot)
-        self.assertNotIn('TFTP_USERNAME="cybex-james"', first_boot)
+        self.assertNotIn('TFTP_USERNAME="tiaris-nest"', first_boot)
         self.assertLess(
-            first_boot.index("cybex-james-network-guard"),
-            first_boot.index("cybex-james-network-runtime"),
+            first_boot.index("tiaris-nest-network-guard"),
+            first_boot.index("tiaris-nest-network-runtime"),
         )
         self.assertLess(
-            first_boot.index("cybex-james-network-runtime"),
+            first_boot.index("tiaris-nest-network-runtime"),
             first_boot.index("validate-appliance-config"),
         )
 
@@ -1805,16 +1805,16 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
         service = NETWORK_RUNTIME_SERVICE.read_text(encoding="utf-8")
         self.assertEqual(NETWORK_RUNTIME_SERVICE.stat().st_mode & 0o777, 0o644)
         self.assertIn("After=network-online.target", service)
-        self.assertIn("Before=cybex-james.service", service)
+        self.assertIn("Before=tiaris-nest.service", service)
         timer = NETWORK_RUNTIME_TIMER.read_text(encoding="utf-8")
         self.assertEqual(NETWORK_RUNTIME_TIMER.stat().st_mode & 0o777, 0o644)
         self.assertEqual(NETWORK_RUNTIME.stat().st_mode & 0o777, 0o755)
         self.assertIn("OnUnitActiveSec=1min", timer)
         self.assertIn("Persistent=true", timer)
         postinst = POSTINST.read_text(encoding="utf-8")
-        self.assertIn("cybex-james-network-runtime.timer", postinst)
-        self.assertIn("install -d -m 0755 -o root -g root /var/cache/cybex-james/tftp", postinst)
-        self.assertIn("! -L /var/cache/cybex-james/tftp", postinst)
+        self.assertIn("tiaris-nest-network-runtime.timer", postinst)
+        self.assertIn("install -d -m 0755 -o root -g root /var/cache/tiaris-nest/tftp", postinst)
+        self.assertIn("! -L /var/cache/tiaris-nest/tftp", postinst)
         readiness = (REPOSITORY / "src/readiness.rs").read_text(encoding="utf-8")
         self.assertIn("read_safe_public_tftp_bootloader", readiness)
         self.assertIn("read_safe_public_tftp_ipxe_chain_script", readiness)
@@ -1826,18 +1826,18 @@ printf '%s:%s\\n' "$appliance_state" "$non_ready_checks"
         self.assertEqual(autoexec.count("dhcp net0 ||"), 2)
         self.assertEqual(
             autoexec.count(
-                "chain --autofree http://${cybex-boot-server}/boot/${net0/mac:hexhyp}"
+                "chain --autofree http://${tiaris-boot-server}/boot/${net0/mac:hexhyp}"
             ),
             2,
         )
-        self.assertEqual(autoexec.count("set cybex-local-handoff 0"), 2)
+        self.assertEqual(autoexec.count("set tiaris-local-handoff 0"), 2)
         self.assertEqual(
             autoexec.count(
-                "iseq ${cybex-local-handoff} 1 && goto cybex_local_handoff"
+                "iseq ${tiaris-local-handoff} 1 && goto tiaris_local_handoff"
             ),
             2,
         )
-        self.assertIn(":cybex_local_handoff\nexit 1", autoexec)
+        self.assertIn(":tiaris_local_handoff\nexit 1", autoexec)
         self.assertIn("isset ${proxydhcp/next-server}", autoexec)
         self.assertIn("isset ${net0/mac}", autoexec)
         self.assertNotIn("organization", autoexec)

@@ -19,7 +19,7 @@ def package_source_offer(snapshot, version, epoch):
         raise ValueError('source-offer package version is invalid')
     if not re.fullmatch(r'[0-9]{1,12}', str(epoch)):
         raise ValueError('source-offer epoch is invalid')
-    files = [snapshot / 'CYBEX-SBOM.spdx.json', snapshot / 'UDPCAST-COPYRIGHT']
+    files = [snapshot / 'TIARIS-SBOM.spdx.json', snapshot / 'UDPCAST-COPYRIGHT']
     sources = sorted(p for p in snapshot.glob('udpcast_*') if not p.name.endswith('.deb'))
     if len(sources) < 3 or sum(p.name.endswith('.dsc') for p in sources) != 1:
         raise ValueError('complete UDPcast corresponding source is required')
@@ -32,24 +32,24 @@ def package_source_offer(snapshot, version, epoch):
                 or not 0 < metadata.st_size <= 64 * 1024 * 1024):
             raise ValueError('unsafe source-offer input')
         identities[path] = (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
-    output = snapshot / ('cybex-james-source-offer_' + version + '-1_all.deb')
+    output = snapshot / ('tiaris-nest-source-offer_' + version + '-1_all.deb')
     if output.exists() or output.is_symlink():
         raise ValueError('source-offer package already exists')
-    with tempfile.TemporaryDirectory(prefix='.cybex-source-offer-', dir=snapshot.parent) as temporary:
+    with tempfile.TemporaryDirectory(prefix='.tiaris-source-offer-', dir=snapshot.parent) as temporary:
         temporary = Path(temporary)
         root = temporary / 'package'
         control = root / 'DEBIAN'
-        documents = root / 'usr/share/doc/cybex-james/source-offer'
+        documents = root / 'usr/share/doc/tiaris-nest/source-offer'
         control.mkdir(parents=True)
         documents.mkdir(parents=True)
         for path in files:
             shutil.copyfile(path, documents / path.name)
             (documents / path.name).chmod(0o644)
         (control / 'control').write_text(chr(10).join([
-            'Package: cybex-james-source-offer', 'Version: ' + version + '-1',
+            'Package: tiaris-nest-source-offer', 'Version: ' + version + '-1',
             'Section: doc', 'Priority: optional', 'Architecture: all',
-            'Maintainer: Cybex <support@cybex.net>',
-            'Description: Complete corresponding source and SPDX for the James snapshot', '',
+            'Maintainer: Tiaris <support@cybex.net>',
+            'Description: Complete corresponding source and SPDX for the Nest snapshot', '',
         ]))
         for directory, _, names in os.walk(root):
             Path(directory).chmod(0o755)

@@ -3,7 +3,7 @@ use std::{env, fs, path::PathBuf};
 fn main() {
     const PIN_FILE: &str = "release/nixpkgs.nix";
     println!("cargo:rerun-if-changed={PIN_FILE}");
-    println!("cargo:rerun-if-env-changed=CYBEX_JAMES_BUILD_MANAGE_ORIGIN");
+    println!("cargo:rerun-if-env-changed=TIARIS_NEST_BUILD_MANAGE_ORIGIN");
     let source = fs::read_to_string(
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"))
             .join(PIN_FILE),
@@ -36,5 +36,5 @@ fn main() {
         )),
         "release nixpkgs URL must carry the exact declared revision"
     );
-    println!("cargo:rustc-env=CYBEX_RELEASE_NIXPKGS_REVISION={revision}");
+    println!("cargo:rustc-env=TIARIS_RELEASE_NIXPKGS_REVISION={revision}");
 }

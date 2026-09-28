@@ -34,8 +34,8 @@ class MountRepairTests(unittest.TestCase):
             with self.assertRaises(repair.base.RepairError): repair.repaired_bytes(body)
 
     def test_released_updater_has_the_same_mount_and_unmount_contract(self):
-        source = (ROOT / 'ubuntu-appliance/rootfs/usr/lib/cybex-james/cybex-james-appliance-update').read_text()
-        self.assertIn('mount -t btrfs -o "subvol=/.cybex-root-generations/$candidate" "UUID=$root_uuid" "$candidate_path"', source)
+        source = (ROOT / 'ubuntu-appliance/rootfs/usr/lib/tiaris-nest/tiaris-nest-appliance-update').read_text()
+        self.assertIn('mount -t btrfs -o "subvol=/.tiaris-root-generations/$candidate" "UUID=$root_uuid" "$candidate_path"', source)
         self.assertIn('mount --bind /dev/pts "$candidate_path/dev/pts"', source)
         cleanup = source[source.index('cleanup_mounts()'):source.index('cleanup_package_solver_state()')]
         self.assertIn('"$candidate_path/dev/pts"', cleanup)

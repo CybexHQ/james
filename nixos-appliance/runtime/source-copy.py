@@ -30,7 +30,7 @@ def copy_source(source, destination, owner=0):
         archive = source / (revision + '.tar')
         with archive.open('rb') as stream:
             digest = hashlib.file_digest(stream, 'sha256').hexdigest()
-        if (value['schema'] != 'cybex.james.manage-source.v1' or value['revision'] != revision
+        if (value['schema'] != 'tiaris.nest.manage-source.v1' or value['revision'] != revision
                 or value['filename'] != archive.name or value['sha256'] != digest
                 or value['size_bytes'] != archive.stat().st_size or not 0 < value['size_bytes'] <= 256 * 1024 ** 2):
             raise ValueError('source archive identity mismatch')

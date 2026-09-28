@@ -84,7 +84,7 @@ pub fn ensure_directories(config: &AppConfig) -> std::io::Result<()> {
 
 pub async fn active_build_job_count(pool: &SqlitePool) -> AppResult<i64> {
     let count = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM james_build_jobs WHERE status IN ('queued', 'running')",
+        "SELECT COUNT(*) FROM nest_build_jobs WHERE status IN ('queued', 'running')",
     )
     .fetch_one(pool)
     .await?;
@@ -136,7 +136,7 @@ pub async fn migrate(pool: &SqlitePool) -> AppResult<()> {
     Ok(())
 }
 
-/// Scrub protected legacy inputs before any worker or Manage report can read
+/// Scrub protected legacy inputs before any worker or Tiaris report can read
 /// them. The durable ledger stores only a categorical boundary rule, the
 /// original BuildSpec SHA-256, and job identity/status. This is deliberately
 /// implemented in Rust so it uses the same versioned boundary as new writes
@@ -144,7 +144,7 @@ pub async fn migrate(pool: &SqlitePool) -> AppResult<()> {
 pub async fn quarantine_protected_build_jobs(pool: &SqlitePool) -> AppResult<usize> {
     let rows = sqlx::query_as::<_, LegacyProtectedBuildJobRow>(
         "SELECT id, managed_job_id, status, build_spec, cache_metadata, logs, error
-         FROM james_build_jobs ORDER BY id",
+         FROM nest_build_jobs ORDER BY id",
     )
     .fetch_all(pool)
     .await?;
@@ -168,13 +168,13 @@ pub async fn quarantine_protected_build_jobs(pool: &SqlitePool) -> AppResult<usi
             let build_spec_sha256 = hex::encode(Sha256::digest(row.build_spec.as_bytes()));
             let safe_spec = serde_json::to_string(&json!({
                 "schema_version": 1,
-                "security_quarantine": "protected reusable input removed during James upgrade"
+                "security_quarantine": "protected reusable input removed during Nest upgrade"
             }))
             .map_err(|err| AppError::Config(err.to_string()))?;
             let safe_metadata = serde_json::to_string(&json!({
                 "security_quarantine": {
                     "status": "pending_purge",
-                    "reason": "protected reusable input removed during James upgrade",
+                    "reason": "protected reusable input removed during Nest upgrade",
                     "scope": "static_binary_cache",
                     "store_gc": "operator_managed"
                 }
@@ -199,10 +199,10 @@ pub async fn quarantine_protected_build_jobs(pool: &SqlitePool) -> AppResult<usi
             .execute(&mut *tx)
             .await?;
             sqlx::query(
-                "UPDATE james_build_jobs
+                "UPDATE nest_build_jobs
                  SET build_spec = ?, cache_metadata = ?, status = 'failed',
                      progress_percent = 100, progress_stage = 'failed',
-                     progress_message = 'Build quarantined during James security upgrade',
+                     progress_message = 'Build quarantined during Nest security upgrade',
                      logs = '', error = 'Build quarantined because reusable input failed the protected-material boundary',
                      completed_at = COALESCE(completed_at, ?), updated_at = ?
                  WHERE id = ?",
@@ -218,7 +218,7 @@ pub async fn quarantine_protected_build_jobs(pool: &SqlitePool) -> AppResult<usi
             quarantined += 1;
         } else if redacted_logs != row.logs || redacted_error != row.error {
             sqlx::query(
-                "UPDATE james_build_jobs SET logs = ?, error = ?, updated_at = ? WHERE id = ?",
+                "UPDATE nest_build_jobs SET logs = ?, error = ?, updated_at = ? WHERE id = ?",
             )
             .bind(redacted_logs)
             .bind(redacted_error)
@@ -237,7 +237,7 @@ pub(crate) async fn pending_protected_build_job_remediations(
     sqlx::query_as::<_, ProtectedBuildJobRemediation>(
         "SELECT remediation.job_id, remediation.managed_job_id, job.output_path
          FROM protected_build_job_remediations remediation
-         JOIN james_build_jobs job ON job.id = remediation.job_id
+         JOIN nest_build_jobs job ON job.id = remediation.job_id
          WHERE remediation.cache_purge_status = 'pending_purge'
          ORDER BY remediation.job_id",
     )
@@ -262,7 +262,7 @@ pub(crate) async fn protected_build_job_remediation_exists(
 /// Complete the SQLite half of a protected-artifact purge after the cache
 /// mutation lock holder has unpublished and swept the filesystem. A `purged`
 /// status covers withdrawal of the exported root plus sweeping members not
-/// shared by retained roots; James deliberately leaves `/nix/store` garbage
+/// shared by retained roots; Nest deliberately leaves `/nix/store` garbage
 /// collection to its separately governed policy.
 pub(crate) async fn complete_protected_build_job_cache_purge(
     pool: &SqlitePool,
@@ -271,7 +271,7 @@ pub(crate) async fn complete_protected_build_job_cache_purge(
 ) -> AppResult<()> {
     let mut tx = pool.begin().await?;
     for artifact_id in artifact_ids {
-        sqlx::query("DELETE FROM james_cache_artifacts WHERE id = ?")
+        sqlx::query("DELETE FROM nest_cache_artifacts WHERE id = ?")
             .bind(artifact_id)
             .execute(&mut *tx)
             .await?;
@@ -279,7 +279,7 @@ pub(crate) async fn complete_protected_build_job_cache_purge(
 
     for artifact_id in artifact_ids {
         let remaining_by_id: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM james_cache_artifacts WHERE id = ?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM nest_cache_artifacts WHERE id = ?")
                 .bind(artifact_id)
                 .fetch_one(&mut *tx)
                 .await?;
@@ -291,7 +291,7 @@ pub(crate) async fn complete_protected_build_job_cache_purge(
     }
 
     let remaining: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM james_cache_artifacts
+        "SELECT COUNT(*) FROM nest_cache_artifacts
          WHERE (? IS NOT NULL AND source_build_job_id = ?)
             OR (? <> '' AND store_path = ?)",
     )
@@ -311,13 +311,13 @@ pub(crate) async fn complete_protected_build_job_cache_purge(
     let safe_metadata = serde_json::to_string(&json!({
         "security_quarantine": {
             "status": "purged",
-            "reason": "protected reusable input removed during James upgrade",
+            "reason": "protected reusable input removed during Nest upgrade",
             "scope": "static_binary_cache",
             "store_gc": "operator_managed"
         }
     }))
     .map_err(|err| AppError::Config(err.to_string()))?;
-    sqlx::query("UPDATE james_build_jobs SET cache_metadata = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE nest_build_jobs SET cache_metadata = ?, updated_at = ? WHERE id = ?")
         .bind(safe_metadata)
         .bind(&now)
         .bind(remediation.job_id)
@@ -1134,7 +1134,7 @@ async fn get_boot_event(pool: &SqlitePool, id: i64) -> AppResult<BootEvent> {
 
 pub async fn list_build_jobs(pool: &SqlitePool) -> AppResult<Vec<BuildJob>> {
     let rows = sqlx::query_as::<_, BuildJobRow>(
-        "SELECT * FROM james_build_jobs ORDER BY created_at DESC, id DESC",
+        "SELECT * FROM nest_build_jobs ORDER BY created_at DESC, id DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -1143,7 +1143,7 @@ pub async fn list_build_jobs(pool: &SqlitePool) -> AppResult<Vec<BuildJob>> {
 
 /// Read a fair, cursor-rotated page of managed build evidence without first
 /// materializing every potentially MiB-sized build specification and metadata
-/// document. Local-only jobs are excluded because Manage cannot correlate or
+/// document. Local-only jobs are excluded because Tiaris cannot correlate or
 /// consume them.
 pub async fn list_build_jobs_report_page(
     pool: &SqlitePool,
@@ -1178,7 +1178,7 @@ pub async fn list_build_jobs_report_page(
                           LENGTH(COALESCE(cancel_requested_at, '')) +
                           LENGTH(created_at) + LENGTH(updated_at)
                       ) AS estimated_bytes
-               FROM james_build_jobs
+               FROM nest_build_jobs
                WHERE managed_job_id IS NOT NULL
            ), rotated AS (
                SELECT *,
@@ -1216,7 +1216,7 @@ pub async fn list_build_jobs_report_page(
            )
            SELECT job.*
            FROM ranked
-           JOIN james_build_jobs job ON job.id = ranked.id
+           JOIN nest_build_jobs job ON job.id = ranked.id
            WHERE ranked.report_position = 1
               OR (ranked.report_position <= ?5 AND ranked.cumulative_bytes <= ?6)
            ORDER BY ranked.report_position"#,
@@ -1253,10 +1253,10 @@ pub async fn create_build_job(
     let cache_metadata = metadata_to_string(input.cache_metadata, "cache_metadata")?;
     let now = now_rfc3339();
     let result = sqlx::query(
-        "INSERT INTO james_build_jobs
+        "INSERT INTO nest_build_jobs
          (requested_artifact_type, build_spec, target, system, input_revision, input_config_hash,
           status, progress_percent, progress_stage, progress_message, cache_metadata, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, 'queued', 'Waiting for James to claim the build', ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, 'queued', 'Waiting for Nest to claim the build', ?, ?, ?)",
     )
     .bind(requested_artifact_type)
     .bind(build_spec)
@@ -1303,51 +1303,51 @@ pub async fn upsert_managed_build_job(
     let cache_metadata = metadata_to_string(cache_metadata, "cache_metadata")?;
     let now = now_rfc3339();
     sqlx::query(
-        "INSERT INTO james_build_jobs
+        "INSERT INTO nest_build_jobs
          (managed_job_id, requested_artifact_type, build_spec, target, system, input_revision,
           input_config_hash, status, progress_percent, progress_stage, progress_message,
           cache_metadata, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, 'queued', 'Waiting for James to claim the build', ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, 'queued', 'Waiting for Nest to claim the build', ?, ?, ?)
          ON CONFLICT(managed_job_id) DO UPDATE SET
              requested_artifact_type = CASE
-                 WHEN james_build_jobs.status = 'queued' THEN excluded.requested_artifact_type
-                 ELSE james_build_jobs.requested_artifact_type
+                 WHEN nest_build_jobs.status = 'queued' THEN excluded.requested_artifact_type
+                 ELSE nest_build_jobs.requested_artifact_type
              END,
              build_spec = CASE
-                 WHEN james_build_jobs.status = 'queued' THEN excluded.build_spec
-                 ELSE james_build_jobs.build_spec
+                 WHEN nest_build_jobs.status = 'queued' THEN excluded.build_spec
+                 ELSE nest_build_jobs.build_spec
              END,
              target = CASE
-                 WHEN james_build_jobs.status = 'queued' THEN excluded.target
-                 ELSE james_build_jobs.target
+                 WHEN nest_build_jobs.status = 'queued' THEN excluded.target
+                 ELSE nest_build_jobs.target
              END,
              system = CASE
-                 WHEN james_build_jobs.status = 'queued' THEN excluded.system
-                 ELSE james_build_jobs.system
+                 WHEN nest_build_jobs.status = 'queued' THEN excluded.system
+                 ELSE nest_build_jobs.system
              END,
              input_revision = CASE
-                 WHEN james_build_jobs.status = 'queued' THEN excluded.input_revision
-                 ELSE james_build_jobs.input_revision
+                 WHEN nest_build_jobs.status = 'queued' THEN excluded.input_revision
+                 ELSE nest_build_jobs.input_revision
              END,
              input_config_hash = CASE
-                 WHEN james_build_jobs.status = 'queued' THEN excluded.input_config_hash
-                 ELSE james_build_jobs.input_config_hash
+                 WHEN nest_build_jobs.status = 'queued' THEN excluded.input_config_hash
+                 ELSE nest_build_jobs.input_config_hash
              END,
              progress_percent = CASE
-                 WHEN james_build_jobs.status = 'queued' THEN excluded.progress_percent
-                 ELSE james_build_jobs.progress_percent
+                 WHEN nest_build_jobs.status = 'queued' THEN excluded.progress_percent
+                 ELSE nest_build_jobs.progress_percent
              END,
              progress_stage = CASE
-                 WHEN james_build_jobs.status = 'queued' THEN excluded.progress_stage
-                 ELSE james_build_jobs.progress_stage
+                 WHEN nest_build_jobs.status = 'queued' THEN excluded.progress_stage
+                 ELSE nest_build_jobs.progress_stage
              END,
              progress_message = CASE
-                 WHEN james_build_jobs.status = 'queued' THEN excluded.progress_message
-                 ELSE james_build_jobs.progress_message
+                 WHEN nest_build_jobs.status = 'queued' THEN excluded.progress_message
+                 ELSE nest_build_jobs.progress_message
              END,
              cache_metadata = CASE
-                 WHEN james_build_jobs.status IN ('queued', 'running') THEN excluded.cache_metadata
-                 ELSE james_build_jobs.cache_metadata
+                 WHEN nest_build_jobs.status IN ('queued', 'running') THEN excluded.cache_metadata
+                 ELSE nest_build_jobs.cache_metadata
              END,
              updated_at = excluded.updated_at",
     )
@@ -1367,20 +1367,20 @@ pub async fn upsert_managed_build_job(
     get_build_job_by_managed_id(pool, &managed_job_id).await
 }
 
-/// Persist a managed job that this James can never build as a terminal local
-/// failure, so the reason reaches Manage on the next report.
+/// Persist a managed job that this Nest can never build as a terminal local
+/// failure, so the reason reaches Tiaris on the next report.
 ///
-/// [`upsert_managed_build_job`] validates before it writes, so a job Manage
-/// considers valid but this James rejects leaves *no local row at all* -- and
-/// the James report is assembled from local rows, so the job stayed `queued`
-/// in Manage forever with no way to see why. Recording the rejection turns an
+/// [`upsert_managed_build_job`] validates before it writes, so a job Tiaris
+/// considers valid but this Nest rejects leaves *no local row at all* -- and
+/// the Nest report is assembled from local rows, so the job stayed `queued`
+/// in Tiaris forever with no way to see why. Recording the rejection turns an
 /// invisible stall into a visible failure an operator can act on.
 ///
 /// Every field is sanitized rather than validated: this path must not be able
 /// to fail for the same reason the strict path did.
 ///
 /// The reason travels as an enumerated `rejection_code` as well as prose.
-/// Manage screens reported free text for words like "credential" and blanks
+/// Tiaris screens reported free text for words like "credential" and blanks
 /// the whole value when it finds one -- which is every protected-material
 /// rejection -- so the prose alone reaches operators as "[redacted]".
 #[allow(clippy::too_many_arguments)]
@@ -1395,13 +1395,13 @@ pub async fn record_rejected_managed_build_job(
     reason: &str,
 ) -> AppResult<()> {
     // The managed id is the row key, so it is the one field that still has to
-    // be well formed. A malformed id is a Manage-side bug we cannot record
+    // be well formed. A malformed id is a Tiaris-side bug we cannot record
     // against any job; the caller logs and moves on.
     let managed_job_id = normalize_managed_id(managed_job_id, "managed_job_id")?;
-    let error = format!("James rejected this build job: {reason}");
+    let error = format!("Nest rejected this build job: {reason}");
     let now = now_rfc3339();
     sqlx::query(
-        "INSERT INTO james_build_jobs
+        "INSERT INTO nest_build_jobs
          (managed_job_id, requested_artifact_type, build_spec, target, system, input_revision,
           input_config_hash, status, progress_percent, progress_stage, progress_message,
           error, rejection_code, cache_metadata, completed_at, created_at, updated_at)
@@ -1413,9 +1413,9 @@ pub async fn record_rejected_managed_build_job(
              progress_message = excluded.progress_message,
              error = excluded.error,
              rejection_code = excluded.rejection_code,
-             completed_at = COALESCE(james_build_jobs.completed_at, excluded.updated_at),
+             completed_at = COALESCE(nest_build_jobs.completed_at, excluded.updated_at),
              updated_at = excluded.updated_at
-         WHERE james_build_jobs.status = 'queued'",
+         WHERE nest_build_jobs.status = 'queued'",
     )
     .bind(&managed_job_id)
     .bind(sanitize_report_field(
@@ -1431,7 +1431,7 @@ pub async fn record_rejected_managed_build_job(
     ))
     .bind(sanitize_report_field(input_revision, 256, ""))
     .bind(sanitize_report_field(input_config_hash, 64, ""))
-    .bind(truncate_chars("Rejected by James validation", 256))
+    .bind(truncate_chars("Rejected by Nest validation", 256))
     .bind(truncate_chars(&error, 2048))
     .bind(classify_validation_rejection(reason))
     .bind(&now)
@@ -1465,12 +1465,12 @@ pub fn classify_validation_rejection(reason: &str) -> &'static str {
         .iter()
         .find(|(needle, _)| reason.contains(needle))
         .map(|(_, code)| *code)
-        // An unrecognized reason is still a real rejection; Manage renders a
+        // An unrecognized reason is still a real rejection; Tiaris renders a
         // generic message rather than dropping the job back into limbo.
         .unwrap_or("rejected")
 }
 
-/// Best-effort cleanup for values that are only ever echoed back to Manage.
+/// Best-effort cleanup for values that are only ever echoed back to Tiaris.
 /// Drops control characters, bounds the length, and falls back when empty.
 fn sanitize_report_field(value: &str, max_chars: usize, fallback: &str) -> String {
     let cleaned = value
@@ -1510,13 +1510,13 @@ pub async fn cancel_absent_managed_build_jobs(
             continue;
         }
         sqlx::query(
-            "UPDATE james_build_jobs
+            "UPDATE nest_build_jobs
              SET status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
                  progress_percent = CASE WHEN status = 'queued' THEN 100 ELSE COALESCE(progress_percent, 5) END,
                  progress_stage = CASE WHEN status = 'queued' THEN 'cancelled' ELSE 'cancelling' END,
                  progress_message = CASE
                      WHEN status = 'queued' THEN 'Build cancelled before start'
-                     ELSE 'Cancellation requested; waiting for James to stop the build'
+                     ELSE 'Cancellation requested; waiting for Nest to stop the build'
                  END,
                  cancel_requested_at = CASE WHEN status = 'running' THEN ? ELSE cancel_requested_at END,
                  completed_at = CASE WHEN status = 'queued' THEN ? ELSE completed_at END,
@@ -1543,13 +1543,13 @@ pub async fn cancel_managed_build_jobs(
     for managed_job_id in managed_job_ids {
         let managed_job_id = normalize_managed_id(managed_job_id, "managed_job_id")?;
         let affected = sqlx::query(
-            "UPDATE james_build_jobs
+            "UPDATE nest_build_jobs
              SET status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
                  progress_percent = CASE WHEN status = 'queued' THEN 100 ELSE COALESCE(progress_percent, 5) END,
                  progress_stage = CASE WHEN status = 'queued' THEN 'cancelled' ELSE 'cancelling' END,
                  progress_message = CASE
                      WHEN status = 'queued' THEN 'Build cancelled before start'
-                     ELSE 'Cancellation requested; waiting for James to stop the build'
+                     ELSE 'Cancellation requested; waiting for Nest to stop the build'
                  END,
                  cancel_requested_at = CASE WHEN status = 'running' THEN ? ELSE cancel_requested_at END,
                  completed_at = CASE WHEN status = 'queued' THEN ? ELSE completed_at END,
@@ -1572,11 +1572,11 @@ pub async fn recover_running_build_jobs(pool: &SqlitePool, reason: &str) -> AppR
     let now = now_rfc3339();
     let error = bounded_error_text(reason);
     let affected = sqlx::query(
-        "UPDATE james_build_jobs
+        "UPDATE nest_build_jobs
          SET status = 'failed',
              progress_percent = 100,
              progress_stage = 'failed',
-             progress_message = 'Build interrupted by James restart recovery',
+             progress_message = 'Build interrupted by Nest restart recovery',
              error = ?,
              completed_at = ?,
              updated_at = ?
@@ -1599,7 +1599,7 @@ pub async fn fail_running_build_job_after_worker_error(
     let now = now_rfc3339();
     let error = bounded_error_text(reason);
     let affected = sqlx::query(
-        "UPDATE james_build_jobs
+        "UPDATE nest_build_jobs
          SET status = 'failed',
              progress_percent = 100,
              progress_stage = 'failed',
@@ -1622,18 +1622,18 @@ pub async fn fail_running_build_job_after_worker_error(
 pub async fn claim_next_build_job(pool: &SqlitePool) -> AppResult<Option<BuildJob>> {
     let now = now_rfc3339();
     let row = sqlx::query_as::<_, BuildJobRow>(
-        "UPDATE james_build_jobs
+        "UPDATE nest_build_jobs
          SET status = 'running',
              progress_percent = 5,
              progress_stage = 'claimed',
-             progress_message = 'Build claimed by James',
+             progress_message = 'Build claimed by Nest',
              started_at = COALESCE(started_at, ?),
              cancel_requested_at = NULL,
              logs = '',
              error = '',
              updated_at = ?
          WHERE id = (
-             SELECT id FROM james_build_jobs
+             SELECT id FROM nest_build_jobs
              WHERE status = 'queued'
              ORDER BY created_at ASC, id ASC
              LIMIT 1
@@ -1649,7 +1649,7 @@ pub async fn claim_next_build_job(pool: &SqlitePool) -> AppResult<Option<BuildJo
 
 pub async fn build_job_cancel_requested(pool: &SqlitePool, id: i64) -> AppResult<bool> {
     let row: Option<(String, Option<String>)> =
-        sqlx::query_as("SELECT status, cancel_requested_at FROM james_build_jobs WHERE id = ?")
+        sqlx::query_as("SELECT status, cancel_requested_at FROM nest_build_jobs WHERE id = ?")
             .bind(id)
             .fetch_optional(pool)
             .await?;
@@ -1666,7 +1666,7 @@ pub async fn build_job_cancel_requested(pool: &SqlitePool, id: i64) -> AppResult
 pub async fn update_build_job_logs(pool: &SqlitePool, id: i64, logs: &str) -> AppResult<()> {
     let now = now_rfc3339();
     sqlx::query(
-        "UPDATE james_build_jobs
+        "UPDATE nest_build_jobs
          SET logs = ?, updated_at = ?
          WHERE id = ? AND status = 'running'",
     )
@@ -1687,7 +1687,7 @@ pub async fn update_build_job_progress(
 ) -> AppResult<()> {
     let now = now_rfc3339();
     sqlx::query(
-        "UPDATE james_build_jobs
+        "UPDATE nest_build_jobs
          SET progress_percent = ?,
              progress_stage = ?,
              progress_message = ?,
@@ -1734,14 +1734,14 @@ pub async fn finish_build_job(
     let progress_stage = terminal_build_progress_stage(status);
     let now = now_rfc3339();
     sqlx::query(
-        "UPDATE james_build_jobs
+        "UPDATE nest_build_jobs
          SET status = CASE
                  WHEN cancel_requested_at IS NOT NULL AND ? = 1 THEN 'cancelled'
                  ELSE ?
              END,
              logs = ?,
              error = CASE
-                 WHEN cancel_requested_at IS NOT NULL AND ? = 1 THEN 'build cancelled by Manage'
+                 WHEN cancel_requested_at IS NOT NULL AND ? = 1 THEN 'build cancelled by Tiaris'
                  ELSE ?
              END,
              output_path = CASE
@@ -1770,7 +1770,7 @@ pub async fn finish_build_job(
                  ELSE ?
              END,
              progress_message = CASE
-                 WHEN cancel_requested_at IS NOT NULL AND ? = 1 THEN 'Build cancelled by Manage'
+                 WHEN cancel_requested_at IS NOT NULL AND ? = 1 THEN 'Build cancelled by Tiaris'
                  ELSE ?
              END,
              completed_at = ?,
@@ -1778,7 +1778,7 @@ pub async fn finish_build_job(
          WHERE id = ?
            AND NOT EXISTS (
                SELECT 1 FROM protected_build_job_remediations remediation
-               WHERE remediation.job_id = james_build_jobs.id
+               WHERE remediation.job_id = nest_build_jobs.id
            )",
     )
     .bind(cancel_override)
@@ -1841,7 +1841,7 @@ pub async fn update_build_job_report(
     let cache_metadata = metadata_to_string(cache_metadata, "cache_metadata")?;
     let now = now_rfc3339();
     sqlx::query(
-        "UPDATE james_build_jobs
+        "UPDATE nest_build_jobs
          SET status = ?,
              progress_percent = ?,
              progress_stage = ?,
@@ -1858,7 +1858,7 @@ pub async fn update_build_job_report(
          WHERE managed_job_id = ?
            AND NOT EXISTS (
                SELECT 1 FROM protected_build_job_remediations remediation
-               WHERE remediation.job_id = james_build_jobs.id
+               WHERE remediation.job_id = nest_build_jobs.id
            )",
     )
     .bind(status)
@@ -1883,7 +1883,7 @@ pub async fn update_build_job_report(
 
 pub async fn list_cache_artifacts(pool: &SqlitePool) -> AppResult<Vec<CacheArtifact>> {
     let rows = sqlx::query_as::<_, CacheArtifactRow>(
-        "SELECT * FROM james_cache_artifacts ORDER BY created_at DESC, id DESC",
+        "SELECT * FROM nest_cache_artifacts ORDER BY created_at DESC, id DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -1926,12 +1926,12 @@ pub async fn list_cache_artifacts_report_page(
                       ) OVER (
                           ORDER BY id DESC
                       ) AS cumulative_bytes
-               FROM james_cache_artifacts
+               FROM nest_cache_artifacts
                WHERE ?1 IS NULL OR id < ?1
            )
            SELECT artifact.*
            FROM ranked
-           JOIN james_cache_artifacts artifact ON artifact.id = ranked.id
+           JOIN nest_cache_artifacts artifact ON artifact.id = ranked.id
            WHERE ranked.report_position = 1
               OR (ranked.report_position <= ?2 AND ranked.cumulative_bytes <= ?3)
            ORDER BY artifact.id DESC"#,
@@ -1942,7 +1942,7 @@ pub async fn list_cache_artifacts_report_page(
     .fetch_all(pool)
     .await?;
     let remaining: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM james_cache_artifacts WHERE ? IS NULL OR id < ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM nest_cache_artifacts WHERE ? IS NULL OR id < ?")
             .bind(cursor)
             .bind(cursor)
             .fetch_one(pool)
@@ -2013,7 +2013,7 @@ pub async fn cache_artifacts_due_for_verification(
     limit: i64,
 ) -> AppResult<Vec<CacheArtifact>> {
     let rows = sqlx::query_as::<_, CacheArtifactRow>(
-        "SELECT * FROM james_cache_artifacts
+        "SELECT * FROM nest_cache_artifacts
          WHERE last_verified_at IS NULL
             OR julianday(last_verified_at) IS NULL
             OR julianday(last_verified_at) <= julianday('now', '-1 day')
@@ -2029,7 +2029,7 @@ pub async fn cache_artifacts_due_for_verification(
 
 pub async fn mark_cache_artifact_verified(pool: &SqlitePool, id: i64) -> AppResult<()> {
     sqlx::query(
-        "UPDATE james_cache_artifacts
+        "UPDATE nest_cache_artifacts
          SET verification_status = 'ready', last_verified_at = ?, updated_at = updated_at
          WHERE id = ?",
     )
@@ -2041,7 +2041,7 @@ pub async fn mark_cache_artifact_verified(pool: &SqlitePool, id: i64) -> AppResu
 }
 
 pub async fn delete_cache_artifact(pool: &SqlitePool, id: i64) -> AppResult<()> {
-    sqlx::query("DELETE FROM james_cache_artifacts WHERE id = ?")
+    sqlx::query("DELETE FROM nest_cache_artifacts WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;
@@ -2126,7 +2126,7 @@ pub async fn upsert_cache_artifact(
     )?;
     let now = now_rfc3339();
     sqlx::query(
-        "INSERT INTO james_cache_artifacts
+        "INSERT INTO nest_cache_artifacts
          (managed_artifact_id, artifact_type, hash, size_bytes, path, store_path, narinfo_path, nar_url, file_hash, nar_hash, nar_size_bytes, closure_size_bytes, closure_file_size_bytes, compression, references_json, serving_url, source_build_job_id, cache_metadata, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(artifact_type, hash) DO UPDATE SET
@@ -2175,7 +2175,7 @@ pub async fn upsert_cache_artifact(
 }
 
 pub async fn get_build_job(pool: &SqlitePool, id: i64) -> AppResult<BuildJob> {
-    let row = sqlx::query_as::<_, BuildJobRow>("SELECT * FROM james_build_jobs WHERE id = ?")
+    let row = sqlx::query_as::<_, BuildJobRow>("SELECT * FROM nest_build_jobs WHERE id = ?")
         .bind(id)
         .fetch_optional(pool)
         .await?
@@ -2188,7 +2188,7 @@ pub async fn get_build_job_by_managed_id(
     managed_job_id: &str,
 ) -> AppResult<BuildJob> {
     let row =
-        sqlx::query_as::<_, BuildJobRow>("SELECT * FROM james_build_jobs WHERE managed_job_id = ?")
+        sqlx::query_as::<_, BuildJobRow>("SELECT * FROM nest_build_jobs WHERE managed_job_id = ?")
             .bind(managed_job_id)
             .fetch_optional(pool)
             .await?
@@ -2202,7 +2202,7 @@ async fn get_cache_artifact_by_key(
     hash: &str,
 ) -> AppResult<CacheArtifact> {
     let row = sqlx::query_as::<_, CacheArtifactRow>(
-        "SELECT * FROM james_cache_artifacts WHERE artifact_type = ? AND hash = ?",
+        "SELECT * FROM nest_cache_artifacts WHERE artifact_type = ? AND hash = ?",
     )
     .bind(artifact_type)
     .bind(hash)
@@ -2283,7 +2283,7 @@ fn profile_fields_have_boot_action(
     raw_script: Option<&str>,
 ) -> bool {
     match profile_type {
-        BootProfileType::LocalDisk | BootProfileType::JamesInstaller => true,
+        BootProfileType::LocalDisk | BootProfileType::NestInstaller => true,
         BootProfileType::CustomIpxe => raw_script
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false),
@@ -2666,16 +2666,16 @@ fn terminal_build_progress_stage(status: &str) -> &'static str {
 fn terminal_build_progress_message(status: &str, metadata: Option<&Value>) -> String {
     match status {
         "succeeded" => "Build completed and cached".to_string(),
-        "cancelled" => "Build cancelled by Manage".to_string(),
+        "cancelled" => "Build cancelled by Tiaris".to_string(),
         _ => match metadata
             .and_then(Value::as_object)
             .and_then(|object| object.get("error_kind"))
             .and_then(Value::as_str)
         {
             Some("out_of_memory") => "Build ran out of memory".to_string(),
-            Some("insufficient_memory") => "James memory is below the required minimum".to_string(),
-            Some("insufficient_swap") => "James swap is below the required minimum".to_string(),
-            Some("insufficient_disk_space") => "James disk space is insufficient".to_string(),
+            Some("insufficient_memory") => "Nest memory is below the required minimum".to_string(),
+            Some("insufficient_swap") => "Nest swap is below the required minimum".to_string(),
+            Some("insufficient_disk_space") => "Nest disk space is insufficient".to_string(),
             Some("package_build_failed") => "A package failed to build".to_string(),
             Some("source_build_blocked") => {
                 "Blocked: requires building from source (not allowed for this Blueprint)"
@@ -2963,7 +2963,7 @@ mod tests {
                     &secret_ref,
                 )]),
                 "expected_state": {
-                    "schema": "cybex.blueprint.expected-state.v2",
+                    "schema": "tiaris.blueprint.expected-state.v2",
                     "compiler_version": 2,
                     "deployment": {
                         "blueprint_revision_id": revision,
@@ -3050,7 +3050,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "cybex-james-sqlite-busy-test-{}-{unique}.sqlite",
+            "tiaris-nest-sqlite-busy-test-{}-{unique}.sqlite",
             std::process::id()
         ));
         let url = format!("sqlite://{}", path.display());
@@ -3097,7 +3097,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "cybex-james-private-dir-{}-{unique}",
+            "tiaris-nest-private-dir-{}-{unique}",
             std::process::id()
         ));
 
@@ -3117,7 +3117,7 @@ mod tests {
             CreateBootProfileRequest {
                 name: "Installer".to_string(),
                 description: None,
-                profile_type: BootProfileType::JamesInstaller,
+                profile_type: BootProfileType::NestInstaller,
                 enabled: Some(true),
                 is_default: Some(false),
                 one_time: Some(true),
@@ -3170,7 +3170,7 @@ mod tests {
             CreateBootProfileRequest {
                 name: "Stale installer".to_string(),
                 description: None,
-                profile_type: BootProfileType::JamesInstaller,
+                profile_type: BootProfileType::NestInstaller,
                 enabled: Some(true),
                 is_default: Some(false),
                 one_time: Some(true),
@@ -3184,7 +3184,7 @@ mod tests {
             CreateBootProfileRequest {
                 name: "Current installer".to_string(),
                 description: None,
-                profile_type: BootProfileType::JamesInstaller,
+                profile_type: BootProfileType::NestInstaller,
                 enabled: Some(true),
                 is_default: Some(false),
                 one_time: Some(true),
@@ -3226,7 +3226,7 @@ mod tests {
             CreateBootProfileRequest {
                 name: "Installer".to_string(),
                 description: None,
-                profile_type: BootProfileType::JamesInstaller,
+                profile_type: BootProfileType::NestInstaller,
                 enabled: Some(true),
                 is_default: Some(false),
                 one_time: Some(false),
@@ -3562,7 +3562,7 @@ mod tests {
             CreateBootProfileRequest {
                 name: "Installer\nshell".to_string(),
                 description: None,
-                profile_type: BootProfileType::JamesInstaller,
+                profile_type: BootProfileType::NestInstaller,
                 enabled: Some(true),
                 is_default: Some(false),
                 one_time: Some(false),
@@ -3583,7 +3583,7 @@ mod tests {
             CreateBootProfileRequest {
                 name: "Installer".to_string(),
                 description: Some("x".repeat(MAX_PROFILE_DESCRIPTION_CHARS + 1)),
-                profile_type: BootProfileType::JamesInstaller,
+                profile_type: BootProfileType::NestInstaller,
                 enabled: Some(true),
                 is_default: Some(false),
                 one_time: Some(false),
@@ -3698,7 +3698,7 @@ mod tests {
             CreateBootProfileRequest {
                 name: "Disabled installer".to_string(),
                 description: None,
-                profile_type: BootProfileType::JamesInstaller,
+                profile_type: BootProfileType::NestInstaller,
                 enabled: Some(false),
                 is_default: Some(false),
                 one_time: Some(false),
@@ -3753,7 +3753,7 @@ mod tests {
             CreateBootProfileRequest {
                 name: "Assigned installer".to_string(),
                 description: None,
-                profile_type: BootProfileType::JamesInstaller,
+                profile_type: BootProfileType::NestInstaller,
                 enabled: Some(true),
                 is_default: Some(false),
                 one_time: Some(false),
@@ -3790,7 +3790,7 @@ mod tests {
         let unchanged = get_profile(&pool, profile.id).await.unwrap();
 
         assert!(err.to_string().contains("assigned profile"));
-        assert_eq!(unchanged.profile_type, BootProfileType::JamesInstaller);
+        assert_eq!(unchanged.profile_type, BootProfileType::NestInstaller);
     }
 
     #[tokio::test]
@@ -3887,7 +3887,7 @@ mod tests {
         let recovered = fail_running_build_job_after_worker_error(
             &pool,
             job.id,
-            "James stopped the build safely after an internal worker error; retry the build.",
+            "Nest stopped the build safely after an internal worker error; retry the build.",
         )
         .await
         .unwrap();
@@ -3914,8 +3914,8 @@ mod tests {
     #[tokio::test]
     async fn rejected_managed_build_job_is_recorded_so_manage_can_see_it() {
         let pool = test_pool().await;
-        // A spec this James refuses: upsert leaves no row, so before the
-        // rejection is recorded there is nothing to report and Manage sees the
+        // A spec this Nest refuses: upsert leaves no row, so before the
+        // rejection is recorded there is nothing to report and Tiaris sees the
         // job sit in `queued` forever.
         let rejected_spec = json!({
             "build_input": { "desktop_module_nix": "services.example.password = \"literal\";" }
@@ -3959,7 +3959,7 @@ mod tests {
         assert_eq!(recorded.status, "failed");
         assert_eq!(recorded.progress_percent, Some(100));
         assert!(recorded.error.contains("protected material"));
-        // The prose may be redacted in transit; the code is what Manage renders.
+        // The prose may be redacted in transit; the code is what Tiaris renders.
         assert_eq!(recorded.rejection_code, "protected_material");
         assert!(recorded.completed_at.is_some());
         // The rejected spec itself is never persisted.
@@ -4122,7 +4122,7 @@ mod tests {
         assert_eq!(updated.status, "cancelled");
         assert_eq!(updated.progress_percent, Some(100));
         assert_eq!(updated.progress_stage.as_deref(), Some("cancelled"));
-        assert_eq!(updated.error, "build cancelled by Manage");
+        assert_eq!(updated.error, "build cancelled by Tiaris");
         assert_eq!(updated.output_path, "");
         assert_eq!(updated.output_sha256, "");
         assert_eq!(updated.output_size_bytes, 0);
@@ -4266,7 +4266,7 @@ mod tests {
             Some(100)
         );
 
-        sqlx::query("UPDATE james_build_jobs SET managed_job_id = ? WHERE id = ?")
+        sqlx::query("UPDATE nest_build_jobs SET managed_job_id = ? WHERE id = ?")
             .bind("managed-job-2")
             .bind(second.id)
             .execute(&pool)
@@ -4319,7 +4319,7 @@ mod tests {
 
     #[tokio::test]
     async fn protected_build_material_is_rejected_before_database_persistence() {
-        let sentinel = "CYBEX_JAMES_PROTECTED_SENTINEL_7f922a";
+        let sentinel = "TIARIS_NEST_PROTECTED_SENTINEL_7f922a";
         let password_hash = "$6$rounds=5000$abcdefghijklmnop$uHL2DmwkR2iK6s.wDbxLW3GxvjJT7qW2rEHemZz3oMlKlfj8JwHc99.FNZrTO4drUslZ0MRyYkBDumQxKdL8q/";
         let pool = test_pool().await;
         let error = create_build_job(
@@ -4350,7 +4350,7 @@ mod tests {
 
         assert!(!error.contains(password_hash));
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM james_build_jobs")
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM nest_build_jobs")
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
@@ -4377,7 +4377,7 @@ mod tests {
         .to_string();
         assert!(!error.contains(sentinel));
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM james_build_jobs")
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM nest_build_jobs")
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
@@ -4402,7 +4402,7 @@ mod tests {
 
         assert!(!error.contains(sentinel));
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM james_build_jobs")
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM nest_build_jobs")
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
@@ -4479,7 +4479,7 @@ mod tests {
         // Simulate an installer-target row written before the target/kind
         // boundary was enforced at every persistence entry point.
         sqlx::query(
-            "UPDATE james_build_jobs
+            "UPDATE nest_build_jobs
              SET target = 'installer_target', build_spec = ?
              WHERE id = ?",
         )
@@ -4491,7 +4491,7 @@ mod tests {
 
         assert_eq!(quarantine_protected_build_jobs(&pool).await.unwrap(), 0);
         let stored: String =
-            sqlx::query_scalar("SELECT build_spec FROM james_build_jobs WHERE id = ?")
+            sqlx::query_scalar("SELECT build_spec FROM nest_build_jobs WHERE id = ?")
                 .bind(legacy.id)
                 .fetch_one(&pool)
                 .await
@@ -4528,7 +4528,7 @@ mod tests {
         });
         let encoded_unsafe_spec = serde_json::to_string(&unsafe_spec).unwrap();
         sqlx::query(
-            "UPDATE james_build_jobs
+            "UPDATE nest_build_jobs
              SET build_spec = ?, status = 'succeeded', logs = ?, error = ? WHERE id = ?",
         )
         .bind(&encoded_unsafe_spec)
@@ -4554,7 +4554,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "UPDATE james_build_jobs
+            "UPDATE nest_build_jobs
              SET status = 'running', cache_metadata = ?, logs = ?, error = ? WHERE id = ?",
         )
         .bind(serde_json::to_string(&json!({"api_token": sentinel})).unwrap())
@@ -4568,7 +4568,7 @@ mod tests {
         assert_eq!(quarantine_protected_build_jobs(&pool).await.unwrap(), 2);
         let stored: (String, String, String, String, String) = sqlx::query_as(
             "SELECT build_spec, cache_metadata, status, logs, error
-             FROM james_build_jobs WHERE id = ?",
+             FROM nest_build_jobs WHERE id = ?",
         )
         .bind(job.id)
         .fetch_one(&pool)
@@ -4580,7 +4580,7 @@ mod tests {
         assert!(stored.3.is_empty());
         assert!(!stored.4.contains(sentinel));
         let running_stored: (String, String, String, String) = sqlx::query_as(
-            "SELECT cache_metadata, status, logs, error FROM james_build_jobs WHERE id = ?",
+            "SELECT cache_metadata, status, logs, error FROM nest_build_jobs WHERE id = ?",
         )
         .bind(running.id)
         .fetch_one(&pool)
@@ -4663,7 +4663,7 @@ mod tests {
                 artifact_type: "nixos_closure".to_string(),
                 hash: "not-a-sha".to_string(),
                 size_bytes: 1,
-                path: "/srv/cybex-james/cache/artifact".to_string(),
+                path: "/srv/tiaris-nest/cache/artifact".to_string(),
                 store_path: None,
                 narinfo_path: None,
                 nar_url: None,
@@ -4674,7 +4674,7 @@ mod tests {
                 closure_file_size_bytes: None,
                 compression: None,
                 references: None,
-                serving_url: Some("http://james.example/cache/artifact".to_string()),
+                serving_url: Some("http://nest.example/cache/artifact".to_string()),
                 source_build_job_id: None,
                 cache_metadata: None,
             },
@@ -4701,7 +4701,7 @@ mod tests {
                 closure_file_size_bytes: None,
                 compression: None,
                 references: None,
-                serving_url: Some("http://james.example/cache/artifact".to_string()),
+                serving_url: Some("http://nest.example/cache/artifact".to_string()),
                 source_build_job_id: None,
                 cache_metadata: None,
             },
@@ -4717,10 +4717,10 @@ mod tests {
                 artifact_type: "nixos_closure".to_string(),
                 hash: "c".repeat(64),
                 size_bytes: 4096,
-                path: "/srv/cybex-james/cache/artifact".to_string(),
+                path: "/srv/tiaris-nest/cache/artifact".to_string(),
                 store_path: Some("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-output".to_string()),
                 narinfo_path: Some(
-                    "/srv/cybex-james/www/cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.narinfo"
+                    "/srv/tiaris-nest/www/cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.narinfo"
                         .to_string(),
                 ),
                 nar_url: Some("nar/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.nar.xz".to_string()),
@@ -4733,7 +4733,7 @@ mod tests {
                 references: Some(json!([
                     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-output"
                 ])),
-                serving_url: Some("http://james.example/cache/artifact".to_string()),
+                serving_url: Some("http://nest.example/cache/artifact".to_string()),
                 source_build_job_id: Some("job-1".to_string()),
                 cache_metadata: Some(json!({"nix_cache_signing": "pending"})),
             },
@@ -4762,7 +4762,7 @@ mod tests {
                 artifact_type: "nixos_closure".to_string(),
                 hash: shared_hash.clone(),
                 size_bytes: 1024,
-                path: "/srv/cybex-james/cache/closure.nar".to_string(),
+                path: "/srv/tiaris-nest/cache/closure.nar".to_string(),
                 store_path: Some("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-closure".to_string()),
                 narinfo_path: None,
                 nar_url: None,
@@ -4773,7 +4773,7 @@ mod tests {
                 closure_file_size_bytes: None,
                 compression: None,
                 references: None,
-                serving_url: Some("http://james.example/cache/closure.nar".to_string()),
+                serving_url: Some("http://nest.example/cache/closure.nar".to_string()),
                 source_build_job_id: None,
                 cache_metadata: Some(json!({"kind": "closure"})),
             },
@@ -4786,7 +4786,7 @@ mod tests {
                 artifact_type: "netboot_artifact".to_string(),
                 hash: shared_hash.clone(),
                 size_bytes: 2048,
-                path: "/srv/cybex-james/cache/netboot.nar".to_string(),
+                path: "/srv/tiaris-nest/cache/netboot.nar".to_string(),
                 store_path: Some("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-netboot".to_string()),
                 narinfo_path: None,
                 nar_url: None,
@@ -4797,7 +4797,7 @@ mod tests {
                 closure_file_size_bytes: None,
                 compression: None,
                 references: None,
-                serving_url: Some("http://james.example/cache/netboot.nar".to_string()),
+                serving_url: Some("http://nest.example/cache/netboot.nar".to_string()),
                 source_build_job_id: None,
                 cache_metadata: Some(json!({"kind": "netboot"})),
             },
@@ -4807,7 +4807,7 @@ mod tests {
 
         assert_ne!(closure.id, netboot.id);
         assert_eq!(netboot.artifact_type, "netboot_artifact");
-        assert_eq!(netboot.path, "/srv/cybex-james/cache/netboot.nar");
+        assert_eq!(netboot.path, "/srv/tiaris-nest/cache/netboot.nar");
         assert_eq!(netboot.cache_metadata["kind"], "netboot");
 
         let artifacts = list_cache_artifacts(&pool).await.unwrap();
@@ -4941,7 +4941,7 @@ mod tests {
             1,
             "zstd",
             Some(json!([])),
-            "https://james.test/cache/nar/a.nar.zst",
+            "https://nest.test/cache/nar/a.nar.zst",
             None,
             None,
         )
@@ -4967,7 +4967,7 @@ mod tests {
                 .is_empty()
         );
         sqlx::query(
-            "UPDATE james_cache_artifacts SET last_verified_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+            "UPDATE nest_cache_artifacts SET last_verified_at = '2000-01-01T00:00:00Z' WHERE id = ?",
         )
         .bind(artifact.id)
         .execute(&pool)
@@ -5027,7 +5027,7 @@ mod tests {
                 1,
                 "zstd",
                 Some(json!([])),
-                &format!("https://james.test/cache/nar/{index}.nar.zst"),
+                &format!("https://nest.test/cache/nar/{index}.nar.zst"),
                 None,
                 Some(json!({"padding": "x".repeat(4096)})),
             )
@@ -5076,7 +5076,7 @@ mod tests {
         // Production resets the cursor when the inventory generation changes.
         // A fresh traversal of that generation must again reach a completing
         // page, and the deleted artifact must be absent from every page. That
-        // completing receipt is what lets Manage remove its stale row.
+        // completing receipt is what lets Tiaris remove its stale row.
         cursor = None;
         let mut second_traversal = Vec::new();
         let mut second_complete = false;
@@ -5119,14 +5119,14 @@ mod tests {
             );
         }
         sqlx::query(
-            "UPDATE james_build_jobs SET status = 'failed', rejection_code = 'protected_material'
+            "UPDATE nest_build_jobs SET status = 'failed', rejection_code = 'protected_material'
              WHERE id = ?",
         )
         .bind(managed[1].id)
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query("UPDATE james_build_jobs SET status = 'succeeded' WHERE id = ?")
+        sqlx::query("UPDATE nest_build_jobs SET status = 'succeeded' WHERE id = ?")
             .bind(managed[2].id)
             .execute(&pool)
             .await

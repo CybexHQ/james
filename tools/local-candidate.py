@@ -15,9 +15,9 @@ import tempfile
 import time
 import zipfile
 
-SCHEMA = 'cybex.james.local-candidate.v1'
+SCHEMA = 'tiaris.nest.local-candidate.v1'
 RECEIPT = 'candidate.json'
-ROOT = Path.home() / '.local/state/cybex-james-releases'
+ROOT = Path.home() / '.local/state/tiaris-nest-releases'
 
 
 def digest(path):
@@ -159,7 +159,7 @@ def download_receipt(expected, artifact_id, artifact_digest, output):
     metadata = json.loads(subprocess.check_output(['gh', 'api', endpoint]))
     sha = artifact_digest.removeprefix('sha256:')
     if (metadata['expired'] or metadata['size_in_bytes'] > 131072
-            or metadata['name'] != 'cybex-james-release-candidate-' + expected['run']
+            or metadata['name'] != 'tiaris-nest-release-candidate-' + expected['run']
             or metadata['workflow_run']['id'] != int(expected['run'])
             or metadata['workflow_run']['head_sha'] != expected['source']
             or metadata['digest'] != 'sha256:' + sha):

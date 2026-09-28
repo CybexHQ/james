@@ -2,7 +2,7 @@
 """Atomically expose one already-verified package snapshot at its signed URL.
 
 This helper is intentionally only a filesystem transport primitive.  The
-caller must first run ``tools/james-release.py verify`` against the complete
+caller must first run ``tools/nest-release.py verify`` against the complete
 signed candidate.  It then binds the exact snapshot bytes to the descriptor in
 that manifest, exposes no other candidate file, and journals ownership outside
 the served tree so cleanup cannot remove an unrelated file.
@@ -26,10 +26,10 @@ from typing import NoReturn, Sequence
 from urllib.parse import unquote, urlsplit
 
 
-MANIFEST_SCHEMA = "cybex.james.release.v1"
-APPLIANCE_SCHEMA_V1 = "cybex.james.appliance-release.v1"
-APPLIANCE_SCHEMA_V2 = "cybex.james.appliance-release.v2"
-LEDGER_SCHEMA = "cybex.james.canonical-package-stage.v1"
+MANIFEST_SCHEMA = "tiaris.nest.release.v1"
+APPLIANCE_SCHEMA_V1 = "tiaris.nest.appliance-release.v1"
+APPLIANCE_SCHEMA_V2 = "tiaris.nest.appliance-release.v2"
+LEDGER_SCHEMA = "tiaris.nest.canonical-package-stage.v1"
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_PACKAGE_BYTES = 4 * 1024 * 1024 * 1024
 SEMVER_RE = re.compile(
@@ -252,7 +252,7 @@ def parse_manifest(
             "schema",
             "release_id",
             "ubuntu_snapshot_id",
-            "cybex_repository_snapshot",
+            "tiaris_repository_snapshot",
             "required_package_versions",
             "expected_kernel",
             "minimum_protocol",
@@ -272,7 +272,7 @@ def parse_manifest(
         fail("appliance release descriptor does not match the candidate")
     canonical_base64(appliance["signature"], "appliance release signature", 64)
     snapshot = exact_keys(
-        appliance["cybex_repository_snapshot"],
+        appliance["tiaris_repository_snapshot"],
         {"url", "sha256", "size_bytes"},
         "package snapshot descriptor",
     )
@@ -294,7 +294,7 @@ def parse_manifest(
     ):
         fail("package snapshot size is invalid")
     _prefix_netloc, prefix_path = canonical_https_prefix(served_prefix)
-    expected_name = f"cybex-james-appliance-packages-{version}-x86_64-linux.tar.zst"
+    expected_name = f"tiaris-nest-appliance-packages-{version}-x86_64-linux.tar.zst"
     if url != f"{served_prefix}/{version}/{expected_name}":
         fail("signed package URL does not map exactly beneath the served prefix")
     return {

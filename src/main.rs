@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use anyhow::{Context, bail};
 use axum::serve as axum_serve;
 use clap::Parser;
-use cybex_james::{
+use tiaris_nest::{
     AppState,
     config::{Cli, Command},
     db, router,
@@ -21,12 +21,12 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let command = cli.command.clone().unwrap_or(Command::Serve);
     if let Command::VerifyApplianceDatabase { database } = &command {
-        return cybex_james::appliance::nixos::verify_database(database).await;
+        return tiaris_nest::appliance::nixos::verify_database(database).await;
     }
     if matches!(command, Command::VerifyApplianceUpdatePolicy) {
         println!(
             "{}",
-            cybex_james::appliance::schedule::verify_stored()?.display()
+            tiaris_nest::appliance::schedule::verify_stored()?.display()
         );
         return Ok(());
     }
@@ -37,11 +37,11 @@ async fn main() -> anyhow::Result<()> {
         if effective_uid() != 0 {
             anyhow::bail!("appliance update policy must run as root");
         }
-        cybex_james::appliance::update_schedule::apply()?;
+        tiaris_nest::appliance::update_schedule::apply()?;
         if matches!(command, Command::CheckApplianceUpdateSchedule) {
             println!(
                 "{}",
-                cybex_james::appliance::update_schedule::readiness(chrono::Utc::now())?
+                tiaris_nest::appliance::update_schedule::readiness(chrono::Utc::now())?
             );
         }
         return Ok(());
@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
         if effective_uid() != 0 {
             anyhow::bail!("appliance package verification must run as root");
         }
-        let packages = cybex_james::appliance::verify_and_extract_stored_update()?;
+        let packages = tiaris_nest::appliance::verify_and_extract_stored_update()?;
         println!("{}", packages.display());
         return Ok(());
     }
@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
         if effective_uid() != 0 {
             anyhow::bail!("candidate appliance verification must run as root");
         }
-        let packages = cybex_james::appliance::verify_and_extract_candidate_update()?;
+        let packages = tiaris_nest::appliance::verify_and_extract_candidate_update()?;
         println!("{}", packages.display());
         return Ok(());
     }
@@ -69,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
         if effective_uid() != 0 {
             anyhow::bail!("appliance network verification must run as root");
         }
-        let candidate = cybex_james::appliance::verify_and_materialize_network_change()?;
+        let candidate = tiaris_nest::appliance::verify_and_materialize_network_change()?;
         println!("{}", candidate.display());
         return Ok(());
     }
@@ -78,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
         if effective_uid() != 0 {
             anyhow::bail!("appliance network recovery verification must run as root");
         }
-        let candidate = cybex_james::appliance::verify_and_materialize_network_change_recovery()?;
+        let candidate = tiaris_nest::appliance::verify_and_materialize_network_change_recovery()?;
         println!("{}", candidate.display());
         return Ok(());
     }
@@ -89,12 +89,12 @@ async fn main() -> anyhow::Result<()> {
         }
         println!(
             "{}",
-            cybex_james::appliance::verify_stored_network_acknowledgement()?
+            tiaris_nest::appliance::verify_stored_network_acknowledgement()?
         );
         return Ok(());
     }
 
-    let config = cybex_james::config::AppConfig::load(&cli.config)
+    let config = tiaris_nest::config::AppConfig::load(&cli.config)
         .with_context(|| format!("failed to load config from {}", cli.config.display()))?;
 
     if matches!(command, Command::ValidateApplianceConfig) {
@@ -123,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
     db::migrate(&pool)
         .await
         .context("database migration failed")?;
-    cybex_james::cache::remediate_protected_build_jobs(&pool, &config)
+    tiaris_nest::cache::remediate_protected_build_jobs(&pool, &config)
         .await
         .context("protected build cache remediation failed")?;
 
@@ -135,8 +135,8 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::SyncOnce => {
             let state = AppState::new(config, pool);
-            cybex_james::netboot_multicast::initialize(&state).await?;
-            let outcome = cybex_james::manage::sync_once(&state).await?;
+            tiaris_nest::netboot_multicast::initialize(&state).await?;
+            let outcome = tiaris_nest::manage::sync_once(&state).await?;
             println!("{}", serde_json::to_string(&outcome)?);
             Ok(())
         }
@@ -174,14 +174,14 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn ensure_managed_command_is_not_root(
-    config: &cybex_james::config::AppConfig,
+    config: &tiaris_nest::config::AppConfig,
     command: &Command,
 ) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         if managed_command_requires_service_user(config, command) && effective_uid() == 0 {
             bail!(
-                "managed Cybex James stateful commands must not run as root; use systemctl for the service"
+                "managed Tiaris Nest stateful commands must not run as root; use systemctl for the service"
             );
         }
     }
@@ -190,7 +190,7 @@ fn ensure_managed_command_is_not_root(
 }
 
 fn managed_command_requires_service_user(
-    config: &cybex_james::config::AppConfig,
+    config: &tiaris_nest::config::AppConfig,
     command: &Command,
 ) -> bool {
     config.manage.enabled
@@ -216,7 +216,7 @@ fn effective_uid() -> u32 {
 }
 
 async fn run_server(
-    config: cybex_james::config::AppConfig,
+    config: tiaris_nest::config::AppConfig,
     pool: sqlx::SqlitePool,
 ) -> anyhow::Result<()> {
     let listen_addr: SocketAddr = config
@@ -225,13 +225,13 @@ async fn run_server(
         .parse()
         .with_context(|| format!("invalid listen address {}", config.server.listen_addr))?;
     let state = AppState::new(config, pool);
-    cybex_james::netboot_multicast::initialize(&state)
+    tiaris_nest::netboot_multicast::initialize(&state)
         .await
         .context("failed to initialize workstation multicast state")?;
-    if let Err(err) = cybex_james::cache::initialize(&state.config).await {
+    if let Err(err) = tiaris_nest::cache::initialize(&state.config).await {
         // Degraded, not fatal: exports re-run key setup and `nix copy`
         // rewrites nix-cache-info, so the cache can still heal later.
-        warn!(error = %err, "James Cache initialization failed; substituters will reject this cache until resolved");
+        warn!(error = %err, "Nest Cache initialization failed; substituters will reject this cache until resolved");
     }
     // Reserve the HTTP socket before any background worker can trigger a
     // readiness report. Requests may wait briefly in the listen backlog, but
@@ -239,14 +239,14 @@ async fn run_server(
     let listener = TcpListener::bind(listen_addr)
         .await
         .with_context(|| format!("failed to bind {listen_addr}"))?;
-    cybex_james::build::spawn(state.clone());
-    cybex_james::netboot::spawn_maintenance(state.clone());
+    tiaris_nest::build::spawn(state.clone());
+    tiaris_nest::netboot::spawn_maintenance(state.clone());
     if state.config.manage.enabled {
-        cybex_james::manage::spawn(state.clone());
+        tiaris_nest::manage::spawn(state.clone());
     }
     let app = router(state.clone());
 
-    info!(%listen_addr, "cybex-james listening");
+    info!(%listen_addr, "tiaris-nest listening");
     spawn_systemd_watchdog();
 
     let shutdown_state = state.clone();
@@ -314,7 +314,7 @@ async fn shutdown_signal() {
 
 fn init_tracing() {
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("cybex_james=info,tower_http=info"));
+        .unwrap_or_else(|_| EnvFilter::new("tiaris_nest=info,tower_http=info"));
     tracing_subscriber::registry()
         .with(env_filter)
         // Operational logs belong on stderr so one-shot commands can reserve
@@ -325,7 +325,7 @@ fn init_tracing() {
 
 #[cfg(test)]
 mod tests {
-    use cybex_james::config::AppConfig;
+    use tiaris_nest::config::AppConfig;
 
     use super::{Command, managed_command_requires_service_user};
 

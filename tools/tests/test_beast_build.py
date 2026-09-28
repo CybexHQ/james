@@ -15,9 +15,9 @@ class BuildIsolationTests(unittest.TestCase):
         args = builder.command('sha256:image', 'owned-container', '/private/source', '/private/scratch',
                                '/private/output', Path('/dedicated'), {
                                    'GH_TOKEN': 'secret-token', 'AWS_SECRET_ACCESS_KEY': 'secret-aws',
-                                   'CYBEX_JAMES_RELEASE_PRIVATE_KEY_B64': 'secret-signing-key',
-                                   'CYBEX_JAMES_UBUNTU_SNAPSHOT_ID': 'retired-snapshot',
-                                   'CYBEX_JAMES_BUILD_MANAGE_ORIGIN': 'https://manage.cybex.net'})
+                                   'TIARIS_NEST_RELEASE_PRIVATE_KEY_B64': 'secret-signing-key',
+                                   'TIARIS_NEST_UBUNTU_SNAPSHOT_ID': 'retired-snapshot',
+                                   'TIARIS_NEST_BUILD_MANAGE_ORIGIN': 'https://manage.cybex.net'})
         text = ' '.join(args)
         for value in ('secret-token', 'secret-aws', 'secret-signing-key', '/var/run/docker.sock',
                       '--privileged', '--network=host', 'src=/nix,', 'retired-snapshot'):
@@ -26,7 +26,7 @@ class BuildIsolationTests(unittest.TestCase):
         self.assertIn('--security-opt=no-new-privileges', args)
         self.assertIn('--memory-swap=48g', args)
         self.assertIn('type=bind,src=/dedicated/nix,dst=/nix', args)
-        self.assertIn('CYBEX_JAMES_BUILD_MANAGE_ORIGIN=https://manage.cybex.net', args)
+        self.assertIn('TIARIS_NEST_BUILD_MANAGE_ORIGIN=https://manage.cybex.net', args)
 
 
     def test_isolated_checkout_retains_exact_revision_and_authorized_origin(self):

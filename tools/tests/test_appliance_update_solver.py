@@ -14,8 +14,8 @@ UPDATER = (
     / "rootfs"
     / "usr"
     / "lib"
-    / "cybex-james"
-    / "cybex-james-appliance-update"
+    / "tiaris-nest"
+    / "tiaris-nest-appliance-update"
 )
 APPLIANCE_SOURCE = REPOSITORY / "src" / "appliance.rs"
 
@@ -38,7 +38,7 @@ def _build_package(
         "Section: misc",
         "Priority: optional",
         "Architecture: all",
-        "Maintainer: Cybex test <test@invalid>",
+        "Maintainer: Tiaris test <test@invalid>",
     ]
     if depends is not None:
         fields.append(f"Depends: {depends}")
@@ -73,7 +73,7 @@ def _installed_stanza(package: str, version: str, *, held: bool = False) -> str:
             "Priority: optional",
             "Section: misc",
             "Installed-Size: 1",
-            "Maintainer: Cybex test <test@invalid>",
+            "Maintainer: Tiaris test <test@invalid>",
             "Architecture: all",
             f"Version: {version}",
             "Description: disposable installed fixture",
@@ -175,14 +175,14 @@ class ApplianceUpdateSolverContractTests(unittest.TestCase):
         self.updater = UPDATER.read_text(encoding="utf-8")
         self.appliance = APPLIANCE_SOURCE.read_text(encoding="utf-8")
 
-    def test_verified_marker_exposes_only_the_three_signed_cybex_roots(self) -> None:
+    def test_verified_marker_exposes_only_the_three_signed_tiaris_roots(self) -> None:
         constant = self.appliance.index("const APPLIANCE_UPDATE_ROOT_PACKAGES")
         constant_end = self.appliance.index("];", constant) + 2
         contract = self.appliance[constant:constant_end]
         for package in (
-            "cybex-james",
-            "cybex-james-appliance",
-            "cybex-james-bootstrap",
+            "tiaris-nest",
+            "tiaris-nest-appliance",
+            "tiaris-nest-bootstrap",
         ):
             self.assertEqual(contract.count(f'"{package}"'), 1)
         for installer_anchor in (
@@ -201,25 +201,25 @@ class ApplianceUpdateSolverContractTests(unittest.TestCase):
 
     def test_solver_uses_only_the_isolated_verified_file_repository(self) -> None:
         self.assertIn(
-            "URIs: copy:///run/cybex-update-packages", self.updater
+            "URIs: copy:///run/tiaris-update-packages", self.updater
         )
         self.assertIn(
             'test -x "$candidate_path/usr/lib/apt/methods/copy"', self.updater
         )
         for option in (
-            "Dir::Etc::sourcelist=/run/cybex-update-apt/cybex-update.sources",
-            "Dir::Etc::sourceparts=/run/cybex-update-apt/sources.list.d",
-            "Dir::State::lists=/run/cybex-update-apt/lists",
-            "Dir::Cache::archives=/run/cybex-update-apt/archives",
+            "Dir::Etc::sourcelist=/run/tiaris-update-apt/tiaris-update.sources",
+            "Dir::Etc::sourceparts=/run/tiaris-update-apt/sources.list.d",
+            "Dir::State::lists=/run/tiaris-update-apt/lists",
+            "Dir::Cache::archives=/run/tiaris-update-apt/archives",
         ):
             self.assertIn(option, self.updater)
         self.assertIn('"$solver_root/sources.list.d"', self.updater)
         self.assertNotIn("Dir::Etc::sourceparts=-", self.updater)
         self.assertNotIn(
-            "install /run/cybex-update-packages/*.deb", self.updater
+            "install /run/tiaris-update-packages/*.deb", self.updater
         )
         self.assertIn(
-            'mount -o remount,bind,ro "$candidate_path/run/cybex-update-packages"',
+            'mount -o remount,bind,ro "$candidate_path/run/tiaris-update-packages"',
             self.updater,
         )
 
@@ -280,62 +280,62 @@ class ApplianceUpdateSolverContractTests(unittest.TestCase):
             removal_root = Path(temporary) / "removal"
             _build_package(
                 removal_root,
-                "cybex-test-root",
+                "tiaris-test-root",
                 "2",
-                conflicts="cybex-test-victim",
+                conflicts="tiaris-test-victim",
             )
             removal_options, _archives = _prepare_apt_root(
                 removal_root,
-                _installed_stanza("cybex-test-victim", "1"),
+                _installed_stanza("tiaris-test-victim", "1"),
             )
             hostile_removal = _run_apt(
                 removal_options,
                 "--simulate",
                 "install",
-                "cybex-test-root=2",
+                "tiaris-test-root=2",
             )
             self.assertEqual(
                 hostile_removal.returncode,
                 0,
                 hostile_removal.stdout + hostile_removal.stderr,
             )
-            self.assertIn("Remv cybex-test-victim", hostile_removal.stdout)
+            self.assertIn("Remv tiaris-test-victim", hostile_removal.stdout)
             rejected_removal = _run_apt(
                 removal_options,
                 "--simulate",
                 "--assume-yes",
                 *safety,
                 "install",
-                "cybex-test-root=2",
+                "tiaris-test-root=2",
             )
             self.assertNotEqual(rejected_removal.returncode, 0)
 
             downgrade_root = Path(temporary) / "downgrade"
-            _build_package(downgrade_root, "cybex-test-root", "2")
+            _build_package(downgrade_root, "tiaris-test-root", "2")
             downgrade_options, _archives = _prepare_apt_root(
                 downgrade_root,
-                _installed_stanza("cybex-test-root", "3"),
+                _installed_stanza("tiaris-test-root", "3"),
             )
             hostile_downgrade = _run_apt(
                 downgrade_options,
                 "--simulate",
                 "--allow-downgrades",
                 "install",
-                "cybex-test-root=2",
+                "tiaris-test-root=2",
             )
             self.assertEqual(
                 hostile_downgrade.returncode,
                 0,
                 hostile_downgrade.stdout + hostile_downgrade.stderr,
             )
-            self.assertIn("Inst cybex-test-root [3] (2", hostile_downgrade.stdout)
+            self.assertIn("Inst tiaris-test-root [3] (2", hostile_downgrade.stdout)
             rejected_downgrade = _run_apt(
                 downgrade_options,
                 "--simulate",
                 "--assume-yes",
                 *safety,
                 "install",
-                "cybex-test-root=2",
+                "tiaris-test-root=2",
             )
             self.assertNotEqual(rejected_downgrade.returncode, 0)
 
@@ -349,7 +349,7 @@ class ApplianceUpdateSolverContractTests(unittest.TestCase):
     def test_real_apt_stages_exact_local_bytes_before_no_download_apply(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            package = _build_package(root, "cybex-test-root", "2")
+            package = _build_package(root, "tiaris-test-root", "2")
             options, archives = _prepare_apt_root(root, "", transport="copy")
             staged = _run_apt(
                 options,
@@ -360,10 +360,10 @@ class ApplianceUpdateSolverContractTests(unittest.TestCase):
                 "--no-allow-change-held-packages",
                 "--no-install-recommends",
                 "install",
-                "cybex-test-root=2",
+                "tiaris-test-root=2",
             )
             self.assertEqual(staged.returncode, 0, staged.stdout + staged.stderr)
-            staged_packages = list(archives.glob("cybex-test-root_2_all.deb"))
+            staged_packages = list(archives.glob("tiaris-test-root_2_all.deb"))
             self.assertEqual(
                 len(staged_packages),
                 1,
@@ -382,7 +382,7 @@ class ApplianceUpdateSolverContractTests(unittest.TestCase):
                 "--no-allow-change-held-packages",
                 "--no-install-recommends",
                 "install",
-                "cybex-test-root=2",
+                "tiaris-test-root=2",
             )
             self.assertEqual(
                 cached_only.returncode,
@@ -392,7 +392,7 @@ class ApplianceUpdateSolverContractTests(unittest.TestCase):
 
         staging = self.updater.index("--yes --download-only")
         unmount = self.updater.index(
-            'umount "$candidate_path/run/cybex-update-packages"', staging
+            'umount "$candidate_path/run/tiaris-update-packages"', staging
         )
         no_download = self.updater.index("--yes --no-download", unmount)
         self.assertLess(staging, unmount)

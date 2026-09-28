@@ -57,18 +57,18 @@ def release_receipt():
     urls = {'schema': owner_module.ARTIFACT_URL_SCHEMA, 'owner': value['owner'], 'releases': {}}
     for role, port, version, marker in (
             ('predecessor', 18081, '1.2.2', '1'), ('candidate', 18083, '1.2.3', '2')):
-        filenames = {'manifest_transport_url': 'cybex-james-release.json',
+        filenames = {'manifest_transport_url': 'tiaris-nest-release.json',
                      'installer_iso_transport_url': role + '.iso',
                      'package_transport_url': role + '-closure.tar.zst',
                      'bundle_transport_url': role + '-workstation.tar.zst'}
         value['releases'][role] = {
             'directory': '/private/' + role, 'version': version,
-            'manifest_url': 'https://example.org/' + role + '/cybex-james-release.json',
+            'manifest_url': 'https://example.org/' + role + '/tiaris-nest-release.json',
             'manifest_sha256': marker * 64, 'compatibility_sha256': marker * 64,
             'transport_filenames': filenames,
         }
         urls['releases'][role] = {
-            'manifest_transport_url': f'http://10.99.17.1:{port}/cybex-james-release.json',
+            'manifest_transport_url': f'http://10.99.17.1:{port}/tiaris-nest-release.json',
             'installer_iso_transport_url': f'http://10.99.17.1:{port}/{role}.iso',
             'package_transport_url': f'http://10.99.16.1:18082/{role}-closure.tar.zst',
             'bundle_transport_url': f'http://10.99.16.1:18082/{role}-workstation.tar.zst',
@@ -95,7 +95,7 @@ for mode in (0o444, 0o400, 0o600):
 
     def test_closed_configuration_and_canonical_origin(self):
         self.assertEqual(config.validate(configuration()), configuration())
-        for field, value in [('app_images', {'predecessor': 'cybex/manage:latest'}), ('manage_revision', 'main'),
+        for field, value in [('app_images', {'predecessor': 'tiaris/manage:latest'}), ('manage_revision', 'main'),
                               ('backend_subnet', '8.8.8.0/28'), ('backend_subnet', '127.0.0.0/28'),
                               ('manage_origin', 'https://dev.example.test:443'),
                               ('manage_origin', 'https://dev.example.test/path'),
@@ -149,12 +149,12 @@ for mode in (0o444, 0o400, 0o600):
         image = {'Id': 'sha256:' + 'a' * 64, 'Config': {'Labels': {
             'org.opencontainers.image.revision': 'a' * 40,
             'org.opencontainers.image.source': config.SOURCE,
-            'net.cybex.manage.james-compatibility-projection-sha256': 'c' * 64}}}
+            'net.tiaris.manage.nest-compatibility-projection-sha256': 'c' * 64}}}
         docker = resources.Docker(lambda args: json.dumps([image]).encode(), receipt()['owner'], 'fixture')
         self.assertEqual(docker.image(image['Id'], 'app', 'a' * 40, 'c' * 64), image['Id'])
         for bad in [image | {'Id': 'sha256:' + 'b' * 64}, image | {'Config': {'Labels': {}}},
                     image | {'Config': image['Config'] | {'Labels': image['Config']['Labels'] |
-                             {'net.cybex.manage.james-compatibility-projection-sha256': 'd' * 64}}},
+                             {'net.tiaris.manage.nest-compatibility-projection-sha256': 'd' * 64}}},
                     image | {'Config': image['Config'] | {'Volumes': {'/host-data': {}}}}]:
             docker.run = lambda args: json.dumps([bad]).encode()
             with self.assertRaises(ValueError):
@@ -164,7 +164,7 @@ for mode in (0o444, 0o400, 0o600):
         key = base64.b64encode(b's' * 32).decode()
         manifest = {'version': '1.2.3', 'installer_iso_template_v3': {
             'manage_origin': configuration()['manage_origin'], 'provisioning_public_keys': [key],
-            'url': 'https://example.org/cybex-james.iso'},
+            'url': 'https://example.org/tiaris-nest.iso'},
             'appliance_release_v1': {'schema': 'v3', 'manage_source_revision': 'a' * 40,
                                      'system_closure': {'url': 'https://example.org/closure.tar.zst'}},
             'workstation_netboot': {'url': 'https://example.org/workstation.tar.zst'}}
@@ -215,20 +215,20 @@ for mode in (0o444, 0o400, 0o600):
 
     def test_environment_contains_only_fresh_explicit_values(self):
         with mock.patch.dict(os.environ, {'SMTP_PASSWORD': 'private', 'HTTPS_PROXY': 'http://production',
-                                          'CYBEX_DATABASE_URL': 'postgres://production'}, clear=False):
+                                          'TIARIS_DATABASE_URL': 'postgres://production'}, clear=False):
             values = resources.environment(configuration(), {'seed': 'seed', 'public_key': 'public',
                 'encryption_key': 'fresh'}, {'manifest_url': 'https://github.com/exact',
                     'manifest_sha256': 'digest', 'version': '1.2.3', 'compatibility_sha256': 'compat'},
-                {'manifest_transport_url': 'http://10.99.17.1:18081/cybex-james-release.json',
+                {'manifest_transport_url': 'http://10.99.17.1:18081/tiaris-nest-release.json',
                  'bundle_transport_url': 'http://10.99.16.1:18082/workstation.tar.zst'},
                 'newpassword', 'newsshca', 'http://10.99.17.1:3128')
         self.assertNotIn('SMTP_PASSWORD', values)
-        self.assertEqual(values['CYBEX_DATABASE_URL'], 'postgres://fixture:newpassword@db:5432/fixture')
-        self.assertEqual(values['CYBEX_JAMES_RELEASE_MANIFEST_URL'], 'https://github.com/exact')
-        self.assertEqual(values['CYBEX_JAMES_APPLIANCE_AUTOMATIC_ROLLOUTS'], 'false')
+        self.assertEqual(values['TIARIS_DATABASE_URL'], 'postgres://fixture:newpassword@db:5432/fixture')
+        self.assertEqual(values['TIARIS_NEST_RELEASE_MANIFEST_URL'], 'https://github.com/exact')
+        self.assertEqual(values['TIARIS_NEST_APPLIANCE_AUTOMATIC_ROLLOUTS'], 'false')
         self.assertEqual(values['HTTPS_PROXY'], 'http://10.99.17.1:3128')
-        self.assertEqual(values['CYBEX_DEV_JAMES_RELEASE_MANIFEST_TRANSPORT_URL'],
-                         'http://10.99.17.1:18081/cybex-james-release.json')
+        self.assertEqual(values['TIARIS_DEV_NEST_RELEASE_MANIFEST_TRANSPORT_URL'],
+                         'http://10.99.17.1:18081/tiaris-nest-release.json')
 
 
 class GuardTests(unittest.TestCase):
@@ -274,7 +274,7 @@ class GuardTests(unittest.TestCase):
             copy.deepcopy(urls),
         ]
         mutations[1]['releases']['predecessor']['manifest_transport_url'] = \
-            'http://10.99.17.1:18083/cybex-james-release.json'
+            'http://10.99.17.1:18083/tiaris-nest-release.json'
         mutations[2]['releases']['candidate']['package_transport_url'] = \
             'http://10.99.16.1:18082/predecessor-closure.tar.zst'
         for changed in mutations:
@@ -508,7 +508,7 @@ class GuardTests(unittest.TestCase):
             owner = owner_module.Owner(Path(temporary), self.adapter)
             owner.directory.mkdir()
             path = owner.directory / 'app.env'
-            original = b'EXISTING=retained\nCYBEX_JAMES_UPDATE_QUALIFICATION_ENABLED=false\n'
+            original = b'EXISTING=retained\nTIARIS_NEST_UPDATE_QUALIFICATION_ENABLED=false\n'
             path.write_bytes(original)
             saved = {'organization_id': str(uuid.uuid4()), 'files': {'app.env': {}}}
             device = 'dev_' + '1' * 32
@@ -522,9 +522,9 @@ class GuardTests(unittest.TestCase):
                 owner.replace_app_environment(saved, device)
             body = path.read_text()
             self.assertIn('EXISTING=retained\n', body)
-            self.assertIn('CYBEX_JAMES_UPDATE_QUALIFICATION_ENABLED=true\n', body)
-            self.assertIn('CYBEX_JAMES_UPDATE_QUALIFICATION_ORGANIZATION_ID=' + saved['organization_id'] + '\n', body)
-            self.assertIn('CYBEX_JAMES_UPDATE_QUALIFICATION_DEVICE_IDS=' + device + '\n', body)
+            self.assertIn('TIARIS_NEST_UPDATE_QUALIFICATION_ENABLED=true\n', body)
+            self.assertIn('TIARIS_NEST_UPDATE_QUALIFICATION_ORGANIZATION_ID=' + saved['organization_id'] + '\n', body)
+            self.assertIn('TIARIS_NEST_UPDATE_QUALIFICATION_DEVICE_IDS=' + device + '\n', body)
             self.assertEqual(saved['files']['app.env']['sha256'], hashlib.sha256(body.encode()).hexdigest())
             self.assertEqual(list(owner.directory.glob('app.env.*')), [])
 
@@ -534,12 +534,12 @@ class GuardTests(unittest.TestCase):
             owner.directory.mkdir()
             saved = release_receipt() | {'files': {'app.env': {}}}
             keys = {
-                'CYBEX_JAMES_RELEASE_MANIFEST_URL': 'old-url',
-                'CYBEX_JAMES_RELEASE_MANIFEST_SHA256': 'old-manifest',
-                'CYBEX_JAMES_RELEASE_VERSION': 'old-version',
-                'CYBEX_JAMES_COMPATIBILITY_PROJECTION_SHA256': 'old-projection',
-                'CYBEX_DEV_JAMES_RELEASE_MANIFEST_TRANSPORT_URL': 'old-transport',
-                'CYBEX_DEV_JAMES_WORKSTATION_TRANSPORT_URL': 'old-bundle',
+                'TIARIS_NEST_RELEASE_MANIFEST_URL': 'old-url',
+                'TIARIS_NEST_RELEASE_MANIFEST_SHA256': 'old-manifest',
+                'TIARIS_NEST_RELEASE_VERSION': 'old-version',
+                'TIARIS_NEST_COMPATIBILITY_PROJECTION_SHA256': 'old-projection',
+                'TIARIS_DEV_NEST_RELEASE_MANIFEST_TRANSPORT_URL': 'old-transport',
+                'TIARIS_DEV_NEST_WORKSTATION_TRANSPORT_URL': 'old-bundle',
             }
             path = owner.directory / 'app.env'
             path.write_bytes(resources.env_body({'UNCHANGED': 'retained', **keys}))
@@ -552,9 +552,9 @@ class GuardTests(unittest.TestCase):
                 owner.replace_release_environment(saved, 'candidate')
             body = path.read_text()
             self.assertIn('UNCHANGED=retained\n', body)
-            self.assertIn('CYBEX_JAMES_RELEASE_VERSION=1.2.3\n', body)
-            self.assertIn('CYBEX_DEV_JAMES_RELEASE_MANIFEST_TRANSPORT_URL=http://10.99.17.1:18083/cybex-james-release.json\n', body)
-            self.assertIn('CYBEX_DEV_JAMES_WORKSTATION_TRANSPORT_URL=http://10.99.16.1:18082/candidate-workstation.tar.zst\n', body)
+            self.assertIn('TIARIS_NEST_RELEASE_VERSION=1.2.3\n', body)
+            self.assertIn('TIARIS_DEV_NEST_RELEASE_MANIFEST_TRANSPORT_URL=http://10.99.17.1:18083/tiaris-nest-release.json\n', body)
+            self.assertIn('TIARIS_DEV_NEST_WORKSTATION_TRANSPORT_URL=http://10.99.16.1:18082/candidate-workstation.tar.zst\n', body)
             self.assertEqual(saved['files']['app.env']['sha256'], hashlib.sha256(body.encode()).hexdigest())
 
     def test_release_selection_resumes_only_same_durable_role_and_preserves_db(self):
@@ -620,7 +620,7 @@ class GuardTests(unittest.TestCase):
         self.assertIs(result, saved)
         self.assertEqual(saved['allowed_device_id'], device)
         self.assertEqual(saved['status'], 'ready')
-        client.request.assert_called_once_with('/v1/james/nodes/' + device, token='private-session')
+        client.request.assert_called_once_with('/v1/nest/nodes/' + device, token='private-session')
         docker.remove_owned.assert_called_once_with('app', 'app-id')
         docker.call.assert_has_calls([mock.call('container', 'start', 'new-app-id'),
                                       mock.call('container', 'restart', 'tls-id')])
@@ -676,7 +676,7 @@ class GuardTests(unittest.TestCase):
         self.owner.save = mock.Mock()
         self.owner.docker = mock.Mock(side_effect=AssertionError('foreign target must not mutate Docker'))
         with mock.patch.object(config, 'read_file', return_value=b'private-session\n'):
-            with self.assertRaisesRegex(ValueError, 'not an active James node'):
+            with self.assertRaisesRegex(ValueError, 'not an active Nest node'):
                 self.owner.allow_device(second)
         self.owner.save.assert_not_called()
 

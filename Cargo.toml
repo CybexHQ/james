@@ -1,9 +1,9 @@
 [package]
-name = "cybex-james"
+name = "tiaris-nest"
 version = "0.2.10"
 edition = "2024"
 rust-version = "1.85"
-description = "UEFI-only PXE/iPXE boot control service for Cybex-managed infrastructure"
+description = "UEFI-only PXE/iPXE boot control service for Tiaris-managed infrastructure"
 license-file = "LICENSE"
 repository = "https://github.com/CybexHQ/james"
 readme = "README.md"

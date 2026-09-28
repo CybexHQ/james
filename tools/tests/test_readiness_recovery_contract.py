@@ -14,8 +14,8 @@ GENERATION_COMMIT = (
     / "rootfs"
     / "usr"
     / "lib"
-    / "cybex-james"
-    / "cybex-james-generation-commit"
+    / "tiaris-nest"
+    / "tiaris-nest-generation-commit"
 ).read_text(encoding="utf-8")
 GENERATION_COMMIT_SERVICE = (
     REPOSITORY
@@ -24,7 +24,7 @@ GENERATION_COMMIT_SERVICE = (
     / "etc"
     / "systemd"
     / "system"
-    / "cybex-james-generation-commit.service"
+    / "tiaris-nest-generation-commit.service"
 ).read_text(encoding="utf-8")
 
 
@@ -40,14 +40,14 @@ class ReadinessRecoveryContractTests(unittest.TestCase):
         self.assertIn(
             ".local_address(IpAddr::V4(Ipv4Addr::LOCALHOST))", READINESS
         )
-        self.assertIn('base.join("boot.ipxe?cybex_check=1")', READINESS)
+        self.assertIn('base.join("boot.ipxe?tiaris_check=1")', READINESS)
         self.assertIn(
             "trusted_loopback_self_probe_does_not_record_a_boot_event", ROUTES
         )
 
     def test_background_workers_start_only_after_the_http_socket_is_bound(self) -> None:
         bind = MAIN.index("let listener = TcpListener::bind(listen_addr)")
-        manage = MAIN.index("cybex_james::manage::spawn(state.clone())")
+        manage = MAIN.index("tiaris_nest::manage::spawn(state.clone())")
         self.assertLess(bind, manage)
 
     def test_candidate_commit_uses_three_uncached_successes_and_resets_on_failure(
@@ -55,7 +55,7 @@ class ReadinessRecoveryContractTests(unittest.TestCase):
     ) -> None:
         self.assertEqual(shell_integer("health_required_successes"), 3)
         self.assertIn(
-            "'http://127.0.0.1:8080/healthz?cybex_fresh=1'", GENERATION_COMMIT
+            "'http://127.0.0.1:8080/healthz?tiaris_fresh=1'", GENERATION_COMMIT
         )
         self.assertIn("consecutive_successes=$((consecutive_successes + 1))", GENERATION_COMMIT)
         self.assertIn("consecutive_successes=0\n      sleep", GENERATION_COMMIT)

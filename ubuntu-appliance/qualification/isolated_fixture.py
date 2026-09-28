@@ -11,7 +11,7 @@ import sys
 import time
 import urllib.request
 
-STATE_ROOT = Path('/var/lib/cybex-james-qualification')
+STATE_ROOT = Path('/var/lib/tiaris-nest-qualification')
 HELPERS = Path(__file__).resolve().parent
 
 
@@ -21,9 +21,9 @@ def private_state(path):
             or state.stat().st_mode & 0o077 or path.is_symlink()):
         raise ValueError('Expected private root-owned qualification state')
     receipt = json.loads((state / 'isolation.json').read_bytes())
-    if (receipt['schema'] != 'cybex.james.isolated-manage.v1'
+    if (receipt['schema'] != 'tiaris.nest.isolated-manage.v1'
             or receipt['origin'] != 'https://manage.cybex.net'
-            or receipt['bridge'] != 'jamesqual0'
+            or receipt['bridge'] != 'nestqual0'
             or receipt['private_database'] != str(state / 'postgres')):
         raise ValueError('Invalid private database ownership receipt')
     return state
@@ -38,7 +38,7 @@ def enter_namespace(state, entered):
     subprocess.run(['mount', '--bind', str(state / 'hosts'), '/etc/hosts'], check=True)
     subprocess.run(['mount', '-o', 'remount,bind,ro', '/etc/hosts'], check=True)
     if {v[4][0] for v in socket.getaddrinfo('manage.cybex.net', 443)} != {'10.62.57.1'}:
-        raise ValueError('Private Manage DNS is not isolated')
+        raise ValueError('Private Tiaris DNS is not isolated')
 
 
 class API:
@@ -125,8 +125,8 @@ class Fixture:
         if self.directory.parent != state or self.directory.is_symlink():
             raise ValueError('Fixture must belong to this private run')
         identity = json.loads((self.directory / 'fixture.json').read_bytes())
-        if (identity['schema'] != 'cybex.james.qualification-fixture.v1'
-                or identity['bridge'] != 'jamesqual0' or identity['mac'] != '52:54:00:c7:be:01'
+        if (identity['schema'] != 'tiaris.nest.qualification-fixture.v1'
+                or identity['bridge'] != 'nestqual0' or identity['mac'] != '52:54:00:c7:be:01'
                 or identity['device_id'] != evidence['device_id']
                 or identity['manifest_sha256'] != evidence['qualified_manifest_sha256']
                 or not evidence['ok'] or str(evidence['root_generation']) != '0'):
@@ -146,8 +146,8 @@ class Fixture:
             '-drive', 'if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd',
             '-drive', f'if=pflash,format=raw,unit=1,file={d}/OVMF_VARS.fd',
             '-drive', f'if=none,id=system,format=raw,file={d}/appliance.raw,cache=none',
-            '-device', 'virtio-scsi-pci,id=scsi0', '-device', 'scsi-hd,drive=system,serial=CYBEXQUALIFICATION',
-            '-netdev', 'bridge,id=net0,br=jamesqual0', '-device', 'virtio-net-pci,netdev=net0,id=nic0,mac=52:54:00:c7:be:01',
+            '-device', 'virtio-scsi-pci,id=scsi0', '-device', 'scsi-hd,drive=system,serial=TIARISQUALIFICATION',
+            '-netdev', 'bridge,id=net0,br=nestqual0', '-device', 'virtio-net-pci,netdev=net0,id=nic0,mac=52:54:00:c7:be:01',
             '-display', 'none', '-serial', f'file:{d}/update-serial.log', '-qmp', f'unix:{qmp},server=on,wait=off'],
             start_new_session=True)
         try:
@@ -167,8 +167,8 @@ class Fixture:
         for _ in range(240):
             if self.process.poll() is not None:
                 raise ValueError('Fixture QEMU exited before readiness')
-            node = api(f'/v1/james/nodes/{self.device}')['node']
-            seen = datetime.datetime.fromisoformat((node.get('james_reported_at') or '1970-01-01T00:00:00Z').replace('Z', '+00:00'))
+            node = api(f'/v1/nest/nodes/{self.device}')['node']
+            seen = datetime.datetime.fromisoformat((node.get('nest_reported_at') or '1970-01-01T00:00:00Z').replace('Z', '+00:00'))
             if seen > self.started and node.get('appliance_local_health', {}).get('status') == 'healthy':
                 self.monitor.events()
                 return node

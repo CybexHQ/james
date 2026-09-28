@@ -24,7 +24,7 @@ def main():
     assert os.geteuid()==0
     parser=argparse.ArgumentParser(); parser.add_argument('--variant', choices=['19','21'],required=True); parser.add_argument('--binary',type=Path,required=True)
     a=parser.parse_args(); safe(a.binary); assert sha(a.binary)==VARIANTS[a.variant]['sha256']
-    override=Path('/etc/systemd/system/cybex-james.service.d/90-verification-fix.conf'); safe(override)
+    override=Path('/etc/systemd/system/tiaris-nest.service.d/90-verification-fix.conf'); safe(override)
     assert sha(override) in ['6fe76ff5a1295f7b7352b3cfbb65251cc66c129120fc254fe2673a4953110037','810378844749f04248bc5b241ce73bc4ad36907495ec0e10e1337158f6cb51f1']
     paths=[line.removeprefix('ExecStart=').split()[0] for line in override.read_text().splitlines() if line.startswith('ExecStart=/')]
     assert len(paths)==1
@@ -32,28 +32,28 @@ def main():
     if before==VARIANTS[a.variant]['sha256']:
         print(json.dumps({'already_repaired':True,'sha256':before}));return
     assert before==OLD[a.variant]
-    lock=Path('/run/lock/cybex-james/appliance-update.lock')
+    lock=Path('/run/lock/tiaris-nest/appliance-update.lock')
     lock.parent.mkdir(mode=0o750,exist_ok=True)
     lockfd=os.open(lock,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o640)
-    os.fchown(lockfd,0,grp.getgrnam('cybex-james').gr_gid);os.close(lockfd);safe(lock)
+    os.fchown(lockfd,0,grp.getgrnam('tiaris-nest').gr_gid);os.close(lockfd);safe(lock)
     with lock.open('r+') as fd:
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        assert not Path('/var/lib/cybex-james/control/pending-root-generation.json').exists()
+        assert not Path('/var/lib/tiaris-nest/control/pending-root-generation.json').exists()
         assert subprocess.run(['pgrep','-f','[n]ix.*build'],stdout=subprocess.DEVNULL).returncode == 1, 'Active Nix build must finish before maintenance'
-        config=tomllib.loads(Path('/etc/cybex-james/config.toml').read_text())
-        db=Path(config['paths']['database_path']); assert str(db)=='/var/lib/cybex-james/state/agent/cybex-james.sqlite'
-        backup=Path('/var/lib/cybex-james/control/maintenance-repairs/database-compat-v1'); backup.mkdir(mode=0o700)
-        plan=Path('/var/lib/cybex-james/control/install-plan.json'); identity=Path('/var/lib/cybex-james/state/agent/manage-state.json')
+        config=tomllib.loads(Path('/etc/tiaris-nest/config.toml').read_text())
+        db=Path(config['paths']['database_path']); assert str(db)=='/var/lib/tiaris-nest/state/agent/tiaris-nest.sqlite'
+        backup=Path('/var/lib/tiaris-nest/control/maintenance-repairs/database-compat-v1'); backup.mkdir(mode=0o700)
+        plan=Path('/var/lib/tiaris-nest/control/install-plan.json'); identity=Path('/var/lib/tiaris-nest/state/agent/manage-state.json')
         identity_data=json.loads(identity.read_text()); identity_hash=hashlib.sha256(json.dumps({k:identity_data[k] for k in ['device_id','private_key_b64','public_key_b64','public_key_fingerprint']},sort_keys=True).encode()).hexdigest()
         receipt={'variant':a.variant,'before_sha256':before,'after':VARIANTS[a.variant],'plan_sha256':sha(plan),'identity_sha256':identity_hash,'database_restored':False,'migration_ledger_rewritten':False}
-        subprocess.run(['systemctl','stop','cybex-james.service'],check=True)
-        assert run('systemctl','show','-p','MainPID','--value','cybex-james.service')=='0'
+        subprocess.run(['systemctl','stop','tiaris-nest.service'],check=True)
+        assert run('systemctl','show','-p','MainPID','--value','tiaris-nest.service')=='0'
         for p in [binary,db,Path(str(db)+'-wal'),Path(str(db)+'-shm')]:
             if p.exists():
                 shutil.copyfile(p,backup/(p.name+'.before')); (backup/(p.name+'.before')).chmod(0o600);sync(backup/(p.name+'.before'))
         with sqlite3.connect('file:'+str(db)+'?mode=ro',uri=True) as c:
             assert c.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
-            active=c.execute("SELECT COUNT(*) FROM james_build_jobs WHERE status IN ('running','building')").fetchone()[0] if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='james_build_jobs'").fetchone() else 0
+            active=c.execute("SELECT COUNT(*) FROM nest_build_jobs WHERE status IN ('running','building')").fetchone()[0] if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='nest_build_jobs'").fetchone() else 0
             assert active==0, 'Active build must finish before maintenance'
             receipt['migration_versions_before']=[r[0] for r in c.execute('SELECT version FROM _sqlx_migrations ORDER BY version')]
         f,name=tempfile.mkstemp(dir=binary.parent,prefix='.dbcompat-')
@@ -62,11 +62,11 @@ def main():
         assert sha(binary)==before
         os.replace(name,binary);sync(binary.parent)
         (backup/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');(backup/'receipt.json').chmod(0o600);sync(backup/'receipt.json');sync(backup)
-        subprocess.run(['systemctl','reset-failed','cybex-james.service'],check=True)
-        subprocess.run(['systemctl','start','cybex-james.service'],check=True)
+        subprocess.run(['systemctl','reset-failed','tiaris-nest.service'],check=True)
+        subprocess.run(['systemctl','start','tiaris-nest.service'],check=True)
         time.sleep(3)
-        assert run('systemctl','is-active','cybex-james.service')=='active'
-        pid=run('systemctl','show','-p','MainPID','--value','cybex-james.service')
+        assert run('systemctl','is-active','tiaris-nest.service')=='active'
+        pid=run('systemctl','show','-p','MainPID','--value','tiaris-nest.service')
         assert sha(Path('/proc')/pid/'exe')==VARIANTS[a.variant]['sha256']
         assert sha(plan)==receipt['plan_sha256']
         receipt['service_started']=True

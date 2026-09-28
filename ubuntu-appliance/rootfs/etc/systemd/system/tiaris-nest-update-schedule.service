@@ -1,0 +1,8 @@
+[Unit]
+Description=Apply the signed Tiaris Nest maintenance schedule
+After=tiaris-nest.service
+ConditionPathExists=/var/lib/tiaris-nest/state/inbox/update-schedule.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/tiaris-nest apply-appliance-update-schedule

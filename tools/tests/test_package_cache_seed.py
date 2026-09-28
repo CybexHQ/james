@@ -46,7 +46,7 @@ class PackageCacheSeedTests(unittest.TestCase):
                     f"Package: {package_name}",
                     "Version: 1.0-1",
                     f"Architecture: {architecture}",
-                    "Maintainer: Cybex Test <test@invalid.example>",
+                    "Maintainer: Tiaris Test <test@invalid.example>",
                     "Description: package cache seed test fixture",
                     "",
                 ]
@@ -146,12 +146,12 @@ class PackageCacheSeedTests(unittest.TestCase):
             check=False,
         )
 
-    def test_extracts_only_current_ubuntu_closure_and_never_old_james_packages(self) -> None:
+    def test_extracts_only_current_ubuntu_closure_and_never_old_nest_packages(self) -> None:
         selected = self.build_deb("curl", "curl_1.0-1_amd64.deb")
         unused = self.build_deb("obsolete-package", "obsolete-package_1.0-1_amd64.deb")
-        james = self.build_deb("cybex-james-old", "cybex-james-old_1.0-1_amd64.deb")
-        snapshot = self.write_snapshot([selected, unused, james])
-        result = self.run_extract(snapshot, self.write_plan([selected, james]))
+        nest = self.build_deb("tiaris-nest-old", "tiaris-nest-old_1.0-1_amd64.deb")
+        snapshot = self.write_snapshot([selected, unused, nest])
+        result = self.run_extract(snapshot, self.write_plan([selected, nest]))
 
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertEqual([path.name for path in self.output.iterdir()], [selected.name])

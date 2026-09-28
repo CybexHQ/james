@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 import unittest
 
-CONSOLE = Path(__file__).resolve().parents[1] / "runtime/cybex-james-console"
+CONSOLE = Path(__file__).resolve().parents[1] / "runtime/tiaris-nest-console"
 
 
 class ConsoleRedraw(unittest.TestCase):
@@ -18,7 +18,7 @@ class ConsoleRedraw(unittest.TestCase):
         before, after = result.stdout.split(b"\x1bc")
         self.assertIn(b"Starting", before)
         self.assertIn(b"Starting", after)
-        self.assertIn(b"Managed by Cybex Manage", after)
+        self.assertIn(b"Managed by Tiaris", after)
 
 
 if __name__ == "__main__":

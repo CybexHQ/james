@@ -79,7 +79,7 @@ fn request_trace_path(uri: &Uri) -> &str {
 
 #[derive(Deserialize)]
 struct HealthQuery {
-    cybex_fresh: Option<String>,
+    tiaris_fresh: Option<String>,
 }
 
 async fn healthz(
@@ -88,7 +88,7 @@ async fn healthz(
     headers: HeaderMap,
     connect: Option<ConnectInfo<SocketAddr>>,
 ) -> Response {
-    let fresh = matches!(query.cybex_fresh.as_deref(), Some("1"))
+    let fresh = matches!(query.tiaris_fresh.as_deref(), Some("1"))
         && is_direct_loopback_request(&headers, connect.map(|value| value.0));
     let readiness = if fresh {
         crate::readiness::probe_fresh(&state).await
@@ -263,7 +263,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/boot.ipxe?cybex_check=1")
+                    .uri("/boot.ipxe?tiaris_check=1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -292,7 +292,7 @@ mod tests {
         let state = test_state().await;
         let app = router(state.clone());
         let mut request = Request::builder()
-            .uri("/boot.ipxe?cybex_check=1")
+            .uri("/boot.ipxe?tiaris_check=1")
             .header("x-forwarded-for", "127.0.0.1")
             .body(Body::empty())
             .unwrap();
@@ -319,7 +319,7 @@ mod tests {
             CreateBootProfileRequest {
                 name: "Default Enrollment".to_string(),
                 description: None,
-                profile_type: BootProfileType::JamesInstaller,
+                profile_type: BootProfileType::NestInstaller,
                 enabled: Some(true),
                 is_default: Some(true),
                 one_time: Some(false),
@@ -378,7 +378,7 @@ mod tests {
             CreateBootProfileRequest {
                 name: "Default Enrollment".to_string(),
                 description: None,
-                profile_type: BootProfileType::JamesInstaller,
+                profile_type: BootProfileType::NestInstaller,
                 enabled: Some(true),
                 is_default: Some(true),
                 one_time: Some(false),
@@ -421,7 +421,7 @@ mod tests {
         )
         .unwrap();
         assert!(body.contains(
-            ":known_local_efi\nsanboot --no-describe --drive 0x80 || goto known_local_efi_handoff\ngoto end\n:known_local_efi_handoff\necho Returning control to UEFI for the next boot entry\nset cybex-local-handoff 1\nexit 1"
+            ":known_local_efi\nsanboot --no-describe --drive 0x80 || goto known_local_efi_handoff\ngoto end\n:known_local_efi_handoff\necho Returning control to UEFI for the next boot entry\nset tiaris-local-handoff 1\nexit 1"
         ));
         assert!(!body.contains("sanboot --drive 0"));
         assert!(body.contains("item profile_"));
@@ -493,7 +493,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cache_route_counts_served_bytes_and_misses_for_the_james_report() {
+    async fn cache_route_counts_served_bytes_and_misses_for_the_nest_report() {
         let state = test_state().await;
         let cache_root = state.config.cache.root_dir.clone();
         let store_hash = "2".repeat(32);
@@ -577,7 +577,7 @@ mod tests {
     }
 
     async fn test_state() -> AppState {
-        let root = temp_test_dir("cybex-james-router");
+        let root = temp_test_dir("tiaris-nest-router");
         let config_path = root.join("config.toml");
         let www = root.join("www");
         fs::create_dir_all(&www).unwrap();
@@ -592,7 +592,7 @@ public_base_url = "http://boot.example"
 
 [paths]
 data_dir = "{root}/data"
-database_path = "{root}/data/cybex-james.sqlite"
+database_path = "{root}/data/tiaris-nest.sqlite"
 boot_assets_dir = "{root}/www"
 static_dir = "{root}/www/assets"
 tftp_dir = "{root}/tftp"

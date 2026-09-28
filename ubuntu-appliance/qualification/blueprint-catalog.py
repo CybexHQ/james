@@ -49,7 +49,7 @@ def catalog(rows, configs, tiling_slug):
         result.append({key: row[key] for key in
                        ('id', 'slug', 'current_revision', 'current_revision_id')}
                       | {'desktop_profile': expected[slug], 'config_hash': config['config_hash']})
-    return {'schema': 'cybex.james.qualification-blueprints.v1',
+    return {'schema': 'tiaris.nest.qualification-blueprints.v1',
             'blueprints': sorted(result, key=lambda row: row['slug'])}
 
 
@@ -77,7 +77,7 @@ def main():
 
     def get(path):
         request = urllib.request.Request(origin + path, headers={'Authorization': 'Bearer ' + token,
-                                                                  'User-Agent': 'cybex-dev-qualification/1'})
+                                                                  'User-Agent': 'tiaris-dev-qualification/1'})
         with client.open(request, timeout=10) as response:
             data = response.read(2 * 1024 * 1024 + 1)
             if len(data) > 2 * 1024 * 1024:

@@ -3,13 +3,13 @@ set -Eeuo pipefail
 umask 022
 
 usage() {
-  echo "usage: $0 --output-dir DIR --james-binary FILE --bootstrap-binary FILE --version SEMVER --ubuntu-snapshot-id ID --manage-source-dir DIR --manage-source-revision 40_HEX [--retained-manage-source-dir DIR] --expected-manage-origin HTTPS_ORIGIN --release-public-key BASE64 --provisioning-public-key BASE64 [--provisioning-public-key BASE64 ...] [--previous-package-snapshot FILE]" >&2
+  echo "usage: $0 --output-dir DIR --nest-binary FILE --bootstrap-binary FILE --version SEMVER --ubuntu-snapshot-id ID --manage-source-dir DIR --manage-source-revision 40_HEX [--retained-manage-source-dir DIR] --expected-manage-origin HTTPS_ORIGIN --release-public-key BASE64 --provisioning-public-key BASE64 [--provisioning-public-key BASE64 ...] [--previous-package-snapshot FILE]" >&2
   exit 2
 }
 
 repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 output_dir=""
-james_binary=""
+nest_binary=""
 bootstrap_binary=""
 version=""
 snapshot_id=""
@@ -24,7 +24,7 @@ previous_package_snapshot=""
 while (($#)); do
   case "$1" in
     --output-dir) output_dir="${2:-}"; shift 2 ;;
-    --james-binary) james_binary="${2:-}"; shift 2 ;;
+    --nest-binary) nest_binary="${2:-}"; shift 2 ;;
     --bootstrap-binary) bootstrap_binary="${2:-}"; shift 2 ;;
     --version) version="${2:-}"; shift 2 ;;
     --ubuntu-snapshot-id) snapshot_id="${2:-}"; shift 2 ;;
@@ -49,7 +49,7 @@ while (($#)); do
   esac
 done
 
-test -n "$output_dir" && test -n "$james_binary" && test -n "$bootstrap_binary"
+test -n "$output_dir" && test -n "$nest_binary" && test -n "$bootstrap_binary"
 test -n "$version" && test -n "$snapshot_id" && test -n "$expected_manage_origin"
 test -n "$manage_source_dir" && test -n "$manage_source_revision"
 test -n "$release_public_key"
@@ -60,7 +60,7 @@ for key in "${provisioning_public_keys[@]}"; do
 done
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]
 [[ "$snapshot_id" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]
-test -f "$james_binary" && test -x "$james_binary"
+test -f "$nest_binary" && test -x "$nest_binary"
 test -f "$bootstrap_binary" && test -x "$bootstrap_binary"
 if [[ -n "$previous_package_snapshot" ]]; then
   if [[ ! -f "$previous_package_snapshot" || -L "$previous_package_snapshot" ]]; then
@@ -90,9 +90,9 @@ do
     exit 1
   }
 done
-python3 -B "$repository_root/tools/james-release.py" validate-public-key \
+python3 -B "$repository_root/tools/nest-release.py" validate-public-key \
   --trusted-public-key "$release_public_key" >/dev/null
-python3 -B "$repository_root/tools/james-release.py" validate-manage-origin \
+python3 -B "$repository_root/tools/nest-release.py" validate-manage-origin \
   --expected-manage-origin "$expected_manage_origin" >/dev/null
 bootstrap_manage_origin="$("$bootstrap_binary" required-manage-origin)"
 test "$bootstrap_manage_origin" = "$expected_manage_origin" || {
@@ -102,8 +102,8 @@ test "$bootstrap_manage_origin" = "$expected_manage_origin" || {
 
 mkdir -p -- "$output_dir"
 output_dir="$(cd -- "$output_dir" && pwd -P)"
-package_bundle_name="cybex-james-appliance-packages-$version-x86_64-linux.tar.zst"
-package_metadata_name="cybex-james-appliance-packages-$version-x86_64-linux.json"
+package_bundle_name="tiaris-nest-appliance-packages-$version-x86_64-linux.tar.zst"
+package_metadata_name="tiaris-nest-appliance-packages-$version-x86_64-linux.json"
 test ! -e "$output_dir/$package_bundle_name" || {
   echo "error: refusing to overwrite existing release candidate $output_dir/$package_bundle_name" >&2
   exit 1
@@ -137,7 +137,7 @@ fi
 
 "$repository_root/ubuntu-appliance/build-offline-repo.sh" \
   --output "$offline_repository" \
-  --james-binary "$james_binary" \
+  --nest-binary "$nest_binary" \
   --bootstrap-binary "$bootstrap_binary" \
   --version "$version" \
   --ubuntu-snapshot-id "$snapshot_id" \
@@ -155,9 +155,9 @@ tar --format=ustar --sort=name --numeric-owner --owner=0 --group=0 \
 
 required_versions='{}'
 for package_name in \
-  cybex-james \
-  cybex-james-bootstrap \
-  cybex-james-appliance \
+  tiaris-nest \
+  tiaris-nest-bootstrap \
+  tiaris-nest-appliance \
   linux-generic \
   linux-firmware \
   nix-bin \
@@ -178,19 +178,19 @@ do
   required_versions="$(jq -c --arg package "$package_name" --arg version "$package_version" '. + {($package):$version}' <<<"$required_versions")"
 done
 
-declare -a james_packages=()
+declare -a nest_packages=()
 while IFS= read -r -d '' package_file; do
-  if [[ "$(dpkg-deb -f "$package_file" Package)" == cybex-james ]]; then
-    james_packages+=("$package_file")
+  if [[ "$(dpkg-deb -f "$package_file" Package)" == tiaris-nest ]]; then
+    nest_packages+=("$package_file")
   fi
 done < <(find "$offline_repository" -maxdepth 1 -type f -name '*.deb' -print0 | LC_ALL=C sort -z)
-if [[ "${#james_packages[@]}" -ne 1 ]]; then
-  echo "error: offline repository must contain exactly one cybex-james package" >&2
+if [[ "${#nest_packages[@]}" -ne 1 ]]; then
+  echo "error: offline repository must contain exactly one tiaris-nest package" >&2
   exit 1
 fi
-packaged_james_root="$work_dir/packaged-james"
-dpkg-deb --extract "${james_packages[0]}" "$packaged_james_root"
-packaged_manage_source="$packaged_james_root/usr/share/cybex-james/manage-source"
+packaged_nest_root="$work_dir/packaged-nest"
+dpkg-deb --extract "${nest_packages[0]}" "$packaged_nest_root"
+packaged_manage_source="$packaged_nest_root/usr/share/tiaris-nest/manage-source"
 declare -a catalog_arguments=()
 if [[ "${#retained_source_arguments[@]}" -gt 0 ]]; then
   catalog_arguments=(--retained-source-dir "${retained_source_arguments[1]}")
@@ -224,7 +224,7 @@ done
 
 package_metadata="$work_dir/$package_metadata_name"
 jq -n \
-  --arg schema 'cybex.james.appliance-package-snapshot.v1' \
+  --arg schema 'tiaris.nest.appliance-package-snapshot.v1' \
   --arg release_id "$version" \
   --arg ubuntu_snapshot_id "$snapshot_id" \
   --arg manage_origin "$expected_manage_origin" \
@@ -241,4 +241,4 @@ jq -n \
 mv -- "$package_bundle" "$output_dir/$package_bundle_name"
 mv -- "$package_metadata" "$output_dir/$package_metadata_name"
 
-echo "built James appliance package snapshot: $output_dir/$package_bundle_name"
+echo "built Nest appliance package snapshot: $output_dir/$package_bundle_name"

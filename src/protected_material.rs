@@ -19,11 +19,11 @@ const MODULAR_PASSWORD_HASH_PREFIXES: &[&str] = &[
     "$argon2i$",
     "$argon2id$",
 ];
-const CYBEX_LOCAL_ACCOUNT_SECRET_PREFIX: &str = "/var/lib/cybex-agent/secrets/local-accounts/";
+const TIARIS_LOCAL_ACCOUNT_SECRET_PREFIX: &str = "/var/lib/tiaris-agent/secrets/local-accounts/";
 const INSTALLER_TARGET_BUILD_INPUT_KIND: &str = "installer_target_nixos_module";
-const EXPECTED_STATE_V2_SCHEMA: &str = "cybex.blueprint.expected-state.v2";
+const EXPECTED_STATE_V2_SCHEMA: &str = "tiaris.blueprint.expected-state.v2";
 const LOCAL_ACCOUNT_PASSWORD_HASH_CHECK_KIND: &str = "local-account-password-hash";
-const LOCAL_ACCOUNT_REFERENCE_DOMAIN: &[u8] = b"cybex-local-account-v2\0";
+const LOCAL_ACCOUNT_REFERENCE_DOMAIN: &[u8] = b"tiaris-local-account-v2\0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProtectedMaterialKind {
@@ -216,7 +216,7 @@ fn installer_target_generated_nix_public_projection(
     for account in accounts {
         projection = projection.replace(
             &format!(
-                "\"{CYBEX_LOCAL_ACCOUNT_SECRET_PREFIX}{}\"",
+                "\"{TIARIS_LOCAL_ACCOUNT_SECRET_PREFIX}{}\"",
                 account.password_secret_ref
             ),
             "\"/run/credentials/validated-local-account-reference\"",
@@ -240,8 +240,8 @@ struct InstallerTargetExpectedStateContract {
     accounts: Vec<InstallerTargetLocalAccount>,
 }
 
-const CYBEX_ADMIN_ACCOUNT_PREFIX: &str = "  users.users.cybex-admin = {\n";
-const CYBEX_KIOSK_ACCOUNT_PREFIX: &str = "  users.users.cybex-kiosk = {\n";
+const TIARIS_ADMIN_ACCOUNT_PREFIX: &str = "  users.users.tiaris-admin = {\n";
+const TIARIS_KIOSK_ACCOUNT_PREFIX: &str = "  users.users.tiaris-kiosk = {\n";
 
 fn installer_target_expected_state_public_projection(
     value: &Value,
@@ -443,7 +443,7 @@ fn installer_target_generated_nix_has_exact_account_overlay(
         return false;
     }
     if accounts.is_empty() {
-        return !generated_nix.contains(CYBEX_LOCAL_ACCOUNT_SECRET_PREFIX)
+        return !generated_nix.contains(TIARIS_LOCAL_ACCOUNT_SECRET_PREFIX)
             && nix_user_assignment_contract_is_exact(generated_nix, accounts);
     }
     let mut expected_overlay = String::from("  # Dynamic local-account profile overlay\n");
@@ -464,7 +464,7 @@ fn installer_target_generated_nix_has_exact_account_overlay(
         }
         expected_overlay.push_str(" ];\n");
         expected_overlay.push_str(&format!(
-            "    hashedPasswordFile = \"{CYBEX_LOCAL_ACCOUNT_SECRET_PREFIX}{}\";\n",
+            "    hashedPasswordFile = \"{TIARIS_LOCAL_ACCOUNT_SECRET_PREFIX}{}\";\n",
             account.password_secret_ref
         ));
         expected_overlay.push_str("  };\n");
@@ -478,7 +478,7 @@ fn installer_target_generated_nix_has_exact_account_overlay(
             overlay_offset + expected_overlay.find("users.users").unwrap_or(0),
         )
         && generated_nix
-            .match_indices(CYBEX_LOCAL_ACCOUNT_SECRET_PREFIX)
+            .match_indices(TIARIS_LOCAL_ACCOUNT_SECRET_PREFIX)
             .count()
             == accounts.len()
         && nix_user_assignment_contract_is_exact(generated_nix, accounts)
@@ -595,13 +595,13 @@ fn nix_blueprint_uses_account_metaprogramming(source: &str) -> bool {
 }
 
 fn reserved_account_blocks_are_canonical(source: &str) -> bool {
-    let admin_count = source.matches(CYBEX_ADMIN_ACCOUNT_PREFIX).count();
-    let kiosk_count = source.matches(CYBEX_KIOSK_ACCOUNT_PREFIX).count();
+    let admin_count = source.matches(TIARIS_ADMIN_ACCOUNT_PREFIX).count();
+    let kiosk_count = source.matches(TIARIS_KIOSK_ACCOUNT_PREFIX).count();
     if admin_count > 1 || kiosk_count > 1 {
         return false;
     }
     if admin_count == 1 {
-        let Some((_, rest)) = source.split_once(CYBEX_ADMIN_ACCOUNT_PREFIX) else {
+        let Some((_, rest)) = source.split_once(TIARIS_ADMIN_ACCOUNT_PREFIX) else {
             return false;
         };
         let Some((block, _)) = rest.split_once("  };\n") else {
@@ -610,7 +610,7 @@ fn reserved_account_blocks_are_canonical(source: &str) -> bool {
         let lines = block.lines().collect::<Vec<_>>();
         if lines.len() < 4
             || lines[0] != "    isNormalUser = true;"
-            || lines[1] != "    description = \"Cybex break-glass administrator\";"
+            || lines[1] != "    description = \"Tiaris break-glass administrator\";"
             || !matches!(
                 lines[2],
                 "    extraGroups = [ \"wheel\" \"networkmanager\" \"video\" \"audio\" ];"
@@ -630,14 +630,14 @@ fn reserved_account_blocks_are_canonical(source: &str) -> bool {
         }
     }
     if kiosk_count == 1 {
-        let Some((_, rest)) = source.split_once(CYBEX_KIOSK_ACCOUNT_PREFIX) else {
+        let Some((_, rest)) = source.split_once(TIARIS_KIOSK_ACCOUNT_PREFIX) else {
             return false;
         };
         let Some((block, _)) = rest.split_once("  };\n") else {
             return false;
         };
-        let with_networkmanager = "    isNormalUser = true;\n    description = \"Cybex kiosk session\";\n    extraGroups = [ \"networkmanager\" \"video\" \"audio\" ];\n    hashedPassword = \"!\";\n";
-        let without_networkmanager = "    isNormalUser = true;\n    description = \"Cybex kiosk session\";\n    extraGroups = [ \"video\" \"audio\" ];\n    hashedPassword = \"!\";\n";
+        let with_networkmanager = "    isNormalUser = true;\n    description = \"Tiaris kiosk session\";\n    extraGroups = [ \"networkmanager\" \"video\" \"audio\" ];\n    hashedPassword = \"!\";\n";
+        let without_networkmanager = "    isNormalUser = true;\n    description = \"Tiaris kiosk session\";\n    extraGroups = [ \"video\" \"audio\" ];\n    hashedPassword = \"!\";\n";
         if block != with_networkmanager && block != without_networkmanager {
             return false;
         }
@@ -910,7 +910,7 @@ fn nix_user_assignment_contract_is_exact(
         .collect::<std::collections::BTreeMap<_, _>>();
     let mut observed = expected.clone();
     let mut reserved_observed =
-        std::collections::BTreeMap::from([("cybex-admin", 0usize), ("cybex-kiosk", 0usize)]);
+        std::collections::BTreeMap::from([("tiaris-admin", 0usize), ("tiaris-kiosk", 0usize)]);
     let mut index = 0usize;
     while index < tokens.len() {
         let first = match &tokens[index].kind {
@@ -974,18 +974,18 @@ fn nix_user_assignment_contract_is_exact(
                     if tokens.get(index + 5).map(|token| &token.kind) != Some(&NixTokenKind::Equals)
                         || tokens[index].start
                             != match attribute.as_str() {
-                                "cybex-admin" => {
-                                    source.find(CYBEX_ADMIN_ACCOUNT_PREFIX).map(|offset| {
+                                "tiaris-admin" => {
+                                    source.find(TIARIS_ADMIN_ACCOUNT_PREFIX).map(|offset| {
                                         offset
-                                            + CYBEX_ADMIN_ACCOUNT_PREFIX
+                                            + TIARIS_ADMIN_ACCOUNT_PREFIX
                                                 .find("users.users")
                                                 .unwrap_or(0)
                                     })
                                 }
-                                "cybex-kiosk" => {
-                                    source.find(CYBEX_KIOSK_ACCOUNT_PREFIX).map(|offset| {
+                                "tiaris-kiosk" => {
+                                    source.find(TIARIS_KIOSK_ACCOUNT_PREFIX).map(|offset| {
                                         offset
-                                            + CYBEX_KIOSK_ACCOUNT_PREFIX
+                                            + TIARIS_KIOSK_ACCOUNT_PREFIX
                                                 .find("users.users")
                                                 .unwrap_or(0)
                                     })
@@ -1001,7 +1001,7 @@ fn nix_user_assignment_contract_is_exact(
                         return false;
                     }
                 } else {
-                    // Immutable Blueprint modules may declare only Cybex's two
+                    // Immutable Blueprint modules may declare only Tiaris's two
                     // appliance accounts here. Every ordinary local account
                     // must come from the exact authenticated overlay above.
                     return false;
@@ -1085,7 +1085,7 @@ pub(crate) fn installer_target_test_generated_nix(
             overlay.push_str(&json_string(group));
         }
         overlay.push_str(&format!(
-            " ];\n    hashedPasswordFile = \"{CYBEX_LOCAL_ACCOUNT_SECRET_PREFIX}{}\";\n  }};\n",
+            " ];\n    hashedPasswordFile = \"{TIARIS_LOCAL_ACCOUNT_SECRET_PREFIX}{}\";\n  }};\n",
             account.password_secret_ref
         ));
     }
@@ -1123,7 +1123,7 @@ fn safe_local_account_username(value: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '-'))
         && !matches!(
             value,
-            "root" | "cybex-admin" | "cybex-kiosk" | "nobody" | "systemd"
+            "root" | "tiaris-admin" | "tiaris-kiosk" | "nobody" | "systemd"
         )
 }
 
@@ -1190,7 +1190,7 @@ fn validate_text(field: &'static str, text: &str) -> Result<(), ProtectedMateria
             ProtectedMaterialKind::ModularPasswordHash,
         ));
     }
-    if contains_cybex_activation_secret_reference(text) {
+    if contains_tiaris_activation_secret_reference(text) {
         return Err(ProtectedMaterialError::new(
             field,
             ProtectedMaterialKind::ActivationSecrets,
@@ -1211,7 +1211,7 @@ fn validate_text(field: &'static str, text: &str) -> Result<(), ProtectedMateria
     Ok(())
 }
 
-fn contains_cybex_activation_secret_reference(text: &str) -> bool {
+fn contains_tiaris_activation_secret_reference(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     let parts = lower
         .split(|ch: char| !ch.is_ascii_alphanumeric())
@@ -1267,10 +1267,10 @@ fn contains_unsafe_credential_assignment(text: &str) -> bool {
 /// a list of bare service identifiers, optionally wrapped in a priority helper.
 ///
 /// This deliberately does not pin one literal spelling. It used to accept only
-/// `lib.mkOrder 490 [ "authd" ]`; when `cybex-authd.nix` dropped that wrapper
+/// `lib.mkOrder 490 [ "authd" ]`; when `tiaris-authd.nix` dropped that wrapper
 /// to fix an NSS lookup deadlock, every Blueprint build began failing this
 /// check, and because a rejected job never reaches the local database it could
-/// not be reported either -- Manage showed the builds queued forever. Any
+/// not be reported either -- Tiaris showed the builds queued forever. Any
 /// literal password smuggled into the value is still caught by the modular
 /// password hash and credential URL scans, which run over the same text.
 fn safe_nixos_nss_database_assignment(text: &str, equals: usize) -> bool {
@@ -1410,7 +1410,7 @@ fn assignment_key(text: &str, equals: usize) -> Option<&str> {
     {
         start -= 1;
     }
-    // Manage embeds shell helpers in a JSON-escaped Nix string. A logical
+    // Tiaris embeds shell helpers in a JSON-escaped Nix string. A logical
     // newline is therefore written as `\n`, and the old reader accidentally
     // treated that `n` as the first character of the following assignment.
     if start > 0
@@ -1454,7 +1454,7 @@ fn assignment_value(text: &str, start: usize) -> &str {
 }
 
 /// `/etc/passwd` is the public NSS account database, not the protected shadow
-/// database. Older Manage revisions embed a captured-home helper whose third
+/// database. Older Tiaris revisions embed a captured-home helper whose third
 /// argument defaults to this path. Accept only those exact spellings so the
 /// historical revisions remain buildable without allowing `/etc/shadow`, an
 /// arbitrary file, or a literal credential value.
@@ -1681,11 +1681,11 @@ fn safe_runtime_secret_reference(value: &str) -> bool {
     // its derivation can only be proven from the complete installer-target
     // expected-state contract. That exact exemption is handled before the
     // generic scanner; never accept this path shape on syntax alone here.
-    if value.starts_with(CYBEX_LOCAL_ACCOUNT_SECRET_PREFIX) {
+    if value.starts_with(TIARIS_LOCAL_ACCOUNT_SECRET_PREFIX) {
         return false;
     }
     if [
-        "/run/cybex/secrets/",
+        "/run/tiaris/secrets/",
         "/run/secrets/",
         "/run/agenix/",
         "/run/credentials/",
@@ -1714,7 +1714,7 @@ mod tests {
 
     use super::*;
 
-    const SENTINEL: &str = "CYBEX_JAMES_PROTECTED_SENTINEL_7f922a";
+    const SENTINEL: &str = "TIARIS_NEST_PROTECTED_SENTINEL_7f922a";
     const PASSWORD_HASH: &str = "$6$rounds=5000$abcdefghijklmnop$uHL2DmwkR2iK6s.wDbxLW3GxvjJT7qW2rEHemZz3oMlKlfj8JwHc99.FNZrTO4drUslZ0MRyYkBDumQxKdL8q/";
 
     fn build_spec(generated_nix: &str, desktop_module_nix: &str, expected_state: Value) -> Value {
@@ -1745,7 +1745,7 @@ mod tests {
         };
         let mut spec = build_spec(
             &format!(
-                "{{ ... }}:\n{{\n  # Dynamic local-account profile overlay\n  users.users.\"student\" = {{\n    isNormalUser = true;\n    description = \"Shared Student\";\n    extraGroups = [ \"audio\" \"networkmanager\" \"video\" ];\n    hashedPasswordFile = \"{CYBEX_LOCAL_ACCOUNT_SECRET_PREFIX}{selected_ref}\";\n  }};\n}}\n"
+                "{{ ... }}:\n{{\n  # Dynamic local-account profile overlay\n  users.users.\"student\" = {{\n    isNormalUser = true;\n    description = \"Shared Student\";\n    extraGroups = [ \"audio\" \"networkmanager\" \"video\" ];\n    hashedPasswordFile = \"{TIARIS_LOCAL_ACCOUNT_SECRET_PREFIX}{selected_ref}\";\n  }};\n}}\n"
             ),
             "{ ... }:\n{\n}\n",
             json!({
@@ -1787,7 +1787,7 @@ mod tests {
         let generated = build_spec(
             &format!("{{ ... }}: {{ users.users.alice.hashedPassword = \"{SENTINEL}\"; }}"),
             "{ ... }: {}",
-            json!({"schema": "cybex.blueprint.expected-state.v2"}),
+            json!({"schema": "tiaris.blueprint.expected-state.v2"}),
         );
         let generated_error = validate_build_spec(&generated).unwrap_err().to_string();
         assert!(!generated_error.contains(SENTINEL));
@@ -1795,7 +1795,7 @@ mod tests {
         let desktop = build_spec(
             "{ ... }: {}",
             &format!("{{ ... }}: {{ services.example.apiToken = \"{SENTINEL}\"; }}"),
-            json!({"schema": "cybex.blueprint.expected-state.v2"}),
+            json!({"schema": "tiaris.blueprint.expected-state.v2"}),
         );
         let desktop_error = validate_build_spec(&desktop).unwrap_err().to_string();
         assert!(!desktop_error.contains(SENTINEL));
@@ -1803,7 +1803,7 @@ mod tests {
         let quoted_attribute = build_spec(
             &format!("{{ ... }}: {{ users.users.alice.\"hashedPassword\" = \"{SENTINEL}\"; }}"),
             "{ ... }: {}",
-            json!({"schema": "cybex.blueprint.expected-state.v2"}),
+            json!({"schema": "tiaris.blueprint.expected-state.v2"}),
         );
         let quoted_error = validate_build_spec(&quoted_attribute)
             .unwrap_err()
@@ -1814,7 +1814,7 @@ mod tests {
             "{ ... }: {}",
             "{ ... }: {}",
             json!({
-                "schema": "cybex.blueprint.expected-state.v2",
+                "schema": "tiaris.blueprint.expected-state.v2",
                 "activation_secrets": {"local_account_password_hashes": {"alice": SENTINEL}}
             }),
         );
@@ -1829,7 +1829,7 @@ mod tests {
         let spec = build_spec(
             &format!("{{ ... }}: {{ environment.etc.example.text = \"{PASSWORD_HASH}\"; }}"),
             "{ ... }: {}",
-            json!({"schema": "cybex.blueprint.expected-state.v2"}),
+            json!({"schema": "tiaris.blueprint.expected-state.v2"}),
         );
         let error = validate_build_spec(&spec).unwrap_err().to_string();
         assert!(!error.contains(PASSWORD_HASH));
@@ -1853,7 +1853,7 @@ mod tests {
             let mut spec = build_spec(
                 "{ ... }: {}",
                 "{ ... }: {}",
-                json!({"schema": "cybex.blueprint.expected-state.v2"}),
+                json!({"schema": "tiaris.blueprint.expected-state.v2"}),
             );
             spec.as_object_mut()
                 .unwrap()
@@ -1870,7 +1870,7 @@ mod tests {
             let mut spec = build_spec(
                 "{ ... }: {}",
                 "{ ... }: {}",
-                json!({"schema": "cybex.blueprint.expected-state.v2"}),
+                json!({"schema": "tiaris.blueprint.expected-state.v2"}),
             );
             spec.as_object_mut()
                 .unwrap()
@@ -1885,7 +1885,7 @@ mod tests {
         let mut spec = build_spec(
             "{ ... }: {}",
             "{ ... }: {}",
-            json!({"schema": "cybex.blueprint.expected-state.v2"}),
+            json!({"schema": "tiaris.blueprint.expected-state.v2"}),
         );
         spec.as_object_mut()
             .unwrap()
@@ -1903,7 +1903,7 @@ mod tests {
               services.example.passwordFile = config.sops.secrets.example.path;
             }"#,
             "{ ... }: {}",
-            json!({"schema": "cybex.blueprint.expected-state.v2"}),
+            json!({"schema": "tiaris.blueprint.expected-state.v2"}),
         );
 
         validate_build_spec(&spec).unwrap();
@@ -1912,7 +1912,7 @@ mod tests {
     #[test]
     fn allows_any_nixos_nss_database_service_list() {
         for desktop_module_nix in [
-            // The wrapped form, and the bare form cybex-authd.nix moved to
+            // The wrapped form, and the bare form tiaris-authd.nix moved to
             // when ordering authd ahead of files deadlocked NSS lookups.
             r#"{ ... }: {
               system.nssDatabases.passwd = lib.mkOrder 490 [ "authd" ];
@@ -1986,27 +1986,27 @@ mod tests {
     #[test]
     fn generic_builds_reject_manage_local_account_runtime_secret_references() {
         let secret_ref = "a".repeat(64);
-        let managed_path = format!("{CYBEX_LOCAL_ACCOUNT_SECRET_PREFIX}{secret_ref}");
+        let managed_path = format!("{TIARIS_LOCAL_ACCOUNT_SECRET_PREFIX}{secret_ref}");
         let spec = build_spec(
             &format!("{{ ... }}: {{ users.users.alice.hashedPasswordFile = \"{managed_path}\"; }}"),
             "{ ... }: { users.users.disabled.hashedPassword = \"!\"; }",
-            json!({"schema": "cybex.blueprint.expected-state.v2"}),
+            json!({"schema": "tiaris.blueprint.expected-state.v2"}),
         );
         assert!(validate_build_spec(&spec).is_err());
 
         for rejected_path in [
-            format!("{CYBEX_LOCAL_ACCOUNT_SECRET_PREFIX}short"),
-            format!("{CYBEX_LOCAL_ACCOUNT_SECRET_PREFIX}{}", "A".repeat(64)),
-            format!("{CYBEX_LOCAL_ACCOUNT_SECRET_PREFIX}{secret_ref}/extra"),
-            format!("{CYBEX_LOCAL_ACCOUNT_SECRET_PREFIX}../{secret_ref}"),
-            format!("/var/lib/cybex-agent/secrets/other/{secret_ref}"),
+            format!("{TIARIS_LOCAL_ACCOUNT_SECRET_PREFIX}short"),
+            format!("{TIARIS_LOCAL_ACCOUNT_SECRET_PREFIX}{}", "A".repeat(64)),
+            format!("{TIARIS_LOCAL_ACCOUNT_SECRET_PREFIX}{secret_ref}/extra"),
+            format!("{TIARIS_LOCAL_ACCOUNT_SECRET_PREFIX}../{secret_ref}"),
+            format!("/var/lib/tiaris-agent/secrets/other/{secret_ref}"),
         ] {
             let rejected = build_spec(
                 &format!(
                     "{{ ... }}: {{ users.users.alice.hashedPasswordFile = \"{rejected_path}\"; }}"
                 ),
                 "{ ... }: {}",
-                json!({"schema": "cybex.blueprint.expected-state.v2"}),
+                json!({"schema": "tiaris.blueprint.expected-state.v2"}),
             );
             let error = validate_build_spec(&rejected).unwrap_err().to_string();
             assert!(!error.contains(&rejected_path));
@@ -2071,7 +2071,7 @@ mod tests {
             .unwrap()
             .replacen(
                 "  # Dynamic local-account profile overlay\n",
-                "  users.users.cybex-admin = {\n    isNormalUser = true;\n    description = \"Cybex break-glass administrator\";\n    extraGroups = [ \"wheel\" \"networkmanager\" \"video\" \"audio\" ];\n    hashedPassword = \"!\";\n  };\n  # Dynamic local-account profile overlay\n",
+                "  users.users.tiaris-admin = {\n    isNormalUser = true;\n    description = \"Tiaris break-glass administrator\";\n    extraGroups = [ \"wheel\" \"networkmanager\" \"video\" \"audio\" ];\n    hashedPassword = \"!\";\n  };\n  # Dynamic local-account profile overlay\n",
                 1,
             );
         spec["build_input"]["generated_nix"] = json!(generated);
@@ -2147,9 +2147,9 @@ mod tests {
             "  ${\"users\"}.${\"users\"}.root.openssh.authorizedKeys.keys = [ \"ssh-ed25519 AAAA\" ];\n",
             "  ${u}.${u}.root.openssh.authorizedKeys.keys = [ \"ssh-ed25519 AAAA\" ];\n",
             "  users.users.\"student\".openssh.authorizedKeys.keys = [ \"ssh-ed25519 AAAA\" ];\n",
-            "  users.users.cybex-admin.openssh.authorizedKeys.keys = [ \"ssh-ed25519 AAAA\" ];\n",
-            "users.users.cybex-admin = { isNormalUser = true; extraGroups = [ \"wheel\" ]; openssh.authorizedKeys.keys = [ \"ssh-ed25519 AAAA\" ]; };\n",
-            "  \"users\".\"users\".cybex-admin = { isNormalUser = true; extraGroups = [ \"wheel\" ]; };\n",
+            "  users.users.tiaris-admin.openssh.authorizedKeys.keys = [ \"ssh-ed25519 AAAA\" ];\n",
+            "users.users.tiaris-admin = { isNormalUser = true; extraGroups = [ \"wheel\" ]; openssh.authorizedKeys.keys = [ \"ssh-ed25519 AAAA\" ]; };\n",
+            "  \"users\".\"users\".tiaris-admin = { isNormalUser = true; extraGroups = [ \"wheel\" ]; };\n",
             "  users.users.\"intruder\" = { isNormalUser = true; };\n",
             "  users.extraUsers.\"student\".hashedPasswordFile = lib.mkForce \"/run/secrets/override\";\n",
             "  \"users\".\"extraUsers\".\"student\".hashedPasswordFile = lib.mkForce \"/run/secrets/override\";\n",
@@ -2260,7 +2260,7 @@ mod tests {
         .unwrap();
         validate_installer_target_non_blueprint_module(
             "build_spec.build_input.target_module_nix",
-            "{ ... }: { cybex.agent.organizationSlug = \"users\"; }",
+            "{ ... }: { tiaris.agent.organizationSlug = \"users\"; }",
         )
         .unwrap();
     }
@@ -2291,16 +2291,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_cybex_activation_secret_references_from_reusable_text() {
+    fn rejects_tiaris_activation_secret_references_from_reusable_text() {
         for reference in [
-            "/run/cybex/activation-secrets/revision/alice",
-            "/run/cybex/activation_secrets/revision/alice",
-            "/run/cybex/activationSecrets/revision/alice",
+            "/run/tiaris/activation-secrets/revision/alice",
+            "/run/tiaris/activation_secrets/revision/alice",
+            "/run/tiaris/activationSecrets/revision/alice",
         ] {
             let spec = build_spec(
                 &format!("{{ ... }}: {{ environment.variables.RUNTIME_PATH = \"{reference}\"; }}"),
                 "{ ... }: {}",
-                json!({"schema": "cybex.blueprint.expected-state.v2"}),
+                json!({"schema": "tiaris.blueprint.expected-state.v2"}),
             );
             let error = validate_build_spec(&spec).unwrap_err().to_string();
             assert!(error.contains("activation secrets"));
@@ -2317,7 +2317,7 @@ mod tests {
             }"#,
             "{ ... }: {}",
             json!({
-                "schema": "cybex.blueprint.expected-state.v2",
+                "schema": "tiaris.blueprint.expected-state.v2",
                 "wheel_needs_password": true
             }),
         );
@@ -2338,7 +2338,7 @@ mod tests {
                     "{{ ... }}: {{ environment.variables.SOURCE_URL = \"{credential_url}\"; }}"
                 ),
                 "{ ... }: {}",
-                json!({"schema": "cybex.blueprint.expected-state.v2"}),
+                json!({"schema": "tiaris.blueprint.expected-state.v2"}),
             );
             let error = validate_build_spec(&spec).unwrap_err().to_string();
             assert!(!error.contains(credential_sentinel));
@@ -2349,7 +2349,7 @@ mod tests {
               environment.variables.SOURCE_URL = "https://example.invalid/releases/tokenizer/source.tar.gz#v1.0";
             }"#,
             "{ ... }: {}",
-            json!({"schema": "cybex.blueprint.expected-state.v2"}),
+            json!({"schema": "tiaris.blueprint.expected-state.v2"}),
         );
         validate_build_spec(&public_source).unwrap();
     }

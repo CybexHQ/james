@@ -19,8 +19,8 @@ import sys
 import release_predecessor as predecessor
 
 HELPERS = Path(__file__).resolve().parent
-OWNER = '/opt/cybex-james-qualification/isolated-manage.py'
-STATE = Path('/var/lib/cybex-james-qualification')
+OWNER = '/opt/tiaris-nest-qualification/isolated-manage.py'
+STATE = Path('/var/lib/tiaris-nest-qualification')
 
 
 def execute(*args):
@@ -32,7 +32,7 @@ def interrupted(_number, _frame):
 
 
 def scoped(name, *arguments, memory='35G'):
-    unit = 'cybex-james-' + name + '.scope'
+    unit = 'tiaris-nest-' + name + '.scope'
     try:
         execute('systemd-run', '--scope', '--quiet', '--unit', unit,
                 '-p', 'MemoryMax=' + memory, '-p', 'MemorySwapMax=0', sys.executable, '-B', *arguments)
@@ -71,7 +71,7 @@ def main():
         if args.predecessor_dir is None:
             raise ValueError('This production fleet requires an authenticated predecessor')
         args.predecessor_dir = args.predecessor_dir.resolve(strict=True)
-        identity_path = args.candidate_dir / 'cybex-james-build-predecessor.json'
+        identity_path = args.candidate_dir / 'tiaris-nest-build-predecessor.json'
         identity, _ = predecessor.checked_json(identity_path)
         if identity['update_contract'] != 'selective_roots_v2':
             raise ValueError('Disposable production updates require selective_roots_v2; legacy_all_debs still requires its canonical HTTPS package preflight and a separately qualified bridge')
@@ -80,19 +80,19 @@ def main():
         compatibility = json.loads((args.predecessor_dir / predecessor.COMPATIBILITY).read_bytes())
         selected_url = compatibility['release_manifest']['url']
         inputs = args.evidence_dir / 'predecessor-fixture-inputs.json'
-        inputs.write_text(json.dumps({'schema': 'cybex.james.resolved-predecessor-fixture.v1',
+        inputs.write_text(json.dumps({'schema': 'tiaris.nest.resolved-predecessor-fixture.v1',
             'identity': str(identity_path), 'directory': str(args.predecessor_dir),
             'trusted_public_key': args.trusted_public_key, 'candidate_version': manifest['version'],
             'repository': 'CybexHQ/james', 'authorization': str(predecessor.ROOT / 'release/recovery-adoption.json')}))
         execute(sys.executable, HELPERS / 'published-predecessor.py', '--inputs', inputs,
                 '--manifest', args.predecessor_dir / predecessor.MANIFEST)
-        shutil.copyfile(identity_path, args.evidence_dir / 'cybex-james-qualified-predecessor.json')
-        (args.evidence_dir / 'cybex-james-qualified-predecessor.json').chmod(0o644)
+        shutil.copyfile(identity_path, args.evidence_dir / 'tiaris-nest-qualified-predecessor.json')
+        (args.evidence_dir / 'tiaris-nest-qualified-predecessor.json').chmod(0o644)
         phases = ['upgrade', 'rollback', 'fresh']
     else:
         selected_url = candidate_url
         phases = ['cold']
-    lock = open('/run/lock/cybex-james-production-qualification.lock', 'a')
+    lock = open('/run/lock/tiaris-nest-production-qualification.lock', 'a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     signal.signal(signal.SIGTERM, interrupted)
     for phase in phases:
@@ -100,11 +100,11 @@ def main():
         state = STATE / name
         if state.exists():
             raise ValueError('Prior qualification state requires its owned cleanup before retry')
-        execute(sys.executable, '/opt/cybex-james-qualification/host-preflight.py')
+        execute(sys.executable, '/opt/tiaris-nest-qualification/host-preflight.py')
         try:
             execute(sys.executable, OWNER, 'prepare', '--run', name, '--manifest-url', selected_url)
             fresh_output = args.evidence_dir / (f'predecessor-{phase}.json' if phase in {'upgrade', 'rollback'}
-                else 'cybex-james-ubuntu-qualification.json' if phase == 'fresh' else 'cybex-james-published-cold-qualification.json')
+                else 'tiaris-nest-ubuntu-qualification.json' if phase == 'fresh' else 'tiaris-nest-published-cold-qualification.json')
             arguments = ['--state-dir', state, '--manifest',
                 args.predecessor_dir / predecessor.MANIFEST if phase in {'upgrade', 'rollback'} else manifest_path,
                 '--output', fresh_output]
@@ -117,12 +117,12 @@ def main():
             scoped(name + '-install', HELPERS / 'run-isolated-lifecycle.py', *arguments)
             if phase == 'cold':
                 scoped(name + '-workstation', HELPERS / 'run-isolated-workstation.py',
-                    '--state-dir', state, '--fixture', state / 'fixture', '--james-evidence', fresh_output,
+                    '--state-dir', state, '--fixture', state / 'fixture', '--nest-evidence', fresh_output,
                     '--manifest', manifest_path, '--output',
-                    args.evidence_dir / 'cybex-james-published-workstation-qualification.json', memory='45G')
+                    args.evidence_dir / 'tiaris-nest-published-workstation-qualification.json', memory='45G')
             if phase in {'upgrade', 'rollback'}:
-                update_output = args.evidence_dir / ('cybex-james-ubuntu-update-qualification.json' if phase == 'upgrade'
-                    else 'cybex-james-ubuntu-rollback-qualification.json')
+                update_output = args.evidence_dir / ('tiaris-nest-ubuntu-update-qualification.json' if phase == 'upgrade'
+                    else 'tiaris-nest-ubuntu-rollback-qualification.json')
                 arguments = ['--state-dir', state, '--fixture', state / 'fixture',
                     '--predecessor-evidence', fresh_output, '--candidate-manifest', manifest_path, '--output', update_output]
                 if phase == 'rollback':

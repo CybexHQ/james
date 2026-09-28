@@ -27,7 +27,7 @@ import uuid
 
 
 def sibling(name):
-    spec = importlib.util.spec_from_file_location('_james_' + name, Path(__file__).with_name(name + '.py'))
+    spec = importlib.util.spec_from_file_location('_nest_' + name, Path(__file__).with_name(name + '.py'))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -35,8 +35,8 @@ def sibling(name):
 
 server = sibling('verified_artifact_server')
 release_verifier = sibling('release_predecessor')
-SCHEMA = 'cybex.james.isolated-manage-artifacts.v1'
-URL_SCHEMA = 'cybex.james.isolated-manage-artifact-urls.v1'
+SCHEMA = 'tiaris.nest.isolated-manage-artifacts.v1'
+URL_SCHEMA = 'tiaris.nest.isolated-manage-artifact-urls.v1'
 ROLES = ('predecessor', 'candidate')
 LISTENERS = ('predecessor-backend', 'candidate-backend', 'guest')
 PORTS = {'predecessor-backend': 18081, 'candidate-backend': 18083, 'guest': 18082}
@@ -249,7 +249,7 @@ class Coordinator:
         manifest, manifest_body = verified['manifest'], verified['manifest_body']
         compatibility = verified['compatibility']
         if (compatibility.get('compatibility_sha256') != entry['compatibility_sha256']
-                or compatibility.get('james_release_version') != manifest.get('version')):
+                or compatibility.get('nest_release_version') != manifest.get('version')):
             raise ValueError('verified release compatibility identity changed')
         manifest_identity = compatibility.get('release_manifest')
         if (not isinstance(manifest_identity, dict) or set(manifest_identity) != {'url', 'sha256'}

@@ -17,7 +17,7 @@ nix-shell release/release-tools.nix --pure --run '
   scratch=$(mktemp -d)
   trap '\''rm -rf -- "$scratch"'\'' EXIT
   cd "$scratch"
-  printf "Cybex release archive preflight\n" > expected
+  printf "Tiaris release archive preflight\n" > expected
   printf "expected\n" | cpio --quiet -o -H newc | zstd --quiet > archive.zst
   zstd --quiet -dc archive.zst | cpio --quiet -i --to-stdout expected > actual
   cmp expected actual

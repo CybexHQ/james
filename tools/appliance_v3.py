@@ -1,6 +1,6 @@
 """Strict public NixOS appliance contracts shared by producer operations.
 
-Historical Ubuntu descriptors have their own reader in james-release.py. These
+Historical Ubuntu descriptors have their own reader in nest-release.py. These
 functions never coerce one descriptor generation into another.
 """
 from __future__ import annotations
@@ -12,9 +12,9 @@ import re
 from urllib.parse import urlsplit
 
 
-SCHEMA = "cybex.james.appliance-release.v3"
-DOMAIN = "CYBEX-JAMES-APPLIANCE-RELEASE-V3"
-TEMPLATE_DOMAIN = "CYBEX-JAMES-INSTALLER-ISO-TEMPLATE-V3"
+SCHEMA = "tiaris.nest.appliance-release.v3"
+DOMAIN = "TIARIS-NEST-APPLIANCE-RELEASE-V3"
+TEMPLATE_DOMAIN = "TIARIS-NEST-INSTALLER-ISO-TEMPLATE-V3"
 DELIVERY = "system-closure-v1"
 MAX_ARCHIVE_BYTES = 4 * 1024**3
 NIX_BASE32 = "0123456789abcdfghijklmnpqrsvwxyz"
@@ -25,7 +25,7 @@ VERSION = re.compile(
     r"(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
 )
-ANCHORS = {"kernel", "linux-firmware", "nix", "cybex-james", "systemd-boot"}
+ANCHORS = {"kernel", "linux-firmware", "nix", "tiaris-nest", "systemd-boot"}
 DESCRIPTOR_FIELDS = {
     "schema", "release_id", "source_revision", "base_os", "base_os_version",
     "nixpkgs_revision", "manage_source_revision", "system_toplevel", "system_closure",
@@ -122,7 +122,7 @@ def base64_bytes(value, size, label):
 
 
 def archive_name(version):
-    return f"cybex-james-appliance-closure-{version}-x86_64-linux.tar.zst"
+    return f"tiaris-nest-appliance-closure-{version}-x86_64-linux.tar.zst"
 
 
 def validate_descriptor(value, version=None, *, signed=True):
@@ -145,8 +145,8 @@ def validate_descriptor(value, version=None, *, signed=True):
     anchors = exact(value["required_system_versions"], ANCHORS, "NixOS system anchors")
     for name, version_value in anchors.items():
         token(version_value, name)
-    if anchors["cybex-james"] != value["release_id"]:
-        fail("James system anchor must match its release")
+    if anchors["tiaris-nest"] != value["release_id"]:
+        fail("Nest system anchor must match its release")
     closure = exact(value["system_closure"], {"url", "sha256", "size_bytes"}, "NixOS closure")
     url = https_url(closure["url"], "NixOS closure URL")
     if url.path.rsplit("/", 1)[-1] != archive_name(value["release_id"]):
@@ -175,7 +175,7 @@ def validate_template(value, version=None, *, signed=True):
             or re.fullmatch(r"[0-9]{2}\.(05|11)", value["base_os_version"]) is None):
         fail("NixOS ISO template contract is incompatible")
     url = https_url(value["url"], "NixOS ISO URL")
-    if url.path.rsplit("/", 1)[-1] != f"cybex-james-appliance-template-{value['version']}-x86_64-linux.iso":
+    if url.path.rsplit("/", 1)[-1] != f"tiaris-nest-appliance-template-{value['version']}-x86_64-linux.iso":
         fail("NixOS ISO URL must bind its exact release filename")
     size = integer(value["size_bytes"], 8192, 16 * 1024**3, "NixOS ISO size")
     integer(value["personalization_offset"], 0, size - 8192, "NixOS ISO slot offset")

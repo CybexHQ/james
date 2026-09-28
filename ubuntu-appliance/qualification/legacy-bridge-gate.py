@@ -30,30 +30,30 @@ from typing import NoReturn, Sequence
 from urllib.parse import unquote, urlsplit
 
 
-POLICY_SCHEMA = "cybex.james.legacy-update-bridge-policy.v1"
-EVIDENCE_SCHEMA = "cybex.james.legacy-update-bridge-evidence.v1"
-QUALIFICATION_SCHEMA = "cybex.james.ubuntu-appliance-qualification.v1"
-INSTALLED_SCHEMA = "cybex.james.installed-appliance.v1"
-PREDECESSOR_SCHEMA = "cybex.james.published-appliance-predecessor.v1"
+POLICY_SCHEMA = "tiaris.nest.legacy-update-bridge-policy.v1"
+EVIDENCE_SCHEMA = "tiaris.nest.legacy-update-bridge-evidence.v1"
+QUALIFICATION_SCHEMA = "tiaris.nest.ubuntu-appliance-qualification.v1"
+INSTALLED_SCHEMA = "tiaris.nest.installed-appliance.v1"
+PREDECESSOR_SCHEMA = "tiaris.nest.published-appliance-predecessor.v1"
 LOCAL_PREDECESSOR_SCHEMA = (
-    "cybex.james.local-published-appliance-predecessor.v1"
+    "tiaris.nest.local-published-appliance-predecessor.v1"
 )
-LOCAL_RELEASE_SET_SCHEMA = "cybex.james.local-immutable-release-set.v1"
-LOCAL_RELEASE_INDEX_SCHEMA = "cybex.james.local-published-release-index.v1"
-LOCAL_STAGE_LEDGER_SCHEMA = "cybex.james.canonical-package-stage.v1"
+LOCAL_RELEASE_SET_SCHEMA = "tiaris.nest.local-immutable-release-set.v1"
+LOCAL_RELEASE_INDEX_SCHEMA = "tiaris.nest.local-published-release-index.v1"
+LOCAL_STAGE_LEDGER_SCHEMA = "tiaris.nest.canonical-package-stage.v1"
 LEGACY_UPDATE_CONTRACT = "legacy_all_debs"
 SELECTIVE_UPDATE_CONTRACT = "selective_roots_v2"
-INSTALLED_RELEASE_PATH = Path("/usr/share/cybex-james/appliance-release.json")
-INSTALLED_STATE_PATH = Path("/var/lib/cybex-james/control/appliance-release.json")
+INSTALLED_RELEASE_PATH = Path("/usr/share/tiaris-nest/appliance-release.json")
+INSTALLED_STATE_PATH = Path("/var/lib/tiaris-nest/control/appliance-release.json")
 DPKG_STATUS_PATH = Path("/var/lib/dpkg/status")
-CANDIDATE_PACKAGES_PATH = Path("/run/cybex-update-packages")
+CANDIDATE_PACKAGES_PATH = Path("/run/tiaris-update-packages")
 APT_GET_PATH = Path("/usr/bin/apt-get")
 DPKG_PATH = Path("/usr/bin/dpkg")
 DPKG_DEB_PATH = Path("/usr/bin/dpkg-deb")
 FINDMNT_PATH = Path("/usr/bin/findmnt")
-RELEASE_MANIFEST_FILENAME = "cybex-james-release.json"
-RELEASE_COMPATIBILITY_FILENAME = "cybex-james-release-compatibility.json"
-UPDATER_PATH = Path("usr/lib/cybex-james/cybex-james-appliance-update")
+RELEASE_MANIFEST_FILENAME = "tiaris-nest-release.json"
+RELEASE_COMPATIBILITY_FILENAME = "tiaris-nest-release-compatibility.json"
+UPDATER_PATH = Path("usr/lib/tiaris-nest/tiaris-nest-appliance-update")
 SNAPSHOT_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 PACKAGE_RE = re.compile(r"^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?$")
@@ -102,7 +102,7 @@ MAX_LOCAL_RELEASE_ROOT_ENTRIES = 512
 MAX_LOCAL_RELEASE_DIRECTORY_ENTRIES = 512
 MAX_LOCAL_PUBLISHED_RELEASES = 128
 MAX_CHECKSUM_INDEX_BYTES = 64 * 1024
-MAX_JAMES_BINARY_BYTES = 512 * 1024 * 1024
+MAX_NEST_BINARY_BYTES = 512 * 1024 * 1024
 MAX_INSTALLER_TEMPLATE_BYTES = 16 * 1024 * 1024 * 1024
 MAX_WORKSTATION_NETBOOT_BYTES = 8 * 1024 * 1024 * 1024
 URL_MAX_BYTES = 2048
@@ -110,10 +110,10 @@ OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 LEGACY_UPDATER_COMMAND = (
     b'chroot "$candidate_path" /bin/sh -c '
-    b"'apt-get --no-download --yes install /run/cybex-update-packages/*.deb'"
+    b"'apt-get --no-download --yes install /run/tiaris-update-packages/*.deb'"
 )
 SELECTIVE_UPDATER_MARKERS = (
-    b"cybex.james.verified-appliance-update.v1",
+    b"tiaris.nest.verified-appliance-update.v1",
     b"package_targets=(",
     b"--no-remove",
     b"--no-allow-downgrades",
@@ -773,25 +773,25 @@ def validate_packaged_source_offer(package: Path) -> None:
     """
     metadata = run_bounded([str(DPKG_DEB_PATH), "--field", str(package), "Package"],
                            "source-offer package identity", maximum=4096)
-    if metadata.stdout.strip() != b"cybex-james-source-offer":
+    if metadata.stdout.strip() != b"tiaris-nest-source-offer":
         fail("source-offer package identity is invalid")
-    with tempfile.TemporaryDirectory(prefix="cybex-source-offer-check-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="tiaris-source-offer-check-") as temporary:
         root = Path(temporary)
         run_bounded([str(DPKG_DEB_PATH), "--extract", str(package), str(root)],
                     "source-offer package extraction", maximum=64 * 1024)
-        documents = root / "usr/share/doc/cybex-james/source-offer"
+        documents = root / "usr/share/doc/tiaris-nest/source-offer"
         if documents.is_symlink() or not documents.is_dir():
             fail("source-offer package has no regular source document directory")
         names = {entry.name for entry in documents.iterdir()}
         sources = {name for name in names if UDPCAST_SOURCE_RE.fullmatch(name)}
         if (len([name for name in sources if name.endswith(".dsc")]) != 1
                 or len(sources) < 3
-                or names != sources | {"CYBEX-SBOM.spdx.json", "UDPCAST-COPYRIGHT"}):
+                or names != sources | {"TIARIS-SBOM.spdx.json", "UDPCAST-COPYRIGHT"}):
             fail("source-offer package omits complete corresponding source")
         for name in names:
             open_regular(documents / name, "source-offer document", 64 * 1024 * 1024)
         try:
-            sbom = json.loads((documents / "CYBEX-SBOM.spdx.json").read_bytes())
+            sbom = json.loads((documents / "TIARIS-SBOM.spdx.json").read_bytes())
         except (UnicodeDecodeError, json.JSONDecodeError):
             fail("source-offer SPDX SBOM is malformed")
         packages = sbom.get("packages") if isinstance(sbom, dict) else None
@@ -818,7 +818,7 @@ def validate_repository_checksums(packages_dir: Path) -> None:
         and UDPCAST_SOURCE_RE.fullmatch(entry.name)
     }
     has_udpcast_binary = any(name.startswith("udpcast_") for name in package_names)
-    source_offer_names = {name for name in package_names if name.startswith("cybex-james-source-offer_")}
+    source_offer_names = {name for name in package_names if name.startswith("tiaris-nest-source-offer_")}
     udpcast_support_names: set[str] = set()
     if has_udpcast_binary and source_offer_names:
         if len(source_offer_names) != 1 or udpcast_source_names:
@@ -830,13 +830,13 @@ def validate_repository_checksums(packages_dir: Path) -> None:
         if len(descriptors) != 1 or not payloads:
             fail("candidate udpcast package omits its complete corresponding source")
         udpcast_support_names = {
-            "CYBEX-SBOM.spdx.json",
+            "TIARIS-SBOM.spdx.json",
             "UDPCAST-COPYRIGHT",
         }
         try:
             sbom = json.loads(
                 open_regular(
-                    packages_dir / "CYBEX-SBOM.spdx.json",
+                    packages_dir / "TIARIS-SBOM.spdx.json",
                     "candidate UDPcast SPDX SBOM",
                     1024 * 1024,
                 )
@@ -857,7 +857,7 @@ def validate_repository_checksums(packages_dir: Path) -> None:
         ):
             fail("candidate UDPcast SPDX SBOM is invalid")
     elif source_offer_names or udpcast_source_names or any(
-        entry.name in {"CYBEX-SBOM.spdx.json", "UDPCAST-COPYRIGHT"}
+        entry.name in {"TIARIS-SBOM.spdx.json", "UDPCAST-COPYRIGHT"}
         for entry in entries
     ):
         fail("candidate repository has UDPcast source evidence without its binary")
@@ -928,7 +928,7 @@ def validate_snapshot_binding(
         "rollback_compatible",
     }
     exact_keys(metadata, required_fields, "candidate package snapshot metadata")
-    if metadata["schema"] != "cybex.james.appliance-package-snapshot.v1":
+    if metadata["schema"] != "tiaris.nest.appliance-package-snapshot.v1":
         fail("candidate package snapshot metadata schema is invalid")
     if metadata["release_id"] != candidate_release:
         fail("candidate package snapshot metadata release does not match")
@@ -952,13 +952,13 @@ def local_asset_url(served_prefix: str, release_id: str, filename: str) -> str:
 
 
 def local_artifact_maximum(filename: str) -> int:
-    if filename == "cybex-james-x86_64-linux":
-        return MAX_JAMES_BINARY_BYTES
-    if filename.startswith("cybex-james-appliance-template-"):
+    if filename == "tiaris-nest-x86_64-linux":
+        return MAX_NEST_BINARY_BYTES
+    if filename.startswith("tiaris-nest-appliance-template-"):
         return MAX_INSTALLER_TEMPLATE_BYTES
-    if filename.startswith("cybex-james-appliance-packages-"):
+    if filename.startswith("tiaris-nest-appliance-packages-"):
         return MAX_PACKAGE_SNAPSHOT_BYTES
-    if filename.startswith("cybex-workstation-netboot-"):
+    if filename.startswith("tiaris-workstation-netboot-"):
         return MAX_WORKSTATION_NETBOOT_BYTES
     if filename == RELEASE_MANIFEST_FILENAME:
         return MAX_MANIFEST_BYTES
@@ -973,15 +973,15 @@ def local_release_filenames(
     release_id: str, entries: set[str]
 ) -> tuple[list[str], str] | None:
     package_filename = (
-        f"cybex-james-appliance-packages-{release_id}-x86_64-linux.tar.zst"
+        f"tiaris-nest-appliance-packages-{release_id}-x86_64-linux.tar.zst"
     )
     if entries == {package_filename}:
         return None
     template_filename = (
-        f"cybex-james-appliance-template-{release_id}-x86_64-linux.iso"
+        f"tiaris-nest-appliance-template-{release_id}-x86_64-linux.iso"
     )
     fixed = {
-        "cybex-james-x86_64-linux",
+        "tiaris-nest-x86_64-linux",
         template_filename,
         package_filename,
         RELEASE_MANIFEST_FILENAME,
@@ -993,13 +993,13 @@ def local_release_filenames(
         fail("immutable local published release must contain exactly seven files")
     netboot_filename = netboot[0]
     if re.fullmatch(
-        r"cybex-workstation-netboot-[0-9A-Za-z.+-]{1,128}-"
+        r"tiaris-workstation-netboot-[0-9A-Za-z.+-]{1,128}-"
         r"[0-9a-f]{12}-x86_64-linux\.tar\.zst",
         netboot_filename,
     ) is None:
         fail("local published release workstation bundle filename is invalid")
     expected_order = [
-        "cybex-james-x86_64-linux",
+        "tiaris-nest-x86_64-linux",
         template_filename,
         package_filename,
         netboot_filename,
@@ -1117,13 +1117,13 @@ def observe_local_semver_entry(
 
 def looks_like_local_release_set(release_id: str, entries: set[str]) -> bool:
     package_filename = (
-        f"cybex-james-appliance-packages-{release_id}-x86_64-linux.tar.zst"
+        f"tiaris-nest-appliance-packages-{release_id}-x86_64-linux.tar.zst"
     )
     template_filename = (
-        f"cybex-james-appliance-template-{release_id}-x86_64-linux.iso"
+        f"tiaris-nest-appliance-template-{release_id}-x86_64-linux.iso"
     )
     fixed = {
-        "cybex-james-x86_64-linux",
+        "tiaris-nest-x86_64-linux",
         template_filename,
         package_filename,
         RELEASE_MANIFEST_FILENAME,
@@ -1135,7 +1135,7 @@ def looks_like_local_release_set(release_id: str, entries: set[str]) -> bool:
         len(entries) == 7
         and len(netboot) == 1
         and re.fullmatch(
-            r"cybex-workstation-netboot-[0-9A-Za-z.+-]{1,128}-"
+            r"tiaris-workstation-netboot-[0-9A-Za-z.+-]{1,128}-"
             r"[0-9a-f]{12}-x86_64-linux\.tar\.zst",
             next(iter(netboot)),
         )
@@ -1176,7 +1176,7 @@ def load_local_stage_journal(
     ):
         fail("local staging state directory metadata is unsafe")
     package_filename = (
-        f"cybex-james-appliance-packages-{release_id}-x86_64-linux.tar.zst"
+        f"tiaris-nest-appliance-packages-{release_id}-x86_64-linux.tar.zst"
     )
     package_path = release_directory / package_filename
     try:
@@ -1331,7 +1331,7 @@ def inspect_local_release_set(
             return None
         checksum_order, netboot_filename = filenames
         expected_modes = {
-            name: 0o555 if name == "cybex-james-x86_64-linux" else 0o444
+            name: 0o555 if name == "tiaris-nest-x86_64-linux" else 0o444
             for name in entries
         }
         sizes: dict[str, int] = {}
@@ -1465,7 +1465,7 @@ def local_published_release_index(
             and child_names is not None
         ):
             package_filename = (
-                f"cybex-james-appliance-packages-{name}-x86_64-linux.tar.zst"
+                f"tiaris-nest-appliance-packages-{name}-x86_64-linux.tar.zst"
             )
             if child_names == {package_filename}:
                 observed["classification"] = "package_only_entry"
@@ -1623,13 +1623,13 @@ def verify_local_predecessor_descriptors(
         manifest_reference, dict
     ):
         fail("local published predecessor compatibility asset is incomplete")
-    if compatibility.get("schema") != "cybex.james.release-compatibility.v1":
+    if compatibility.get("schema") != "tiaris.nest.release-compatibility.v1":
         fail("local published predecessor compatibility schema is invalid")
-    if manifest.get("schema") != "cybex.james.release.v1":
+    if manifest.get("schema") != "tiaris.nest.release.v1":
         fail("local published predecessor manifest schema is invalid")
     if manifest.get("version") != release_id:
         fail("local published predecessor directory does not match its manifest")
-    if compatibility.get("james_release_version") != release_id:
+    if compatibility.get("nest_release_version") != release_id:
         fail("local published predecessor compatibility release does not match")
     manifest_artifact = artifacts[RELEASE_MANIFEST_FILENAME]
     if (
@@ -1644,7 +1644,7 @@ def verify_local_predecessor_descriptors(
         filename=RELEASE_MANIFEST_FILENAME,
         label="local published predecessor manifest",
     )
-    with tempfile.TemporaryDirectory(prefix="cybex-local-predecessor-contract-") as directory_name:
+    with tempfile.TemporaryDirectory(prefix="tiaris-local-predecessor-contract-") as directory_name:
         contract_path = Path(directory_name) / "compatibility.json"
         contract_path.write_bytes(canonical_json(compatibility_contract))
         run_bounded(
@@ -1679,19 +1679,19 @@ def verify_local_predecessor_descriptors(
     assert isinstance(template, dict)
     assert isinstance(appliance, dict)
     assert isinstance(workstation, dict)
-    binary_name = "cybex-james-x86_64-linux"
+    binary_name = "tiaris-nest-x86_64-linux"
     binary_artifact = artifacts[binary_name]
     require_local_asset_url(
         binary.get("url"),
         served_prefix=served_prefix,
         release_id=release_id,
         filename=binary_name,
-        label="local published predecessor James binary",
+        label="local published predecessor Nest binary",
     )
     if binary.get("sha256") != binary_artifact["sha256"]:
-        fail("local published predecessor James binary identity is inconsistent")
+        fail("local published predecessor Nest binary identity is inconsistent")
     template_name = (
-        f"cybex-james-appliance-template-{release_id}-x86_64-linux.iso"
+        f"tiaris-nest-appliance-template-{release_id}-x86_64-linux.iso"
     )
     template_artifact = artifacts[template_name]
     require_local_asset_url(
@@ -1714,11 +1714,11 @@ def verify_local_predecessor_descriptors(
         "local published predecessor Ubuntu snapshot",
         SNAPSHOT_RE,
     )
-    snapshot = appliance.get("cybex_repository_snapshot")
+    snapshot = appliance.get("tiaris_repository_snapshot")
     if not isinstance(snapshot, dict):
         fail("local published predecessor package descriptor is missing")
     package_name = (
-        f"cybex-james-appliance-packages-{release_id}-x86_64-linux.tar.zst"
+        f"tiaris-nest-appliance-packages-{release_id}-x86_64-linux.tar.zst"
     )
     package_artifact = artifacts[package_name]
     require_local_asset_url(
@@ -1795,7 +1795,7 @@ def stream_https_artifact(
             headers={
                 "Accept": "application/octet-stream",
                 "Accept-Encoding": "identity",
-                "User-Agent": "Cybex-James-Local-Predecessor/1",
+                "User-Agent": "Tiaris-Nest-Local-Predecessor/1",
             },
         )
         response = connection.getresponse()
@@ -1890,9 +1890,9 @@ def verify_published_predecessor_descriptors(
         manifest_reference, dict
     ):
         fail("published predecessor compatibility asset is incomplete")
-    if compatibility.get("schema") != "cybex.james.release-compatibility.v1":
+    if compatibility.get("schema") != "tiaris.nest.release-compatibility.v1":
         fail("published predecessor compatibility asset schema is invalid")
-    if manifest.get("schema") != "cybex.james.release.v1":
+    if manifest.get("schema") != "tiaris.nest.release.v1":
         fail("published predecessor manifest schema is invalid")
     manifest_url = manifest_reference.get("url")
     manifest_sha256 = manifest_reference.get("sha256")
@@ -1904,7 +1904,7 @@ def verify_published_predecessor_descriptors(
         filename=RELEASE_MANIFEST_FILENAME,
         label="published predecessor manifest",
     )
-    with tempfile.TemporaryDirectory(prefix="cybex-predecessor-contract-") as directory:
+    with tempfile.TemporaryDirectory(prefix="tiaris-predecessor-contract-") as directory:
         contract_path = Path(directory) / "compatibility.json"
         contract_path.write_bytes(canonical_json(compatibility_contract))
         run_bounded(
@@ -1931,16 +1931,16 @@ def verify_published_predecessor_descriptors(
     assert isinstance(release_id, str)
     if tag_name != f"v{release_id}":
         fail("published predecessor tag does not match the signed manifest release")
-    if compatibility.get("james_release_version") != release_id:
+    if compatibility.get("nest_release_version") != release_id:
         fail("published predecessor compatibility release does not match its manifest")
     binary = manifest.get("artifact")
     if not isinstance(binary, dict):
-        fail("published predecessor manifest has no James binary descriptor")
+        fail("published predecessor manifest has no Nest binary descriptor")
     require_release_asset_url(
         binary.get("url"),
         tag_name=tag_name,
-        filename="cybex-james-x86_64-linux",
-        label="published predecessor James binary",
+        filename="tiaris-nest-x86_64-linux",
+        label="published predecessor Nest binary",
         origin=origin,
     )
     appliance = manifest.get("appliance_release_v1")
@@ -1953,7 +1953,7 @@ def verify_published_predecessor_descriptors(
         "published predecessor Ubuntu snapshot",
         SNAPSHOT_RE,
     )
-    snapshot = appliance.get("cybex_repository_snapshot")
+    snapshot = appliance.get("tiaris_repository_snapshot")
     if not isinstance(snapshot, dict):
         fail("published predecessor has no package snapshot descriptor")
     snapshot_sha256 = sha256_field(
@@ -1968,7 +1968,7 @@ def verify_published_predecessor_descriptors(
     ):
         fail("published predecessor package snapshot size is invalid")
     snapshot_filename = (
-        f"cybex-james-appliance-packages-{release_id}-x86_64-linux.tar.zst"
+        f"tiaris-nest-appliance-packages-{release_id}-x86_64-linux.tar.zst"
     )
     require_release_asset_url(
         snapshot.get("url"),
@@ -2054,11 +2054,11 @@ def packaged_updater_identity(
             package_name = result.stdout.decode("ascii").strip()
         except UnicodeDecodeError:
             fail("Debian package identity is not ASCII")
-        if package_name == "cybex-james-appliance":
+        if package_name == "tiaris-nest-appliance":
             appliance_packages.append(package)
     if len(appliance_packages) != 1:
         fail("published predecessor must contain exactly one appliance package")
-    with tempfile.TemporaryDirectory(prefix="cybex-predecessor-package-") as directory:
+    with tempfile.TemporaryDirectory(prefix="tiaris-predecessor-package-") as directory:
         extraction = Path(directory)
         run_bounded(
             [str(DPKG_DEB_PATH), "--extract", str(appliance_packages[0]), str(extraction)],
@@ -2066,7 +2066,7 @@ def packaged_updater_identity(
             maximum=64 * 1024,
         )
         updater = extraction / UPDATER_PATH
-        packaged_release = extraction / "usr/share/cybex-james/appliance-release.json"
+        packaged_release = extraction / "usr/share/tiaris-nest/appliance-release.json"
         metadata = updater.lstat()
         if not stat.S_ISREG(metadata.st_mode) or not metadata.st_mode & 0o111:
             fail("published predecessor updater is not a regular executable")
@@ -2084,7 +2084,7 @@ def packaged_updater_identity(
         fail("published predecessor packaged release descriptor is invalid JSON")
     if not isinstance(packaged_release_value, dict):
         fail("published predecessor packaged release descriptor must be an object")
-    if packaged_release_value.get("schema") != "cybex.james.appliance-release.v1":
+    if packaged_release_value.get("schema") != "tiaris.nest.appliance-release.v1":
         fail("published predecessor packaged release descriptor schema is invalid")
     if packaged_release_value.get("release_id") != expected_release:
         fail("published predecessor package does not match the signed release")
@@ -2143,7 +2143,7 @@ def build_local_predecessor_identity(
         descriptor["package_snapshot_filename"]
     )
     with tempfile.TemporaryDirectory(
-        prefix="cybex-local-predecessor-snapshot-"
+        prefix="tiaris-local-predecessor-snapshot-"
     ) as directory:
         packages_dir = Path(directory)
         extract_repository_snapshot(package_snapshot, packages_dir)
@@ -2261,7 +2261,7 @@ def identify_predecessor(arguments: argparse.Namespace) -> None:
         or snapshot_size != descriptor["package_snapshot_size_bytes"]
     ):
         fail("published predecessor package snapshot bytes do not match its signature")
-    with tempfile.TemporaryDirectory(prefix="cybex-predecessor-snapshot-") as directory:
+    with tempfile.TemporaryDirectory(prefix="tiaris-predecessor-snapshot-") as directory:
         packages_dir = Path(directory)
         extract_repository_snapshot(arguments.package_snapshot, packages_dir)
         marker = open_regular(
@@ -2533,7 +2533,7 @@ def validate_predecessor(
         fail("predecessor provenance contains invalid JSON")
     if not all(isinstance(value, dict) for value in (release, state, qualification)):
         fail("predecessor provenance JSON must contain objects")
-    if release.get("schema") != "cybex.james.appliance-release.v1":
+    if release.get("schema") != "tiaris.nest.appliance-release.v1":
         fail("installed release descriptor schema is invalid")
     if release.get("release_id") != policy["predecessor_release"]:
         fail("installed release does not match the bridge predecessor")
@@ -2604,7 +2604,7 @@ def capture(arguments: argparse.Namespace) -> None:
             "/bin/sh",
             "-c",
             "exec /usr/bin/apt-get --simulate --no-download --yes install "
-            "/run/cybex-update-packages/*.deb",
+            "/run/tiaris-update-packages/*.deb",
         ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -2655,7 +2655,7 @@ def capture(arguments: argparse.Namespace) -> None:
         "published_identity_sha256": provenance["published_identity_sha256"],
         "command_contract": (
             "apt-get --simulate --no-download --yes install "
-            "/run/cybex-update-packages/*.deb"
+            "/run/tiaris-update-packages/*.deb"
         ),
         "apt_version": apt_version,
         "upgrades": upgrades,
@@ -2759,7 +2759,7 @@ def verify(arguments: argparse.Namespace) -> None:
             fail(f"bridge evidence {field} does not match predecessor provenance")
     if evidence_value["command_contract"] != (
         "apt-get --simulate --no-download --yes install "
-        "/run/cybex-update-packages/*.deb"
+        "/run/tiaris-update-packages/*.deb"
     ):
         fail("bridge evidence did not exercise the legacy wildcard APT contract")
     upgrades = validate_actions(
@@ -2798,7 +2798,7 @@ def verify(arguments: argparse.Namespace) -> None:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="Capture or verify a monotone legacy James update bridge"
+        description="Capture or verify a monotone legacy Nest update bridge"
     )
     commands = result.add_subparsers(dest="command", required=True)
     capture_parser = commands.add_parser("capture")

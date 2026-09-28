@@ -1,0 +1,37 @@
+[Unit]
+Description=Tiaris Nest automatic network boot discovery
+After=network-online.target tiaris-nest-first-boot.service tiaris-nest-network-runtime.service tiaris-nest.service
+Wants=network-online.target tiaris-nest.service
+Requires=tiaris-nest-first-boot.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/tiaris-nest/tiaris-nest-pxe
+Restart=always
+RestartSec=5s
+RuntimeDirectory=tiaris-nest-pxe
+RuntimeDirectoryMode=0755
+UMask=0022
+KillMode=control-group
+TimeoutStopSec=15s
+User=root
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_NET_ADMIN CAP_SETUID CAP_SETGID CAP_DAC_READ_SEARCH CAP_KILL
+# Retain setuid across the Python exec so dnsmasq can drop to its service user.
+AmbientCapabilities=CAP_SETUID
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_NETLINK
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/run/tiaris-nest-pxe
+
+[Install]
+WantedBy=multi-user.target

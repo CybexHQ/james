@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+import os
+from pathlib import Path
+import subprocess
+from appliance_state import CONTROL, read, write
+
+write(Path('/etc/netplan/90-tiaris-nest.yaml'), read(CONTROL / 'netplan-approved.json'), mode=0o600, group=0)
+subprocess.run(['/usr/lib/tiaris-nest/tiaris-nest-netplan-activate'], check=True,
+               env={**os.environ, 'TIARIS_NETWORK_RENDER_ONLY': '1'})

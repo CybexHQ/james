@@ -60,7 +60,7 @@ pub struct ClosureManifest {
 impl ClosureManifest {
     fn validate(&self, release: &NixosRelease, key: &VerifyingKey) -> Result<()> {
         ensure!(
-            self.schema == "cybex.james.system-closure.v1",
+            self.schema == "tiaris.nest.system-closure.v1",
             "closure manifest schema"
         );
         ensure!(
@@ -78,7 +78,7 @@ impl ClosureManifest {
         ensure!(
             self.nix_signing_public_key
                 == format!(
-                    "cybex-james-appliance-1:{}",
+                    "tiaris-nest-appliance-1:{}",
                     STANDARD.encode(key.as_bytes())
                 ),
             "archive Nix key differs from independently trusted key"
@@ -86,7 +86,7 @@ impl ClosureManifest {
         ensure!(
             self.manage_source.revision == release.manage_source_revision
                 && self.manage_source.size_bytes > 0,
-            "Manage source identity mismatch"
+            "Tiaris source identity mismatch"
         );
         super::release_v3::require_hex(&self.manage_source.sha256, 64)?;
         let (source_root, _) = source_location(&self.manage_source)?;
@@ -247,7 +247,7 @@ fn narinfo(body: &[u8], entry: &StorePath, key: &VerifyingKey) -> Result<(String
         "compressed NAR size limit"
     );
     let sig = field("Sig")?
-        .strip_prefix("cybex-james-appliance-1:")
+        .strip_prefix("tiaris-nest-appliance-1:")
         .ok_or_else(|| anyhow!("NARInfo signer is untrusted"))?;
     let sig: [u8; 64] = canonical_base64(sig, 64)?
         .try_into()
@@ -602,7 +602,7 @@ fn verify_nar(
     )?;
     ensure!(
         source.is_none() || found_source,
-        "embedded Manage source file is absent from its NAR"
+        "embedded Tiaris source file is absent from its NAR"
     );
     let mut one = [0];
     ensure!(nar.read(&mut one)? == 0, "trailing NAR bytes");
@@ -688,7 +688,7 @@ fn nar_node(
                     remaining.is_empty()
                         && len == metadata.size_bytes
                         && hex::encode(hash.finalize()) == metadata.sha256,
-                    "embedded Manage source bytes do not match manifest"
+                    "embedded Tiaris source bytes do not match manifest"
                 );
                 *found_source = true;
             }
@@ -733,7 +733,7 @@ fn nar_node(
         b"symlink" => {
             ensure!(
                 source.is_none(),
-                "embedded Manage source cannot be a symlink"
+                "embedded Tiaris source cannot be a symlink"
             );
             nar_expect(reader, b"target")?;
             let target = nar_string(reader, 4096)?;

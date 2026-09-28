@@ -31,11 +31,11 @@ def main():
     parser.add_argument("--namespace", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     state = args.state_dir.resolve(strict=True)
-    if (os.geteuid() != 0 or state.parent != Path("/var/lib/cybex-james-qualification")
+    if (os.geteuid() != 0 or state.parent != Path("/var/lib/tiaris-nest-qualification")
             or state.stat().st_uid != 0 or state.stat().st_mode & 0o077):
         raise ValueError("Expected private, root-owned qualification state")
     isolation = json.loads((state / "isolation.json").read_bytes())
-    if isolation["schema"] != "cybex.james.isolated-manage.v1" or isolation["origin"] != "https://manage.cybex.net":
+    if isolation["schema"] != "tiaris.nest.isolated-manage.v1" or isolation["origin"] != "https://manage.cybex.net":
         raise ValueError("Invalid qualification isolation receipt")
     if not args.namespace:
         os.execvp("unshare", ["unshare", "--mount", "--propagation", "private", sys.executable,
@@ -63,7 +63,7 @@ def main():
                 "--manage-origin", origin, "--token-file", str(state / "session")]))
     manifest = json.loads(args.manifest.read_bytes())
     version = manifest["version"]
-    template = args.manifest.parent / f"cybex-james-appliance-template-{version}-x86_64-linux.iso"
+    template = args.manifest.parent / f"tiaris-nest-appliance-template-{version}-x86_64-linux.iso"
     command = ["bash", str(Path(__file__).with_name("run-lifecycle.sh")), "--template", str(template), "--manifest", str(args.manifest),
                "--manage-origin", origin, "--token-file", str(state / "session"), "--output", str(args.output)]
     if args.published_predecessor_inputs:
@@ -74,19 +74,19 @@ def main():
         command += ["--require-candidate-runtime"]
     if args.prepublication_candidate:
         command += ["--prepublication-candidate"]
-    environment = {**os.environ, "CYBEX_JAMES_QUALIFICATION_BRIDGE": isolation["bridge"],
-                   "CYBEX_JAMES_QUALIFICATION_MANAGEMENT_CIDR": "10.62.57.1/32", "CYBEX_JAMES_HAS_PREDECESSOR": "true"}
+    environment = {**os.environ, "TIARIS_NEST_QUALIFICATION_BRIDGE": isolation["bridge"],
+                   "TIARIS_NEST_QUALIFICATION_MANAGEMENT_CIDR": "10.62.57.1/32", "TIARIS_NEST_HAS_PREDECESSOR": "true"}
     temporary = state / "temporary"
     temporary.mkdir(mode=0o700, exist_ok=True)
     environment["TMPDIR"] = str(temporary)
-    environment["CYBEX_JAMES_QUALIFICATION_FAILURE_DIRECTORY"] = str(state / ("failed-fixture-" + str(int(time.time()))))
+    environment["TIARIS_NEST_QUALIFICATION_FAILURE_DIRECTORY"] = str(state / ("failed-fixture-" + str(int(time.time()))))
     started = datetime.datetime.now(datetime.timezone.utc)
     process = subprocess.Popen(command, env=environment, start_new_session=True)
     last = None
     admitted = set()
     try:
         while process.poll() is None:
-            sessions = api("/v1/james/provisioning-sessions?limit=100&offset=0")["sessions"]
+            sessions = api("/v1/nest/provisioning-sessions?limit=100&offset=0")["sessions"]
             sessions = [v for v in sessions if v["release_version"] == version and datetime.datetime.fromisoformat(v["created_at"].replace("Z", "+00:00")) >= started]
             if len(sessions) > 1:
                 raise ValueError("Another lifecycle entered this isolated instance")
@@ -95,15 +95,15 @@ def main():
                 device = session.get("reserved_device_id")
                 observation = {"session_state": session["state"], "device_id": device}
                 if device and session["state"] == "ready":
-                    runtime = api(f"/v1/james/nodes/{device}/workstation-netboot")
-                    jobs = api(f"/v1/james/nodes/{device}/build/jobs?limit=200&offset=0")["jobs"]
+                    runtime = api(f"/v1/nest/nodes/{device}/workstation-netboot")
+                    jobs = api(f"/v1/nest/nodes/{device}/build/jobs?limit=200&offset=0")["jobs"]
                     observation.update(runtime=runtime["state"], jobs=[v["status"] for v in jobs])
                     if runtime.get("operational") and runtime.get("converged"):
                         for blueprint in catalog["blueprints"]:
                             revision = blueprint["current_revision_id"]
                             if revision in admitted or any(j["build_spec"].get("blueprint_revision_id") == revision and j["status"] in {"queued", "running", "succeeded"} for j in jobs):
                                 continue
-                            api(f"/v1/james/nodes/{device}/build/jobs", {"requested_artifact_type": "nixos_closure",
+                            api(f"/v1/nest/nodes/{device}/build/jobs", {"requested_artifact_type": "nixos_closure",
                                 "blueprint_id": blueprint["id"], "blueprint_revision_id": revision, "target": "blueprint", "system": "x86_64-linux"})
                             admitted.add(revision)
                 if observation != last:

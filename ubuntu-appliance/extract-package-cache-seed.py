@@ -225,7 +225,7 @@ def parse_ustar_header(header: bytes) -> tuple[str, bytes, int]:
     type_flag = header[156:157]
     if type_flag == b"\0":
         type_flag = b"0"
-    # James package snapshots are emitted as strict USTAR and contain only the
+    # Nest package snapshots are emitted as strict USTAR and contain only the
     # repository directory plus regular files. Reject PAX/GNU extension
     # records before reading their declared payload: Python's tarfile parser
     # otherwise materializes those records internally before yielding them.
@@ -391,7 +391,7 @@ def exclude_local_package_names(packages: list[Path]) -> int:
 
     accepted = 0
     for package in packages:
-        if package.name.lower().startswith("cybex-james"):
+        if package.name.lower().startswith("tiaris-nest"):
             package.unlink()
             continue
         accepted += 1

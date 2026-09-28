@@ -23,10 +23,10 @@ use std::{
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::SyncIoBridge;
 
-pub(crate) const EMBEDDED_REPOSITORY_PATH: &str = "/cdrom/cybex/apt";
-pub(crate) const RELEASE_PUBLIC_KEY_PATH: &str = "/cdrom/cybex/release-public-key";
-pub(crate) const STAGING_ROOT: &str = "/run/cybex-appliance-repo";
-pub(crate) const STAGED_REPOSITORY_PATH: &str = "/run/cybex-appliance-repo/packages";
+pub(crate) const EMBEDDED_REPOSITORY_PATH: &str = "/cdrom/tiaris/apt";
+pub(crate) const RELEASE_PUBLIC_KEY_PATH: &str = "/cdrom/tiaris/release-public-key";
+pub(crate) const STAGING_ROOT: &str = "/run/tiaris-appliance-repo";
+pub(crate) const STAGED_REPOSITORY_PATH: &str = "/run/tiaris-appliance-repo/packages";
 
 const MAX_SNAPSHOT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_EXPANDED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -59,7 +59,7 @@ pub(crate) enum PackageDelivery {
 }
 
 pub(crate) fn inspect_media_layout() -> Result<MediaLayout> {
-    if Path::new("/cdrom/cybex/nixos-appliance").is_file() {
+    if Path::new("/cdrom/tiaris/nixos-appliance").is_file() {
         return Ok(MediaLayout::Nixos);
     }
     let path = Path::new(EMBEDDED_REPOSITORY_PATH);
@@ -114,12 +114,12 @@ pub(crate) fn validate_plan_delivery(
             Ok(PackageDelivery::NetworkSnapshot)
         }
         (INSTALL_PLAN_SCHEMA_V1, MediaLayout::Thin) => {
-            bail!("thin James media requires a signed network snapshot install plan")
+            bail!("thin Nest media requires a signed network snapshot install plan")
         }
         (INSTALL_PLAN_SCHEMA_V2, MediaLayout::Embedded) => {
-            bail!("embedded James media cannot use network snapshot delivery")
+            bail!("embedded Nest media cannot use network snapshot delivery")
         }
-        _ => bail!("install plan package delivery does not match this James media"),
+        _ => bail!("install plan package delivery does not match this Nest media"),
     }
 }
 
@@ -234,10 +234,10 @@ fn clear_repository_state(staging_root: &Path, repository: &Path) -> Result<()> 
 
 fn verified_marker(release: &SignedApplianceRelease) -> VerifiedSnapshotMarker {
     VerifiedSnapshotMarker {
-        schema: "cybex.james.verified-appliance-snapshot.v1".to_string(),
+        schema: "tiaris.nest.verified-appliance-snapshot.v1".to_string(),
         release_id: release.release_id.clone(),
-        snapshot_sha256: release.cybex_repository_snapshot.sha256.clone(),
-        snapshot_size_bytes: release.cybex_repository_snapshot.size_bytes,
+        snapshot_sha256: release.tiaris_repository_snapshot.sha256.clone(),
+        snapshot_size_bytes: release.tiaris_repository_snapshot.size_bytes,
         release_signature: release.signature.clone(),
     }
 }
@@ -269,7 +269,7 @@ async fn download_extract_and_verify(
     release: &SignedApplianceRelease,
     candidate: &Path,
 ) -> Result<()> {
-    let snapshot = &release.cybex_repository_snapshot;
+    let snapshot = &release.tiaris_repository_snapshot;
     let canonical_transport = transport == snapshot.url;
     let mut response = release_transport::get(
         transport,
@@ -359,7 +359,7 @@ fn validate_transport_url(transport: &str, release: &SignedApplianceRelease) -> 
     {
         bail!("appliance package transport URL is not canonical")
     }
-    let canonical = &release.cybex_repository_snapshot.url;
+    let canonical = &release.tiaris_repository_snapshot.url;
     if transport == canonical {
         if parsed.scheme() != "https" {
             bail!("canonical appliance package transport must use HTTPS")
@@ -367,7 +367,7 @@ fn validate_transport_url(transport: &str, release: &SignedApplianceRelease) -> 
         return Ok(parsed);
     }
     let expected_filename = format!(
-        "cybex-james-appliance-packages-{}-x86_64-linux.tar.zst",
+        "tiaris-nest-appliance-packages-{}-x86_64-linux.tar.zst",
         release.release_id
     );
     let private_address = parsed
@@ -442,7 +442,7 @@ fn validate_tmpfs_capacity(
 }
 
 fn required_staging_capacity(release: &SignedApplianceRelease) -> Result<u64> {
-    let bundle = release.cybex_repository_snapshot.size_bytes;
+    let bundle = release.tiaris_repository_snapshot.size_bytes;
     if bundle > MAX_SNAPSHOT_BYTES {
         bail!("approved appliance repository exceeds its compressed size bound")
     }
@@ -484,11 +484,11 @@ mod tests {
 
     fn release(canonical_url: &str) -> SignedApplianceRelease {
         SignedApplianceRelease {
-            schema: "cybex.james.appliance-release.v1".into(),
+            schema: "tiaris.nest.appliance-release.v1".into(),
             release_id: "0.1.2".into(),
             source_revision: None,
             ubuntu_snapshot_id: "20260801T120000Z".into(),
-            cybex_repository_snapshot: crate::appliance::ApplianceRepositorySnapshot {
+            tiaris_repository_snapshot: crate::appliance::ApplianceRepositorySnapshot {
                 url: canonical_url.into(),
                 sha256: "a".repeat(64),
                 size_bytes: 1024 * 1024 * 1024,
@@ -506,11 +506,11 @@ mod tests {
     #[test]
     fn production_transport_must_equal_the_release_signed_https_url() {
         let url =
-            "https://releases.cybex.net/cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst";
+            "https://releases.cybex.net/tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst";
         assert!(validate_transport_url(url, &release(url)).is_ok());
         assert!(
             validate_transport_url(
-                "https://mirror.example/cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst",
+                "https://mirror.example/tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst",
                 &release(url)
             )
             .is_err()
@@ -520,29 +520,29 @@ mod tests {
     #[test]
     fn qualification_transport_is_an_explicit_private_ip_endpoint() {
         let release = release(
-            "https://releases.cybex.net/cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst",
+            "https://releases.cybex.net/tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst",
         );
         assert!(
             validate_transport_url(
-                "http://192.168.122.1:8080/cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst",
+                "http://192.168.122.1:8080/tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst",
                 &release
             )
             .is_ok()
         );
         assert!(
             validate_transport_url(
-                "http://[fd00::1]:8080/cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst",
+                "http://[fd00::1]:8080/tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst",
                 &release
             )
             .is_ok()
         );
         for invalid in [
-            "http://example.test:8080/cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst",
-            "http://203.0.113.2:8080/cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst",
-            "http://127.0.0.1/cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst",
+            "http://example.test:8080/tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst",
+            "http://203.0.113.2:8080/tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst",
+            "http://127.0.0.1/tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst",
             "http://127.0.0.1:8080/wrong.tar.zst",
-            "http://user@127.0.0.1:8080/cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst",
-            "http://127.0.0.1:8080/cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst?token=x",
+            "http://user@127.0.0.1:8080/tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst",
+            "http://127.0.0.1:8080/tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst?token=x",
         ] {
             assert!(
                 validate_transport_url(invalid, &release).is_err(),
@@ -561,19 +561,19 @@ mod tests {
     #[test]
     fn staging_capacity_keeps_headroom_without_exceeding_expansion_cap() {
         let release = release(
-            "https://releases.cybex.net/cybex-james-appliance-packages-0.1.2-x86_64-linux.tar.zst",
+            "https://releases.cybex.net/tiaris-nest-appliance-packages-0.1.2-x86_64-linux.tar.zst",
         );
         assert_eq!(
             required_staging_capacity(&release).unwrap(),
             1024 * 1024 * 1024 + 128 * 1024 * 1024
         );
         let mut oversized = release;
-        oversized.cybex_repository_snapshot.size_bytes = MAX_EXPANDED_BYTES;
+        oversized.tiaris_repository_snapshot.size_bytes = MAX_EXPANDED_BYTES;
         assert_eq!(
             required_staging_capacity(&oversized).unwrap(),
             MAX_EXPANDED_BYTES
         );
-        oversized.cybex_repository_snapshot.size_bytes += 1;
+        oversized.tiaris_repository_snapshot.size_bytes += 1;
         assert!(required_staging_capacity(&oversized).is_err());
     }
 }

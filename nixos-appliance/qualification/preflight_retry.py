@@ -43,7 +43,7 @@ def timestamp(value):
 def wait_session(api, session_id, desired, timeout=300, heartbeat_after=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        session = api('/v1/james/provisioning-sessions/' + session_id)
+        session = api('/v1/nest/provisioning-sessions/' + session_id)
         if session.get('id') != session_id:
             raise ValueError('Q03 observed a different provisioning session')
         fresh = heartbeat_after is None or (session.get('heartbeat_at') is not None
@@ -90,7 +90,7 @@ def validate_new_plan(session, initial):
                   'package_delivery', 'appliance_release', 'package_transport_url'):
         if before.get(field) != after.get(field):
             raise ValueError('Q03 retry altered approved hardware, identity or signed delivery')
-    if after.get('schema') != 'cybex.james.install-plan.v3' or after.get('plan_revision', 0) <= before['plan_revision']:
+    if after.get('schema') != 'tiaris.nest.install-plan.v3' or after.get('plan_revision', 0) <= before['plan_revision']:
         raise ValueError('Q03 retry did not advance the exact V3 attempt')
 
 
@@ -104,19 +104,19 @@ def begin(args, api):
             raise ValueError('Q03 disk inspection requires a stopped guest')
         actual_disk = fingerprint(args.disk)
         # Re-fetch while paused to fence a retry or other operator change.
-        session = api('/v1/james/provisioning-sessions/' + args.session_id)
+        session = api('/v1/nest/provisioning-sessions/' + args.session_id)
         responses = [json.loads(line) for line in args.responses.read_text().splitlines()]
         corruption = failed_before_writes(session, initial, args.disk_digest, actual_disk, responses)
         device = api('/v1/devices/' + session['reserved_device_id'])
         key = device['public_key_fingerprint']
         if not re.fullmatch('[0-9a-f]{64}', key): raise ValueError('Q03 provisioning identity fingerprint invalid')
-        retry = api('/v1/james/provisioning-sessions/' + args.session_id + '/retry',
+        retry = api('/v1/nest/provisioning-sessions/' + args.session_id + '/retry',
                     {'session_revision': session['session_revision']})
         unchanged_session(retry, initial)
         if (retry.get('state') != 'awaiting_approval' or retry.get('install_plan') is not None
                 or retry.get('progress') != [] or retry['session_revision'] <= session['session_revision']):
             raise ValueError('Console retry failed to retire the old attempt safely')
-        save(args.receipt, {'schema': 'cybex.james.nixos-preflight-retry-attempt.v1',
+        save(args.receipt, {'schema': 'tiaris.nest.nixos-preflight-retry-attempt.v1',
              'session_id': args.session_id, 'device_id': session['reserved_device_id'],
              'old_plan_id': initial['install_plan']['id'], 'failure_revision': session['session_revision'],
              'retry_revision': retry['session_revision'], 'provisioning_key_fingerprint': key,
@@ -149,7 +149,7 @@ def approve(args, api):
     try:
         monitor.call('stop')
         if monitor.call('query-status')['running']: raise ValueError('Q03 reapproval requires a paused guest')
-        approved = api('/v1/james/provisioning-sessions/' + args.session_id + '/approve', body)
+        approved = api('/v1/nest/provisioning-sessions/' + args.session_id + '/approve', body)
         validate_new_plan(approved, initial)
         save(args.reapproved, {**approved, '_qualification_restart': {
             'started_at': args.restarted_at, 'heartbeat_at': session['heartbeat_at']}})
@@ -171,7 +171,7 @@ def sha256(path):
 
 def complete(args, api):
     receipt, approved, lifecycle = read(args.receipt), read(args.reapproved), read(args.lifecycle)
-    session = api('/v1/james/provisioning-sessions/' + args.session_id)
+    session = api('/v1/nest/provisioning-sessions/' + args.session_id)
     device = api('/v1/devices/' + receipt['device_id'])
     if (session.get('state') != 'ready' or session.get('reserved_device_id') != receipt['device_id']
             or session.get('install_plan', {}).get('id') != approved['install_plan']['id']
@@ -189,7 +189,7 @@ def complete(args, api):
     if not any(r.get('mode') == 'clean' and r.get('complete') is True and r.get('bytes') == closure['size_bytes']
                and r.get('response_sha256') == closure['sha256'] == r.get('original_sha256') for r in responses):
         raise ValueError('Q03 did not restore and serve the exact signed closure')
-    save(args.output, {**receipt, 'schema': 'cybex.james.nixos-preflight-retry-qualification.v1', 'ok': True,
+    save(args.output, {**receipt, 'schema': 'tiaris.nest.nixos-preflight-retry-qualification.v1', 'ok': True,
          'new_plan_id': approved['install_plan']['id'], 'new_plan_sha256': approved['install_plan']['plan_sha256'],
          'permanent_key_fingerprint': device['public_key_fingerprint'], 'same_iso_restarted': True,
          'restart_started_at': restart['started_at'], 'post_restart_heartbeat_at': restart['heartbeat_at'],

@@ -45,22 +45,22 @@ class CanonicalPackageStageTests(unittest.TestCase):
         self.source.mkdir(mode=0o700)
         self.version = "0.2.1-dev.13"
         self.filename = (
-            f"cybex-james-appliance-packages-{self.version}-x86_64-linux.tar.zst"
+            f"tiaris-nest-appliance-packages-{self.version}-x86_64-linux.tar.zst"
         )
         self.package = self.source / self.filename
         self.package.write_bytes(b"exact signed candidate package snapshot\0\xff")
-        url = f"https://dev.example.test/james-dev-artifacts/{self.version}/{self.filename}"
-        self.manifest = self.source / "cybex-james-release.json"
+        url = f"https://dev.example.test/nest-dev-artifacts/{self.version}/{self.filename}"
+        self.manifest = self.source / "tiaris-nest-release.json"
         self.manifest.write_bytes(
             canonical(
                 {
-                    "schema": "cybex.james.release.v1",
+                    "schema": "tiaris.nest.release.v1",
                     "version": self.version,
                     "appliance_release_v1": {
-                        "schema": "cybex.james.appliance-release.v1",
+                        "schema": "tiaris.nest.appliance-release.v1",
                         "release_id": self.version,
                         "ubuntu_snapshot_id": "20260812T000000Z",
-                        "cybex_repository_snapshot": {
+                        "tiaris_repository_snapshot": {
                             "url": url,
                             "sha256": digest(self.package.read_bytes()),
                             "size_bytes": self.package.stat().st_size,
@@ -93,7 +93,7 @@ class CanonicalPackageStageTests(unittest.TestCase):
             "--artifact-root",
             str(self.artifacts),
             "--served-prefix",
-            "https://dev.example.test/james-dev-artifacts",
+            "https://dev.example.test/nest-dev-artifacts",
             "--state-dir",
             str(self.state),
             "--owner",
@@ -121,7 +121,7 @@ class CanonicalPackageStageTests(unittest.TestCase):
     @property
     def private_package_temp(self) -> Path:
         manifest = json.loads(self.manifest.read_bytes())
-        url = manifest["appliance_release_v1"]["cybex_repository_snapshot"]["url"]
+        url = manifest["appliance_release_v1"]["tiaris_repository_snapshot"]["url"]
         key = hashlib.sha256(url.encode("ascii")).hexdigest()
         return self.state / f".{key}.json.package.tmp"
 
@@ -152,7 +152,7 @@ class CanonicalPackageStageTests(unittest.TestCase):
 
     def test_v2_stage_verify_and_cleanup_preserve_exact_source_binding(self) -> None:
         value = json.loads(self.manifest.read_bytes())
-        value["appliance_release_v1"]["schema"] = "cybex.james.appliance-release.v2"
+        value["appliance_release_v1"]["schema"] = "tiaris.nest.appliance-release.v2"
         value["appliance_release_v1"]["source_revision"] = "d" * 40
         self.manifest.write_bytes(canonical(value))
         self.test_stage_verify_and_cleanup_are_exact_and_idempotent()
@@ -160,12 +160,12 @@ class CanonicalPackageStageTests(unittest.TestCase):
     def test_invalid_v2_source_or_schema_is_rejected_before_exposure(self) -> None:
         original = json.loads(self.manifest.read_bytes())
         for schema, source in (
-            ("cybex.james.appliance-release.v2", None),
-            ("cybex.james.appliance-release.v2", "HEAD"),
-            ("cybex.james.appliance-release.v2", "D" * 40),
-            ("cybex.james.appliance-release.v2", 123),
-            ("cybex.james.appliance-release.v3", "d" * 40),
-            ("cybex.james.appliance-release.v1", "d" * 40),
+            ("tiaris.nest.appliance-release.v2", None),
+            ("tiaris.nest.appliance-release.v2", "HEAD"),
+            ("tiaris.nest.appliance-release.v2", "D" * 40),
+            ("tiaris.nest.appliance-release.v2", 123),
+            ("tiaris.nest.appliance-release.v3", "d" * 40),
+            ("tiaris.nest.appliance-release.v1", "d" * 40),
         ):
             with self.subTest(schema=schema, source=source):
                 value = json.loads(json.dumps(original))
@@ -189,7 +189,7 @@ class CanonicalPackageStageTests(unittest.TestCase):
 
     def test_mismatch_is_rejected_before_exposure(self) -> None:
         value = json.loads(self.manifest.read_bytes())
-        value["appliance_release_v1"]["cybex_repository_snapshot"]["sha256"] = "0" * 64
+        value["appliance_release_v1"]["tiaris_repository_snapshot"]["sha256"] = "0" * 64
         self.manifest.write_bytes(canonical(value))
         result = self.command("stage")
         self.assertNotEqual(result.returncode, 0)
@@ -226,7 +226,7 @@ class CanonicalPackageStageTests(unittest.TestCase):
         staged = self.command("stage")
         self.assertEqual(staged.returncode, 0, staged.stderr)
         self.target_directory.chmod(0o700)
-        (self.target_directory / "cybex-james-release.json").write_bytes(
+        (self.target_directory / "tiaris-nest-release.json").write_bytes(
             self.manifest.read_bytes()
         )
         self.target_directory.chmod(0o555)
@@ -262,7 +262,7 @@ class CanonicalPackageStageTests(unittest.TestCase):
             "--artifact-root",
             str(self.artifacts),
             "--served-prefix",
-            "https://dev.example.test/james-dev-artifacts",
+            "https://dev.example.test/nest-dev-artifacts",
             "--state-dir",
             str(nested_state),
             "--owner",
@@ -281,7 +281,7 @@ class CanonicalPackageStageTests(unittest.TestCase):
 
     def test_staging_lock_cannot_be_a_symlink(self) -> None:
         manifest = json.loads(self.manifest.read_bytes())
-        url = manifest["appliance_release_v1"]["cybex_repository_snapshot"]["url"]
+        url = manifest["appliance_release_v1"]["tiaris_repository_snapshot"]["url"]
         key = hashlib.sha256(url.encode("ascii")).hexdigest()
         unrelated = self.root / "unrelated-lock-target"
         unrelated.write_bytes(b"do not touch")
@@ -293,7 +293,7 @@ class CanonicalPackageStageTests(unittest.TestCase):
 
     def test_url_must_map_to_the_exact_served_release_path(self) -> None:
         value = json.loads(self.manifest.read_bytes())
-        value["appliance_release_v1"]["cybex_repository_snapshot"]["url"] = (
+        value["appliance_release_v1"]["tiaris_repository_snapshot"]["url"] = (
             f"https://dev.example.test/not-served/{self.version}/{self.filename}"
         )
         self.manifest.write_bytes(canonical(value))

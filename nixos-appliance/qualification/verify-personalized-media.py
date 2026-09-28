@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 
 
-DOMAIN = b"CYBEX-JAMES-PROVISIONING-ENVELOPE-V1\n"
+DOMAIN = b"TIARIS-NEST-PROVISIONING-ENVELOPE-V1\n"
 DER_PREFIX = bytes.fromhex("302a300506032b6570032100")
 
 
@@ -28,7 +28,7 @@ def main() -> None:
     parser.add_argument("--headers", required=True)
     parser.add_argument("--session-id", required=True)
     arguments = parser.parse_args()
-    secret = os.environ.get("CYBEX_JAMES_MEDIA_SECRET", "")
+    secret = os.environ.get("TIARIS_NEST_MEDIA_SECRET", "")
     if not secret:
         fail("media secret environment is missing")
     manifest = json.loads(Path(arguments.manifest).read_text(encoding="utf-8"))
@@ -93,7 +93,7 @@ def main() -> None:
         fail("envelope signature has invalid length")
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     verified = False
-    with tempfile.TemporaryDirectory(prefix="cybex-envelope-verify-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="tiaris-envelope-verify-") as temporary:
         root = Path(temporary)
         message = root / "message"
         signature_path = root / "signature"
@@ -135,7 +135,7 @@ def main() -> None:
         fail("envelope signature is not trusted by the offline descriptor")
 
     headers = Path(arguments.headers).read_text(encoding="utf-8").lower()
-    expected_header = f"x-cybex-james-envelope-sha256: {envelope_digest.hexdigest()}"
+    expected_header = f"x-tiaris-nest-envelope-sha256: {envelope_digest.hexdigest()}"
     if expected_header not in headers:
         fail("download response did not bind the exact envelope digest")
     print(

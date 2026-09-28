@@ -27,10 +27,10 @@ def script(name):
     return module
 
 
-window = script('cybex-james-appliance-update-window')
-network = script('cybex-james-netplan-activate')
-firewall = script('cybex-james-firewall')
-first_boot = script('cybex-james-first-boot')
+window = script('tiaris-nest-appliance-update-window')
+network = script('tiaris-nest-netplan-activate')
+firewall = script('tiaris-nest-firewall')
+first_boot = script('tiaris-nest-first-boot')
 source_copy = script('source-copy.py')
 
 
@@ -99,7 +99,7 @@ class MaintenancePolicy(unittest.TestCase):
     def test_closed_window_reuses_only_verified_identity_and_open_window_reverifies(self):
         attempt = '11111111-1111-4111-8111-111111111111'
         body = state.canonical({'attempt_id': attempt})
-        verified = {'schema': 'cybex.james.verified-appliance-update.v3', 'attempt_id': attempt,
+        verified = {'schema': 'tiaris.nest.verified-appliance-update.v3', 'attempt_id': attempt,
                     'request_sha256': hashlib.sha256(body).hexdigest(),
                     'source_system_generation': '1', 'source_system_toplevel': '/source'}
         with patch.object(update, 'read', return_value=body), patch.object(update, 'load', return_value=verified), \
@@ -117,7 +117,7 @@ class MaintenancePolicy(unittest.TestCase):
 
 class NetworkPolicy(unittest.TestCase):
     def config(self):
-        return {'network': {'version': 2, 'renderer': 'networkd', 'ethernets': {'cybex-james': {
+        return {'network': {'version': 2, 'renderer': 'networkd', 'ethernets': {'tiaris-nest': {
             'set-name': 'enp1s0', 'match': {'macaddress': '02:00:00:00:00:42'}, 'dhcp4': False, 'dhcp6': False,
             'addresses': ['192.0.2.42/24'], 'routes': [{'to': 'default', 'via': '192.0.2.1'}],
             'nameservers': {'addresses': ['192.0.2.53']}}}}}
@@ -127,7 +127,7 @@ class NetworkPolicy(unittest.TestCase):
         name, output = network.render(value)
         self.assertEqual(name, 'enp1s0')
         self.assertIn(b'Address=192.0.2.42/24\nGateway=192.0.2.1\nDNS=192.0.2.53\n', output)
-        interface = value['network']['ethernets']['cybex-james']
+        interface = value['network']['ethernets']['tiaris-nest']
         interface['dhcp4'] = True
         name, output = network.render(value)
         self.assertIn(b'DHCP=ipv4\n', output)
@@ -136,17 +136,17 @@ class NetworkPolicy(unittest.TestCase):
     def test_rejects_multicast_mac_and_config_injection(self):
         for key, value in [('set-name', 'eth0\n[Network]'), ('set-name', 'lo'), ('dhcp4', 'true')]:
             config = self.config()
-            config['network']['ethernets']['cybex-james'][key] = value
+            config['network']['ethernets']['tiaris-nest'][key] = value
             with self.assertRaises(ValueError):
                 network.render(config)
         config = self.config()
-        config['network']['ethernets']['cybex-james']['match']['macaddress'] = '01:00:00:00:00:01'
+        config['network']['ethernets']['tiaris-nest']['match']['macaddress'] = '01:00:00:00:00:01'
         with self.assertRaises(ValueError):
             network.render(config)
 
     def test_atomic_firewall_preserves_other_ports_and_denies_other_ssh(self):
         rules = firewall.render('192.0.2.0/24\n2001:db8::/32\n', True)
-        self.assertTrue(rules.startswith('delete table inet cybex_james\n'))
+        self.assertTrue(rules.startswith('delete table inet tiaris_nest\n'))
         self.assertIn('policy accept;', rules)
         self.assertIn('ip saddr { 192.0.2.0/24 } tcp dport 22 accept', rules)
         self.assertIn('ip6 saddr { 2001:db8::/32 } tcp dport 22 accept', rules)
@@ -222,7 +222,7 @@ class Recovery(unittest.TestCase):
         self.enterContext(patch.object(update, 'load', lambda path, **kw: json.loads(path.read_text())))
         self.enterContext(patch.object(update, 'save', lambda path, value: path.write_bytes(state.canonical(value))))
         self.enterContext(patch.object(update, 'remove', lambda path: path.unlink(missing_ok=True)))
-        self.receipt = {'schema': 'cybex.james.pending-system-generation.v3',
+        self.receipt = {'schema': 'tiaris.nest.pending-system-generation.v3',
             'attempt_id': '11111111-1111-4111-8111-111111111111', 'system_toplevel': '/candidate',
             'source_toplevel': '/source', 'candidate_generation': '2', 'source_generation': '1',
             'candidate_loader_entry': 'nixos-generation-2.conf', 'source_loader_entry': 'nixos-generation-1.conf',
@@ -311,7 +311,7 @@ class BootAnchors(unittest.TestCase):
                     update.verify_boot_entry(entry.name, str(system), boot)
 
     def test_actual_kernel_mismatch_cannot_commit(self):
-        expected = {'kernel': '6.18.38', 'nix': '2.34.7', 'systemd-boot': '260.2', 'cybex-james': '0.2.5'}
+        expected = {'kernel': '6.18.38', 'nix': '2.34.7', 'systemd-boot': '260.2', 'tiaris-nest': '0.2.5'}
         with patch.object(update, 'observed_system_versions', return_value=expected):
             update.verify_observed_versions(expected)
         with patch.object(update, 'observed_system_versions', return_value={**expected, 'kernel': '6.18.37'}):

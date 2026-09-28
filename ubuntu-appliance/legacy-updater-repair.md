@@ -14,9 +14,9 @@ SHA-256 is
 Unknown predecessors require separate review; do not add their hashes blindly.
 
 The original and a repair receipt are preserved in
-`/var/lib/cybex-james/control/maintenance-repairs/apt-sourceparts-v1/`.
+`/var/lib/tiaris-nest/control/maintenance-repairs/apt-sourceparts-v1/`.
 The helper retains the original owner and executable permissions and does not
-restart James, initiate an update, or change its configuration, identity,
+restart Nest, initiate an update, or change its configuration, identity,
 database, signed package verification, maintenance window or rollback logic.
 An active updater lock blocks the repair. For rollback, restore `updater.before`
 atomically under that same updater lock, preserving the installed permissions;
@@ -45,7 +45,7 @@ override, checking the referenced binaries/assets before changing any file.
 
 An origin change requires staging `authorization.json` and `manifest.json` in
 the root-owned `control/origin-transitions/<candidate-release>/` directory.
-`cybex-james-origin-transition` runs during candidate package configuration. It
+`tiaris-nest-origin-transition` runs during candidate package configuration. It
 verifies the retained authority's Ed25519 origin authorization and binds it to
 the original release/origin, exact candidate manifest, compiled target origin
 and root updater's protected package-verification receipt. The Management
@@ -102,7 +102,7 @@ unit tests alone are not evidence that a fleet upgrade is qualified.
 
 The dev.28 fresh-install rehearsal exposed a regional locale archive unavailable
 from the public binary cache and unreviewed current Dock/Standard assembly recipes.
-The Manage generator now selects the prebuilt full locale archive while preserving
+The Tiaris generator now selects the prebuilt full locale archive while preserving
 the selected default language. Dev.29 adds only the exact reviewed paired recipe
 fingerprints for the current production Dock/Standard service links and `/etc`
 assembly at nixpkgs 74cc63f. Fixtures reject changed executable providers,

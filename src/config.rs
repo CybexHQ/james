@@ -19,15 +19,15 @@ use uuid::Uuid;
 use crate::manage_source;
 
 #[derive(Debug, Parser)]
-#[command(name = "cybex-james")]
+#[command(name = "tiaris-nest")]
 #[command(about = "UEFI-only PXE/iPXE boot control service")]
 #[command(version)]
 pub struct Cli {
     #[arg(
         short,
         long,
-        default_value = "/etc/cybex-james/config.toml",
-        env = "CYBEX_JAMES_CONFIG"
+        default_value = "/etc/tiaris-nest/config.toml",
+        env = "TIARIS_NEST_CONFIG"
     )]
     pub config: PathBuf,
 
@@ -125,7 +125,7 @@ pub struct BuildConfig {
     pub work_dir: PathBuf,
     pub output_dir: PathBuf,
     pub nix_binary: String,
-    /// Immutable Manage source used by installer-target builds. The exact
+    /// Immutable Tiaris source used by installer-target builds. The exact
     /// signed revision replaces `{revision}` before Nix evaluates the input.
     pub manage_source_url_template: String,
     pub targets: Vec<BuildTargetConfig>,
@@ -141,7 +141,7 @@ pub struct BuildTargetConfig {
     pub attr: String,
 }
 
-pub const RELEASE_NIXPKGS_REVISION: &str = env!("CYBEX_RELEASE_NIXPKGS_REVISION");
+pub const RELEASE_NIXPKGS_REVISION: &str = env!("TIARIS_RELEASE_NIXPKGS_REVISION");
 
 pub(crate) fn governed_blueprint_build_target() -> BuildTargetConfig {
     BuildTargetConfig {
@@ -231,49 +231,49 @@ impl AppConfig {
             "paths.data_dir",
             &self.paths.data_dir,
             if legacy_bridge {
-                "/var/lib/cybex-james/state"
+                "/var/lib/tiaris-nest/state"
             } else {
-                "/var/lib/cybex-james/state/agent"
+                "/var/lib/tiaris-nest/state/agent"
             },
         )?;
         require_appliance_path(
             "paths.database_path",
             &self.paths.database_path,
             if legacy_bridge {
-                "/var/lib/cybex-james/state/cybex-james.sqlite"
+                "/var/lib/tiaris-nest/state/tiaris-nest.sqlite"
             } else {
-                "/var/lib/cybex-james/state/agent/cybex-james.sqlite"
+                "/var/lib/tiaris-nest/state/agent/tiaris-nest.sqlite"
             },
         )?;
         require_appliance_path(
             "paths.boot_assets_dir",
             &self.paths.boot_assets_dir,
-            "/var/cache/cybex-james/www",
+            "/var/cache/tiaris-nest/www",
         )?;
         require_appliance_path(
             "paths.static_dir",
             &self.paths.static_dir,
-            "/var/cache/cybex-james/www/assets",
+            "/var/cache/tiaris-nest/www/assets",
         )?;
         require_appliance_path(
             "paths.tftp_dir",
             &self.paths.tftp_dir,
-            "/var/cache/cybex-james/tftp",
+            "/var/cache/tiaris-nest/tftp",
         )?;
         require_appliance_path(
             "build.work_dir",
             &self.build.work_dir,
-            "/var/cache/cybex-james/build",
+            "/var/cache/tiaris-nest/build",
         )?;
         require_appliance_path(
             "build.output_dir",
             &self.build.output_dir,
-            "/var/cache/cybex-james/build-outputs",
+            "/var/cache/tiaris-nest/build-outputs",
         )?;
         require_appliance_path(
             "cache.root_dir",
             &self.cache.root_dir,
-            "/var/cache/cybex-james/www/cache",
+            "/var/cache/tiaris-nest/www/cache",
         )?;
         if !matches!(
             self.build.nix_binary.as_str(),
@@ -283,25 +283,25 @@ impl AppConfig {
         }
         if self.build.manage_source_url_template != manage_source::MANAGE_SOURCE_URL_TEMPLATE {
             bail!(
-                "appliance build.manage_source_url_template must remain the packaged Manage source archive"
+                "appliance build.manage_source_url_template must remain the packaged Tiaris source archive"
             );
         }
         require_appliance_path(
             "cache.private_key_path",
             &self.cache.private_key_path,
             if legacy_bridge {
-                "/var/lib/cybex-james/state/cache-private.pem"
+                "/var/lib/tiaris-nest/state/cache-private.pem"
             } else {
-                "/var/lib/cybex-james/state/agent/cache-private.pem"
+                "/var/lib/tiaris-nest/state/agent/cache-private.pem"
             },
         )?;
         require_appliance_path(
             "cache.public_key_path",
             &self.cache.public_key_path,
             if legacy_bridge {
-                "/var/lib/cybex-james/state/cache-public.pem"
+                "/var/lib/tiaris-nest/state/cache-public.pem"
             } else {
-                "/var/lib/cybex-james/state/agent/cache-public.pem"
+                "/var/lib/tiaris-nest/state/agent/cache-public.pem"
             },
         )?;
 
@@ -327,9 +327,9 @@ impl AppConfig {
             "manage.state_path",
             &self.manage.state_path,
             if legacy_bridge {
-                "/var/lib/cybex-james/state/manage-state.json"
+                "/var/lib/tiaris-nest/state/manage-state.json"
             } else {
-                "/var/lib/cybex-james/state/agent/manage-state.json"
+                "/var/lib/tiaris-nest/state/agent/manage-state.json"
             },
         )?;
         Ok(())
@@ -468,7 +468,7 @@ impl AppConfig {
 }
 
 fn legacy_state_bridge_active() -> anyhow::Result<bool> {
-    let path = Path::new("/etc/cybex-james/legacy-state-layout");
+    let path = Path::new("/etc/tiaris-nest/legacy-state-layout");
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -873,7 +873,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen_addr: "127.0.0.1:8080".to_string(),
-            public_base_url: "http://CYBEX_JAMES_IP".to_string(),
+            public_base_url: "http://TIARIS_NEST_IP".to_string(),
         }
     }
 }
@@ -881,11 +881,11 @@ impl Default for ServerConfig {
 impl Default for PathsConfig {
     fn default() -> Self {
         Self {
-            data_dir: PathBuf::from("/var/lib/cybex-james"),
-            database_path: PathBuf::from("/var/lib/cybex-james/cybex-james.sqlite"),
-            boot_assets_dir: PathBuf::from("/srv/cybex-james/www"),
-            static_dir: PathBuf::from("/srv/cybex-james/www/assets"),
-            tftp_dir: PathBuf::from("/srv/cybex-james/tftp"),
+            data_dir: PathBuf::from("/var/lib/tiaris-nest"),
+            database_path: PathBuf::from("/var/lib/tiaris-nest/tiaris-nest.sqlite"),
+            boot_assets_dir: PathBuf::from("/srv/tiaris-nest/www"),
+            static_dir: PathBuf::from("/srv/tiaris-nest/www/assets"),
+            tftp_dir: PathBuf::from("/srv/tiaris-nest/tftp"),
         }
     }
 }
@@ -894,7 +894,7 @@ impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             admin_token: "change-me".to_string(),
-            cookie_name: "cybex_admin".to_string(),
+            cookie_name: "tiaris_admin".to_string(),
         }
     }
 }
@@ -921,8 +921,8 @@ impl Default for BuildConfig {
             max_log_bytes: 64 * 1024,
             max_artifact_size_bytes: 20 * 1024 * 1024 * 1024,
             allowed_systems: vec!["x86_64-linux".to_string()],
-            work_dir: PathBuf::from("/var/lib/cybex-james/build"),
-            output_dir: PathBuf::from("/var/lib/cybex-james/build-outputs"),
+            work_dir: PathBuf::from("/var/lib/tiaris-nest/build"),
+            output_dir: PathBuf::from("/var/lib/tiaris-nest/build-outputs"),
             nix_binary: "nix".to_string(),
             manage_source_url_template: manage_source::MANAGE_SOURCE_URL_TEMPLATE.to_string(),
             // Standalone or incomplete configuration remains fail-closed.
@@ -937,10 +937,10 @@ impl Default for CacheConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            root_dir: PathBuf::from("/srv/cybex-james/www/cache"),
-            signing_key_name: "cybex-james-cache".to_string(),
-            private_key_path: PathBuf::from("/var/lib/cybex-james/cache/cache-priv-key.pem"),
-            public_key_path: PathBuf::from("/var/lib/cybex-james/cache/cache-pub-key.pem"),
+            root_dir: PathBuf::from("/srv/tiaris-nest/www/cache"),
+            signing_key_name: "tiaris-nest-cache".to_string(),
+            private_key_path: PathBuf::from("/var/lib/tiaris-nest/cache/cache-priv-key.pem"),
+            public_key_path: PathBuf::from("/var/lib/tiaris-nest/cache/cache-pub-key.pem"),
             max_bytes: 64 * 1024 * 1024 * 1024,
             retain_recent_builds: 50,
         }
@@ -954,7 +954,7 @@ impl Default for ManageConfig {
             api_url: String::new(),
             organization_id: String::new(),
             organization_slug: String::new(),
-            state_path: PathBuf::from("/var/lib/cybex-james/state/manage-state.json"),
+            state_path: PathBuf::from("/var/lib/tiaris-nest/state/manage-state.json"),
             sync_interval_seconds: 30,
             http_timeout_seconds: 30,
         }
@@ -979,22 +979,22 @@ mod tests {
     fn appliance_config() -> AppConfig {
         let mut config = AppConfig::default();
         config.server.public_base_url = "http://192.0.2.20".to_string();
-        config.paths.data_dir = PathBuf::from("/var/lib/cybex-james/state/agent");
+        config.paths.data_dir = PathBuf::from("/var/lib/tiaris-nest/state/agent");
         config.paths.database_path =
-            PathBuf::from("/var/lib/cybex-james/state/agent/cybex-james.sqlite");
-        config.paths.boot_assets_dir = PathBuf::from("/var/cache/cybex-james/www");
-        config.paths.static_dir = PathBuf::from("/var/cache/cybex-james/www/assets");
-        config.paths.tftp_dir = PathBuf::from("/var/cache/cybex-james/tftp");
-        config.build.work_dir = PathBuf::from("/var/cache/cybex-james/build");
-        config.build.output_dir = PathBuf::from("/var/cache/cybex-james/build-outputs");
+            PathBuf::from("/var/lib/tiaris-nest/state/agent/tiaris-nest.sqlite");
+        config.paths.boot_assets_dir = PathBuf::from("/var/cache/tiaris-nest/www");
+        config.paths.static_dir = PathBuf::from("/var/cache/tiaris-nest/www/assets");
+        config.paths.tftp_dir = PathBuf::from("/var/cache/tiaris-nest/tftp");
+        config.build.work_dir = PathBuf::from("/var/cache/tiaris-nest/build");
+        config.build.output_dir = PathBuf::from("/var/cache/tiaris-nest/build-outputs");
         config.build.nix_binary = "/usr/bin/nix".to_string();
-        config.cache.root_dir = PathBuf::from("/var/cache/cybex-james/www/cache");
+        config.cache.root_dir = PathBuf::from("/var/cache/tiaris-nest/www/cache");
         config.cache.private_key_path =
-            PathBuf::from("/var/lib/cybex-james/state/agent/cache-private.pem");
+            PathBuf::from("/var/lib/tiaris-nest/state/agent/cache-private.pem");
         config.cache.public_key_path =
-            PathBuf::from("/var/lib/cybex-james/state/agent/cache-public.pem");
+            PathBuf::from("/var/lib/tiaris-nest/state/agent/cache-public.pem");
         config.manage.state_path =
-            PathBuf::from("/var/lib/cybex-james/state/agent/manage-state.json");
+            PathBuf::from("/var/lib/tiaris-nest/state/agent/manage-state.json");
         config.update.trusted_public_key = STANDARD.encode(
             SigningKey::from_bytes(&[7u8; 32])
                 .verifying_key()
@@ -1029,7 +1029,7 @@ mod tests {
 
     #[test]
     fn cli_reports_the_exact_package_version() {
-        let result = Cli::try_parse_from(["cybex-james", "--version"]).unwrap_err();
+        let result = Cli::try_parse_from(["tiaris-nest", "--version"]).unwrap_err();
 
         assert_eq!(result.kind(), clap::error::ErrorKind::DisplayVersion);
         assert!(result.to_string().contains(env!("CARGO_PKG_VERSION")));
@@ -1078,18 +1078,18 @@ mod tests {
         let config = AppConfig::default();
 
         assert_eq!(config.server.listen_addr, "127.0.0.1:8080");
-        assert_eq!(config.server.public_base_url, "http://CYBEX_JAMES_IP");
+        assert_eq!(config.server.public_base_url, "http://TIARIS_NEST_IP");
         assert_eq!(
             config.paths.boot_assets_dir,
-            PathBuf::from("/srv/cybex-james/www")
+            PathBuf::from("/srv/tiaris-nest/www")
         );
         assert_eq!(
             config.paths.static_dir,
-            PathBuf::from("/srv/cybex-james/www/assets")
+            PathBuf::from("/srv/tiaris-nest/www/assets")
         );
         assert_eq!(
             config.paths.tftp_dir,
-            PathBuf::from("/srv/cybex-james/tftp")
+            PathBuf::from("/srv/tiaris-nest/tftp")
         );
         assert_eq!(config.manage.http_timeout_seconds, 30);
         assert_eq!(config.build.max_build_cores, 4);
@@ -1127,7 +1127,7 @@ mod tests {
     #[test]
     fn missing_config_loads_normalized_defaults() {
         let path = std::env::temp_dir().join(format!(
-            "cybex-james-missing-config-test-{}-{}.toml",
+            "tiaris-nest-missing-config-test-{}-{}.toml",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1172,10 +1172,10 @@ organization_slug = " Default "
     #[test]
     fn config_rejects_removed_install_code_and_executable_updater_fields() {
         for raw in [
-            "[manage]\njames_install_code = \"removed\"\n",
-            "[manage]\njames_install_code_file = \"/run/removed\"\n",
+            "[manage]\nnest_install_code = \"removed\"\n",
+            "[manage]\nnest_install_code_file = \"/run/removed\"\n",
             "[update]\nenabled = true\n",
-            "[update]\nwork_dir = \"/var/lib/cybex-james/updates\"\n",
+            "[update]\nwork_dir = \"/var/lib/tiaris-nest/updates\"\n",
         ] {
             let path = write_temp_config(raw);
             let error = AppConfig::load(&path).unwrap_err();
@@ -1202,7 +1202,7 @@ organization_slug = " Default "
         );
         for invalid in [
             "https://192.0.2.20",
-            "http://james.example",
+            "http://nest.example",
             "http://192.0.2.20:8080",
             "http://127.0.0.1",
         ] {
@@ -1212,27 +1212,27 @@ organization_slug = " Default "
             );
         }
         rejected(
-            |config| config.paths.data_dir = PathBuf::from("/srv/cybex-james/data"),
+            |config| config.paths.data_dir = PathBuf::from("/srv/tiaris-nest/data"),
             "paths.data_dir",
         );
         rejected(
-            |config| config.paths.database_path = PathBuf::from("/tmp/james.sqlite"),
+            |config| config.paths.database_path = PathBuf::from("/tmp/nest.sqlite"),
             "paths.database_path",
         );
         rejected(
-            |config| config.paths.tftp_dir = PathBuf::from("/var/cache/cybex-james/other-tftp"),
+            |config| config.paths.tftp_dir = PathBuf::from("/var/cache/tiaris-nest/other-tftp"),
             "paths.tftp_dir",
         );
         rejected(
-            |config| config.paths.boot_assets_dir = PathBuf::from("/var/www/james"),
+            |config| config.paths.boot_assets_dir = PathBuf::from("/var/www/nest"),
             "paths.boot_assets_dir",
         );
         rejected(
-            |config| config.build.work_dir = PathBuf::from("/var/lib/cybex-james/build"),
+            |config| config.build.work_dir = PathBuf::from("/var/lib/tiaris-nest/build"),
             "build.work_dir",
         );
         rejected(
-            |config| config.cache.root_dir = PathBuf::from("/var/lib/cybex-james/cache-public"),
+            |config| config.cache.root_dir = PathBuf::from("/var/lib/tiaris-nest/cache-public"),
             "cache.root_dir",
         );
         rejected(
@@ -1289,7 +1289,7 @@ public_base_url = "https://"
         let path = write_temp_config(
             r#"
 [server]
-public_base_url = "http://boot.example/james;chain"
+public_base_url = "http://boot.example/nest;chain"
 "#,
         );
 
@@ -1429,7 +1429,7 @@ bootloader_filename = "{bootloader_filename}"
 public_base_url = "http://boot.example"
 
 [paths]
-data_dir = "../var/lib/cybex-james"
+data_dir = "../var/lib/tiaris-nest"
 "#,
             ),
             (
@@ -1439,7 +1439,7 @@ data_dir = "../var/lib/cybex-james"
 public_base_url = "http://boot.example"
 
 [paths]
-database_path = "/var/lib/../cybex-james.sqlite"
+database_path = "/var/lib/../tiaris-nest.sqlite"
 "#,
             ),
             (
@@ -1449,7 +1449,7 @@ database_path = "/var/lib/../cybex-james.sqlite"
 public_base_url = "http://boot.example"
 
 [paths]
-boot_assets_dir = "/srv/cybex-james//www"
+boot_assets_dir = "/srv/tiaris-nest//www"
 "#,
             ),
             (
@@ -1469,7 +1469,7 @@ tftp_dir = "/"
 public_base_url = "http://boot.example"
 
 [manage]
-state_path = "/var/lib/cybex-james/../manage-state.json"
+state_path = "/var/lib/tiaris-nest/../manage-state.json"
 "#,
             ),
         ] {
@@ -1606,7 +1606,7 @@ menu_timeout_ms = 42
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "cybex-james-config-test-{}-{unique}.toml",
+            "tiaris-nest-config-test-{}-{unique}.toml",
             std::process::id()
         ));
         fs::write(&path, contents).unwrap();
@@ -1619,7 +1619,7 @@ menu_timeout_ms = 42
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "cybex-james-config-{label}-{}-{unique}",
+            "tiaris-nest-config-{label}-{}-{unique}",
             std::process::id()
         ));
         fs::create_dir_all(&path).unwrap();

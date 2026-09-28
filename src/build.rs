@@ -34,14 +34,14 @@ use crate::{
 const BLUEPRINT_BUILD_INPUT_KIND: &str = "blueprint_nixos_module";
 const LEGACY_DESKTOP_EXPERIENCE_BUILD_INPUT_KIND: &str = "desktop_experience_nixos_module";
 const INSTALLER_TARGET_BUILD_INPUT_KIND: &str = "installer_target_nixos_module";
-const INSTALLER_TARGET_BUILD_SCHEMA_V1: &str = "cybex.installer-target.build.v1";
-const INSTALLER_TARGET_BUILD_SCHEMA: &str = "cybex.installer-target.build.v2";
+const INSTALLER_TARGET_BUILD_SCHEMA_V1: &str = "tiaris.installer-target.build.v1";
+const INSTALLER_TARGET_BUILD_SCHEMA: &str = "tiaris.installer-target.build.v2";
 /// Device-agnostic cohort identity: the closure is a function of the Blueprint
-/// revision artifact, the hardware module, the target module, the Manage source
-/// revision, and the nixpkgs pin only. Manage reuses the verified closure for
+/// revision artifact, the hardware module, the target module, the Tiaris source
+/// revision, and the nixpkgs pin only. Tiaris reuses the verified closure for
 /// every approval with the same inputs, so the identity must not name a
 /// device, preparation, disk, or boot session.
-const INSTALLER_TARGET_BUILD_SCHEMA_V3: &str = "cybex.installer-target.build.v3";
+const INSTALLER_TARGET_BUILD_SCHEMA_V3: &str = "tiaris.installer-target.build.v3";
 const MAX_GENERATED_NIX_BYTES: usize = 1024 * 1024;
 const MAX_DESKTOP_MODULE_NIX_BYTES: usize = 1024 * 1024;
 const MAX_HARDWARE_MODULE_NIX_BYTES: usize = 1024 * 1024;
@@ -53,7 +53,7 @@ const CAPACITY_ACCOUNTING_TOLERANCE_BYTES: u64 = 1024 * 1024;
 const BUILDING_PROGRESS_START: i32 = 25;
 const BUILDING_PROGRESS_END: i32 = 79;
 // These files are part of the pinned nixpkgs materialization machinery used
-// by James's current source lock. A nixpkgs update must deliberately refresh
+// by Nest's current source lock. A nixpkgs update must deliberately refresh
 // the hashes after reviewing the new scripts. Derivation attributes and names
 // alone are explicitly not treated as provenance.
 const TRUSTED_STDENV_SOURCE_SHA256: &str =
@@ -124,10 +124,10 @@ pub struct BuildSpec {
     /// source (trivial per-system glue derivations are exempt).
     #[serde(default)]
     pub allow_source_builds: bool,
-    /// Copy the verified closure from an approved sibling James instead of
+    /// Copy the verified closure from an approved sibling Nest instead of
     /// building it. Lives outside `build_input`, so the cohort identity
     /// (`input_config_hash`) and the installer-target identity are unchanged;
-    /// Manage compares the resulting manifest with the origin's.
+    /// Tiaris compares the resulting manifest with the origin's.
     #[serde(default)]
     pub closure_source: Option<ClosureSource>,
 }
@@ -282,15 +282,15 @@ pub fn spawn(state: AppState) {
     tokio::spawn(async move {
         match db::recover_running_build_jobs(
             &state.db,
-            "James restarted while this build was running; mark failed for explicit retry.",
+            "Nest restarted while this build was running; mark failed for explicit retry.",
         )
         .await
         {
             Ok(count) if count > 0 => {
-                warn!(count, "recovered stale running James build jobs");
+                warn!(count, "recovered stale running Nest build jobs");
             }
             Ok(_) => {}
-            Err(err) => warn!(error = %err, "failed to recover running James build jobs"),
+            Err(err) => warn!(error = %err, "failed to recover running Nest build jobs"),
         }
         sweep_stale_job_dirs(&state.config).await;
 
@@ -316,9 +316,9 @@ async fn worker_loop(state: AppState, worker_index: usize) {
             Ok(Some(job)) => {
                 claim_failures = 0;
                 let job_id = job.id;
-                info!(job_id, worker_index, "claimed James build job");
+                info!(job_id, worker_index, "claimed Nest build job");
                 if let Err(err) = execute_claimed_job(&state, job).await {
-                    warn!(error = %safe_error(&err), worker_index, "James build job execution failed");
+                    warn!(error = %safe_error(&err), worker_index, "Nest build job execution failed");
                     recover_failed_job_execution(&state, job_id, worker_index).await;
                 }
                 cleanup_job_dirs(&state.config, job_id).await;
@@ -332,7 +332,7 @@ async fn worker_loop(state: AppState, worker_index: usize) {
                 drop(_maintenance_lease);
                 claim_failures = claim_failures.saturating_add(1);
                 let delay = (5u64 << claim_failures.saturating_sub(1).min(5)).min(120);
-                warn!(error = %err, worker_index, retry_in_seconds = delay, "failed to claim James build job");
+                warn!(error = %err, worker_index, retry_in_seconds = delay, "failed to claim Nest build job");
                 sleep(Duration::from_secs(delay)).await;
             }
         }
@@ -341,14 +341,14 @@ async fn worker_loop(state: AppState, worker_index: usize) {
 
 async fn recover_failed_job_execution(state: &AppState, job_id: i64, worker_index: usize) {
     const RECOVERY_REASON: &str =
-        "James stopped the build safely after an internal worker error; retry the build.";
+        "Nest stopped the build safely after an internal worker error; retry the build.";
     let mut failures: u32 = 0;
     loop {
         match db::fail_running_build_job_after_worker_error(&state.db, job_id, RECOVERY_REASON)
             .await
         {
             Ok(true) => {
-                warn!(job_id, worker_index, "recovered failed James build worker");
+                warn!(job_id, worker_index, "recovered failed Nest build worker");
                 return;
             }
             Ok(false) => return,
@@ -361,7 +361,7 @@ async fn recover_failed_job_execution(state: &AppState, job_id: i64, worker_inde
                     job_id,
                     worker_index,
                     retry_in_seconds = delay,
-                    "failed to persist James build worker recovery"
+                    "failed to persist Nest build worker recovery"
                 );
                 sleep(Duration::from_secs(delay)).await;
             }
@@ -382,13 +382,13 @@ async fn cleanup_job_dirs(config: &AppConfig, job_id: i64) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {
-                warn!(error = %err, path = %dir.display(), "failed to remove James build job directory");
+                warn!(error = %err, path = %dir.display(), "failed to remove Nest build job directory");
             }
         }
     }
 }
 
-/// Remove job dirs left behind by earlier James runs. Runs once at startup,
+/// Remove job dirs left behind by earlier Nest runs. Runs once at startup,
 /// after stale running jobs have been marked failed and before workers start,
 /// so nothing under these names can be live.
 async fn sweep_stale_job_dirs(config: &AppConfig) {
@@ -401,7 +401,7 @@ async fn sweep_stale_job_dirs(config: &AppConfig) {
             Ok(entries) => entries,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => {
-                warn!(error = %err, path = %root.display(), "failed to scan James build directory");
+                warn!(error = %err, path = %root.display(), "failed to scan Nest build directory");
                 continue;
             }
         };
@@ -420,13 +420,13 @@ async fn sweep_stale_job_dirs(config: &AppConfig) {
             match tokio::fs::remove_dir_all(entry.path()).await {
                 Ok(()) => removed += 1,
                 Err(err) => {
-                    warn!(error = %err, path = %entry.path().display(), "failed to remove stale James build job directory");
+                    warn!(error = %err, path = %entry.path().display(), "failed to remove stale Nest build job directory");
                 }
             }
         }
     }
     if removed > 0 {
-        info!(removed, "removed stale James build job directories");
+        info!(removed, "removed stale Nest build job directories");
     }
 }
 
@@ -499,7 +499,7 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
     if let Err(err) = crate::disk::ensure_headroom(
         Path::new("/nix/store"),
         state.config.build.max_artifact_size_bytes,
-        "James build",
+        "Nest build",
     ) {
         db::finish_build_job(
             &state.db,
@@ -530,7 +530,7 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                 "failed",
                 "",
                 &format!(
-                    "could not inspect James memory capacity: {}",
+                    "could not inspect Nest memory capacity: {}",
                     safe_error(&err)
                 ),
                 "",
@@ -555,7 +555,7 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
         Some((
             "insufficient_memory",
             format!(
-                "James requires at least {} bytes of memory for Build/Cache; detected {} bytes",
+                "Nest requires at least {} bytes of memory for Build/Cache; detected {} bytes",
                 state.config.build.minimum_memory_bytes, capacity.memory_bytes
             ),
         ))
@@ -563,7 +563,7 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
         Some((
             "insufficient_swap",
             format!(
-                "James requires at least {} bytes of emergency swap for Build/Cache; detected {} bytes",
+                "Nest requires at least {} bytes of emergency swap for Build/Cache; detected {} bytes",
                 state.config.build.minimum_swap_bytes, capacity.swap_bytes
             ),
         ))
@@ -655,7 +655,7 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
             Ok(_) => {}
             Err(err) => {
                 let error = format!(
-                    "James could not verify binary cache coverage, so this source-disabled build was stopped safely: {}",
+                    "Nest could not verify binary cache coverage, so this source-disabled build was stopped safely: {}",
                     safe_error(&err)
                 );
                 db::finish_build_job(
@@ -754,7 +754,7 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                 job.id,
                 Some(90),
                 "exporting",
-                "Exporting closure to James cache",
+                "Exporting closure to Nest cache",
             )
             .await?;
             let mut cached = match cache::export_output(
@@ -859,7 +859,7 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                 job.id,
                 "cancelled",
                 &logs,
-                "build cancelled by Manage",
+                "build cancelled by Tiaris",
                 "",
                 "",
                 0,
@@ -897,7 +897,7 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
     Ok(())
 }
 
-/// A replica copy mirrors a verified closure from an approved sibling James
+/// A replica copy mirrors a verified closure from an approved sibling Nest
 /// instead of building it. The cache module verifies every member against
 /// the origin's signature and file hash and re-verifies the mirrored closure
 /// under this node's key; the job then publishes exactly like a build.
@@ -914,7 +914,7 @@ async fn execute_replica_copy(
         Some(25),
         "copying",
         &format!(
-            "Mirroring the verified closure from James {}",
+            "Mirroring the verified closure from Nest {}",
             source.server_device_id
         ),
     )
@@ -983,7 +983,7 @@ async fn execute_replica_copy(
         job.id,
         Some(90),
         "exporting",
-        "Verified mirrored closure in James cache",
+        "Verified mirrored closure in Nest cache",
     )
     .await?;
     let software_inventory = evaluate_software_inventory(&state.config, spec).await;
@@ -1047,7 +1047,7 @@ fn validate_build_spec(config: &AppConfig, job: &BuildJob) -> Result<ValidatedBu
         .iter()
         .any(|value| value == &system)
     {
-        bail!("system is not allowed on this James node");
+        bail!("system is not allowed on this Nest node");
     }
     let input_revision = normalize_revision(&spec.input_revision)?;
     let input_config_hash = normalize_sha256(&spec.input_config_hash)?;
@@ -1138,7 +1138,7 @@ fn validate_build_spec(config: &AppConfig, job: &BuildJob) -> Result<ValidatedBu
     })
 }
 
-const CLOSURE_SOURCE_KIND_JAMES_CACHE: &str = "james_cache";
+const CLOSURE_SOURCE_KIND_NEST_CACHE: &str = "nest_cache";
 const MAX_CLOSURE_SOURCE_MEMBERS: u64 = 200_000;
 const MAX_CLOSURE_SOURCE_URL_BYTES: usize = 2048;
 
@@ -1167,7 +1167,7 @@ fn validate_closure_source(source: &ClosureSource, target: &str) -> Result<Valid
     if target != "installer_target" {
         bail!("closure_source is only accepted for installer_target builds");
     }
-    if source.kind != CLOSURE_SOURCE_KIND_JAMES_CACHE {
+    if source.kind != CLOSURE_SOURCE_KIND_NEST_CACHE {
         bail!("unsupported closure_source kind");
     }
     let server_device_id = source.server_device_id.trim();
@@ -1373,7 +1373,7 @@ fn validate_blueprint_build_input(
             .ok_or_else(|| anyhow!("build_input.expected_state must be an object when desktop_module_nix is supplied"))?;
         if !matches!(
             expected_state.get("schema").and_then(Value::as_str),
-            Some("cybex.blueprint.expected-state.v1" | "cybex.blueprint.expected-state.v2")
+            Some("tiaris.blueprint.expected-state.v1" | "tiaris.blueprint.expected-state.v2")
         ) {
             bail!("build_input.expected_state has an unsupported schema");
         }
@@ -1412,7 +1412,7 @@ fn validate_blueprint_build_input(
             .as_deref()
             .ok_or_else(|| anyhow!("installer target requires manage_source_revision"))?;
         normalize_nixpkgs_commit(manage_source_revision)
-            .context("normalize installer target Manage revision")?;
+            .context("normalize installer target Tiaris revision")?;
         validate_installer_target_identity(
             input
                 .installer_target
@@ -1443,7 +1443,7 @@ fn validate_blueprint_build_input(
         }
         if input.desktop_module_nix.is_some() || input.expected_state.is_none() {
             bail!(
-                "installer target must use the packaged Manage desktop module and requires expected state"
+                "installer target must use the packaged Tiaris desktop module and requires expected state"
             );
         }
     } else if input.hardware_module_nix.is_some()
@@ -1478,7 +1478,7 @@ fn validate_blueprint_build_input(
 pub(crate) fn validate_blueprint_wallpaper_asset(
     mut asset: BlueprintWallpaperAsset,
 ) -> Result<BlueprintWallpaperAsset> {
-    if asset.schema != "cybex.blueprint-wallpaper.v1" {
+    if asset.schema != "tiaris.blueprint-wallpaper.v1" {
         bail!("build_input.wallpaper_asset has an unsupported schema");
     }
     asset.id = normalize_optional_uuidish("wallpaper_asset.id", &asset.id)?;
@@ -1562,7 +1562,7 @@ fn sha256_hex_text(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
 
-/// v3: every digest in the identity must match the module text James actually
+/// v3: every digest in the identity must match the module text Nest actually
 /// evaluates, so a reported identity is proof of the exact closure inputs.
 fn validate_installer_target_cohort_identity(
     object: &serde_json::Map<String, Value>,
@@ -1631,7 +1631,7 @@ fn validate_installer_target_cohort_identity(
         bail!("installer_target.expected_state_sha256 does not match the expected state");
     }
     if normalize_nixpkgs_commit(text("manage_source_revision")?)? != manage_revision {
-        bail!("installer target Manage revision fields do not match");
+        bail!("installer target Tiaris revision fields do not match");
     }
     normalize_nixpkgs_commit(text("nixpkgs_revision")?)?;
     let policy = text("hardware_driver_policy")?;
@@ -1675,7 +1675,7 @@ fn validate_installer_target_identity(
         "hardware_facts_sha256",
         "hardware_driver_policy",
         "disk_layout_sha256",
-        "james_device_id",
+        "nest_device_id",
         "bundle_sha256",
         "profile_id",
         "managed_device_id",
@@ -1733,7 +1733,7 @@ fn validate_installer_target_identity(
     {
         bail!("installer_target reinstall bindings must both be present or both be null");
     }
-    for field in ["device_id", "james_device_id"] {
+    for field in ["device_id", "nest_device_id"] {
         normalize_public_identifier(
             field,
             object
@@ -1768,7 +1768,7 @@ fn validate_installer_target_identity(
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("installer_target.manage_source_revision is required"))?;
     if normalize_nixpkgs_commit(identity_manage_revision)? != manage_revision {
-        bail!("installer target Manage revision fields do not match");
+        bail!("installer target Tiaris revision fields do not match");
     }
     normalize_nixpkgs_commit(
         object
@@ -1831,9 +1831,7 @@ fn build_target<'a>(
         let configured_revision = pinned_nixpkgs_revision(&target.flake)
             .context("validate configured Blueprint nixpkgs pin")?;
         if spec.nixpkgs_commit.as_deref() != Some(configured_revision) {
-            bail!(
-                "Blueprint nixpkgs_commit does not match this James target's reviewed source pin"
-            );
+            bail!("Blueprint nixpkgs_commit does not match this Nest target's reviewed source pin");
         }
     }
     Ok(target)
@@ -1952,14 +1950,14 @@ fn classify_nix_build_failure(logs: &str, oom_killed: bool) -> (&'static str, St
     if oom_killed || lower.contains("out of memory") || lower.contains("oom-kill") {
         return (
             "out_of_memory",
-            "James exhausted its build memory; increase memory/swap or reduce max_build_cores"
+            "Nest exhausted its build memory; increase memory/swap or reduce max_build_cores"
                 .to_string(),
         );
     }
     if lower.contains("no space left on device") || lower.contains("disk full") {
         return (
             "insufficient_disk_space",
-            "James ran out of disk space while building the Nix closure".to_string(),
+            "Nest ran out of disk space while building the Nix closure".to_string(),
         );
     }
     if lower.contains("unable to start any build") {
@@ -2008,7 +2006,7 @@ const REJECT_FLAKE_CONFIG_NIX_OPTION: [&str; 3] = ["--option", "accept-flake-con
 const REQUIRE_BUILD_SANDBOX_NIX_OPTION: [&str; 3] = ["--option", "sandbox", "true"];
 
 fn append_source_policy_nix_options(args: &mut Vec<String>, allow_source_builds: bool) {
-    // James is a trusted Nix client because it exports and signs closures.
+    // Nest is a trusted Nix client because it exports and signs closures.
     // Pin the daemon-side sandbox and refuse flake-supplied client settings on
     // every path so a Blueprint cannot use that trust to relax isolation.
     args.extend(
@@ -2752,8 +2750,8 @@ where
     };
     let attrs = derivation_attributes(drv);
     if [
-        "__cybex_conflicting_derivation_attributes",
-        "__cybex_invalid_derivation_attributes",
+        "__tiaris_conflicting_derivation_attributes",
+        "__tiaris_invalid_derivation_attributes",
     ]
     .iter()
     .any(|key| attrs.get(*key).and_then(Value::as_bool) == Some(true))
@@ -2934,7 +2932,7 @@ fn script_sha256_with_store_path_policy(script: &str, preserve_executables: bool
 /// Nix 2.26 serializes `__structuredAttrs` inside `env.__json`, while newer
 /// releases expose `structuredAttrs` directly. Merge both shapes with the
 /// ordinary string environment so policy decisions do not depend on the Nix
-/// client version installed on James.
+/// client version installed on Nest.
 fn derivation_attributes(drv: &Value) -> serde_json::Map<String, Value> {
     let mut merged = serde_json::Map::new();
     let mut conflict = false;
@@ -2972,13 +2970,13 @@ fn derivation_attributes(drv: &Value) -> serde_json::Map<String, Value> {
     }
     if conflict {
         merged.insert(
-            "__cybex_conflicting_derivation_attributes".to_string(),
+            "__tiaris_conflicting_derivation_attributes".to_string(),
             Value::Bool(true),
         );
     }
     if invalid {
         merged.insert(
-            "__cybex_invalid_derivation_attributes".to_string(),
+            "__tiaris_invalid_derivation_attributes".to_string(),
             Value::Bool(true),
         );
     }
@@ -3889,42 +3887,42 @@ const PINNED_HYPRLAND_ETC_EXECUTABLE_FINGERPRINT: &str =
 const PINNED_DESKTOP_NIXOS_GENERATOR_FINGERPRINTS: &[(&str, &str)] = &[
     // Current production Standard service links and regional /etc assembly.
     (
-        "3f991350e271b53be1a4a0058680bb701ac51546055254bbcb0e110548fd43e8",
-        "ef1646770b12dab1024ec7fb761e4d1d5f71fab8894339d8e1075b0877b455bb",
+        "3b67dbfcb231874c224bf7322c305ef8db88d0a72f58c60b9e42c54617134a69",
+        "dafa647087ab2a40654d467623121147109d68c9c5ffc4eb70a7d3264a082fc7",
     ),
     (
-        "f8dad9c696d45974e30b770cf50a128e2fe0f74c26cd90a8cef368897831e6a5",
-        "1eebb9e5684b11434d217090b39698f40dcaf55dcd8a65017f7e932056d62f09",
+        "106a0873ec9f081be574d1f2a2fd42f49d9280744ecdc3cc7a9fd1344fce7314",
+        "bfad7295bf9ffbe83904436e95844cab30e522179876ad195770b5edb284a458",
     ),
     // Current production Dock service-link and /etc assembly at 74cc63f.
     // Reviewed GNOME unit/package lists preserve executable provider hashes.
     (
-        "77fca7fa425661f645c32b971e204a6ed976bd1e1d0fdc4ba495d8210eb26650",
-        "23f20ee98cb8601f42a8712d30948ce2dc9178fa036d6d86e8921c29cd6b69df",
+        "98af94de7900a2a292ada2e04cd591bbc97ec623ae760b16c8175dfc7f24277d",
+        "46ad92ddeb0f065666433caa3c11aa11f4d21cb174b873330ffd6f1d0bf09ec9",
     ),
     (
         "adef8f2b7298836253217ece1d46fbcf8142430184a9367b4d8d5dc834381e91",
         "bea1c4825160d666fd144084eb9d93ab68155c1bf7b867cf251a2ab277fadb28",
     ),
     (
-        "c639ff5ef1eaa673c517907930033325457a3187c362614d3592864414fa413e",
-        "ded03d1f03837ecb84bf710c881226dde2667ad01411e3a4a5ed967fc497440d",
+        "f4a6d27acb7b47c935995e402d9e8ddd0c221214b04959119112b34fc35ff34c",
+        "121c4dc026aac18d7b2888859bb26a558fa803c3654542edcf7b2d2e37dd0103",
     ),
     // Production tiling composition at the retained 74cc63f source pin.
     // These exact recipes only assemble service links and /etc entries;
     // executable env-generator/lndir paths retain their pinned hashes.
     // Fixtures retain the reviewed recipes and reject hook/compiler injection.
     (
-        "6643cbaf8775634552586142935abb6e6f12444521a0229fcc8d5b2dd8539969",
-        "9a1c2594d74fc2a670f0b73dbf2c5821a9201779ce540092ad66def616121178",
+        "18c93f8e2242bf72397e4a6d360c29d5e55ad19302a42d447e3170d46130d6cb",
+        "bc02d11c2accab49b4ac88d02db38ae736472e224701ea70f657c1ffce76940a",
     ),
     (
         "47430a9f2980f5c9026395123fcacd1ca34faa34c8624424d85a5f900c631d03",
         "273456c6d5885ccfd9d57f4dfd465a5678d7dbfbaf6ad5cfd9e9e68c5e039db6",
     ),
     (
-        "e595fb08b0f5eb11a751b58affa3aa7130bfee11a00ac578d353b9afe79b62ac",
-        "be46d2413cb36b694034104b1ea7ac31a047f22a66285b2b65570fe27a988793",
+        "69c929df70bea710ce223b072474de18367925ea50b70d9b4bbbe3d11446f822",
+        "15662cf2502944c83d0834160204cc7e1122becfa86db7470eab7879acd953b5",
     ),
     (
         "2b2fc4793476549635b1bc215ceb531bd6136a9e73532a3aeea9804374731d9f",
@@ -5098,7 +5096,7 @@ fn build_result_metadata(
     let mut metadata = job.cache_metadata.as_object().cloned().unwrap_or_default();
     metadata.insert(
         "result_schema".to_string(),
-        json!("cybex.james.build.result.v1"),
+        json!("tiaris.nest.build.result.v1"),
     );
     metadata.insert(
         "max_build_cores".to_string(),
@@ -5182,7 +5180,7 @@ fn success_result_metadata(
         object.insert(
             "closure_source".to_string(),
             json!({
-                "kind": CLOSURE_SOURCE_KIND_JAMES_CACHE,
+                "kind": CLOSURE_SOURCE_KIND_NEST_CACHE,
                 "server_device_id": source.server_device_id,
                 "cache_base_url": source.cache_base_url,
             }),
@@ -5372,14 +5370,14 @@ fn blueprint_nix_build_command(
         let revision = build_input
             .manage_source_revision
             .as_deref()
-            .expect("validated installer target Manage revision");
+            .expect("validated installer target Tiaris revision");
         Some(
             manage_source::verify_revision(
                 &config.build.manage_source_url_template,
                 revision,
                 config.workstation_netboot.allow_private_release_urls,
             )
-            .context("verify packaged Manage source for installer target")?
+            .context("verify packaged Tiaris source for installer target")?
             .url,
         )
     } else {
@@ -5400,7 +5398,7 @@ fn blueprint_nix_build_command(
     write_job_input_file(input_dir.join("blueprint.nix"), &build_input.generated_nix)?;
     if build_input.kind != INSTALLER_TARGET_BUILD_INPUT_KIND {
         if let Some(desktop_module_nix) = build_input.desktop_module_nix.as_deref() {
-            write_job_input_file(input_dir.join("cybex-blueprints.nix"), desktop_module_nix)?;
+            write_job_input_file(input_dir.join("tiaris-blueprints.nix"), desktop_module_nix)?;
         }
     }
     if let Some(expected_state) = build_input.expected_state.as_ref() {
@@ -5420,16 +5418,16 @@ fn blueprint_nix_build_command(
         blueprint_compat_module(build_input.desktop_module_nix.is_some())
     };
     write_job_input_file(
-        input_dir.join("cybex-compat-options.nix"),
+        input_dir.join("tiaris-compat-options.nix"),
         compatibility_module,
     )?;
     write_job_input_file(
         input_dir.join("configuration.nix"),
-        &james_nixos_configuration(build_input),
+        &nest_nixos_configuration(build_input),
     )?;
     write_job_input_file(
         input_dir.join("flake.nix"),
-        &james_nixos_flake(
+        &nest_nixos_flake(
             &format!(
                 "github:NixOS/nixpkgs/{}",
                 spec.nixpkgs_commit
@@ -5463,7 +5461,7 @@ fn blueprint_nix_build_command(
         let wallpaper_path = verify_cached_wallpaper_asset(config, asset)?;
         args.push("--impure".to_string());
         env.push((
-            "CYBEX_BLUEPRINT_WALLPAPER_PATH".to_string(),
+            "TIARIS_BLUEPRINT_WALLPAPER_PATH".to_string(),
             wallpaper_path.display().to_string(),
         ));
     }
@@ -5519,7 +5517,7 @@ fn set_private_job_input_file_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn james_nixos_flake(
+fn nest_nixos_flake(
     nixpkgs_flake: &str,
     system: &str,
     build_input: &ValidatedBlueprintBuildInput,
@@ -5531,14 +5529,14 @@ fn james_nixos_flake(
         .map(|value| value.to_string())
         .unwrap_or_else(|| "unknown".to_string());
     let description = serde_json::to_string(&format!(
-        "Cybex James Blueprint build: {name} rev {revision}"
+        "Tiaris Nest Blueprint build: {name} rev {revision}"
     ))
-    .unwrap_or_else(|_| "\"Cybex James Blueprint build\"".to_string());
+    .unwrap_or_else(|_| "\"Tiaris Nest Blueprint build\"".to_string());
     let nixpkgs_flake =
         serde_json::to_string(nixpkgs_flake).unwrap_or_else(|_| "\"nixpkgs\"".to_string());
     if build_input.kind == INSTALLER_TARGET_BUILD_INPUT_KIND {
         let manage_flake = serde_json::to_string(
-            manage_source_url.expect("verified installer target Manage source"),
+            manage_source_url.expect("verified installer target Tiaris source"),
         )
         .unwrap_or_else(|_| "\"manage\"".to_string());
         return format!(
@@ -5557,7 +5555,7 @@ fn james_nixos_flake(
       pkgs = import nixpkgs {{ inherit system; }};
       # Keep the shared protocol files and source layout required by this
       # signed runtime's agent, using the same recipe as its netboot bundle.
-      cybexAgent = import (manage + "/deploy/nixos/cybex-agent-package.nix") {{
+      tiarisAgent = import (manage + "/deploy/nixos/tiaris-agent-package.nix") {{
         inherit pkgs;
         repoRoot = manage;
       }};
@@ -5567,7 +5565,7 @@ fn james_nixos_flake(
           inherit system;
           specialArgs = {{
             manageSource = manage;
-            inherit cybexAgent;
+            inherit tiarisAgent;
           }};
           modules = [ ./configuration.nix ];
         }}).config.system.build.toplevel;
@@ -5599,17 +5597,17 @@ fn james_nixos_flake(
     )
 }
 
-fn james_nixos_configuration(build_input: &ValidatedBlueprintBuildInput) -> String {
+fn nest_nixos_configuration(build_input: &ValidatedBlueprintBuildInput) -> String {
     let include_desktop_module = build_input.desktop_module_nix.is_some();
     if build_input.kind == INSTALLER_TARGET_BUILD_INPUT_KIND {
         return r#"{ manageSource, ... }:
 
 {
   imports = [
-    ./cybex-compat-options.nix
-    (manageSource + "/deploy/nixos/cybex-blueprints.nix")
-    (manageSource + "/deploy/nixos/cybex-agent-module.nix")
-    (manageSource + "/deploy/nixos/cybex-workstation-runtime.nix")
+    ./tiaris-compat-options.nix
+    (manageSource + "/deploy/nixos/tiaris-blueprints.nix")
+    (manageSource + "/deploy/nixos/tiaris-agent-module.nix")
+    (manageSource + "/deploy/nixos/tiaris-workstation-runtime.nix")
     ./blueprint.nix
     ./hardware.nix
     ./target.nix
@@ -5619,7 +5617,7 @@ fn james_nixos_configuration(build_input: &ValidatedBlueprintBuildInput) -> Stri
         .to_string();
     }
     let desktop_module_import = if include_desktop_module {
-        "    ./cybex-blueprints.nix\n"
+        "    ./tiaris-blueprints.nix\n"
     } else {
         ""
     };
@@ -5627,13 +5625,13 @@ fn james_nixos_configuration(build_input: &ValidatedBlueprintBuildInput) -> Stri
 
 {
   imports = [
-    ./cybex-compat-options.nix
+    ./tiaris-compat-options.nix
 @DESKTOP_MODULE_IMPORT@
     ./blueprint.nix
   ];
 
   system.stateVersion = lib.mkDefault lib.trivial.release;
-  networking.hostName = lib.mkDefault "cybex-james-build";
+  networking.hostName = lib.mkDefault "tiaris-nest-build";
   networking.useDHCP = lib.mkDefault true;
 
   fileSystems."/" = {
@@ -5662,21 +5660,21 @@ fn blueprint_compat_module(include_desktop_module: bool) -> &'static str {
         return r#"{ lib, ... }:
 
 {
-  options.cybex = lib.mkOption {
+  options.tiaris = lib.mkOption {
     type = lib.types.attrsOf lib.types.anything;
     default = {};
-    description = "Cybex Blueprint metadata accepted while James prebuilds a generic NixOS closure.";
+    description = "Tiaris Blueprint metadata accepted while Nest prebuilds a generic NixOS closure.";
   };
 
-  options.services.cybex-agent = lib.mkOption {
+  options.services.tiaris-agent = lib.mkOption {
     type = lib.types.attrsOf lib.types.anything;
     default = {};
-    description = "Cybex Agent policy accepted while James prebuilds a generic NixOS closure.";
+    description = "Tiaris Agent policy accepted while Nest prebuilds a generic NixOS closure.";
   };
 }
 "#;
     }
-    // The reviewed desktop module owns the Cybex option declarations. Keep
+    // The reviewed desktop module owns the Tiaris option declarations. Keep
     // this shim limited to the legacy catalog alias and the generic Agent
     // policy sink; redeclaring an option in two imported NixOS modules makes
     // the entire evaluation fail before cache/source policy can be checked.
@@ -5685,14 +5683,14 @@ fn blueprint_compat_module(include_desktop_module: bool) -> &'static str {
 {
   imports = [
     (lib.mkAliasOptionModule
-      [ "cybex" "catalog" "applications" ]
-      [ "cybex" "blueprint" "applications" ])
+      [ "tiaris" "catalog" "applications" ]
+      [ "tiaris" "blueprint" "applications" ])
   ];
 
-  options.services.cybex-agent = lib.mkOption {
+  options.services.tiaris-agent = lib.mkOption {
     type = lib.types.attrsOf lib.types.anything;
     default = {};
-    description = "Cybex Agent policy accepted while James prebuilds a generic NixOS closure.";
+    description = "Tiaris Agent policy accepted while Nest prebuilds a generic NixOS closure.";
   };
 }
 "#
@@ -5700,14 +5698,14 @@ fn blueprint_compat_module(include_desktop_module: bool) -> &'static str {
 
 fn installer_target_compat_module() -> &'static str {
     // Installer targets always import the reviewed desktop module and the
-    // real cybex-agent module, so both option trees already have one owner.
+    // real tiaris-agent module, so both option trees already have one owner.
     r#"{ lib, ... }:
 
 {
   imports = [
     (lib.mkAliasOptionModule
-      [ "cybex" "catalog" "applications" ]
-      [ "cybex" "blueprint" "applications" ])
+      [ "tiaris" "catalog" "applications" ]
+      [ "tiaris" "blueprint" "applications" ])
   ];
 }
 "#
@@ -5778,7 +5776,7 @@ async fn run_nix_build(
                 warn!(
                     error = %safe_error(&err.into()),
                     job_id = job.id,
-                    "could not check James build cancellation; build supervision will retry"
+                    "could not check Nest build cancellation; build supervision will retry"
                 );
             }
         }
@@ -5805,7 +5803,7 @@ async fn run_nix_build(
                 warn!(
                     error = %safe_error(&err.into()),
                     job_id = job.id,
-                    "could not persist James build logs; build supervision will retry"
+                    "could not persist Nest build logs; build supervision will retry"
                 );
             }
             let update = progress
@@ -5833,7 +5831,7 @@ async fn run_nix_build(
                         Err(err) => warn!(
                             error = %safe_error(&err.into()),
                             job_id = job.id,
-                            "could not persist James build progress; build supervision will retry"
+                            "could not persist Nest build progress; build supervision will retry"
                         ),
                     }
                 }
@@ -6236,7 +6234,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-nix-daemon-feature-test-{}",
+            "tiaris-nest-nix-daemon-feature-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
@@ -6278,7 +6276,7 @@ esac
             "hardware_facts_sha256": "11".repeat(32),
             "hardware_driver_policy": "auto",
             "disk_layout_sha256": "22".repeat(32),
-            "james_device_id": "james_1",
+            "nest_device_id": "nest_1",
             "bundle_sha256": "33".repeat(32),
             "profile_id": "00000000-0000-4000-8000-000000000005",
             "managed_device_id": null,
@@ -6305,7 +6303,7 @@ esac
                 &secret_ref,
             )]),
             "expected_state": {
-                "schema": "cybex.blueprint.expected-state.v2",
+                "schema": "tiaris.blueprint.expected-state.v2",
                 "compiler_version": 2,
                 "deployment": {
                     "blueprint_revision_id": revision,
@@ -6335,7 +6333,7 @@ esac
             "blueprint_name": "Device-specific installer target",
             "blueprint_revision": 1,
             "hardware_module_nix": "{ ... }: {}",
-            "target_module_nix": "{ ... }: { cybex.agent.organizationSlug = \"users\"; }",
+            "target_module_nix": "{ ... }: { tiaris.agent.organizationSlug = \"users\"; }",
             "manage_source_revision": "4".repeat(40),
             "installer_target": valid_installer_target_identity(),
         });
@@ -6462,14 +6460,14 @@ esac
 
     fn valid_closure_source() -> Value {
         json!({
-            "kind": "james_cache",
+            "kind": "nest_cache",
             "server_device_id": "dev_origin",
             "cache_base_url": "http://10.0.0.5/cache",
-            "public_key": "cybex-james-cache:rRtA+N3tj2cIPfWQONIGcJBzdFSCPxJN2xRHg1hNhKU=",
-            "toplevel_store_path": "/nix/store/w3xanx4s88yziz926n9aykfjkzckdyr8-nixos-system-cybex-workstation-26.05",
+            "public_key": "tiaris-nest-cache:rRtA+N3tj2cIPfWQONIGcJBzdFSCPxJN2xRHg1hNhKU=",
+            "toplevel_store_path": "/nix/store/w3xanx4s88yziz926n9aykfjkzckdyr8-nixos-system-tiaris-workstation-26.05",
             "closure_store_paths_sha256": "a".repeat(64),
             "closure_member_count": 2059,
-            "evaluated_derivation": "/nix/store/w3xanx4s88yziz926n9aykfjkzckdyr8-nixos-system-cybex-workstation-26.05.drv",
+            "evaluated_derivation": "/nix/store/w3xanx4s88yziz926n9aykfjkzckdyr8-nixos-system-tiaris-workstation-26.05.drv",
         })
     }
 
@@ -6641,7 +6639,7 @@ esac
             )
             .unwrap_err()
             .to_string()
-            .contains("Manage revision fields do not match")
+            .contains("Tiaris revision fields do not match")
         );
 
         let mut one_sided_reinstall = valid.clone();
@@ -6793,7 +6791,7 @@ esac
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-software-inventory-policy-test-{}",
+            "tiaris-nest-software-inventory-policy-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
@@ -6848,7 +6846,7 @@ printf '123.4\n'
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-software-inventory-timeout-test-{}",
+            "tiaris-nest-software-inventory-timeout-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
@@ -6906,7 +6904,7 @@ sleep 5
     #[tokio::test]
     async fn cleanup_and_sweep_remove_job_dirs() {
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-build-cleanup-test-{}",
+            "tiaris-nest-build-cleanup-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
@@ -6997,9 +6995,9 @@ sleep 5
             "build_input": {
                 "kind": "blueprint_nixos_module",
                 "generated_nix": "{ lib, ... }: { networking.hostName = lib.mkDefault \"test\"; }",
-                "desktop_module_nix": "{ lib, ... }: { options.cybex.desktop.profile = lib.mkOption { type = lib.types.str; default = \"auto\"; }; }",
+                "desktop_module_nix": "{ lib, ... }: { options.tiaris.desktop.profile = lib.mkOption { type = lib.types.str; default = \"auto\"; }; }",
                 "expected_state": {
-                    "schema": "cybex.blueprint.expected-state.v2",
+                    "schema": "tiaris.blueprint.expected-state.v2",
                     "compiler_version": 2,
                     "desktop": {"profile": "gnome"},
                     "checks": []
@@ -7017,7 +7015,7 @@ sleep 5
     #[test]
     fn blueprint_wallpaper_descriptor_is_exact_bounded_jpeg_metadata() {
         let asset = BlueprintWallpaperAsset {
-            schema: "cybex.blueprint-wallpaper.v1".to_string(),
+            schema: "tiaris.blueprint-wallpaper.v1".to_string(),
             id: "c1ba1e3e-5cb6-4ad3-bf92-47534e9e79e8".to_string(),
             blueprint_revision_id: "b1c5c356-9c4a-48d9-96a7-8a05c468c027".to_string(),
             name: "Office wall".to_string(),
@@ -7060,7 +7058,7 @@ sleep 5
             )]),
             desktop_module_nix: None,
             expected_state: Some(json!({
-                "schema": "cybex.blueprint.expected-state.v2",
+                "schema": "tiaris.blueprint.expected-state.v2",
                 "compiler_version": 2,
                 "deployment": {
                     "blueprint_revision_id": revision,
@@ -7143,7 +7141,7 @@ sleep 5
             parsed.build_input.unwrap().blueprint_name.as_deref(),
             Some("Legacy Workstation")
         );
-        // Specs from older Manage versions omit allow_source_builds entirely;
+        // Specs from older Tiaris versions omit allow_source_builds entirely;
         // enforcement must default on.
         assert!(!parsed.allow_source_builds);
         assert!(build_target_names_compatible(
@@ -7155,13 +7153,13 @@ sleep 5
     #[test]
     fn nix_build_command_uses_allowlisted_attr() {
         let mut config = AppConfig::default();
-        config.build.output_dir = PathBuf::from("/tmp/cybex-james-test-builds");
+        config.build.output_dir = PathBuf::from("/tmp/tiaris-nest-test-builds");
         config.build.nix_binary = "nix".to_string();
         let target = BuildTargetConfig {
             artifact_type: "nixos_closure".to_string(),
             target: "blueprint".to_string(),
             system: "x86_64-linux".to_string(),
-            flake: "/srv/cybex-james/build-inputs/cybex".to_string(),
+            flake: "/srv/tiaris-nest/build-inputs/tiaris".to_string(),
             attr: "packages.x86_64-linux.desktop-experience".to_string(),
         };
         let mut spec = ValidatedBuildSpec {
@@ -7187,7 +7185,7 @@ sleep 5
         assert_eq!(command.args[0], "build");
         assert!(
             command.args.contains(
-                &"/srv/cybex-james/build-inputs/cybex#packages.x86_64-linux.desktop-experience"
+                &"/srv/tiaris-nest/build-inputs/tiaris#packages.x86_64-linux.desktop-experience"
                     .to_string()
             )
         );
@@ -8354,7 +8352,7 @@ grep -q '[^[:space:]]' "$out/session.conf" || (echo "\"$out/session.conf\" was g
         let write_text = synthetic_materializer(
             json!({
                 "buildCommand": STOCK_WRITE_TEXT_COMMAND,
-                "text": "james-host\n",
+                "text": "nest-host\n",
                 "checkPhase": ""
             }),
             vec![],
@@ -8400,7 +8398,7 @@ grep -q '[^[:space:]]' "$out/session.conf" || (echo "\"$out/session.conf\" was g
         // materializer exemption; complex stock generators use reviewed
         // fingerprints instead of a permissive shell parser.
         assert!(!derivation_is_exempt_from_source_policy_with_verifier(
-            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-nixos-system-james-26.05.drv",
+            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-nixos-system-nest-26.05.drv",
             Some(&structured),
             &synthetic_pinned_source,
         ));
@@ -8974,7 +8972,7 @@ fi
         let mut nonce = [0_u8; 8];
         OsRng.fill_bytes(&mut nonce);
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-bounded-spawn-test-{}-{}",
+            "tiaris-nest-bounded-spawn-test-{}-{}",
             std::process::id(),
             hex::encode(nonce)
         ));
@@ -9009,12 +9007,12 @@ fi
 
     #[cfg(unix)]
     #[tokio::test]
-    #[ignore = "requires Nix, network access, and CYBEX_SOURCE_POLICY_INSTALLABLE"]
+    #[ignore = "requires Nix, network access, and TIARIS_SOURCE_POLICY_INSTALLABLE"]
     async fn source_policy_qualifies_cache_only_installable() {
-        let installable = std::env::var("CYBEX_SOURCE_POLICY_INSTALLABLE")
+        let installable = std::env::var("TIARIS_SOURCE_POLICY_INSTALLABLE")
             .expect("set an exact pinned qualification installable");
         let root = std::env::temp_dir().join(format!(
-            "cybex-source-policy-qualification-{}",
+            "tiaris-source-policy-qualification-{}",
             std::process::id()
         ));
         std::fs::create_dir(&root).unwrap();
@@ -9037,7 +9035,7 @@ fi
     async fn source_policy_rejects_an_unverified_substituted_helper() {
         use std::os::unix::fs::PermissionsExt;
         let root =
-            std::env::temp_dir().join(format!("cybex-substitute-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tiaris-substitute-test-{}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
         let fake = root.join("nix");
         let log = root.join("fetch-args");
@@ -9087,7 +9085,7 @@ esac
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-source-policy-test-{}",
+            "tiaris-nest-source-policy-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
@@ -9168,7 +9166,7 @@ esac
             return;
         }
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-source-policy-ifd-test-{}",
+            "tiaris-nest-source-policy-ifd-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
@@ -9192,7 +9190,7 @@ esac
   outputs = { self }:
     let
       forced = derivation {
-        name = "cybex-ifd-regression-leaf";
+        name = "tiaris-ifd-regression-leaf";
         system = "x86_64-linux";
         builder = ./ifd-builder.sh;
         args = [];
@@ -9200,7 +9198,7 @@ esac
       payload = builtins.readFile forced;
     in {
       packages.x86_64-linux.default = derivation {
-        name = "cybex-ifd-regression-result-${payload}";
+        name = "tiaris-ifd-regression-result-${payload}";
         system = "x86_64-linux";
         builder = ./ifd-builder.sh;
         args = [];
@@ -9298,7 +9296,7 @@ esac
     #[tokio::test]
     async fn source_policy_bounds_dry_run_pipes_and_cleans_isolated_store() {
         let overflow_root = std::env::temp_dir().join(format!(
-            "cybex-james-source-policy-overflow-test-{}",
+            "tiaris-nest-source-policy-overflow-test-{}",
             std::process::id()
         ));
         let (config, command) = source_policy_test_command(
@@ -9315,7 +9313,7 @@ esac
         let _ = std::fs::remove_dir_all(&overflow_root);
 
         let timeout_root = std::env::temp_dir().join(format!(
-            "cybex-james-source-policy-timeout-test-{}",
+            "tiaris-nest-source-policy-timeout-test-{}",
             std::process::id()
         ));
         let (config, command) =
@@ -9334,7 +9332,7 @@ esac
     #[tokio::test]
     async fn source_policy_timeout_kills_helpers_that_inherit_capture_pipes() {
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-source-policy-process-group-test-{}",
+            "tiaris-nest-source-policy-process-group-test-{}",
             std::process::id()
         ));
         let helper_pid = root.join("helper.pid");
@@ -9375,7 +9373,7 @@ esac
     #[tokio::test]
     async fn source_policy_bounds_derivation_show_while_reading_and_cleans_store() {
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-source-policy-show-overflow-test-{}",
+            "tiaris-nest-source-policy-show-overflow-test-{}",
             std::process::id()
         ));
         let (config, command) = source_policy_test_command(
@@ -9487,7 +9485,7 @@ esac
     #[test]
     fn nix_build_command_writes_blueprint_flake_input() {
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-build-input-test-{}",
+            "tiaris-nest-build-input-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
@@ -9499,7 +9497,7 @@ esac
             artifact_type: "nixos_closure".to_string(),
             target: "blueprint".to_string(),
             system: "x86_64-linux".to_string(),
-            flake: "/srv/cybex-james/build-inputs/cybex".to_string(),
+            flake: "/srv/tiaris-nest/build-inputs/tiaris".to_string(),
             attr: "packages.x86_64-linux.desktop-experience".to_string(),
         };
         let mut spec = ValidatedBuildSpec {
@@ -9519,11 +9517,11 @@ esac
                 generated_nix: "{ lib, ... }: { networking.hostName = lib.mkDefault \"test\"; }"
                     .to_string(),
                 desktop_module_nix: Some(
-                    "{ lib, ... }: { options.cybex.desktop.profile = lib.mkOption { type = lib.types.str; default = \"auto\"; }; }"
+                    "{ lib, ... }: { options.tiaris.desktop.profile = lib.mkOption { type = lib.types.str; default = \"auto\"; }; }"
                         .to_string(),
                 ),
                 expected_state: Some(json!({
-                    "schema": "cybex.blueprint.expected-state.v1",
+                    "schema": "tiaris.blueprint.expected-state.v1",
                     "desktop": {"profile": "gnome"}
                 })),
                 blueprint_name: Some("Standard Workstation".to_string()),
@@ -9554,7 +9552,7 @@ esac
         assert!(root.join("work/job-42-input/flake.nix").is_file());
         assert!(root.join("work/job-42-input/blueprint.nix").is_file());
         assert!(
-            root.join("work/job-42-input/cybex-blueprints.nix")
+            root.join("work/job-42-input/tiaris-blueprints.nix")
                 .is_file()
         );
         assert!(root.join("work/job-42-input/expected-state.json").is_file());
@@ -9576,7 +9574,7 @@ esac
         }
         let configuration =
             std::fs::read_to_string(root.join("work/job-42-input/configuration.nix")).unwrap();
-        assert!(configuration.contains("./cybex-blueprints.nix"));
+        assert!(configuration.contains("./tiaris-blueprints.nix"));
         assert!(
             configuration
                 .contains("systemd.services.systemd-udevd.restartTriggers = lib.mkForce [];")
@@ -9587,19 +9585,19 @@ esac
         assert!(configuration.contains("boot.kernelModules = lib.mkForce [];"));
         assert!(configuration.contains("security.lockKernelModules = lib.mkForce false;"));
         let compatibility =
-            std::fs::read_to_string(root.join("work/job-42-input/cybex-compat-options.nix"))
+            std::fs::read_to_string(root.join("work/job-42-input/tiaris-compat-options.nix"))
                 .unwrap();
         assert!(compatibility.contains("lib.mkAliasOptionModule"));
-        assert!(compatibility.contains("options.services.cybex-agent"));
-        assert!(!compatibility.contains("options.cybex.desktop.environment"));
-        assert!(!compatibility.contains("options.cybex.blueprint.applications"));
-        assert!(!compatibility.contains("options.cybex.security.luks.enable"));
+        assert!(compatibility.contains("options.services.tiaris-agent"));
+        assert!(!compatibility.contains("options.tiaris.desktop.environment"));
+        assert!(!compatibility.contains("options.tiaris.blueprint.applications"));
+        assert!(!compatibility.contains("options.tiaris.security.luks.enable"));
         let flake = std::fs::read_to_string(root.join("work/job-42-input/flake.nix")).unwrap();
         assert!(flake.contains(&format!(
             r#"inputs.nixpkgs.url = "github:NixOS/nixpkgs/{}";"#,
             "c".repeat(40)
         )));
-        assert!(!flake.contains("/srv/cybex-james/build-inputs/cybex"));
+        assert!(!flake.contains("/srv/tiaris-nest/build-inputs/tiaris"));
 
         spec.allow_source_builds = true;
         let source_enabled = nix_build_command(&config, &target, &spec, 43).unwrap();
@@ -9614,10 +9612,10 @@ esac
         let compatibility = installer_target_compat_module();
 
         assert!(compatibility.contains("lib.mkAliasOptionModule"));
-        assert!(!compatibility.contains("options.services.cybex-agent"));
-        assert!(!compatibility.contains("options.cybex.desktop.environment"));
-        assert!(!compatibility.contains("options.cybex.blueprint.applications"));
-        assert!(!compatibility.contains("options.cybex.security.luks.enable"));
+        assert!(!compatibility.contains("options.services.tiaris-agent"));
+        assert!(!compatibility.contains("options.tiaris.desktop.environment"));
+        assert!(!compatibility.contains("options.tiaris.blueprint.applications"));
+        assert!(!compatibility.contains("options.tiaris.security.luks.enable"));
     }
 
     #[cfg(unix)]
@@ -9626,14 +9624,14 @@ esac
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-installer-source-test-{}",
+            "tiaris-nest-installer-source-test-{}",
             uuid::Uuid::new_v4().simple()
         ));
         let revision = "4".repeat(40);
         let source_dir = root.join("manage-source");
         std::fs::create_dir_all(&source_dir).unwrap();
         std::fs::set_permissions(&source_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let archive_body = b"deterministic installer Manage source";
+        let archive_body = b"deterministic installer Tiaris source";
         let archive_path = source_dir.join(format!("{revision}.tar"));
         std::fs::write(&archive_path, archive_body).unwrap();
         std::fs::set_permissions(&archive_path, std::fs::Permissions::from_mode(0o444)).unwrap();
@@ -9641,7 +9639,7 @@ esac
         std::fs::write(
             &metadata_path,
             format!(
-                "{{\"filename\":\"{revision}.tar\",\"revision\":\"{revision}\",\"schema\":\"cybex.james.manage-source.v1\",\"sha256\":\"{}\",\"size_bytes\":{}}}\n",
+                "{{\"filename\":\"{revision}.tar\",\"revision\":\"{revision}\",\"schema\":\"tiaris.nest.manage-source.v1\",\"sha256\":\"{}\",\"size_bytes\":{}}}\n",
                 hex::encode(Sha256::digest(archive_body)),
                 archive_body.len()
             ),
@@ -9699,16 +9697,20 @@ esac
             source_dir.display()
         )));
         assert!(!flake.contains("github:CybexHQ/manage"));
-        assert!(flake.contains("import (manage + \"/deploy/nixos/cybex-agent-package.nix\")"));
+        assert!(flake.contains("import (manage + \"/deploy/nixos/tiaris-agent-package.nix\")"));
         assert!(flake.contains("repoRoot = manage;"));
-        assert!(!flake.contains("src = manage + \"/agent/cybex-agent\""));
+        assert!(!flake.contains("src = manage + \"/agent/tiaris-agent\""));
         let configuration =
             std::fs::read_to_string(root.join("work/job-44-input/configuration.nix")).unwrap();
-        assert!(configuration.contains("(manageSource + \"/deploy/nixos/cybex-blueprints.nix\")"));
+        assert!(configuration.contains("(manageSource + \"/deploy/nixos/tiaris-blueprints.nix\")"));
         assert!(
-            configuration.contains("(manageSource + \"/deploy/nixos/cybex-agent-module.nix\")")
+            configuration.contains("(manageSource + \"/deploy/nixos/tiaris-agent-module.nix\")")
         );
-        assert!(!root.join("work/job-44-input/cybex-blueprints.nix").exists());
+        assert!(
+            !root
+                .join("work/job-44-input/tiaris-blueprints.nix")
+                .exists()
+        );
 
         std::fs::set_permissions(&archive_path, std::fs::Permissions::from_mode(0o644)).unwrap();
         std::fs::write(&archive_path, b"tampered source").unwrap();
@@ -9723,9 +9725,9 @@ esac
 
     #[test]
     fn nix_build_command_rejects_protected_material_before_writing_inputs() {
-        let sentinel = "CYBEX_JAMES_PROTECTED_SENTINEL_7f922a";
+        let sentinel = "TIARIS_NEST_PROTECTED_SENTINEL_7f922a";
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-protected-build-input-test-{}",
+            "tiaris-nest-protected-build-input-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
@@ -9736,7 +9738,7 @@ esac
             artifact_type: "nixos_closure".to_string(),
             target: "blueprint".to_string(),
             system: "x86_64-linux".to_string(),
-            flake: "/srv/cybex-james/build-inputs/cybex".to_string(),
+            flake: "/srv/tiaris-nest/build-inputs/tiaris".to_string(),
             attr: "packages.x86_64-linux.desktop-experience".to_string(),
         };
         let spec = ValidatedBuildSpec {
@@ -9819,7 +9821,7 @@ esac
 
     #[tokio::test]
     async fn log_capture_redacts_spaced_nix_assignments_and_modular_hashes() {
-        let sentinel = "CYBEX_JAMES_PROTECTED_SENTINEL_7f922a";
+        let sentinel = "TIARIS_NEST_PROTECTED_SENTINEL_7f922a";
         let password_hash = "$6$rounds=5000$abcdefghijklmnop$uHL2DmwkR2iK6s.wDbxLW3GxvjJT7qW2rEHemZz3oMlKlfj8JwHc99.FNZrTO4drUslZ0MRyYkBDumQxKdL8q/";
         let log = SharedLog::new(4096);
         log.append(&format!(
@@ -9835,11 +9837,11 @@ esac
 
     #[tokio::test]
     async fn log_capture_redacts_assignments_split_across_stream_chunks() {
-        let sentinel = "CYBEX_JAMES_PROTECTED_SENTINEL_7f922a";
+        let sentinel = "TIARIS_NEST_PROTECTED_SENTINEL_7f922a";
         let log = SharedLog::new(4096);
-        log.append("users.users.alice.hashedPassword = \"CYBEX_JAMES_")
+        log.append("users.users.alice.hashedPassword = \"TIARIS_NEST_")
             .await;
-        assert!(!log.snapshot().await.contains("CYBEX_JAMES_"));
+        assert!(!log.snapshot().await.contains("TIARIS_NEST_"));
 
         log.append("PROTECTED_SENTINEL_7f922a\"; done\n").await;
         let snapshot = log.snapshot().await;
@@ -9911,7 +9913,7 @@ esac
     #[test]
     fn managed_metadata_cannot_replace_verified_cache_export_fields() {
         let mut destination = json!({
-            "cache_schema": "cybex.james.cache.v1",
+            "cache_schema": "tiaris.nest.cache.v1",
             "closure_manifest": {"verified": true},
             "closure_manifest_sha256": "a".repeat(64)
         });
@@ -9924,7 +9926,7 @@ esac
 
         merge_build_metadata(&mut destination, &source);
 
-        assert_eq!(destination["cache_schema"], "cybex.james.cache.v1");
+        assert_eq!(destination["cache_schema"], "tiaris.nest.cache.v1");
         assert_eq!(destination["closure_manifest"], json!({"verified": true}));
         assert_eq!(destination["closure_manifest_sha256"], "a".repeat(64));
         assert_eq!(destination["target"], "blueprint");

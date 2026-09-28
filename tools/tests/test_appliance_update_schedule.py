@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-HELPER = ROOT / 'ubuntu-appliance/rootfs/usr/lib/cybex-james/cybex-james-appliance-update-window'
+HELPER = ROOT / 'ubuntu-appliance/rootfs/usr/lib/tiaris-nest/tiaris-nest-appliance-update-window'
 
 
 class ApplianceUpdateScheduleTests(unittest.TestCase):
@@ -28,15 +28,15 @@ case "$1" in
 esac
 ''')
             date.chmod(0o755)
-            verifier = root / 'cybex-james'
+            verifier = root / 'tiaris-nest'
             verifier.write_text('#!/bin/sh\necho ' + signed_state + '\n')
             verifier.chmod(0o755)
             helper = root / 'window'
-            helper.write_text(HELPER.read_text().replace('/usr/bin/cybex-james', str(verifier)))
+            helper.write_text(HELPER.read_text().replace('/usr/bin/tiaris-nest', str(verifier)))
             env = dict(os.environ, PATH=f'{root}:' + os.environ['PATH'])
-            env.pop('CYBEX_JAMES_APPLIANCE_UPDATE_SCHEDULE', None)
+            env.pop('TIARIS_NEST_APPLIANCE_UPDATE_SCHEDULE', None)
             if mode is not None:
-                env['CYBEX_JAMES_APPLIANCE_UPDATE_SCHEDULE'] = mode
+                env['TIARIS_NEST_APPLIANCE_UPDATE_SCHEDULE'] = mode
             return subprocess.run(['bash', str(helper), str(plan)], env=env,
                                   capture_output=True, text=True).returncode
 

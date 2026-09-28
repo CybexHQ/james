@@ -1,0 +1,10 @@
+[Unit]
+Description=Apply a signed two-phase Tiaris Nest Netplan change
+After=network-online.target tiaris-nest.service
+Wants=network-online.target tiaris-nest.service
+ConditionPathExists=/var/lib/tiaris-nest/state/inbox/appliance-network-change-request.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/tiaris-nest/tiaris-nest-network-change
+TimeoutStartSec=5min

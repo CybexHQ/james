@@ -30,8 +30,8 @@ import threading
 import time
 import uuid
 
-SCHEMA = 'cybex.qualification.artifact-server-config.v1'
-RECEIPT_SCHEMA = 'cybex.qualification.artifact-server-receipt.v1'
+SCHEMA = 'tiaris.qualification.artifact-server-config.v1'
+RECEIPT_SCHEMA = 'tiaris.qualification.artifact-server-receipt.v1'
 MAX_CONFIG = 65536
 MAX_ARTIFACTS = 16
 MAX_ARTIFACT_SIZE = 8 * 1024 ** 3
@@ -274,7 +274,7 @@ class ArtifactServer(ThreadingHTTPServer):
             # No socket is constructed until every source has passed verification.
             super().__init__(address, Handler)
             self.receipt.update(bind=address[0], port=self.server_port)
-            self.challenge_path = '/.well-known/cybex-artifact-server/' + self.receipt['server_id'] + '/' + self.receipt['challenge']
+            self.challenge_path = '/.well-known/tiaris-artifact-server/' + self.receipt['server_id'] + '/' + self.receipt['challenge']
             self.ready_body = canonical({key: self.receipt[key] for key in
                                          ('scope_owner', 'server_id', 'challenge', 'config_sha256', 'process', 'bind', 'port')})
         except BaseException:
@@ -325,7 +325,7 @@ class ArtifactServer(ThreadingHTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
-    server_version = 'CybexArtifactFixture/1'
+    server_version = 'TiarisArtifactFixture/1'
     sys_version = ''
 
     def log_message(self, *args):
@@ -422,7 +422,7 @@ def verify_server(receipt, *, _test_loopback=False):
             raise ValueError('artifact receipt identity is invalid')
     connection = http.client.HTTPConnection(receipt['bind'], receipt['port'], timeout=REQUEST_TIMEOUT)
     try:
-        connection.request('GET', '/.well-known/cybex-artifact-server/' + receipt['server_id'] + '/' + receipt['challenge'])
+        connection.request('GET', '/.well-known/tiaris-artifact-server/' + receipt['server_id'] + '/' + receipt['challenge'])
         response = connection.getresponse()
         body = response.read(4097)
         expected = canonical({key: receipt[key] for key in

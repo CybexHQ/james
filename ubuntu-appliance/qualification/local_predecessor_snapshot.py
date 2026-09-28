@@ -17,7 +17,7 @@ import tempfile
 from types import SimpleNamespace
 
 
-SCHEMA = "cybex.james.local-predecessor-snapshot.v1"
+SCHEMA = "tiaris.nest.local-predecessor-snapshot.v1"
 
 
 class Snapshot:
@@ -64,7 +64,7 @@ class Snapshot:
             if not g.SEMVER_RE.fullmatch(name):
                 continue
             observation, info, children = g.observe_local_semver_entry(self.root / name, name)
-            package = f"cybex-james-appliance-packages-{name}-x86_64-linux.tar.zst"
+            package = f"tiaris-nest-appliance-packages-{name}-x86_64-linux.tar.zst"
             if children == {package} and stat.S_IMODE(info.st_mode) == 0o555:
                 journal, package_hash = g.load_local_stage_journal(
                     artifact_root=self.root, state_directory=self.args.staging_state_dir,
@@ -97,9 +97,9 @@ class Snapshot:
             g.fail("snapshot manifest has no workstation descriptor")
         runtime_name = runtime["url"].rsplit("/", 1)[-1]
         fixed = [
-            "cybex-james-x86_64-linux",
-            f"cybex-james-appliance-template-{release}-x86_64-linux.iso",
-            f"cybex-james-appliance-packages-{release}-x86_64-linux.tar.zst",
+            "tiaris-nest-x86_64-linux",
+            f"tiaris-nest-appliance-template-{release}-x86_64-linux.iso",
+            f"tiaris-nest-appliance-packages-{release}-x86_64-linux.tar.zst",
             runtime_name, g.RELEASE_MANIFEST_FILENAME, g.RELEASE_COMPATIBILITY_FILENAME]
         # Reuse the canonical filename grammar and exact six-artifact layout.
         g.local_release_filenames(release, set(fixed) | {"SHA256SUMS"})
@@ -114,7 +114,7 @@ class Snapshot:
         contract = compatibility.get("compatibility")
         if not isinstance(contract, dict):
             g.fail("snapshot compatibility contract is missing")
-        with tempfile.TemporaryDirectory(prefix="cybex-predecessor-contract-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="tiaris-predecessor-contract-") as temporary:
             path = Path(temporary) / "compatibility.json"
             path.write_bytes(g.canonical_json(contract))
             g.run_bounded([
@@ -145,7 +145,7 @@ class Snapshot:
                     digest.update(chunk)
                     destination.write(chunk)
                 destination.flush()
-                os.fchmod(destination.fileno(), 0o555 if target.name == "cybex-james-x86_64-linux" else 0o444)
+                os.fchmod(destination.fileno(), 0o555 if target.name == "tiaris-nest-x86_64-linux" else 0o444)
                 os.fsync(destination.fileno())
             if size != before.st_size or g.stable_file_identity(os.fstat(fd)) != g.stable_file_identity(before):
                 g.fail("historical predecessor artifact changed while copying")

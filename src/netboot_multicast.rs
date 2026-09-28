@@ -39,11 +39,11 @@ use uuid::Uuid;
 use crate::{AppState, config::AppConfig, netboot::WorkstationNetbootDescriptor};
 
 pub const CAPABILITY: &str = "workstation_rootfs_multicast_v1";
-pub const JOIN_SCHEMA: &str = "cybex.james.squashfs-multicast-join.v1";
-pub const OFFER_SCHEMA: &str = "cybex.james.squashfs-multicast-offer.v1";
-pub const RESULT_SCHEMA: &str = "cybex.james.squashfs-multicast-result.v1";
-pub const POLICY_SCHEMA: &str = "cybex.manage.workstation-multicast-policy.v1";
-pub const REPORT_SCHEMA: &str = "cybex.manage.workstation-multicast-report.v1";
+pub const JOIN_SCHEMA: &str = "tiaris.nest.squashfs-multicast-join.v1";
+pub const OFFER_SCHEMA: &str = "tiaris.nest.squashfs-multicast-offer.v1";
+pub const RESULT_SCHEMA: &str = "tiaris.nest.squashfs-multicast-result.v1";
+pub const POLICY_SCHEMA: &str = "tiaris.manage.workstation-multicast-policy.v1";
+pub const REPORT_SCHEMA: &str = "tiaris.manage.workstation-multicast-report.v1";
 pub const TRANSPORT: &str = "udpcast-v1";
 pub const MINIMUM_ROOTFS_MULTICAST_RUNTIME_VERSION: &str = "1.0.56";
 
@@ -56,7 +56,7 @@ const RECEIPT_COLLECTION_SECONDS: i64 = 30;
 const FAILURE_COOLDOWN_SECONDS: u64 = 15;
 const FINALIZED_TRANSFER_RETENTION_DAYS: i64 = 7;
 const CHILD_OUTPUT_CAPTURE_BYTES: usize = 16 * 1024;
-const NETWORK_PLAN_PATH: &str = "/var/lib/cybex-james/control/netplan-approved.json";
+const NETWORK_PLAN_PATH: &str = "/var/lib/tiaris-nest/control/netplan-approved.json";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -646,7 +646,7 @@ async fn discover_inner(
     let row = sqlx::query_as::<_, EligibleSessionRow>(
         "SELECT session.session_id, session.expires_at, session.cleanup_after,
                 bundle.runtime_version, bundle.descriptor_json, bundle.root_path
-         FROM james_boot_sessions session
+         FROM nest_boot_sessions session
          JOIN workstation_netboot_bundles bundle
            ON bundle.bundle_sha256 = session.bundle_sha256
          WHERE session.multicast_join_token_sha256 = ?
@@ -1257,7 +1257,7 @@ async fn record_result_inner(state: &AppState, bundle_sha256: &str, body: &[u8])
     let token_hash = sha256_hex(&request.join_token);
     let now = Utc::now().timestamp();
     let session: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT session_id, multicast_finalized_at FROM james_boot_sessions
+        "SELECT session_id, multicast_finalized_at FROM nest_boot_sessions
          WHERE multicast_join_token_sha256 = ?
            AND bundle_sha256 = ? AND cleanup_after >= ?",
     )
@@ -1487,7 +1487,7 @@ async fn finalize_transfer_event(state: &AppState, transfer_id: &str) -> Result<
     }
     let finalized_at = now_text();
     sqlx::query(
-        "UPDATE james_boot_sessions SET multicast_finalized_at = ?
+        "UPDATE nest_boot_sessions SET multicast_finalized_at = ?
          WHERE session_id IN (
            SELECT session_id FROM workstation_multicast_registrations WHERE transfer_id = ?
          ) AND multicast_finalized_at IS NULL",
@@ -1937,11 +1937,11 @@ mod tests {
         let nonce = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
         assert_eq!(
             join_token_from_nonce(nonce),
-            "cc1f6776d65be2867765fa4b9ef8731128f2820171764185aac7bfd47b2056f0"
+            "d2144ac7b4b27c4b54e6e269f1016dca79d0dc5960f58f16db7adac409eee50a"
         );
         assert_eq!(
             stored_join_token_hash(nonce),
-            "86a6a5fbf524ff2ae56014382de39ca74d53a5b8a4152c14b8455c21b9511234"
+            "cef7c505ec37b431fc77e5e61cb5a75c630b455b5dc1d78c2f6c915c9c9fcf18"
         );
     }
 

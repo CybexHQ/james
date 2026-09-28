@@ -5,7 +5,7 @@ autoinstall:
   refresh-installer:
     update: false
   early-commands:
-    - /cdrom/cybex/bootstrap/cybex-james-bootstrap prepare --envelope /cdrom/CYBEX_PROVISIONING.BIN --provisioning-keys /cdrom/cybex/provisioning-public-keys --autoinstall /autoinstall.yaml --state-mount /run/cybex-state
+    - /cdrom/tiaris/bootstrap/tiaris-nest-bootstrap prepare --envelope /cdrom/TIARIS_PROVISIONING.BIN --provisioning-keys /cdrom/tiaris/provisioning-public-keys --autoinstall /autoinstall.yaml --state-mount /run/tiaris-state
   error-commands:
-    - /bin/sh -c 'journalctl -b --no-pager -n 500 | tee /run/cybex-installer-error.log /dev/tty0 /dev/ttyS0 >/dev/null || true'
+    - /bin/sh -c 'journalctl -b --no-pager -n 500 | tee /run/tiaris-installer-error.log /dev/tty0 /dev/ttyS0 >/dev/null || true'
   shutdown: reboot

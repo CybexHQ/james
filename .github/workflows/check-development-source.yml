@@ -23,7 +23,7 @@ jobs:
         with:
           repository: CybexHQ/development
           ref: ${{ inputs.revision }}
-          ssh-key: ${{ secrets.CYBEX_DEVELOPMENT_SOURCE_SSH_KEY }}
+          ssh-key: ${{ secrets.TIARIS_DEVELOPMENT_SOURCE_SSH_KEY }}
           persist-credentials: false
       - name: Verify source identity without building or publishing
         env:

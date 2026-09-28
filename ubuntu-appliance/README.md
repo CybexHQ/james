@@ -1,9 +1,9 @@
-# Ubuntu James appliance
+# Ubuntu Nest appliance
 
-This directory builds the provisionable Ubuntu 26.04 LTS James thin USB
+This directory builds the provisionable Ubuntu 26.04 LTS Nest thin USB
 installer, its separately delivered package snapshot, the installed appliance
 payload, and the release qualification harness. This is the sole supported
-James appliance and installation implementation.
+Nest appliance and installation implementation.
 
 ## Build inputs and outputs
 
@@ -19,11 +19,11 @@ Boot chain; no MOK enrollment is required.
 The ISO build adds only:
 
 - unattended NoCloud/Autoinstall configuration;
-- `cybex-james-bootstrap`, accepted online provisioning public keys, and the
-  offline James release trust key;
-- the Cybex-branded GRUB boot screen used by the former USB installer, with a
-  single **Boot Cybex James Setup** action;
-- a fixed zero-filled 8192-byte `/CYBEX_PROVISIONING.BIN` slot.
+- `tiaris-nest-bootstrap`, accepted online provisioning public keys, and the
+  offline Nest release trust key;
+- the Tiaris-branded GRUB boot screen used by the former USB installer, with a
+  single **Boot Tiaris Nest Setup** action;
+- a fixed zero-filled 8192-byte `/TIARIS_PROVISIONING.BIN` slot.
 
 Static-network safety checks run before the target package snapshot is
 installed. The bootstrap therefore uses the `arping` applet at the pinned live
@@ -33,7 +33,7 @@ exact authenticated live root and rejects the ISO if either BusyBox or its
 `iputils-arping` through the signed package closure.
 
 The package dependency closure is built and published as a separate signed
-release asset. It is intentionally not embedded at `/cybex/apt`, keeping the
+release asset. It is intentionally not embedded at `/tiaris/apt`, keeping the
 hybrid ISO suitable for USB installation while avoiding a second copy of the
 kernel, firmware, and appliance runtime packages. The ISO builder also removes
 Ubuntu's `/pool` and `/dists` target-package trees, including the large
@@ -47,24 +47,24 @@ Typical invocation:
 ```bash
 ubuntu-appliance/build-package-snapshot.sh \
   --output-dir dist \
-  --james-binary target/x86_64-unknown-linux-gnu/release/cybex-james \
-  --bootstrap-binary target/x86_64-unknown-linux-gnu/release/cybex-james-bootstrap \
+  --nest-binary target/x86_64-unknown-linux-gnu/release/tiaris-nest \
+  --bootstrap-binary target/x86_64-unknown-linux-gnu/release/tiaris-nest-bootstrap \
   --version 1.2.3 \
   --ubuntu-snapshot-id 20260804T000000Z \
-  --manage-source-dir "$CYBEX_JAMES_MANAGE_SOURCE_DIR" \
-  --manage-source-revision "$CYBEX_JAMES_MANAGE_SOURCE_REVISION" \
-  --expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" \
-  --release-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
-  --provisioning-public-key "$CYBEX_JAMES_PROVISIONING_PUBLIC_KEY"
+  --manage-source-dir "$TIARIS_NEST_MANAGE_SOURCE_DIR" \
+  --manage-source-revision "$TIARIS_NEST_MANAGE_SOURCE_REVISION" \
+  --expected-manage-origin "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" \
+  --release-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
+  --provisioning-public-key "$TIARIS_NEST_PROVISIONING_PUBLIC_KEY"
 
 ubuntu-appliance/build-template.sh \
   --output-dir dist \
-  --bootstrap-binary target/x86_64-unknown-linux-gnu/release/cybex-james-bootstrap \
+  --bootstrap-binary target/x86_64-unknown-linux-gnu/release/tiaris-nest-bootstrap \
   --version 1.2.3 \
   --ubuntu-snapshot-id 20260804T000000Z \
-  --expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" \
-  --release-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
-  --provisioning-public-key "$CYBEX_JAMES_PROVISIONING_PUBLIC_KEY"
+  --expected-manage-origin "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" \
+  --release-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
+  --provisioning-public-key "$TIARIS_NEST_PROVISIONING_PUBLIC_KEY"
 ```
 
 For a follow-up release on the exact same Ubuntu snapshot, the previous
@@ -73,16 +73,16 @@ package snapshot may be supplied only as an explicit download-cache seed:
 ```bash
 ubuntu-appliance/build-package-snapshot.sh \
   --output-dir dist \
-  --james-binary target/x86_64-unknown-linux-gnu/release/cybex-james \
-  --bootstrap-binary target/x86_64-unknown-linux-gnu/release/cybex-james-bootstrap \
+  --nest-binary target/x86_64-unknown-linux-gnu/release/tiaris-nest \
+  --bootstrap-binary target/x86_64-unknown-linux-gnu/release/tiaris-nest-bootstrap \
   --version 1.2.4 \
   --ubuntu-snapshot-id 20260804T000000Z \
-  --manage-source-dir "$CYBEX_JAMES_MANAGE_SOURCE_DIR" \
-  --manage-source-revision "$CYBEX_JAMES_MANAGE_SOURCE_REVISION" \
-  --expected-manage-origin "$CYBEX_JAMES_BUILD_MANAGE_ORIGIN" \
-  --release-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
-  --provisioning-public-key "$CYBEX_JAMES_PROVISIONING_PUBLIC_KEY" \
-  --previous-package-snapshot dist/cybex-james-appliance-packages-1.2.3-x86_64-linux.tar.zst
+  --manage-source-dir "$TIARIS_NEST_MANAGE_SOURCE_DIR" \
+  --manage-source-revision "$TIARIS_NEST_MANAGE_SOURCE_REVISION" \
+  --expected-manage-origin "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" \
+  --release-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
+  --provisioning-public-key "$TIARIS_NEST_PROVISIONING_PUBLIC_KEY" \
+  --previous-package-snapshot dist/tiaris-nest-appliance-packages-1.2.3-x86_64-linux.tar.zst
 ```
 
 The flag is optional and is never inferred from an environment variable or
@@ -102,11 +102,11 @@ only when its origin matches the signed installer-template origin. This binds
 the bootstrap installed from the authenticated package archive without adding
 the private build metadata to the public release asset set.
 
-The Manage source arguments must identify an exact clean checkout at the
+The Tiaris source arguments must identify an exact clean checkout at the
 signed workstation runtime's 40-hex `manage_source_revision`. The package
 builder creates a deterministic Git tar archive with a fixed archive umask and
-embeds it in `cybex-james` at
-`/usr/share/cybex-james/manage-source/<revision>.tar`. Adjacent canonical JSON
+embeds it in `tiaris-nest` at
+`/usr/share/tiaris-nest/manage-source/<revision>.tar`. Adjacent canonical JSON
 binds its revision, filename, byte length, and SHA-256. The directory is
 root-owned mode `0755`; both files are root-owned mode `0444`. Package-snapshot
 metadata records the same identity, manifest signing rejects a revision that
@@ -117,11 +117,11 @@ installer-target builds offline and adds no public release artifact.
 Both builders create their outputs once and never overwrite an existing
 candidate:
 
-- `cybex-james-appliance-template-<version>-x86_64-linux.iso`
+- `tiaris-nest-appliance-template-<version>-x86_64-linux.iso`
 - matching template metadata with the exact slot offset/size/digests and
   `package_delivery: network-snapshot-v1` plus the explicit canonical
   `manage_origin`
-- `cybex-james-appliance-packages-<version>-x86_64-linux.tar.zst`
+- `tiaris-nest-appliance-packages-<version>-x86_64-linux.tar.zst`
 - matching package-snapshot metadata
 
 Release automation signs the v2 installer descriptor and package descriptor,
@@ -130,8 +130,8 @@ qualification is forbidden.
 
 ## Network-delivered package snapshot
 
-`build-packages.sh` produces `cybex-james`, `cybex-james-bootstrap`, and
-`cybex-james-appliance` Debian packages. The appliance dependency closure
+`build-packages.sh` produces `tiaris-nest`, `tiaris-nest-bootstrap`, and
+`tiaris-nest-appliance` Debian packages. The appliance dependency closure
 includes systemd, nginx, TFTP/iPXE, OpenSSH, nftables, Netplan, Btrfs/watchdog,
 Nix, `linux-generic`, `linux-firmware`, `intel-microcode`, and
 `amd64-microcode`, plus the exact `udpcast` `20120424-2build2` sender used only
@@ -140,10 +140,10 @@ package dependency and part of the signer-side package metadata. The signed
 archive digest authenticates the complete package closure; the published
 `required_package_versions` map retains the seven core anchors accepted by
 installed clients, rather than adding an undeclared wire-protocol extension.
-`CYBEX-SBOM.spdx.json`, `UDPCAST-COPYRIGHT`, and the authenticated `.dsc`
+`TIARIS-SBOM.spdx.json`, `UDPCAST-COPYRIGHT`, and the authenticated `.dsc`
 and complete Ubuntu source payload ship in the snapshot’s
-`cybex-james-source-offer` Debian package under
-`/usr/share/doc/cybex-james/source-offer/`. This preserves the complete GPL
+`tiaris-nest-source-offer` Debian package under
+`/usr/share/doc/tiaris-nest/source-offer/`. This preserves the complete GPL
 source offer without adding top-level archive names rejected by installed
 appliances. The package is indexed and covered by the same signed archive
 digest as every binary package. The snapshot also carries `grub-efi-amd64`, Canonical's
@@ -151,9 +151,9 @@ signed GRUB and shim packages, and `secureboot-db`; the target therefore does
 not depend on Ubuntu's removed media pool to create its signed UEFI boot chain.
 The pinned Subiquity/Curtin runtime bind-mounts `/run` into the chrootable
 target, so the authenticated repository staged beneath
-`/run/cybex-appliance-repo/packages` is available to Curtin's UEFI curthooks
+`/run/tiaris-appliance-repo/packages` is available to Curtin's UEFI curthooks
 before late commands run.
-It installs the pinned James release public key and all root-owned helpers.
+It installs the pinned Nest release public key and all root-owned helpers.
 `build-offline-repo.sh` resolves and downloads the exact
 Ubuntu snapshot dependency closure and emits deterministic APT metadata;
 `build-package-snapshot.sh` archives that repository and emits the bounded
@@ -162,10 +162,10 @@ metadata consumed by release signing. Independent `apt-daily`,
 installation.
 
 Before admitting a signed workstation runtime or starting any installer-target
-build, James securely reopens the revision-scoped Manage archive and metadata,
+build, Nest securely reopens the revision-scoped Tiaris archive and metadata,
 rejects links or unsafe ownership/modes/link counts, and verifies the declared
 size and SHA-256. Installer flakes use only the resulting local
-`tarball+file:///usr/share/cybex-james/manage-source/<revision>.tar` input; no
+`tarball+file:///usr/share/tiaris-nest/manage-source/<revision>.tar` input; no
 GitHub availability or credential is part of device preparation.
 
 The optional previous-snapshot seed is an optimization, not a trust root or an
@@ -175,8 +175,8 @@ opens a bounded regular archive, requires the exact snapshot marker, and
 extracts only unique top-level regular `.deb` members selected by that current
 plan. APT is forced to project the strong SHA256 from those authenticated
 indexes; every candidate must match that exact digest and size before import.
-Names beginning with `cybex-james` are always discarded so each release uses
-the newly built James packages. No Debian or inner archive parser sees bytes
+Names beginning with `tiaris-nest` are always discarded so each release uses
+the newly built Nest packages. No Debian or inner archive parser sees bytes
 before this strong identity check. Verified candidates are imported with
 no-overwrite semantics into a fresh APT archive cache, APT fetches every
 missing package, and only afterward does the builder inspect package structure
@@ -189,7 +189,7 @@ builds emit the same package snapshot bytes.
 The NoCloud seed has no interactive sections. Its early command runs:
 
 ```text
-cybex-james-bootstrap prepare
+tiaris-nest-bootstrap prepare
 ```
 
 The Rust bootstrap verifies canonical envelope padding/body/signature and the
@@ -197,7 +197,7 @@ fixed production `https://manage.cybex.net` origin, derives a provisioning-only
 key from the 256-bit media secret, claims the session with exact-body proof,
 and uploads bounded inventory. It blocks until Management returns a valid plan
 containing the release-signed appliance package snapshot. The bootstrap
-authenticates that descriptor with `/cdrom/cybex/release-public-key`, downloads
+authenticates that descriptor with `/cdrom/tiaris/release-public-key`, downloads
 the exact snapshot, and validates its size, digest, archive, repository, and
 required package versions before installation can be accepted. A failed or
 interrupted fetch leaves the target disk untouched. Hardware, network, media,
@@ -210,7 +210,7 @@ choosing the safe retry.
 
 Official bootstrap binaries keep that production origin compiled in. A
 development-only appliance may be pinned to another canonical HTTPS origin at
-compile time with `CYBEX_JAMES_BUILD_MANAGE_ORIGIN`; that binary and ISO must
+compile time with `TIARIS_NEST_BUILD_MANAGE_ORIGIN`; that binary and ISO must
 use separate development provisioning and release trust keys. The template
 builder requires the independently governed `--expected-manage-origin`, asks
 the bootstrap binary for its compiled origin, and re-opens the completed ISO to
@@ -227,7 +227,7 @@ signed Management origin must all succeed. The temporary address, rule, and
 routes are removed on every exit path.
 
 The accepted destructive event precedes the first disk command. Partition 3
-(`CYBEX_STATE`) is then created first; a random permanent Ed25519 key is written
+(`TIARIS_STATE`) is then created first; a random permanent Ed25519 key is written
 and fsynced there, and the Management identity transition requires both
 temporary and permanent signatures. The rest of the GPT is created
 idempotently. Subiquity re-reads the generated `/autoinstall.yaml`, installs
@@ -239,39 +239,39 @@ Durable state records the session, signed plan, online Management public key,
 permanent key, event sequence, identity activation, and install completion.
 Booting the same media after a pre-completion power interruption validates and
 resumes exact geometry/events. A completed marker inspects the kernel-provided
-UEFI variables directly, sets the active installed Ubuntu or Cybex James entry
+UEFI variables directly, sets the active installed Ubuntu or Tiaris Nest entry
 as `BootNext`, verifies it, and reboots rather than replaying installation. The
 live recovery handoff therefore has no undeclared dependency on `efibootmgr`.
 
 ## Installed services
 
-- `cybex-james.service`: unprivileged James service
-- `cybex-james-first-boot.service`: network guard, first permanent-key report,
+- `tiaris-nest.service`: unprivileged Nest service
+- `tiaris-nest-first-boot.service`: network guard, first permanent-key report,
   and readiness transition
 - `getty@tty1.service`: status-only physical console for the managed appliance
-- `cybex-james-firewall.service`: management-CIDR SSH nftables boundary
-- `cybex-james-appliance-update.timer/service`: promptly approved root
+- `tiaris-nest-firewall.service`: management-CIDR SSH nftables boundary
+- `tiaris-nest-appliance-update.timer/service`: promptly approved root
   generation updater
-- `cybex-james-generation-commit.service`: candidate health/commit or rollback
-- `cybex-james-network-change.path/service`: signed two-phase Netplan changes
-- `cybex-james-network-runtime.timer/service`: reconciles the advertised boot
+- `tiaris-nest-generation-commit.service`: candidate health/commit or rollback
+- `tiaris-nest-network-change.path/service`: signed two-phase Netplan changes
+- `tiaris-nest-network-runtime.timer/service`: reconciles the advertised boot
   origin with the committed Netplan interface after DHCP leases or approved
   network changes
 
 The first physical virtual console is an appliance status display, not a local
-administration or login screen. It shows only the administrator-assigned James
+administration or login screen. It shows only the administrator-assigned Nest
 name when that name is safe for a terminal, a simple Starting, Ready, or
-Attention needed state, and directs recovery to Cybex Manage. The tty1-specific
+Attention needed state, and directs recovery to Tiaris. The tty1-specific
 unit yields to system rescue mode; serial-console recovery and the separate
 short-lived-certificate SSH support path are unchanged. Normal administration
-remains exclusively in Cybex Manage.
+remains exclusively in Tiaris.
 
 First boot stages the package-provided `snponly.efi`, `ipxe-amd64.efi`, and
 credential-free `autoexec.ipxe` handoff into the persistent TFTP root as
 root-owned, public-readable immutable files. The narrow tree is `0755
 root:root` and all three files are `0644 root:root`: this satisfies
 `tftpd-hpa`'s public-readability policy without granting either the
-unprivileged James process or the dedicated `tftp` account write access. The
+unprivileged Nest process or the dedicated `tftp` account write access. The
 handoff uses the DHCP `next-server` and the active NIC's MAC to request the
 per-client HTTP boot route. This breaks stock iPXE's otherwise-recursive
 chainload without requiring a DHCP server to implement a fragile second-stage
@@ -283,46 +283,46 @@ Readiness also self-fetches the boot script from the current local IPv4 origin;
 public health requests share a bounded single-flight cache rather than starting
 unlimited probes.
 
-The James appliance continues to require factory Secure Boot enabled. A
+The Nest appliance continues to require factory Secure Boot enabled. A
 workstation installed through PXE currently requires x86-64 UEFI network boot
 with Secure Boot turned off because the package-provided iPXE EFI program and
-the NixOS workstation kernel do not yet share a Cybex-governed signing chain.
+the NixOS workstation kernel do not yet share a Tiaris-governed signing chain.
 Do not claim workstation Secure Boot support until that chain is an explicit,
 verified release prerequisite.
 
-`cybex-support` has a locked password. SSH disables password/keyboard/root
+`tiaris-support` has a locked password. SSH disables password/keyboard/root
 login, permits only that user and the exact device principal, and trusts active
-plus next Cybex CA public keys. Forwarding works only when the short-lived user
+plus next Tiaris CA public keys. Forwarding works only when the short-lived user
 certificate explicitly contains its permission extension. nftables drops SSH
 from outside the plan's management CIDRs. Its input policy otherwise remains
 accepting, so multicast needs neither a root firewall reconciler nor wider
 service privileges: the unprivileged, policy-gated high-UDP sender socket is
-the runtime boundary, and `cybex-james.service` retains empty capability and
+the runtime boundary, and `tiaris-nest.service` retains empty capability and
 ambient-capability sets.
 
 `/nix` is an executable `nodev,nosuid` bind mount backed by
-`CYBEX_CACHE`. Appliance installation requires a fixed disk of at least
+`TIARIS_CACHE`. Appliance installation requires a fixed disk of at least
 160 GiB; the bootstrap also requires at least 80 GiB for this final shared
 partition after the fixed EFI, root, state, and swap partitions. Installer-seeded
 Nix content is copied there before the bind is activated; first boot verifies
 the mount identity/options and initializes the store before `nix-daemon`.
-The store remains root-owned while `cybex-james` receives daemon access through
+The store remains root-owned while `tiaris-nest` receives daemon access through
 `nix-users`. Cache retention reacts to both its configured cache-size ceiling
 and real filesystem headroom, preserving space for one maximum exact workstation
 installer target whenever unprotected artifacts can be reclaimed.
 
 ## Root generations and package updates
 
-The James service accepts only a Management request whose
-`cybex.james.appliance-release.v1` validates against the installed offline
+The Nest service accepts only a Management request whose
+`tiaris.nest.appliance-release.v1` validates against the installed offline
 release key. It downloads the exact archive without redirects. Root then runs
-`cybex-james verify-appliance-update` against the original descriptor/archive,
+`tiaris-nest verify-appliance-update` against the original descriptor/archive,
 checks safe archive entries/checksum coverage/Packages versions, and builds a
 writable Btrfs generation. The repository is shared with fresh installation,
 but an installed update does not install its full installer closure. APT sees
 only the verified local repository and requests the exact signed versions of
-`cybex-james`, `cybex-james-bootstrap`, and `cybex-james-appliance`; only their
-needed dependencies may be added or upgraded. The Cybex appliance package pins the exact `linux-generic`, `linux-firmware`,
+`tiaris-nest`, `tiaris-nest-bootstrap`, and `tiaris-nest-appliance`; only their
+needed dependencies may be added or upgraded. The Tiaris appliance package pins the exact `linux-generic`, `linux-firmware`,
 `nix-bin`, and `python3` versions resolved from the authenticated Ubuntu snapshot
 indexes. This makes the three-root update request also select the OS anchors
 promised by the signed descriptor, rather than silently retaining an older
@@ -340,7 +340,7 @@ predecessor's exact update command against the successor snapshot and prove a
 monotone plan with no removals or downgrades. After that bridge, the selective
 solver above is the supported N-to-N+1 update contract.
 
-On candidate boot, `cybex-james-generation-commit` checks James, Nix, nginx,
+On candidate boot, `tiaris-nest-generation-commit` checks Nest, Nix, nginx,
 TFTP, disk, and network. Success sets the default generation and retains two
 prior known-good generations. Failure records bounded rollback evidence and
 leaves the prior default in force. A hardware watchdog protects a candidate
@@ -357,7 +357,7 @@ snapshot on a dynamically allocated port bound only to the qualification
 bridge's private IPv4 address and supplies that short-lived transport override
 to the signed qualification plan. A frozen legacy predecessor rejects that
 additional field, so its one-time bridge instead requires the same package
-bytes to be readable at the already-signed canonical HTTPS URL before Manage
+bytes to be readable at the already-signed canonical HTTPS URL before Tiaris
 delivers the predecessor's canonical three-field request. The harness then
 downloads only its signed fixed-size personalization envelope, applies that
 envelope to the local build-once template, verifies personalization, boots
@@ -366,12 +366,12 @@ disk prefix is unchanged before approval, claims and approves through
 Management, installs, rotates identity, reboots with media still attached,
 requires a healthy permanent-key appliance projection, completes a two-phase
 DHCP network change, verifies an exact-principal/non-forwarding SSH
-certificate, and then proves the greenfield delivery invariant. The new James
+certificate, and then proves the greenfield delivery invariant. The new Nest
 must report an operational and converged verified workstation runtime; the
 default source-free policy must remain effective; and the exact current
 revisions of Standard Workstation (`standard_workstation`), Dock Workstation
 (`dock_workstation`), and an explicit rehearsal-only Tiling Blueprint
-(`qualification_tiling`, override with `CYBEX_JAMES_QUALIFICATION_TILING_BLUEPRINT`) must all prepare successfully on that node and be ready on
+(`qualification_tiling`, override with `TIARIS_NEST_QUALIFICATION_TILING_BLUEPRINT`) must all prepare successfully on that node and be ready on
 every required replica. The Tiling fixture selects an App List containing Deno rather than Node.js. It is
 not a built-in; prepare and release it in the disposable organization before
 admission, without assigning computers. Never reset built-ins to revision 1.
@@ -381,7 +381,7 @@ The final check rejects changes during qualification. Both built-in settings
 and administrator edits remain untouched.
 A source-policy failure records its bounded offending derivations before the
 qualification fails. Publication requires these assertions in the run evidence,
-so an official built-in that is incompatible with the current James classifier
+so an official built-in that is incompatible with the current Nest classifier
 cannot first be discovered on a customer installation. The harness then
 captures bounded redacted evidence. Browser tests separately
 cover range requests across both slot boundaries; Rust/shell tests cover update
@@ -389,18 +389,18 @@ state, generation commit/rollback, and network rollback helpers. Publication
 downloads the qualified artifact by ID/digest and fails if it is missing,
 expired, changed, or rebuilt.
 
-For development releases whose signed package URL is under Manage's configured
-`/james-dev-artifacts` tree, first verify the complete candidate with
-`tools/james-release.py verify`, then stage only the hash-bound package:
+For development releases whose signed package URL is under Tiaris's configured
+`/nest-dev-artifacts` tree, first verify the complete candidate with
+`tools/nest-release.py verify`, then stage only the hash-bound package:
 
 ```bash
-install -d -m 0700 /absolute/private/cybex-james-stage-state
+install -d -m 0700 /absolute/private/tiaris-nest-stage-state
 ubuntu-appliance/qualification/stage-canonical-package.py stage \
-  --manifest dist/cybex-james-release.json \
-  --package-snapshot dist/cybex-james-appliance-packages-VERSION-x86_64-linux.tar.zst \
+  --manifest dist/tiaris-nest-release.json \
+  --package-snapshot dist/tiaris-nest-appliance-packages-VERSION-x86_64-linux.tar.zst \
   --artifact-root /absolute/served/releases \
-  --served-prefix https://manage.example/james-dev-artifacts \
-  --state-dir /absolute/private/cybex-james-stage-state \
+  --served-prefix https://manage.example/nest-dev-artifacts \
+  --state-dir /absolute/private/tiaris-nest-stage-state \
   --owner acceptance-VERSION
 ```
 
@@ -424,7 +424,7 @@ the other qualified assets can be attached. Therefore the
 preflight unless an authorized immutable package-only transport exists at the
 signed URL. Do not work around that gate by publishing the release early,
 adding a field the predecessor cannot deserialize, or signing a different
-origin: Manage's production importer requires every release artifact to belong
+origin: Tiaris's production importer requires every release artifact to belong
 to the same immutable GitHub release. The bounded local staging helper above is
 the supported path for this acceptance campaign; general production release
 automation remains blocked on an artifact host/publication protocol that can
@@ -452,20 +452,20 @@ the served tree.
 ubuntu-appliance/qualification/legacy-bridge-gate.py \
   identify-local-predecessor \
   --artifact-root /absolute/served/releases \
-  --staging-state-dir /absolute/private/cybex-james-stage-state \
-  --served-prefix https://manage.example/james-dev-artifacts \
-  --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
-  --release-verifier tools/james-release.py \
+  --staging-state-dir /absolute/private/tiaris-nest-stage-state \
+  --served-prefix https://manage.example/nest-dev-artifacts \
+  --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
+  --release-verifier tools/nest-release.py \
   --output /absolute/private/local-predecessor.json
 
 ubuntu-appliance/qualification/legacy-bridge-gate.py \
   recheck-local-predecessor \
   --qualified-identity /absolute/private/local-predecessor.json \
   --artifact-root /absolute/served/releases \
-  --staging-state-dir /absolute/private/cybex-james-stage-state \
-  --served-prefix https://manage.example/james-dev-artifacts \
-  --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
-  --release-verifier tools/james-release.py
+  --staging-state-dir /absolute/private/tiaris-nest-stage-state \
+  --served-prefix https://manage.example/nest-dev-artifacts \
+  --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
+  --release-verifier tools/nest-release.py
 ```
 
 Identification streams all seven selected files from their exact HTTPS URLs,
@@ -473,7 +473,7 @@ requires status 200 without redirects, ranges, or content encoding, and checks
 the declared length and SHA-256 while streaming. It extracts the authenticated
 package snapshot to derive the updater contract and packaged release identity.
 The separate
-`cybex.james.local-published-appliance-predecessor.v1` result binds both the
+`tiaris.nest.local-published-appliance-predecessor.v1` result binds both the
 selected seven-file release-set digest and the complete local published-index
 digest. Run the recheck after qualification and before using the governed
 identity; it repeats the full inspection and fails if the highest release,
@@ -495,10 +495,10 @@ ubuntu-appliance/qualification/legacy-bridge-gate.py \
   prepare-local-predecessor \
   --artifact-root /absolute/served/releases \
   --prepared-release /absolute/private/predecessor-snapshot \
-  --staging-state-dir /absolute/private/cybex-james-stage-state \
-  --served-prefix https://manage.example/james-dev-artifacts \
-  --trusted-public-key "$CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY" \
-  --release-verifier tools/james-release.py
+  --staging-state-dir /absolute/private/tiaris-nest-stage-state \
+  --served-prefix https://manage.example/nest-dev-artifacts \
+  --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
+  --release-verifier tools/nest-release.py
 ```
 
 Pass the same `--prepared-release` and original `--artifact-root` to both
@@ -535,7 +535,7 @@ binding is unchanged, and clean it after successful qualification/publication.
 
 The bridge address is discovered automatically. A runner with more than one
 private bridge address can select an address already assigned to that bridge
-with `CYBEX_JAMES_QUALIFICATION_PACKAGE_BIND_ADDRESS`; loopback and public
+with `TIARIS_NEST_QUALIFICATION_PACKAGE_BIND_ADDRESS`; loopback and public
 addresses are rejected.
 
 The automated boot entry mirrors Ubuntu to the first serial port so early
@@ -559,14 +559,14 @@ firmware generations before the release is promoted.
 
 ## Automatic workstation network boot
 
-The appliance includes `dnsmasq-base` and `cybex-james-pxe.service` for IPv4
+The appliance includes `dnsmasq-base` and `tiaris-nest-pxe.service` for IPv4
 ProxyDHCP on the approved wired interface. Existing DHCP retains ownership of
 addresses. Signed organization inventory controls responder election and
-per-computer James placement; missing or stale inventory stops advertising.
+per-computer Nest placement; missing or stale inventory stops advertising.
 UEFI architectures 7 and 9 are supported. Workstation Secure Boot must be off;
-James itself continues to require Secure Boot on. `/healthz/pxe` and appliance
+Nest itself continues to require Secure Boot on. `/healthz/pxe` and appliance
 health report discovery readiness. Set the preserved conffile
-`/etc/cybex-james/pxe-discovery.json` to `{"mode":"external"}` when an existing
+`/etc/tiaris-nest/pxe-discovery.json` to `{"mode":"external"}` when an existing
 PXE service is authoritative.
 
 Package assembly normalizes the public rootfs file permissions independently

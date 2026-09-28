@@ -11,15 +11,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class NetworkCommitRuntimeTests(unittest.TestCase):
     def test_pending_generation_defers_before_lock_or_network_mutation(self):
-        source = (ROOT / 'runtime/cybex-james-network-change').read_text()
+        source = (ROOT / 'runtime/tiaris-nest-network-change').read_text()
         for marker in ('pending-system-generation.json', 'system-prepare-intent.json',
                        'system-commit-intent.json', 'system-rollback-intent.json'):
             with self.subTest(marker=marker), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 (root / marker).write_text('{}')
-                script = source.replace('control_dir=/var/lib/cybex-james/control', 'control_dir=' + temporary)
+                script = source.replace('control_dir=/var/lib/tiaris-nest/control', 'control_dir=' + temporary)
                 # The nonexistent lock makes any fallthrough an observable failure.
-                script = script.replace('lock=/run/lock/cybex-james/maintenance.lock', 'lock=' + temporary + '/absent-lock')
+                script = script.replace('lock=/run/lock/tiaris-nest/maintenance.lock', 'lock=' + temporary + '/absent-lock')
                 result = subprocess.run(['bash', '-c', script], text=True, capture_output=True, timeout=5)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('Network change deferred', result.stderr)
@@ -40,7 +40,7 @@ class NetworkCommitRuntimeTests(unittest.TestCase):
             network, control, binaries = root / 'netplan', root / 'control', root / 'bin'
             for path in (network, control, binaries): path.mkdir()
             candidate = root / 'c85b4a37-b98a-4c61-b2de-b455c383dc97.yaml'; candidate.write_text('{"candidate":"acknowledged"}')
-            active = network / '90-cybex-james.yaml'; active.write_text('old approved profile')
+            active = network / '90-tiaris-nest.yaml'; active.write_text('old approved profile')
             acknowledgement = root / 'ack'; acknowledgement.write_text('signed ack fixture')
             digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
             def helper(name, body):
@@ -69,13 +69,13 @@ while i<len(args):
     else: paths.append(args[i]); i+=1
 shutil.copyfile(*paths)
 ''')
-            script = (ROOT / 'runtime/cybex-james-netplan-apply').read_text()
-            replacements = {'/etc/netplan': str(network), '/var/lib/cybex-james/control': str(control),
-                '/usr/lib/cybex-james/cybex-james-bootstrap': commit,
-                '/usr/lib/cybex-james/cybex-james-netplan-activate': activation,
-                '/usr/bin/cybex-james': verifier}
+            script = (ROOT / 'runtime/tiaris-nest-netplan-apply').read_text()
+            replacements = {'/etc/netplan': str(network), '/var/lib/tiaris-nest/control': str(control),
+                '/usr/lib/tiaris-nest/tiaris-nest-bootstrap': commit,
+                '/usr/lib/tiaris-nest/tiaris-nest-netplan-activate': activation,
+                '/usr/bin/tiaris-nest': verifier}
             for old, new in replacements.items(): script = script.replace(old, new)
-            self.assertNotIn('/usr/lib/cybex-james/', script)
+            self.assertNotIn('/usr/lib/tiaris-nest/', script)
             result = subprocess.run(['bash', '-c', script, 'fixture', str(candidate), str(acknowledgement)],
                 env={**os.environ, 'PATH': str(binaries) + os.pathsep + os.environ['PATH'],
                      'TEST_DIGEST': digest, 'TEST_ACTIVATIONS': str(root / 'activations'),

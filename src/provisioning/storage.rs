@@ -1,8 +1,8 @@
 use super::{
     DurableProvisioningState,
-    inventory::JamesProvisioningInventory,
+    inventory::NestProvisioningInventory,
     packages::{PackageDelivery, STAGED_REPOSITORY_PATH},
-    protocol::{JamesProvisioningNetworkPlan, SignedInstallPlan},
+    protocol::{NestProvisioningNetworkPlan, SignedInstallPlan},
 };
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
@@ -84,7 +84,7 @@ pub(crate) fn existing_state_for_session(
         if DurableProvisioningState::path(state_mount).exists()
             || state_mount_is_mounted(state_mount)?
         {
-            bail!("mounted CYBEX_STATE has no unique partition-label device")
+            bail!("mounted TIARIS_STATE has no unique partition-label device")
         }
         return Ok(None);
     };
@@ -126,7 +126,7 @@ fn finish_existing_state_probe(
         }));
     }
     // Empty or foreign STATE never grants disk-write authority. Unmount before
-    // collecting inventory and asking Manage for the current signed authority.
+    // collecting inventory and asking Tiaris for the current signed authority.
     unmount()?;
     Ok(None)
 }
@@ -155,7 +155,7 @@ fn unmount_probe(state_mount: &Path) -> Result<()> {
 
 fn existing_state_device() -> Result<Option<PathBuf>> {
     let output = StdCommand::new("blkid")
-        .args(["-t", "PARTLABEL=CYBEX_STATE", "-o", "device"])
+        .args(["-t", "PARTLABEL=TIARIS_STATE", "-o", "device"])
         .output()
         .context("enumerate existing STATE partitions")?;
     if output.status.code() == Some(2) {
@@ -169,7 +169,7 @@ fn existing_state_device() -> Result<Option<PathBuf>> {
     candidates.sort();
     candidates.dedup();
     if candidates.len() > 1 {
-        bail!("multiple CYBEX_STATE partitions are present; detach unrelated appliance disks")
+        bail!("multiple TIARIS_STATE partitions are present; detach unrelated appliance disks")
     }
     let Some(path) = candidates.pop() else {
         return Ok(None);
@@ -187,7 +187,7 @@ fn mount_existing_state_probe(state_mount: &Path, device_path: &Path) -> Result<
         .arg(device_path)
         .arg(state_mount)
         .status()
-        .context("mount existing CYBEX_STATE recovery probe")?;
+        .context("mount existing TIARIS_STATE recovery probe")?;
     if !status.success() {
         if state_mount_is_mounted(state_mount)? {
             unmount_probe(state_mount)?;
@@ -214,23 +214,23 @@ pub(crate) fn activate_existing_state(
         let status = StdCommand::new("umount")
             .arg(state_mount)
             .status()
-            .context("unmount read-only CYBEX_STATE recovery probe")?;
+            .context("unmount read-only TIARIS_STATE recovery probe")?;
         if !status.success() {
-            bail!("read-only CYBEX_STATE recovery probe could not be unmounted")
+            bail!("read-only TIARIS_STATE recovery probe could not be unmounted")
         }
         let status = StdCommand::new("mount")
             .args(["-t", "ext4", "-o", recovery_active_mount_options()])
             .arg(&probe.device_path)
             .arg(state_mount)
             .status()
-            .context("mount active CYBEX_STATE recovery state")?;
+            .context("mount active TIARIS_STATE recovery state")?;
         if !status.success() {
-            bail!("CYBEX_STATE could not be activated after package verification")
+            bail!("TIARIS_STATE could not be activated after package verification")
         }
     }
     validate_state_mount(state_mount, &probe.device_path)?;
     if mount_is_read_only(state_mount)? {
-        bail!("active CYBEX_STATE recovery mount remained read-only")
+        bail!("active TIARIS_STATE recovery mount remained read-only")
     }
     let refreshed = load_durable_state(state_mount)?;
     validate_recovered_state_transition(&probe.state, &refreshed)?;
@@ -251,7 +251,9 @@ fn recovery_active_mount_options() -> &'static str {
 
 fn require_read_only_recovery_probe(read_only: bool) -> Result<()> {
     if !read_only {
-        bail!("refusing recovery while CYBEX_STATE is writable; reboot to obtain a read-only probe")
+        bail!(
+            "refusing recovery while TIARIS_STATE is writable; reboot to obtain a read-only probe"
+        )
     }
     Ok(())
 }
@@ -262,7 +264,7 @@ fn validate_existing_recovery_probe(path: &Path) -> Result<()> {
     if mountinfo.len() > 4 * 1024 * 1024
         || !mountinfo_has_safe_recovery_probe(&mountinfo, path.as_os_str().as_bytes())
     {
-        bail!("CYBEX_STATE recovery probe did not disable ext4 journal replay")
+        bail!("TIARIS_STATE recovery probe did not disable ext4 journal replay")
     }
     Ok(())
 }
@@ -315,10 +317,10 @@ fn comma_option(options: &[u8], expected: &[u8]) -> bool {
 
 fn mount_is_read_only(path: &Path) -> Result<bool> {
     let path = std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| anyhow!("CYBEX_STATE mount path contains NUL"))?;
+        .map_err(|_| anyhow!("TIARIS_STATE mount path contains NUL"))?;
     let mut stats = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
     if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("inspect CYBEX_STATE mount flags");
+        return Err(std::io::Error::last_os_error()).context("inspect TIARIS_STATE mount flags");
     }
     let stats = unsafe { stats.assume_init() };
     Ok(stats.f_flag & libc::ST_RDONLY as libc::c_ulong != 0)
@@ -326,24 +328,25 @@ fn mount_is_read_only(path: &Path) -> Result<bool> {
 
 fn mounted_filesystem_type(path: &Path) -> Result<i64> {
     let path = std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| anyhow!("CYBEX_STATE mount path contains NUL"))?;
+        .map_err(|_| anyhow!("TIARIS_STATE mount path contains NUL"))?;
     let mut stats = std::mem::MaybeUninit::<libc::statfs>::zeroed();
     if unsafe { libc::statfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("inspect CYBEX_STATE filesystem type");
+        return Err(std::io::Error::last_os_error())
+            .context("inspect TIARIS_STATE filesystem type");
     }
     Ok(unsafe { stats.assume_init() }.f_type)
 }
 
 fn validate_state_mount(state_mount: &Path, device_path: &Path) -> Result<()> {
-    let mount = fs::metadata(state_mount).context("inspect CYBEX_STATE mountpoint")?;
-    let device = fs::metadata(device_path).context("inspect CYBEX_STATE block device")?;
+    let mount = fs::metadata(state_mount).context("inspect TIARIS_STATE mountpoint")?;
+    let device = fs::metadata(device_path).context("inspect TIARIS_STATE block device")?;
     if !mount.is_dir()
         || !device.file_type().is_block_device()
         || mounted_filesystem_type(state_mount)? != EXT4_SUPER_MAGIC
         || libc::major(mount.dev()) != libc::major(device.rdev())
         || libc::minor(mount.dev()) != libc::minor(device.rdev())
     {
-        bail!("CYBEX_STATE mount does not match its unique partition-label device")
+        bail!("TIARIS_STATE mount does not match its unique partition-label device")
     }
     Ok(())
 }
@@ -366,7 +369,7 @@ fn validate_recovered_state_transition(
         || (probed.installation_complete && !active.installation_complete)
         || active.updated_at < probed.updated_at
     {
-        bail!("CYBEX_STATE changed incompatibly while its recovery probe was read-only")
+        bail!("TIARIS_STATE changed incompatibly while its recovery probe was read-only")
     }
     Ok(())
 }
@@ -412,7 +415,7 @@ fn select_installed_boot_entry(efivars: &Path) -> Result<u16> {
             continue;
         };
         let lower = description.to_ascii_lowercase();
-        if lower.contains("ubuntu") || lower.contains("cybex james") {
+        if lower.contains("ubuntu") || lower.contains("tiaris nest") {
             candidates.push(number);
         }
     }
@@ -490,7 +493,7 @@ fn efi_load_option_description(body: &[u8]) -> Result<Option<String>> {
 
 pub(crate) async fn create_state_partition_first(
     plan: &SignedInstallPlan,
-    inventory: &JamesProvisioningInventory,
+    inventory: &NestProvisioningInventory,
     state_mount: &Path,
 ) -> Result<PreparedStorage> {
     let disk = inventory
@@ -533,7 +536,7 @@ pub(crate) async fn create_state_partition_first(
         &[
             &format!("--new={state_index}:{}:{}", starts[slot], ends[slot]),
             &format!("--typecode={state_index}:8300"),
-            &format!("--change-name={state_index}:CYBEX_STATE"),
+            &format!("--change-name={state_index}:TIARIS_STATE"),
             &disk.path,
         ],
     )
@@ -545,7 +548,7 @@ pub(crate) async fn create_state_partition_first(
         &[
             "-F",
             "-L",
-            "CYBEX_STATE",
+            "TIARIS_STATE",
             state_partition
                 .to_str()
                 .ok_or_else(|| anyhow!("state partition path is not UTF-8"))?,
@@ -579,7 +582,7 @@ pub(crate) async fn create_state_partition_first(
 
 pub(crate) async fn resume_prepared_storage(
     plan: &SignedInstallPlan,
-    inventory: &JamesProvisioningInventory,
+    inventory: &NestProvisioningInventory,
     state_mount: &Path,
 ) -> Result<PreparedStorage> {
     let disk = inventory
@@ -628,7 +631,7 @@ pub(crate) async fn resume_prepared_storage(
         starts[slot],
         ends[slot],
         "8300",
-        "CYBEX_STATE",
+        "TIARIS_STATE",
     )
     .await?;
     if !DurableProvisioningState::path(state_mount).is_file() {
@@ -655,10 +658,10 @@ pub(crate) async fn create_remaining_partitions(prepared: &PreparedStorage) -> R
     let starts = prepared.partition_starts;
     let ends = prepared.partition_ends;
     for (index, start, end, type_code, label) in [
-        (1, starts[0], ends[0], "ef00", "CYBEX_EFI"),
-        (2, starts[1], ends[1], "8300", "CYBEX_ROOT"),
-        (4, starts[3], ends[3], "8200", "CYBEX_SWAP"),
-        (5, starts[4], ends[4], "8300", "CYBEX_CACHE"),
+        (1, starts[0], ends[0], "ef00", "TIARIS_EFI"),
+        (2, starts[1], ends[1], "8300", "TIARIS_ROOT"),
+        (4, starts[3], ends[3], "8200", "TIARIS_SWAP"),
+        (5, starts[4], ends[4], "8300", "TIARIS_CACHE"),
     ] {
         match inspect_partition(disk, index).await? {
             Some(partition) => {
@@ -680,10 +683,10 @@ pub(crate) async fn create_remaining_partitions(prepared: &PreparedStorage) -> R
     }
     settle_partitions(disk).await?;
     for (index, start, end, type_code, label) in [
-        (1, starts[0], ends[0], "ef00", "CYBEX_EFI"),
-        (2, starts[1], ends[1], "8300", "CYBEX_ROOT"),
-        (4, starts[3], ends[3], "8200", "CYBEX_SWAP"),
-        (5, starts[4], ends[4], "8300", "CYBEX_CACHE"),
+        (1, starts[0], ends[0], "ef00", "TIARIS_EFI"),
+        (2, starts[1], ends[1], "8300", "TIARIS_ROOT"),
+        (4, starts[3], ends[3], "8200", "TIARIS_SWAP"),
+        (5, starts[4], ends[4], "8300", "TIARIS_CACHE"),
     ] {
         validate_existing_partition(disk, index, start, end, type_code, label).await?;
     }
@@ -797,7 +800,7 @@ pub(crate) fn save_durable_state(
     state_mount: &Path,
     state: &DurableProvisioningState,
 ) -> Result<()> {
-    fs::create_dir_all(state_mount).context("create CYBEX_STATE mount directory")?;
+    fs::create_dir_all(state_mount).context("create TIARIS_STATE mount directory")?;
     let mut state = state.clone();
     state.updated_at = Utc::now();
     let bytes =
@@ -823,7 +826,7 @@ pub(crate) fn load_durable_state(state_mount: &Path) -> Result<DurableProvisioni
     }
     let state: DurableProvisioningState =
         serde_json::from_slice(&bytes).context("parse durable provisioning state")?;
-    if state.schema != "cybex.james.provisioning-state.v1" {
+    if state.schema != "tiaris.nest.provisioning-state.v1" {
         bail!("durable provisioning state schema is unsupported")
     }
     Ok(state)
@@ -836,7 +839,7 @@ pub(crate) fn write_autoinstall(
     package_delivery: PackageDelivery,
 ) -> Result<()> {
     configure_live_offline_apt(Path::new("/"), package_delivery)?;
-    let hostname = format!("james-{}", device_id_suffix(&plan.reserved_device_id));
+    let hostname = format!("nest-{}", device_id_suffix(&plan.reserved_device_id));
     let config = json!({
         "autoinstall": {
             "version": 1,
@@ -866,7 +869,7 @@ fn offline_apt_config(package_delivery: PackageDelivery) -> Value {
         "preserve_sources_list": true,
         "fallback": "offline-install",
         "conf": concat!(
-            "Dir::Etc::sourcelist \"/etc/apt/sources.list.d/cybex-appliance.sources\";\n",
+            "Dir::Etc::sourcelist \"/etc/apt/sources.list.d/tiaris-appliance.sources\";\n",
             "Dir::Etc::sourceparts \"-\";\n",
             "Acquire::Languages \"none\";\n"
         ),
@@ -875,7 +878,7 @@ fn offline_apt_config(package_delivery: PackageDelivery) -> Value {
             // /etc/apt/sources.list.d. Keep the deb822 suffix here; APT ignores
             // extensionless source files, and the extracted target needs this
             // repository during its built-in UEFI curthooks.
-            "cybex-appliance.sources": {
+            "tiaris-appliance.sources": {
                 // Curtin's Ubuntu 26.04 legacy-to-deb822 converter drops the
                 // trusted option. Supply deb822 directly so apt retains the
                 // independently verified repository's trust boundary. Curtin
@@ -902,14 +905,14 @@ fn configure_live_offline_apt(root: &Path, package_delivery: PackageDelivery) ->
     let legacy_sources = root.join("etc/apt/sources.list");
     atomic_write(
         &legacy_sources,
-        b"# Cybex James installation uses the verified offline package snapshot.\n",
+        b"# Tiaris Nest installation uses the verified offline package snapshot.\n",
         0o644,
     )?;
     let repository = repository_path(package_delivery);
     let source =
         format!("Types: deb\nURIs: file://{repository}\nSuites: ./\nComponents:\nTrusted: yes\n");
     atomic_write(
-        &sources_dir.join("cybex-appliance.sources"),
+        &sources_dir.join("tiaris-appliance.sources"),
         source.as_bytes(),
         0o644,
     )
@@ -917,9 +920,9 @@ fn configure_live_offline_apt(root: &Path, package_delivery: PackageDelivery) ->
 
 fn offline_package_install_commands(package_delivery: PackageDelivery) -> Value {
     let packages = [
-        "cybex-james",
-        "cybex-james-bootstrap",
-        "cybex-james-appliance",
+        "tiaris-nest",
+        "tiaris-nest-bootstrap",
+        "tiaris-nest-appliance",
         "linux-generic",
         "linux-firmware",
         "intel-microcode",
@@ -937,7 +940,7 @@ fn offline_package_install_commands(package_delivery: PackageDelivery) -> Value 
         "btrfs-progs",
         "watchdog",
     ];
-    let apt_options = "-o Dir::Etc::sourcelist=/tmp/cybex-offline.list \
+    let apt_options = "-o Dir::Etc::sourcelist=/tmp/tiaris-offline.list \
                        -o Dir::Etc::sourceparts=- \
                        -o Acquire::Languages=none";
     let (prepare_repository, cleanup_repository) = match package_delivery {
@@ -952,9 +955,9 @@ fn offline_package_install_commands(package_delivery: PackageDelivery) -> Value 
     let install = format!(
         "{prepare_repository}\
          printf '%s\\n' 'deb [trusted=yes] file://{repository} ./' \
-         > /target/tmp/cybex-offline.list; \
-         chmod 0644 /target/tmp/cybex-offline.list; \
-         trap 'rm -f /target/tmp/cybex-offline.list{cleanup_repository}' EXIT; \
+         > /target/tmp/tiaris-offline.list; \
+         chmod 0644 /target/tmp/tiaris-offline.list; \
+         trap 'rm -f /target/tmp/tiaris-offline.list{cleanup_repository}' EXIT; \
          curtin in-target --target=/target -- apt-get {apt_options} update; \
          curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive \
          apt-get {apt_options} install --yes --no-install-recommends {}",
@@ -962,16 +965,16 @@ fn offline_package_install_commands(package_delivery: PackageDelivery) -> Value 
     );
     json!([
         ["sh", "-ceu", install],
-        "/cdrom/cybex/bootstrap/cybex-james-bootstrap event --state-mount /run/cybex-state --stage installing_packages --status succeeded --progress-percent 80 --message 'Offline Ubuntu and Cybex packages installed'",
-        "/cdrom/cybex/bootstrap/cybex-james-bootstrap finalize-target --target /target --state-mount /run/cybex-state",
-        "/cdrom/cybex/bootstrap/cybex-james-bootstrap event --state-mount /run/cybex-state --stage installing_bootloader --status succeeded --progress-percent 95 --message 'Signed Ubuntu bootloader installed'",
-        "/cdrom/cybex/bootstrap/cybex-james-bootstrap event --state-mount /run/cybex-state --stage rebooting --status succeeded --progress-percent 99 --message 'Rebooting into the managed appliance'"
+        "/cdrom/tiaris/bootstrap/tiaris-nest-bootstrap event --state-mount /run/tiaris-state --stage installing_packages --status succeeded --progress-percent 80 --message 'Offline Ubuntu and Tiaris packages installed'",
+        "/cdrom/tiaris/bootstrap/tiaris-nest-bootstrap finalize-target --target /target --state-mount /run/tiaris-state",
+        "/cdrom/tiaris/bootstrap/tiaris-nest-bootstrap event --state-mount /run/tiaris-state --stage installing_bootloader --status succeeded --progress-percent 95 --message 'Signed Ubuntu bootloader installed'",
+        "/cdrom/tiaris/bootstrap/tiaris-nest-bootstrap event --state-mount /run/tiaris-state --stage rebooting --status succeeded --progress-percent 99 --message 'Rebooting into the managed appliance'"
     ])
 }
 
 fn repository_path(package_delivery: PackageDelivery) -> &'static str {
     match package_delivery {
-        PackageDelivery::Embedded => "/cdrom/cybex/apt",
+        PackageDelivery::Embedded => "/cdrom/tiaris/apt",
         PackageDelivery::NetworkSnapshot => STAGED_REPOSITORY_PATH,
         PackageDelivery::SystemClosure => unreachable!("NixOS cannot select an APT repository"),
     }
@@ -1002,15 +1005,15 @@ fn storage_config(prepared: &PreparedStorage) -> Result<Value> {
         {"type":"partition","id":"state-partition","device":"disk0","number":3,"size":partition_sizes[2],"preserve":true},
         {"type":"partition","id":"swap-partition","device":"disk0","number":4,"size":partition_sizes[3],"preserve":true},
         {"type":"partition","id":"cache-partition","device":"disk0","number":5,"size":partition_sizes[4],"preserve":true},
-        {"type":"format","id":"efi-format","volume":"efi-partition","fstype":"fat32","label":"CYBEX_EFI"},
-        {"type":"format","id":"root-format","volume":"root-partition","fstype":"btrfs","label":"CYBEX_ROOT"},
-        {"type":"format","id":"state-format","volume":"state-partition","fstype":"ext4","label":"CYBEX_STATE","preserve":true},
-        {"type":"format","id":"swap-format","volume":"swap-partition","fstype":"swap","label":"CYBEX_SWAP"},
-        {"type":"format","id":"cache-format","volume":"cache-partition","fstype":"ext4","label":"CYBEX_CACHE"},
+        {"type":"format","id":"efi-format","volume":"efi-partition","fstype":"fat32","label":"TIARIS_EFI"},
+        {"type":"format","id":"root-format","volume":"root-partition","fstype":"btrfs","label":"TIARIS_ROOT"},
+        {"type":"format","id":"state-format","volume":"state-partition","fstype":"ext4","label":"TIARIS_STATE","preserve":true},
+        {"type":"format","id":"swap-format","volume":"swap-partition","fstype":"swap","label":"TIARIS_SWAP"},
+        {"type":"format","id":"cache-format","volume":"cache-partition","fstype":"ext4","label":"TIARIS_CACHE"},
         {"type":"mount","id":"root-mount","device":"root-format","path":"/","options":"defaults"},
         {"type":"mount","id":"efi-mount","device":"efi-format","path":"/boot/efi","options":"umask=0077"},
-        {"type":"mount","id":"state-mount","device":"state-format","path":"/var/lib/cybex-james/state","options":"nodev,nosuid"},
-        {"type":"mount","id":"cache-mount","device":"cache-format","path":"/var/cache/cybex-james","options":"nodev,nosuid,exec"},
+        {"type":"mount","id":"state-mount","device":"state-format","path":"/var/lib/tiaris-nest/state","options":"nodev,nosuid"},
+        {"type":"mount","id":"cache-mount","device":"cache-format","path":"/var/cache/tiaris-nest","options":"nodev,nosuid,exec"},
         {"type":"mount","id":"swap-mount","device":"swap-format","path":"none"}
     ]))
 }
@@ -1026,11 +1029,11 @@ pub(crate) fn materialize_target(
     if state.plan.ssh_ca_public_keys.is_empty() {
         bail!("install plan contains no SSH CA trust key")
     }
-    let target_state_root = target.join("var/lib/cybex-james/state");
-    let target_control = target.join("var/lib/cybex-james/control");
+    let target_state_root = target.join("var/lib/tiaris-nest/state");
+    let target_control = target.join("var/lib/tiaris-nest/control");
     let target_agent = target_state_root.join("agent");
     let target_inbox = target_state_root.join("inbox");
-    let target_etc = target.join("etc/cybex-james");
+    let target_etc = target.join("etc/tiaris-nest");
     let target_ssh = target.join("etc/ssh");
     let target_netplan = target.join("etc/netplan");
     for directory in [
@@ -1043,7 +1046,7 @@ pub(crate) fn materialize_target(
     ] {
         fs::create_dir_all(directory).with_context(|| format!("create {}", directory.display()))?;
     }
-    let transient_apt_source = target.join("etc/apt/sources.list.d/cybex-appliance.sources");
+    let transient_apt_source = target.join("etc/apt/sources.list.d/tiaris-appliance.sources");
     if transient_apt_source.exists() {
         fs::remove_file(&transient_apt_source)
             .with_context(|| format!("remove {}", transient_apt_source.display()))?;
@@ -1073,10 +1076,10 @@ pub(crate) fn materialize_target(
     )?;
 
     let public_base_url = public_base_url(&state.plan);
-    let config = james_config(target, state, &public_base_url)?;
+    let config = nest_config(target, state, &public_base_url)?;
     atomic_write(&target_etc.join("config.toml"), config.as_bytes(), 0o600)?;
     atomic_write(
-        &target_netplan.join("90-cybex-james.yaml"),
+        &target_netplan.join("90-tiaris-nest.yaml"),
         &serde_json::to_vec_pretty(&netplan(&state.plan.network, &state.plan))?,
         0o600,
     )?;
@@ -1085,7 +1088,7 @@ pub(crate) fn materialize_target(
         &serde_json::to_vec_pretty(&netplan(&state.plan.network, &state.plan))?,
         0o600,
     )?;
-    let fallback = JamesProvisioningNetworkPlan {
+    let fallback = NestProvisioningNetworkPlan {
         mode: "dhcp".to_string(),
         interface_id: state.plan.network.interface_id.clone(),
         address_cidr: None,
@@ -1098,19 +1101,19 @@ pub(crate) fn materialize_target(
         0o600,
     )?;
     atomic_write(
-        &target_ssh.join("cybex-james-ca.pub"),
+        &target_ssh.join("tiaris-nest-ca.pub"),
         format!("{}\n", state.plan.ssh_ca_public_keys.join("\n")).as_bytes(),
         0o644,
     )?;
     atomic_write(
-        &target_ssh.join("cybex-james-principals"),
+        &target_ssh.join("tiaris-nest-principals"),
         format!("{}\n", state.plan.reserved_device_id).as_bytes(),
         0o644,
     )?;
     atomic_write(
         &target_control.join("appliance-release.json"),
         &serde_json::to_vec_pretty(&json!({
-            "schema": "cybex.james.installed-appliance.v1",
+            "schema": "tiaris.nest.installed-appliance.v1",
             "release": state.plan.release_version,
             "base_os": "ubuntu",
             "base_os_version": "26.04",
@@ -1127,9 +1130,9 @@ pub(crate) fn materialize_target(
     stage_cache_backed_nix_store(target)?;
     append_unique_line(
         &target.join("etc/fstab"),
-        "/var/cache/cybex-james/nix /nix none bind,nodev,nosuid,exec 0 0",
+        "/var/cache/tiaris-nest/nix /nix none bind,nodev,nosuid,exec 0 0",
     )?;
-    // The live and target paths are two mounts of the same CYBEX_STATE
+    // The live and target paths are two mounts of the same TIARIS_STATE
     // filesystem. Flush the live file; it is already visible in the target.
     File::open(state_mount)?.sync_all()?;
     Ok(())
@@ -1137,7 +1140,7 @@ pub(crate) fn materialize_target(
 
 fn stage_cache_backed_nix_store(target: &Path) -> Result<()> {
     let target_nix = target.join("nix");
-    let cache_nix = target.join("var/cache/cybex-james/nix");
+    let cache_nix = target.join("var/cache/tiaris-nest/nix");
     fs::create_dir_all(&target_nix).context("create installed Nix directory")?;
     fs::create_dir_all(&cache_nix).context("create cache-backed Nix store")?;
 
@@ -1150,21 +1153,21 @@ fn stage_cache_backed_nix_store(target: &Path) -> Result<()> {
     }
 
     // Debian's Nix packages may seed /nix during installation. Preserve that
-    // content before the persistent CYBEX_CACHE bind mount hides the root-side
+    // content before the persistent TIARIS_CACHE bind mount hides the root-side
     // directory on first boot.
     let status = StdCommand::new("cp")
         .args(["--archive", "--reflink=auto", "--"])
         .arg(target_nix.join("."))
         .arg(&cache_nix)
         .status()
-        .context("copy installed Nix content into CYBEX_CACHE")?;
+        .context("copy installed Nix content into TIARIS_CACHE")?;
     if !status.success() {
-        bail!("installed Nix content could not be staged in CYBEX_CACHE")
+        bail!("installed Nix content could not be staged in TIARIS_CACHE")
     }
     Ok(())
 }
 
-pub(crate) fn netplan(network: &JamesProvisioningNetworkPlan, plan: &SignedInstallPlan) -> Value {
+pub(crate) fn netplan(network: &NestProvisioningNetworkPlan, plan: &SignedInstallPlan) -> Value {
     let mut device = serde_json::Map::new();
     device.insert(
         "match".to_string(),
@@ -1193,26 +1196,26 @@ pub(crate) fn netplan(network: &JamesProvisioningNetworkPlan, plan: &SignedInsta
         "network": {
             "version": 2,
             "renderer": "networkd",
-            "ethernets": {"cybex-james": Value::Object(device)}
+            "ethernets": {"tiaris-nest": Value::Object(device)}
         }
     })
 }
 
-pub(super) fn james_config(
+pub(super) fn nest_config(
     target: &Path,
     state: &DurableProvisioningState,
     public_base_url: &str,
 ) -> Result<String> {
     let admin_token = super::protocol::sha256_hex(format!(
-        "CYBEX-JAMES-LOCAL-ADMIN-V1\0{}",
+        "TIARIS-NEST-LOCAL-ADMIN-V1\0{}",
         state.device_private_key_b64
     ));
     let release_public_key =
-        fs::read_to_string(target.join("usr/share/cybex-james/release-public-key"))
-            .context("read installed James release public key")?;
+        fs::read_to_string(target.join("usr/share/tiaris-nest/release-public-key"))
+            .context("read installed Nest release public key")?;
     let release_public_key = release_public_key.trim();
     if release_public_key.is_empty() {
-        bail!("installed James release public key is empty")
+        bail!("installed Nest release public key is empty")
     }
     let organization_slug = state
         .plan
@@ -1222,14 +1225,14 @@ pub(super) fn james_config(
     let blueprint_target = crate::config::governed_blueprint_build_target();
     Ok(format!(
         "[server]\nlisten_addr = \"127.0.0.1:8080\"\npublic_base_url = {}\n\n\
-         [paths]\ndata_dir = \"/var/lib/cybex-james/state/agent\"\ndatabase_path = \"/var/lib/cybex-james/state/agent/cybex-james.sqlite\"\nboot_assets_dir = \"/var/cache/cybex-james/www\"\nstatic_dir = \"/var/cache/cybex-james/www/assets\"\ntftp_dir = \"/var/cache/cybex-james/tftp\"\n\n\
+         [paths]\ndata_dir = \"/var/lib/tiaris-nest/state/agent\"\ndatabase_path = \"/var/lib/tiaris-nest/state/agent/tiaris-nest.sqlite\"\nboot_assets_dir = \"/var/cache/tiaris-nest/www\"\nstatic_dir = \"/var/cache/tiaris-nest/www/assets\"\ntftp_dir = \"/var/cache/tiaris-nest/tftp\"\n\n\
          [auth]\nadmin_token = {}\n\n\
-         [build]\nwork_dir = \"/var/cache/cybex-james/build\"\noutput_dir = \"/var/cache/cybex-james/build-outputs\"\nnix_binary = \"/usr/bin/nix\"\nmanage_source_url_template = {}\n\n\
+         [build]\nwork_dir = \"/var/cache/tiaris-nest/build\"\noutput_dir = \"/var/cache/tiaris-nest/build-outputs\"\nnix_binary = \"/usr/bin/nix\"\nmanage_source_url_template = {}\n\n\
          [[build.targets]]\nartifact_type = {}\ntarget = {}\nsystem = {}\nflake = {}\nattr = {}\n\n\
-         [cache]\nroot_dir = \"/var/cache/cybex-james/www/cache\"\nprivate_key_path = \"/var/lib/cybex-james/state/agent/cache-private.pem\"\npublic_key_path = \"/var/lib/cybex-james/state/agent/cache-public.pem\"\n\n\
+         [cache]\nroot_dir = \"/var/cache/tiaris-nest/www/cache\"\nprivate_key_path = \"/var/lib/tiaris-nest/state/agent/cache-private.pem\"\npublic_key_path = \"/var/lib/tiaris-nest/state/agent/cache-public.pem\"\n\n\
          [update]\ntrusted_public_key = {}\n\n\
          [workstation_netboot]\nallow_private_release_urls = false\nmulticast_emergency_disabled = false\nudp_sender_path = \"/usr/bin/udp-sender\"\n\n\
-         [manage]\nenabled = true\napi_url = {}\norganization_id = {}\norganization_slug = {}\nstate_path = \"/var/lib/cybex-james/state/agent/manage-state.json\"\nsync_interval_seconds = 30\nhttp_timeout_seconds = 30\n",
+         [manage]\nenabled = true\napi_url = {}\norganization_id = {}\norganization_slug = {}\nstate_path = \"/var/lib/tiaris-nest/state/agent/manage-state.json\"\nsync_interval_seconds = 30\nhttp_timeout_seconds = 30\n",
         toml_string(public_base_url),
         toml_string(&admin_token),
         toml_string(crate::manage_source::MANAGE_SOURCE_URL_TEMPLATE),
@@ -1262,7 +1265,7 @@ pub(super) fn public_base_url(plan: &SignedInstallPlan) -> String {
         .map(|address| format!("http://{address}"))
         .unwrap_or_else(|| {
             format!(
-                "http://james-{}.local",
+                "http://nest-{}.local",
                 device_id_suffix(&plan.reserved_device_id)
             )
         })
@@ -1419,7 +1422,7 @@ mod tests {
     fn durable_state_fixture() -> DurableProvisioningState {
         let now = Utc::now();
         let plan = serde_json::from_value(json!({
-            "schema": "cybex.james.install-plan.v1",
+            "schema": "tiaris.nest.install-plan.v1",
             "id": "11111111-1111-4111-8111-111111111111",
             "organization_id": "22222222-2222-4222-8222-222222222222",
             "organization_slug": "acme-control",
@@ -1430,7 +1433,7 @@ mod tests {
             "hardware_digest": "b".repeat(64),
             "provisioning_public_key_fingerprint": "c".repeat(64),
             "reserved_device_id": "dev_0123456789abcdef0123456789abcdef",
-            "display_name": "Recovery James",
+            "display_name": "Recovery Nest",
             "target_disk_id": "disk-1",
             "target_disk": {
                 "id": "disk-1",
@@ -1479,7 +1482,7 @@ mod tests {
         }))
         .unwrap();
         DurableProvisioningState {
-            schema: "cybex.james.provisioning-state.v1".to_string(),
+            schema: "tiaris.nest.provisioning-state.v1".to_string(),
             session_id: uuid::Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap(),
             plan,
             manage_origin: "https://manage.cybex.net".to_string(),
@@ -1497,10 +1500,10 @@ mod tests {
     #[test]
     fn fresh_config_accepts_standard_and_dock_blueprint_build_contract() {
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-fresh-config-{}",
+            "tiaris-nest-fresh-config-{}",
             Uuid::new_v4().simple()
         ));
-        let release_key_path = root.join("usr/share/cybex-james/release-public-key");
+        let release_key_path = root.join("usr/share/tiaris-nest/release-public-key");
         fs::create_dir_all(release_key_path.parent().unwrap()).unwrap();
         let public_key = STANDARD.encode(
             SigningKey::from_bytes(&[7_u8; 32])
@@ -1509,10 +1512,10 @@ mod tests {
         );
         fs::write(&release_key_path, format!("{public_key}\n")).unwrap();
 
-        let body = james_config(&root, &durable_state_fixture(), "http://192.0.2.20").unwrap();
+        let body = nest_config(&root, &durable_state_fixture(), "http://192.0.2.20").unwrap();
         let loaded = crate::config::AppConfig::from_toml_str(
             &body,
-            &root.join("etc/cybex-james/config.toml"),
+            &root.join("etc/tiaris-nest/config.toml"),
         )
         .unwrap();
         loaded.validate_appliance_config().unwrap();
@@ -1541,7 +1544,7 @@ mod tests {
 
         let mut predecessor = durable_state_fixture();
         predecessor.plan.organization_slug = None;
-        let error = james_config(&root, &predecessor, "http://192.0.2.20")
+        let error = nest_config(&root, &predecessor, "http://192.0.2.20")
             .unwrap_err()
             .to_string();
         assert!(error.contains("install plan organization slug is missing"));
@@ -1551,7 +1554,7 @@ mod tests {
 
     #[test]
     fn empty_foreign_or_corrupt_state_is_unmounted_without_granting_authority() {
-        let root = std::env::temp_dir().join(format!("james-state-probe-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("nest-state-probe-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let durable = durable_state_fixture();
         let unmounted = std::cell::Cell::new(false);
@@ -1629,29 +1632,33 @@ mod tests {
 
     #[test]
     fn existing_probe_requires_read_only_ext4_with_replay_disabled() {
-        let safe = b"36 29 8:3 / /run/cybex-state ro,nosuid,nodev - ext4 /dev/sda3 ro,norecovery\n";
-        assert!(mountinfo_has_safe_recovery_probe(safe, b"/run/cybex-state"));
-        let writable = b"36 29 8:3 / /run/cybex-state rw,nosuid,nodev - ext4 /dev/sda3 rw\n";
+        let safe =
+            b"36 29 8:3 / /run/tiaris-state ro,nosuid,nodev - ext4 /dev/sda3 ro,norecovery\n";
+        assert!(mountinfo_has_safe_recovery_probe(
+            safe,
+            b"/run/tiaris-state"
+        ));
+        let writable = b"36 29 8:3 / /run/tiaris-state rw,nosuid,nodev - ext4 /dev/sda3 rw\n";
         assert!(!mountinfo_has_safe_recovery_probe(
             writable,
-            b"/run/cybex-state"
+            b"/run/tiaris-state"
         ));
-        let replaying = b"36 29 8:3 / /run/cybex-state ro,nosuid,nodev - ext4 /dev/sda3 ro\n";
+        let replaying = b"36 29 8:3 / /run/tiaris-state ro,nosuid,nodev - ext4 /dev/sda3 ro\n";
         assert!(!mountinfo_has_safe_recovery_probe(
             replaying,
-            b"/run/cybex-state"
+            b"/run/tiaris-state"
         ));
         let wrong_filesystem =
-            b"36 29 8:3 / /run/cybex-state ro,nosuid,nodev,noload - xfs /dev/sda3 ro\n";
+            b"36 29 8:3 / /run/tiaris-state ro,nosuid,nodev,noload - xfs /dev/sda3 ro\n";
         assert!(!mountinfo_has_safe_recovery_probe(
             wrong_filesystem,
-            b"/run/cybex-state"
+            b"/run/tiaris-state"
         ));
         let escaped =
-            b"36 29 8:3 / /run/cybex\\040state ro,nosuid,nodev,noload - ext4 /dev/sda3 ro\n";
+            b"36 29 8:3 / /run/tiaris\\040state ro,nosuid,nodev,noload - ext4 /dev/sda3 ro\n";
         assert!(mountinfo_has_safe_recovery_probe(
             escaped,
-            b"/run/cybex state"
+            b"/run/tiaris state"
         ));
     }
 
@@ -1723,18 +1730,18 @@ mod tests {
                     Last sector: 2047 (at 1023.5 KiB)\n\
                     Partition size: 1024 sectors (512.0 KiB)\n\
                     Attribute flags: 0000000000000000\n\
-                    Partition name: 'CYBEX_STATE'\n";
+                    Partition name: 'TIARIS_STATE'\n";
         let partition = parse_partition_info(body, 3).unwrap().unwrap();
         assert_eq!(partition.first_sector, 1024);
         assert_eq!(partition.last_sector, 2047);
         assert_eq!(partition.type_code, "0FC63DAF-8483-4772-8E79-3D69D8477DE4");
-        assert_eq!(partition.name, "CYBEX_STATE");
+        assert_eq!(partition.name, "TIARIS_STATE");
         partition
-            .validate(1024, 2047, "8300", "CYBEX_STATE")
+            .validate(1024, 2047, "8300", "TIARIS_STATE")
             .unwrap();
         assert!(
             partition
-                .validate(1024, 2047, "8200", "CYBEX_STATE")
+                .validate(1024, 2047, "8200", "TIARIS_STATE")
                 .is_err()
         );
     }
@@ -1754,7 +1761,7 @@ mod tests {
     #[test]
     fn completed_install_selects_active_appliance_uefi_entry_without_efibootmgr() {
         let root =
-            std::env::temp_dir().join(format!("cybex-james-efivars-{}", Uuid::new_v4().simple()));
+            std::env::temp_dir().join(format!("tiaris-nest-efivars-{}", Uuid::new_v4().simple()));
         fs::create_dir_all(&root).unwrap();
         write_boot_option(
             &root.join(format!("Boot0007-{EFI_GLOBAL_VARIABLE_GUID}")),
@@ -1768,7 +1775,7 @@ mod tests {
         );
         write_boot_option(
             &root.join(format!("Boot0002-{EFI_GLOBAL_VARIABLE_GUID}")),
-            "Cybex James stale",
+            "Tiaris Nest stale",
             false,
         );
 
@@ -1787,7 +1794,7 @@ mod tests {
     #[test]
     fn completed_install_rejects_missing_or_malformed_uefi_entries() {
         let root = std::env::temp_dir().join(format!(
-            "cybex-james-efivars-invalid-{}",
+            "tiaris-nest-efivars-invalid-{}",
             Uuid::new_v4().simple()
         ));
         fs::create_dir_all(&root).unwrap();
@@ -1821,7 +1828,7 @@ mod tests {
             config["conf"]
                 .as_str()
                 .unwrap()
-                .contains("cybex-appliance.sources")
+                .contains("tiaris-appliance.sources")
         );
         assert!(
             config["conf"]
@@ -1830,15 +1837,15 @@ mod tests {
                 .contains("sourceparts \"-\"")
         );
         assert_eq!(
-            config["sources"]["cybex-appliance.sources"]["source"],
-            "Types: deb\nURIs: file:///cdrom/cybex/apt\nSuites: ./\nComponents:\nTrusted: yes\n"
+            config["sources"]["tiaris-appliance.sources"]["source"],
+            "Types: deb\nURIs: file:///cdrom/tiaris/apt\nSuites: ./\nComponents:\nTrusted: yes\n"
         );
     }
 
     #[test]
     fn live_offline_apt_source_replaces_ubuntu_and_cdrom_sources() {
         let root =
-            std::env::temp_dir().join(format!("cybex-james-offline-apt-test-{}", Uuid::new_v4()));
+            std::env::temp_dir().join(format!("tiaris-nest-offline-apt-test-{}", Uuid::new_v4()));
         let sources_dir = root.join("etc/apt/sources.list.d");
         fs::create_dir_all(&sources_dir).unwrap();
         fs::write(sources_dir.join("cdrom.sources"), b"cdrom\n").unwrap();
@@ -1849,12 +1856,12 @@ mod tests {
         assert!(!sources_dir.join("cdrom.sources").exists());
         assert!(!sources_dir.join("ubuntu.sources").exists());
         assert_eq!(
-            fs::read_to_string(sources_dir.join("cybex-appliance.sources")).unwrap(),
-            "Types: deb\nURIs: file:///run/cybex-appliance-repo/packages\nSuites: ./\nComponents:\nTrusted: yes\n"
+            fs::read_to_string(sources_dir.join("tiaris-appliance.sources")).unwrap(),
+            "Types: deb\nURIs: file:///run/tiaris-appliance-repo/packages\nSuites: ./\nComponents:\nTrusted: yes\n"
         );
         assert_eq!(
             fs::read_to_string(root.join("etc/apt/sources.list")).unwrap(),
-            "# Cybex James installation uses the verified offline package snapshot.\n"
+            "# Tiaris Nest installation uses the verified offline package snapshot.\n"
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -1869,15 +1876,15 @@ mod tests {
         let install = install_command[2].as_str().unwrap();
         let mkdir = install.find("mkdir -p /target/cdrom").unwrap();
         let mount = install.find("mount --bind /cdrom /target/cdrom").unwrap();
-        let source = install.find("/target/tmp/cybex-offline.list").unwrap();
+        let source = install.find("/target/tmp/tiaris-offline.list").unwrap();
         let update = install.find(" update;").unwrap();
         let packages = install.find(" install --yes").unwrap();
         assert!(mkdir < mount && mount < source && source < update && update < packages);
-        assert!(install.contains("deb [trusted=yes] file:///cdrom/cybex/apt ./"));
-        assert!(install.contains("chmod 0644 /target/tmp/cybex-offline.list"));
+        assert!(install.contains("deb [trusted=yes] file:///cdrom/tiaris/apt ./"));
+        assert!(install.contains("chmod 0644 /target/tmp/tiaris-offline.list"));
         assert_eq!(install.matches("Dir::Etc::sourcelist").count(), 2);
         assert_eq!(install.matches("Dir::Etc::sourceparts=-").count(), 2);
-        assert!(install.contains("rm -f /target/tmp/cybex-offline.list"));
+        assert!(install.contains("rm -f /target/tmp/tiaris-offline.list"));
         assert!(install.contains("umount /target/cdrom"));
         assert!(install.contains("DEBIAN_FRONTEND=noninteractive"));
         assert!(
@@ -1888,9 +1895,9 @@ mod tests {
                 .success()
         );
         for package in [
-            "cybex-james",
-            "cybex-james-bootstrap",
-            "cybex-james-appliance",
+            "tiaris-nest",
+            "tiaris-nest-bootstrap",
+            "tiaris-nest-appliance",
             "linux-generic",
             "shim-signed",
             "openssh-server",
@@ -1915,22 +1922,22 @@ mod tests {
             config["conf"]
                 .as_str()
                 .unwrap()
-                .contains("cybex-appliance.sources")
+                .contains("tiaris-appliance.sources")
         );
         assert_eq!(
-            config["sources"]["cybex-appliance.sources"]["source"],
-            "Types: deb\nURIs: file:///run/cybex-appliance-repo/packages\nSuites: ./\nComponents:\nTrusted: yes\n"
+            config["sources"]["tiaris-appliance.sources"]["source"],
+            "Types: deb\nURIs: file:///run/tiaris-appliance-repo/packages\nSuites: ./\nComponents:\nTrusted: yes\n"
         );
         let commands = offline_package_install_commands(PackageDelivery::NetworkSnapshot);
         let install = commands[0].as_array().unwrap()[2].as_str().unwrap();
         let source = install
-            .find("file:///run/cybex-appliance-repo/packages")
+            .find("file:///run/tiaris-appliance-repo/packages")
             .unwrap();
         let update = install.find(" update;").unwrap();
         assert!(source < update);
         assert!(!install.contains("mount --bind"));
         assert!(!install.contains("umount"));
-        assert!(install.contains("trap 'rm -f /target/tmp/cybex-offline.list' EXIT"));
+        assert!(install.contains("trap 'rm -f /target/tmp/tiaris-offline.list' EXIT"));
         assert!(
             StdCommand::new("sh")
                 .args(["-n", "-c", install])
@@ -1945,7 +1952,7 @@ mod tests {
         let (starts, ends) = calculate_layout(512, (160 * GIB) / 512).unwrap();
         let prepared = PreparedStorage {
             disk_path: PathBuf::from("/dev/sda"),
-            state_mount: PathBuf::from("/run/cybex-state"),
+            state_mount: PathBuf::from("/run/tiaris-state"),
             sector_size: 512,
             nixos: false,
             partition_starts: starts,
@@ -1974,7 +1981,7 @@ mod tests {
         let (starts, ends) = calculate_layout(512, (160 * GIB) / 512).unwrap();
         let prepared = PreparedStorage {
             disk_path: PathBuf::from("/dev/sda"),
-            state_mount: PathBuf::from("/run/cybex-state"),
+            state_mount: PathBuf::from("/run/tiaris-state"),
             sector_size: 512,
             nixos: false,
             partition_starts: starts,
@@ -1998,7 +2005,7 @@ mod tests {
     #[test]
     fn cache_backed_nix_staging_preserves_installer_seeded_content() {
         let root =
-            std::env::temp_dir().join(format!("cybex-james-nix-stage-{}", Uuid::new_v4().simple()));
+            std::env::temp_dir().join(format!("tiaris-nest-nix-stage-{}", Uuid::new_v4().simple()));
         let result = (|| -> Result<()> {
             let source = root.join("nix/store");
             fs::create_dir_all(&source)?;
@@ -2007,7 +2014,7 @@ mod tests {
             stage_cache_backed_nix_store(&root)?;
 
             assert_eq!(
-                fs::read(root.join("var/cache/cybex-james/nix/store/seeded-path"))?,
+                fs::read(root.join("var/cache/tiaris-nest/nix/store/seeded-path"))?,
                 b"seeded"
             );
             Ok(())
