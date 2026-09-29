@@ -15,7 +15,9 @@ Coordinated releases require a separate exact-candidate promotion action.
 
 ## Isolated management service
 
-Both qualification jobs use `production-release-qualification`. Configure:
+Both qualification jobs use `production-release-qualification`. The process inputs
+below map to the existing `CYBEX_JAMES_*` GitHub variables; the runner retains
+`cybex-james-lab`. Configure those infrastructure values without rotating keys:
 
 - `TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN`: `https://manage.cybex.net`.
 - `TIARIS_NEST_QUALIFICATION_CONFIG`: absolute path to a dedicated root-private
@@ -158,3 +160,19 @@ healthy network projection. Qualification waits for a later accepted report with
 healthy local state, then checks the exact candidate generation, rollback reason,
 predecessor closure and permanent device identity. A failed proof reports only a
 fixed check name; private API values stay out of public logs.
+
+## James namespace transition
+
+The first Nest release uses `release/namespace-transition.json`, signed by the
+existing release authority, to admit exactly the immutable James 0.2.41
+publication as history. It binds both original descriptor hashes, GitHub release
+ID, source commit, repository, successor version and production origin. The
+original compatibility signature and manifest digest are verified without
+rewriting either document. This admission is reinstall-only; James media cannot
+serve as the Nest upgrade fixture. Qualification still requires a separately
+built and signed Nest baseline and all warm and cold acceptance gates.
+
+A successor must advance both the appliance version and workstation runtime,
+preserve the Management origin, and never lower the runtime compatibility epoch
+or appliance state schema. The original recovery-adoption authorization remains
+unchanged. A later candidate version requires a new exact signed authorization.

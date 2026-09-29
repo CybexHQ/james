@@ -1,3 +1,5 @@
+> CI and release compute run on The Beast. See [local CI](docs/local-ci.md).
+
 # Tiaris Nest
 
 Tiaris Nest is a managed NixOS appliance that builds and serves Tiaris
@@ -13,9 +15,9 @@ workstation releases together with the renamed management API. Existing signed
 artifacts cannot be relabelled; use the signed recovery/install flow when
 replacing an existing appliance. Applied SQLite migrations remain immutable;
 the new rename migration preserves device identities and boot assignments.
-Before publishing, configure the renamed `TIARIS_*` workflow secrets and runner
-environment variables with the existing corresponding values; do not generate
-replacement signing authorities as part of a name change. The original signed
+The GitHub repository, sealed `CYBEX_*` secrets/variables, and `cybex-james-lab`
+runner label retain their existing infrastructure identities. Workflows map these
+to the new `TIARIS_*` process inputs without rotating signing authorities. The original signed
 recovery authorization remains historical evidence and cannot authorize a
 renamed release.
 
