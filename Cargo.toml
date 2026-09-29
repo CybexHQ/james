@@ -1,6 +1,6 @@
 [package]
 name = "tiaris-nest"
-version = "0.2.12"
+version = "0.2.42"
 edition = "2024"
 rust-version = "1.85"
 description = "UEFI-only PXE/iPXE boot control service for Tiaris-managed infrastructure"
