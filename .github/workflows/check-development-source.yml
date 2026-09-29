@@ -11,7 +11,7 @@ permissions:
   contents: read
 jobs:
   source:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cybex-james-lab]
     environment: production-release
     steps:
       - name: Require an immutable source revision

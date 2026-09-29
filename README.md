@@ -1,3 +1,5 @@
+> CI and release compute run on The Beast. See [local CI](docs/local-ci.md).
+
 # Tiaris Nest
 
 Tiaris Nest is a managed NixOS appliance that builds and serves Tiaris
