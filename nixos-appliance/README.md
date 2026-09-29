@@ -220,7 +220,11 @@ bootstrap bytes. Release/ISO use standard Base64 signatures; install/network
 plans retain URL-safe unpadded signatures.
 
 The ISO uses installation-cd hardware support, UEFI USB-hybrid boot and the single
-branded **Boot Tiaris Nest Setup** entry. `/TIARIS_PROVISIONING.BIN` is an ordinary
+branded **Install Tiaris Nest** entry, drawn with Manage's presentation-only
+`deploy/nixos/tiaris-grub-theme.nix` (`variant = "nest-installer"`). The pinned
+module's options submenu (copy-to-RAM, nomodeset, debug), firmware-setup and
+shutdown entries are removed; the tty1 screen needs no basic-graphics entry
+because it falls back to text without DRM. `/TIARIS_PROVISIONING.BIN` is an ordinary
 uncompressed ISO9660 file consisting of exactly 8192 zero bytes in one extent.
 Derive its offset from final xorriso LBA metadata, reopen its exact bytes, and
 export slot identity. Personalization changes only those bytes; test HTTP ranges
@@ -274,8 +278,54 @@ entry and reboots automatically, including when ISO remains attached.
 First boot checks protected ownership, mounted store/state, actual booted closure,
 identity and network, stages credential-free immutable iPXE/TFTP files and enables
 managed readiness. TFTP readiness verifies exact complete transfers; HTTP boot
-readiness uses the current local IPv4 origin. The tty1 console shows only safe
-assigned name and Starting/Ready/Attention needed; administration stays in Tiaris.
+readiness uses the current local IPv4 origin. Administration stays in Tiaris.
+
+## tty1 screens
+
+Both tty1 screens run Manage's native `tiaris-installer-kiosk`
+(`deploy/nixos/tiaris-installer-kiosk-package.nix`): `--nest-setup` on the setup
+ISO (`tiaris-nest-setup-console.service`) and `--appliance` on the installed Nest
+(`tiaris-nest-console.service`). Each owns tty1 with getty/autovt masked, restarts
+always, and prints its own line-oriented text feed on tty1 when no DRM output is
+usable (nomodeset, serial). The kiosk reads at most 64 KiB, ignores unknown fields,
+treats a wrong `schema` as unavailable and a missing file as no status yet.
+Both projections are presentation only, written atomically (same-directory
+temporary, fsync, rename) as 0644 JSON of at most 16 KiB, and never contain
+secrets, keys, tokens, serials, raw errors or URLs with paths.
+
+`tiaris-nest-bootstrap prepare` writes `/run/tiaris-nest-setup/status.json`
+(`--setup-status`; `RuntimeDirectory` 0755, preserved across restarts), schema
+`tiaris.nest-setup-status.v1`. A write failure is logged and never changes
+provisioning. `state` is `checking` (rows `firmware`, `processor`, `memory`,
+`ethernet`, `disk`, `tiaris` with `done|active|queued|error`; a row below the
+Tiaris admission minimum of UEFI, 4 cores, 16 GiB, a linked wired interface and
+an eligible 160 GiB disk is `error`), `awaiting_approval` (`tiaris_host`,
+`network`, `boot_mode`, and `disk` only when exactly one disk is eligible),
+`installing` (`approved_at`, `organization`, `name`, plan `disk`/`network`,
+`system`, `encrypted` and `step` 1-5 of: stage the signed release, verify
+signatures and system, recheck disk/memory/link, partition and format, install
+the system; `progress_percent` only for the measured closure download),
+`stopped` (`stop.disk_untouched: true`: a hardware minimum or a pre-destructive
+failure code, with public `reason`, up to three `steps` and the failing `check`),
+`failed` (`disk_untouched: false` after any disk write or during resume) or
+`rebooting` (step 6).
+
+The `tiaris-nest` daemon rewrites `/run/tiaris-nest/console-status.json`
+(`RuntimeDirectory` 0755, preserved so a stopped daemon leaves a visibly stale
+file) every 15 seconds and after each accepted Tiaris report, schema
+`tiaris.nest-console-status.v1`. `state` is `attention` > `starting` >
+`healthy`: a failed watched unit is `service_failed` with its friendly name;
+Tiaris silence for more than ten minutes (measured from the later of the last
+contact and daemon start) is `tiaris_unreachable` with `since` the last contact;
+six consecutive not-ready checks spanning 75 seconds is `not_ready`. Otherwise
+`starting` has `stage` `first_boot`, `enrolling` (no accepted Tiaris report this
+boot) or `services` (units, local PXE readiness and discovery not yet ready).
+Identity fields come from the sealed root:tiaris-nest 0640 install plan (`name`,
+`organization`, `interface`), the live boot URL (`address`), the Manage origin
+(`tiaris_host`), the PXE supervisor (`pxe`), `/proc/stat` (`booted_at`) and the
+immutable system identity (`system`). `active_installs` counts distinct
+workstations holding an unexpired (ten-minute) Nest boot grant. The kiosk treats
+a status older than 90 seconds as stale attention.
 
 ## Services and network changes
 
