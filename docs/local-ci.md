@@ -24,3 +24,9 @@ remain required. This migration does not publish a new appliance or runtime.
 Digital Brain no longer drives coordinated releases. The local `tiaris-release`
 command in development prepares, reviews and explicitly approves immutable
 Manage/Nest/workstation candidates. Production is never deployed by ordinary CI.
+
+The former Digital Brain source-access dispatch is retired. Its use of `main`
+was rejected by the tag-only production environment. Local preparation checks
+source availability; the tagged producer still checks out the exact development
+commit with its protected read-only key before any build/signing step. Environment
+restrictions and signing secrets remain unchanged.
