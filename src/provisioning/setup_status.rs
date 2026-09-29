@@ -733,8 +733,110 @@ fn phase_stop(phase: Phase, host: Option<&str>) -> StopDetail {
     StopDetail::new(reason, true, &steps, check)
 }
 
+/// Milestones of one bootstrap run, in the order the flow reaches them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Milestone {
+    Started,
+    MediaVerified,
+    InventoryCollected,
+    SessionClaimed,
+    PlanAccepted,
+}
+
+impl Milestone {
+    fn previous(self) -> Self {
+        match self {
+            Self::Started | Self::MediaVerified => Self::Started,
+            Self::InventoryCollected => Self::MediaVerified,
+            Self::SessionClaimed => Self::InventoryCollected,
+            Self::PlanAccepted => Self::SessionClaimed,
+        }
+    }
+}
+
+/// A `stopped` or `failed` screen preserved from an earlier run of the
+/// restarting bootstrap. It stays on screen until this run passes `release`.
+#[derive(Clone, Debug)]
+struct HeldScreen {
+    document: serde_json::Map<String, serde_json::Value>,
+    release: Milestone,
+    failed: bool,
+}
+
+/// Classify a preserved status. Anything other than a well-formed
+/// `stopped`/`failed` document of this schema is ignored.
+fn held_screen(body: &[u8]) -> Option<HeldScreen> {
+    let serde_json::Value::Object(document) = serde_json::from_slice(body).ok()? else {
+        return None;
+    };
+    if document.get("schema")?.as_str()? != SETUP_STATUS_SCHEMA {
+        return None;
+    }
+    let state = document.get("state")?.as_str()?;
+    if !document
+        .get("stop")
+        .is_some_and(serde_json::Value::is_object)
+    {
+        return None;
+    }
+    let checks = document
+        .get("checks")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let check_state = |id: &str| {
+        checks
+            .iter()
+            .find(|check| check.get("id").and_then(serde_json::Value::as_str) == Some(id))
+            .and_then(|check| check.get("state").and_then(serde_json::Value::as_str))
+    };
+    let release = match state {
+        // After a disk write only resumed installation progress may replace it.
+        "failed" => Milestone::PlanAccepted,
+        "stopped" if document.contains_key("approved_at") => Milestone::PlanAccepted,
+        "stopped"
+            if ["firmware", "processor", "memory", "ethernet", "disk"]
+                .iter()
+                .any(|id| check_state(id) == Some("error")) =>
+        {
+            Milestone::InventoryCollected
+        }
+        "stopped" if !document.contains_key("tiaris_host") => Milestone::MediaVerified,
+        "stopped" if matches!(check_state("processor"), None | Some("queued")) => {
+            Milestone::InventoryCollected
+        }
+        "stopped" => Milestone::SessionClaimed,
+        _ => return None,
+    };
+    let failed = state == "failed";
+    Some(HeldScreen {
+        document,
+        release,
+        failed,
+    })
+}
+
+fn preserved_screen(path: Option<&Path>) -> Option<HeldScreen> {
+    let path = path?;
+    let body =
+        super::read_bounded_nofollow(path, MAX_STATUS_BYTES as u64, "preserved setup status")
+            .ok()?;
+    held_screen(&body)
+}
+
+/// What one update publishes: this run's status or the preserved screen.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Snapshot {
+    Current(Box<SetupStatus>),
+    Held(serde_json::Map<String, serde_json::Value>),
+}
+
 struct ReporterState {
     status: SetupStatus,
+    /// Preserved screen still shown instead of `status`, if any.
+    held: Option<HeldScreen>,
+    reached: Milestone,
     phase: Phase,
     /// True once any target write may have happened, including every resume
     /// of an interrupted installation.
@@ -763,11 +865,16 @@ impl SetupStatusReporter {
         Self::with_boot_mode(path, Some(boot_mode))
     }
 
+    /// A restarted bootstrap keeps showing a preserved `stopped` or `failed`
+    /// screen instead of flashing `checking` while it retries.
     fn with_boot_mode(path: Option<PathBuf>, boot_mode: Option<&'static str>) -> Self {
+        let held = preserved_screen(path.as_deref());
         Self {
             path,
             state: Mutex::new(ReporterState {
                 status: SetupStatus::initial(boot_mode),
+                held,
+                reached: Milestone::Started,
                 phase: Phase::Media,
                 disk_may_be_changed: false,
                 hardware_blocked: false,
@@ -777,14 +884,31 @@ impl SetupStatusReporter {
         }
     }
 
-    fn update(&self, change: impl FnOnce(&mut ReporterState)) {
+    fn update(&self, milestone: Milestone, change: impl FnOnce(&mut ReporterState)) {
         let snapshot = {
             let Ok(mut state) = self.state.lock() else {
                 return;
             };
             change(&mut state);
-            state.status.updated_at = timestamp(Utc::now());
-            state.status.clone()
+            state.reached = state.reached.max(milestone);
+            let now = timestamp(Utc::now());
+            state.status.updated_at = now.clone();
+            let reached = state.reached;
+            if state
+                .held
+                .as_ref()
+                .is_some_and(|held| reached >= held.release)
+            {
+                state.held = None;
+            }
+            match state.held.as_mut() {
+                Some(held) => {
+                    held.document
+                        .insert("updated_at".to_string(), serde_json::Value::String(now));
+                    Snapshot::Held(held.document.clone())
+                }
+                None => Snapshot::Current(Box::new(state.status.clone())),
+            }
         };
         let Some(path) = self.path.as_deref() else {
             return;
@@ -795,17 +919,22 @@ impl SetupStatusReporter {
     }
 
     #[cfg(test)]
+    fn holding(&self) -> bool {
+        self.state.lock().unwrap().held.is_some()
+    }
+
+    #[cfg(test)]
     fn snapshot(&self) -> SetupStatus {
         self.state.lock().unwrap().status.clone()
     }
 
     /// Firmware is being checked; every other row is queued.
     pub(super) fn begin(&self) {
-        self.update(|_| {});
+        self.update(Milestone::Started, |_| {});
     }
 
     pub(super) fn media_verified(&self, manage_origin: &str) {
-        self.update(|state| {
+        self.update(Milestone::MediaVerified, |state| {
             state.phase = Phase::Inventory;
             state.status.tiaris_host = origin_host(manage_origin);
         });
@@ -815,7 +944,7 @@ impl SetupStatusReporter {
         let link = LinkFacts {
             speed_mbps: linked_interface(inventory).and_then(|i| link_speed_mbps(&i.name)),
         };
-        self.update(|state| {
+        self.update(Milestone::InventoryCollected, |state| {
             state.phase = Phase::Connecting;
             let checks = inventory_checks(inventory, link, (CheckState::Active, "Connecting…"));
             state.status.boot_mode = Some(boot_mode_label(inventory));
@@ -836,7 +965,7 @@ impl SetupStatusReporter {
         let link = LinkFacts {
             speed_mbps: linked_interface(inventory).and_then(|i| link_speed_mbps(&i.name)),
         };
-        self.update(|state| {
+        self.update(Milestone::SessionClaimed, |state| {
             state.phase = Phase::AwaitingApproval;
             state.status.checks =
                 inventory_checks(inventory, link, (CheckState::Done, "Connected"));
@@ -856,7 +985,7 @@ impl SetupStatusReporter {
         plan: &SignedInstallPlan,
         inventory: &NestProvisioningInventory,
     ) {
-        self.update(|state| {
+        self.update(Milestone::PlanAccepted, |state| {
             state.phase = Phase::Preparing;
             state.hardware_blocked = false;
             apply_plan(&mut state.status, plan, inventory);
@@ -869,7 +998,7 @@ impl SetupStatusReporter {
 
     /// Resuming an interrupted installation: the disk may already be changed.
     pub(super) fn resumed(&self, plan: &SignedInstallPlan, inventory: &NestProvisioningInventory) {
-        self.update(|state| {
+        self.update(Milestone::PlanAccepted, |state| {
             state.phase = Phase::Preparing;
             state.disk_may_be_changed = true;
             state.hardware_blocked = false;
@@ -882,12 +1011,12 @@ impl SetupStatusReporter {
     }
 
     pub(super) fn step(&self, step: InstallStep) {
-        self.update(|state| set_step(state, step));
+        self.update(Milestone::PlanAccepted, |state| set_step(state, step));
     }
 
     /// Mark the point after which a failure can no longer be "untouched".
     pub(super) fn disk_write_started(&self) {
-        self.update(|state| {
+        self.update(Milestone::PlanAccepted, |state| {
             state.disk_may_be_changed = true;
             set_step(state, InstallStep::PrepareDisk);
         });
@@ -915,12 +1044,14 @@ impl SetupStatusReporter {
             due
         };
         if publish {
-            self.update(|state| state.status.progress_percent = Some(percent));
+            self.update(Milestone::PlanAccepted, |state| {
+                state.status.progress_percent = Some(percent)
+            });
         }
     }
 
     pub(super) fn pre_destructive_stop(&self, code: &str, public_message: &str) {
-        self.update(|state| {
+        self.update(Milestone::PlanAccepted, |state| {
             let interface = state
                 .status
                 .network
@@ -944,7 +1075,7 @@ impl SetupStatusReporter {
     }
 
     pub(super) fn rebooting(&self) {
-        self.update(|state| {
+        self.update(Milestone::PlanAccepted, |state| {
             set_step(state, InstallStep::FirstBoot);
             state.status.state = SetupState::Rebooting;
             state.status.stop = None;
@@ -953,8 +1084,20 @@ impl SetupStatusReporter {
 
     /// The bootstrap process is about to exit with an error. Publish a public
     /// explanation chosen from the recorded phase, never the error text.
+    ///
+    /// A preserved screen stays if this run failed at or after the point
+    /// where the earlier run stopped: it is still the first obstacle. A run
+    /// that failed earlier replaces a preserved `stopped` screen with its own,
+    /// but a preserved `failed` screen is never replaced by an untouched stop.
     pub(super) fn process_failed(&self) {
-        self.update(|state| {
+        self.update(Milestone::Started, |state| {
+            let reached = state.reached;
+            if state.held.as_ref().is_some_and(|held| {
+                (held.failed && !state.disk_may_be_changed) || reached >= held.release.previous()
+            }) {
+                return;
+            }
+            state.held = None;
             state.status.progress_percent = None;
             if state.disk_may_be_changed {
                 let step = state.current_step.unwrap_or(InstallStep::PrepareDisk);
@@ -1065,7 +1208,7 @@ fn bounded(value: &str, maximum: usize) -> String {
 }
 
 /// Atomically replace `path` with a world-readable status document.
-pub(super) fn write_status(path: &Path, status: &SetupStatus) -> Result<()> {
+pub(super) fn write_status(path: &Path, status: &impl Serialize) -> Result<()> {
     let body = serde_json::to_vec(status).context("serialize Nest setup status")?;
     crate::public_status::write_public_json(path, &body, MAX_STATUS_BYTES)
 }

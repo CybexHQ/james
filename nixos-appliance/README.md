@@ -308,7 +308,10 @@ the system; `progress_percent` only for the measured closure download),
 `stopped` (`stop.disk_untouched: true`: a hardware minimum or a pre-destructive
 failure code, with public `reason`, up to three `steps` and the failing `check`),
 `failed` (`disk_untouched: false` after any disk write or during resume) or
-`rebooting` (step 6).
+`rebooting` (step 6). A restarted bootstrap keeps showing a preserved `stopped`
+screen until it passes the point where the earlier run stopped (media
+verification, inventory, session claim or a new approved plan), and a preserved
+`failed` screen until resumed installation progress replaces it.
 
 The `tiaris-nest` daemon rewrites `/run/tiaris-nest/console-status.json`
 (`RuntimeDirectory` 0755, preserved so a stopped daemon leaves a visibly stale

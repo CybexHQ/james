@@ -349,6 +349,8 @@ fn process_errors_before_disk_writes_are_untouched_stops() {
     status.process_failed();
     assert_eq!(published(&path)["stop"]["check"]["label"], "Setup ISO");
 
+    // Each run is independent: no preserved screen from the previous one.
+    let dir = tempdir::TempDir::new();
     let (status, path) = reporter(&dir);
     status.media_verified("https://manage.cybex.net");
     status.inventory_collected(&inventory);
@@ -367,6 +369,8 @@ fn process_errors_before_disk_writes_are_untouched_stops() {
     // A recorded hardware stop is kept rather than replaced by a generic one.
     let mut blocked = inventory.clone();
     blocked.memory_bytes = 8 * GIB;
+    // Each run is independent: no preserved screen from the previous one.
+    let dir = tempdir::TempDir::new();
     let (status, path) = reporter(&dir);
     status.inventory_collected(&blocked);
     status.session_claimed(&blocked);
@@ -375,6 +379,8 @@ fn process_errors_before_disk_writes_are_untouched_stops() {
     assert_eq!(published(&path)["stop"]["check"]["label"], "Memory");
 
     // A resumed installation can never claim the disk is untouched.
+    // Each run is independent: no preserved screen from the previous one.
+    let dir = tempdir::TempDir::new();
     let (status, path) = reporter(&dir);
     status.resumed(&plan, &inventory);
     status.process_failed();
@@ -383,6 +389,8 @@ fn process_errors_before_disk_writes_are_untouched_stops() {
     assert_eq!(value["step"], 1);
     assert_eq!(value["stop"]["disk_untouched"], false);
 
+    // Each run is independent: no preserved screen from the previous one.
+    let dir = tempdir::TempDir::new();
     let (status, path) = reporter(&dir);
     status.resumed(&plan, &inventory);
     status.rebooting();
@@ -499,4 +507,224 @@ fn omitted_fields_are_not_serialized_as_null() {
         object.keys().map(String::as_str).collect::<Vec<_>>(),
         vec!["checks", "schema", "state", "updated_at"]
     );
+}
+
+/// Run one bootstrap attempt that stops, then restart on the same status file.
+fn restarted_after(
+    first_run: impl FnOnce(&SetupStatusReporter),
+) -> (tempdir::TempDir, PathBuf, Value) {
+    let dir = tempdir::TempDir::new();
+    let (status, path) = reporter(&dir);
+    status.begin();
+    first_run(&status);
+    let preserved = published(&path);
+    assert!(matches!(
+        preserved["state"].as_str(),
+        Some("stopped" | "failed")
+    ));
+    (dir, path, preserved)
+}
+
+fn without_timestamp(mut value: Value) -> Value {
+    value.as_object_mut().unwrap().remove("updated_at");
+    value
+}
+
+#[test]
+fn restarted_run_keeps_a_session_stop_until_the_claim_succeeds() {
+    let (_, inventory) = fixture();
+    let (dir, path, preserved) = restarted_after(|status| {
+        status.media_verified("https://manage.cybex.net");
+        status.inventory_collected(&inventory);
+        status.process_failed();
+    });
+    assert_eq!(preserved["stop"]["check"]["label"], "Tiaris");
+
+    let (status, _) = reporter(&dir);
+    assert!(status.holding());
+    status.begin();
+    status.media_verified("https://manage.cybex.net");
+    status.inventory_collected(&inventory);
+    let shown = published(&path);
+    assert_eq!(
+        without_timestamp(shown.clone()),
+        without_timestamp(preserved.clone())
+    );
+    assert!(shown["updated_at"].as_str().unwrap() >= preserved["updated_at"].as_str().unwrap());
+    // Failing again at the same point keeps the same screen: no flicker.
+    status.process_failed();
+    assert_eq!(
+        without_timestamp(published(&path)),
+        without_timestamp(preserved.clone())
+    );
+
+    let (status, _) = reporter(&dir);
+    status.begin();
+    status.media_verified("https://manage.cybex.net");
+    status.inventory_collected(&inventory);
+    status.session_claimed(&inventory);
+    assert!(!status.holding());
+    assert_eq!(published(&path)["state"], "awaiting_approval");
+}
+
+#[test]
+fn restarted_run_keeps_a_media_stop_until_media_verifies() {
+    let (dir, path, preserved) = restarted_after(|status| status.process_failed());
+    assert_eq!(preserved["stop"]["check"]["label"], "Setup ISO");
+    let (status, _) = reporter(&dir);
+    status.begin();
+    assert_eq!(published(&path)["state"], "stopped");
+    status.process_failed();
+    assert_eq!(published(&path)["stop"]["check"]["label"], "Setup ISO");
+
+    let (status, _) = reporter(&dir);
+    status.begin();
+    status.media_verified("https://manage.cybex.net");
+    let shown = published(&path);
+    assert_eq!(shown["state"], "checking");
+    assert_eq!(shown["tiaris_host"], "manage.cybex.net");
+}
+
+#[test]
+fn restarted_run_keeps_a_plan_stop_until_a_new_plan_is_approved() {
+    let (plan, inventory) = fixture();
+    let (dir, path, preserved) = restarted_after(|status| {
+        status.media_verified("https://manage.cybex.net");
+        status.inventory_collected(&inventory);
+        status.session_claimed(&inventory);
+        status.plan_approved(&plan, &inventory);
+        status.pre_destructive_stop(
+            "hardware_revalidation_failed",
+            "Nest could not confirm the approved server hardware before disk preparation.",
+        );
+        status.process_failed();
+    });
+    assert_eq!(preserved["stop"]["check"]["label"], "Hardware");
+
+    let (status, _) = reporter(&dir);
+    status.begin();
+    status.media_verified("https://manage.cybex.net");
+    status.inventory_collected(&inventory);
+    status.session_claimed(&inventory);
+    assert_eq!(published(&path)["stop"]["check"]["label"], "Hardware");
+    status.process_failed();
+    assert_eq!(published(&path)["stop"]["check"]["label"], "Hardware");
+
+    // A run that fails earlier than the preserved stop shows its own reason.
+    let (status, _) = reporter(&dir);
+    status.begin();
+    status.process_failed();
+    assert_eq!(published(&path)["stop"]["check"]["label"], "Setup ISO");
+
+    let (dir, path, _) = restarted_after(|status| {
+        status.media_verified("https://manage.cybex.net");
+        status.inventory_collected(&inventory);
+        status.session_claimed(&inventory);
+        status.plan_approved(&plan, &inventory);
+        status.pre_destructive_stop("network_preflight_failed", "Public message.");
+    });
+    let (status, _) = reporter(&dir);
+    status.begin();
+    status.media_verified("https://manage.cybex.net");
+    status.inventory_collected(&inventory);
+    status.session_claimed(&inventory);
+    assert_eq!(published(&path)["state"], "stopped");
+    status.plan_approved(&plan, &inventory);
+    assert_eq!(published(&path)["state"], "installing");
+}
+
+#[test]
+fn restarted_run_never_replaces_failed_with_checking_or_an_untouched_stop() {
+    let (plan, inventory) = fixture();
+    let (dir, path, preserved) = restarted_after(|status| {
+        status.media_verified("https://manage.cybex.net");
+        status.inventory_collected(&inventory);
+        status.session_claimed(&inventory);
+        status.plan_approved(&plan, &inventory);
+        status.disk_write_started();
+        status.process_failed();
+    });
+    assert_eq!(preserved["stop"]["disk_untouched"], false);
+
+    for failure_point in 0..4 {
+        let (status, _) = reporter(&dir);
+        status.begin();
+        if failure_point > 0 {
+            status.media_verified("https://manage.cybex.net");
+        }
+        if failure_point > 1 {
+            status.inventory_collected(&inventory);
+        }
+        if failure_point > 2 {
+            status.session_claimed(&inventory);
+        }
+        assert_eq!(published(&path)["state"], "failed", "point {failure_point}");
+        status.process_failed();
+        let shown = published(&path);
+        assert_eq!(shown["state"], "failed", "point {failure_point}");
+        assert_eq!(shown["stop"]["disk_untouched"], false);
+    }
+
+    // Only resumed installation progress replaces it.
+    let (status, _) = reporter(&dir);
+    status.begin();
+    status.media_verified("https://manage.cybex.net");
+    status.inventory_collected(&inventory);
+    status.resumed(&plan, &inventory);
+    let shown = published(&path);
+    assert_eq!(shown["state"], "installing");
+    assert_eq!(shown["step"], 1);
+}
+
+#[test]
+fn restarted_run_rechecks_a_hardware_stop_with_fresh_inventory() {
+    let (_, inventory) = fixture();
+    let mut blocked = inventory.clone();
+    blocked.memory_bytes = 8 * GIB;
+    let (dir, path, _) = restarted_after(|status| {
+        status.media_verified("https://manage.cybex.net");
+        status.inventory_collected(&blocked);
+        status.process_failed();
+    });
+    let (status, _) = reporter(&dir);
+    status.begin();
+    status.media_verified("https://manage.cybex.net");
+    assert_eq!(published(&path)["stop"]["check"]["label"], "Memory");
+    status.inventory_collected(&inventory);
+    assert_eq!(published(&path)["state"], "checking");
+}
+
+#[test]
+fn only_valid_stopped_or_failed_screens_are_preserved() {
+    let checking = serde_json::to_vec(&SetupStatus::initial(Some("uefi"))).unwrap();
+    assert!(held_screen(&checking).is_none());
+    assert!(held_screen(b"not json").is_none());
+    assert!(held_screen(br#"{"schema":"other","state":"stopped","stop":{}}"#).is_none());
+    assert!(
+        held_screen(br#"{"schema":"tiaris.nest-setup-status.v1","state":"stopped"}"#).is_none()
+    );
+    assert!(
+        held_screen(br#"{"schema":"tiaris.nest-setup-status.v1","state":"rebooting","stop":{}}"#)
+            .is_none()
+    );
+    let held =
+        held_screen(br#"{"schema":"tiaris.nest-setup-status.v1","state":"failed","stop":{}}"#)
+            .unwrap();
+    assert!(held.failed);
+    assert_eq!(held.release, Milestone::PlanAccepted);
+
+    let dir = tempdir::TempDir::new();
+    let path = dir.path().join("tiaris-nest-setup/status.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let target = dir.path().join("elsewhere.json");
+    fs::write(
+        &target,
+        br#"{"schema":"tiaris.nest-setup-status.v1","state":"failed","stop":{}}"#,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&target, &path).unwrap();
+    assert!(!SetupStatusReporter::with_boot_mode(Some(path.clone()), None).holding());
+    fs::remove_file(&path).unwrap();
+    fs::write(&path, vec![b' '; MAX_STATUS_BYTES + 1]).unwrap();
+    assert!(!SetupStatusReporter::with_boot_mode(Some(path), None).holding());
 }
