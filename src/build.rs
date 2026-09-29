@@ -3885,6 +3885,51 @@ const PINNED_HYPRLAND_ETC_EXECUTABLE_FINGERPRINT: &str =
 // the second one preserves executable store paths, so changing a tool provider
 // cannot ride on the store-normalized hash.
 const PINNED_DESKTOP_NIXOS_GENERATOR_FINGERPRINTS: &[(&str, &str)] = &[
+    // Real Tiaris Standard, Dock and Tiling recipes at 74cc63f. The rebrand
+    // changes the sorted position of service links and /etc entries; textual
+    // fixture renaming does not reproduce that order. These exact scripts only
+    // assemble reviewed inputs (UTC/Amsterdam) or link desktop session files.
+    // Preserve exact executable providers and all independent input checks.
+    (
+        "dade0e42ad5b06ecb9e0a45cfc9cecf177647fc51e0bb70579eb471d2fffb032",
+        "4038a53f37a4db2f2cb3573adb501a9c9ba819a3c6fb65fff0a9e194fb04ec3a",
+    ),
+    (
+        "bf8c7bd1f98327584a2f9f96e305219218920dbd36c750bb15f6b69fce73376c",
+        "c1770e1cd07663e37cba6a1dc1c6c3773ec8513c8a66e326539dce3be57cb178",
+    ),
+    (
+        "4afc0bcc0c244405ce7cc54dfe42894247429a84e5ece23d36ce45fcb870b279",
+        "f05a7ab53a3a8ef14a5a84d2cdf4bc4612ec83eef3fa1f0ede4c16a73a1281ef",
+    ),
+    (
+        "057aed11fdbbdc9dabd69f7472616a91c7c559ea41df2c0ec1d7764cd255a01a",
+        "71259096ad195cafe80a5febefc3d006fa042c43cedafe73b72fc95c8432e301",
+    ),
+    (
+        "5187f475e821bba3d963de73ac255e8675e33db2dd093e6bd185ba62ed7ca093",
+        "57b3fb3d047ad5bb4e8ea8455e0332090379d5882eae1e17f7ee71cb8abb289b",
+    ),
+    (
+        "a3013a25e906ecbb0bf80cc9c47cce5770f93d101cf8792326a463cd3a8d6f5a",
+        "a0da3cc1743d83583e08d8d1fad8d6697dcf08db36d84469c51aa684652c58b3",
+    ),
+    (
+        "3d6c68e6782766416053d20ab874c5fd675c7c83889fa89740d8320b0820c58e",
+        "f919faf2b3d6b69d49680c2c84e257c1216c48e3572f02e761ec2bb1877df06a",
+    ),
+    (
+        "46327174d6ce17eaf284c28e93c3f35450ecde8ae2eca403ba859085dfff7f1e",
+        "f6d452fd71336b6d465d5ff310c699fa7e1fb66e506563b9e036232cb3b887eb",
+    ),
+    (
+        "ade50ddb2d4aa7e589ae05551bdc4b0dd0cc3b787459048e0aaca5e420b58039",
+        "94695e375974f6ad7343ba1a4a0ee36eb413d928d97e4be0ff2bddabd85280a3",
+    ),
+    (
+        "1887811654c77bb12eda84231deb305a53abaab0ff5de22167145112de4208ab",
+        "05020cc94499606e3a2f15713d82c964de3ebadc0e8727b51c8296e99611c6d7",
+    ),
     // Fresh Standard and Dock profiles use UTC. These reviewed 74cc63f /etc
     // assembly recipes use Tiaris paths and change only the localtime symlink
     // from /etc/zoneinfo/Europe/Amsterdam to /etc/zoneinfo/UTC. The paired
@@ -7777,6 +7822,70 @@ sleep 5
                 Some(&executable),
                 &synthetic_pinned_source,
             ));
+        }
+    }
+
+    #[test]
+    fn source_policy_accepts_real_tiaris_profile_recipes_without_weakening_guards() {
+        let derivations: BTreeMap<String, Value> = serde_json::from_str(include_str!(
+            "../tests/fixtures/source-policy/tiaris-production-generators.json"
+        ))
+        .unwrap();
+        assert_eq!(derivations.len(), 7);
+        for (path, drv) in derivations {
+            let original = drv["env"]["buildCommand"].as_str().unwrap();
+            let mut recipes = vec![original.to_owned()];
+            if drv["env"]["name"] == "etc" {
+                assert!(original.contains("/etc/zoneinfo/UTC localtime direct-symlink"));
+                recipes.push(original.replace(
+                    "/etc/zoneinfo/UTC localtime direct-symlink",
+                    "/etc/zoneinfo/Europe/Amsterdam localtime direct-symlink",
+                ));
+            }
+            for recipe in recipes {
+                let mut valid = drv.clone();
+                valid["env"]["buildCommand"] = json!(recipe);
+                assert!(
+                    derivation_is_exempt_from_source_policy_with_verifier(
+                        &path,
+                        Some(&valid),
+                        &synthetic_pinned_source
+                    ),
+                    "rejected real Tiaris recipe: {path}"
+                );
+                let mut injected = valid.clone();
+                injected["env"]["buildCommand"] =
+                    json!(format!("{recipe}\ngcc source.c -o $out/payload\n"));
+                assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                    &path,
+                    Some(&injected),
+                    &synthetic_pinned_source
+                ));
+                injected = valid.clone();
+                injected["env"]["preBuild"] = json!("gcc source.c -o $out/payload");
+                assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                    &path,
+                    Some(&injected),
+                    &synthetic_pinned_source
+                ));
+                let altered = recipe
+                    .replace(
+                        "wy0mh9ah0alglg3ab5djg3jv6f0garyc-nixos-init",
+                        "ffffffffffffffffffffffffffffffff-nixos-init",
+                    )
+                    .replace(
+                        "ccihqmbbygsvx7jap8apl5jwp8ipy61y-lndir",
+                        "ffffffffffffffffffffffffffffffff-lndir",
+                    );
+                assert_ne!(altered, recipe, "fixture must bind an executable provider");
+                injected = valid.clone();
+                injected["env"]["buildCommand"] = json!(altered);
+                assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                    &path,
+                    Some(&injected),
+                    &synthetic_pinned_source
+                ));
+            }
         }
     }
 
