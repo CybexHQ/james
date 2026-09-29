@@ -1,9 +1,7 @@
 name: Nest Release
 
 on:
-  pull_request:
   push:
-    branches: ["main"]
     tags: ["v*"]
 
 permissions:
@@ -12,13 +10,18 @@ permissions:
 jobs:
   contracts:
     name: Installer and release contracts
-    runs-on: ubuntu-latest
+    environment: production-release
+    runs-on: [self-hosted, linux, x64, cybex-james-lab]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install native checks
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential dnsmasq-base ripgrep shellcheck
+        run: |
+          command -v cc
+          command -v dnsmasq
+          command -v rg
+          command -v shellcheck
 
       - name: Bash syntax
         shell: bash
@@ -43,8 +46,11 @@ jobs:
 
   rust-release:
     name: Rust production release gate
+    environment: production-release
+    env:
+      CARGO_TARGET_DIR: /home/john/.local/state/tiaris-nest-ci-target/release-gate
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cybex-james-lab]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -66,20 +72,21 @@ jobs:
 
       - name: Audit the dependencies before signing a production release
         run: |
-          cargo install cargo-audit --version 0.22.1 --locked
+          cargo audit --version
           cargo tree -i sqlx-mysql 2>&1 | tee /tmp/sqlx-mysql-tree.txt
           grep -q "nothing to print" /tmp/sqlx-mysql-tree.txt
           cargo audit --ignore RUSTSEC-2023-0071
 
   nix:
     name: Pinned workstation netboot
-    runs-on: ubuntu-latest
+    environment: production-release
+    runs-on: [self-hosted, linux, x64, cybex-james-lab]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@ab739621df7a23f52766f9ccc97f38da6b7af14f # v31.10.5
+      - name: Verify installed local Nix
+        run: nix-instantiate --version
 
       - name: Parse workstation expressions
         run: |
@@ -267,7 +274,7 @@ jobs:
         if: steps.release-candidate.outputs.reuse != 'true'
         shell: bash
         run: |
-          cargo install cargo-audit --version 0.22.1 --locked
+          cargo audit --version
           cargo audit --file manage-source/agent/tiaris-agent/Cargo.lock
 
       - name: Require local release tools
@@ -1396,7 +1403,7 @@ jobs:
     if: needs.release_build.outputs.coordinated != 'true'
     name: Promote cold-qualified immutable release
     needs: [release_build, release_cold_qualify]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cybex-james-lab]
     environment: production-release
     concurrency:
       group: nest-release-publish

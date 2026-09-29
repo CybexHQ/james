@@ -28,7 +28,7 @@ permissions:
   contents: read
 jobs:
   promote:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cybex-james-lab]
     environment: production-release
     concurrency:
       group: nest-release-publish
