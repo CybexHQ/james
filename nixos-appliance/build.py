@@ -107,7 +107,7 @@ def require_workstation_agent_cache(cache, agent):
 
 def build(args):
     manage = Path(args.manage_source_dir).absolute()
-    clean_checkout(REPO, args.source_revision, 'nest')
+    clean_checkout(REPO, args.source_revision, 'james')
     clean_checkout(manage, args.manage_source_revision, 'development')
     run(sys.executable, REPO / 'tools/nest-release.py', 'validate-manage-origin',
         '--expected-manage-origin', args.expected_manage_origin)
