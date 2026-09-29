@@ -21,7 +21,7 @@ class NamespaceTransitionTests(unittest.TestCase):
 
     def authenticate(self, directory=FIXTURE, authorization=P.TRANSITION, **overrides):
         args = dict(trusted_key=self.anchor['public_key'], repository='CybexHQ/james',
-                    candidate='0.2.42', previous=self.previous)
+                    candidate=self.anchor['successor_version'], previous=self.previous)
         args.update(overrides)
         return P.transition.authenticate(P.release, directory, authorization, **args)
 
@@ -36,7 +36,7 @@ class NamespaceTransitionTests(unittest.TestCase):
             P.verify_pair(FIXTURE, self.anchor['public_key'])
 
     def test_exact_successor_repository_and_publication_are_required(self):
-        for override in ({'candidate': '0.2.43'}, {'repository': 'CybexHQ/other'},
+        for override in ({'candidate': '0.0.0'}, {'repository': 'CybexHQ/other'},
                          {'previous': self.previous | {'id': 42}},
                          {'previous': self.previous | {'target_commitish': '0' * 40}}):
             with self.subTest(override=override), self.assertRaises(ValueError):
@@ -63,7 +63,7 @@ class NamespaceTransitionTests(unittest.TestCase):
     def test_signed_current_successor_must_advance_runtime_and_preserve_origin(self):
         previous = json.loads((FIXTURE / P.transition.COMPATIBILITY).read_bytes())
         current = copy.deepcopy(previous)
-        current['nest_release_version'] = '0.2.42'
+        current['nest_release_version'] = self.anchor['successor_version']
         current['artifacts']['workstation_runtime']['runtime_version'] = '1.0.86'
         current['artifacts']['workstation_runtime']['sha256'] = 'a' * 64
         def verify(value):
@@ -107,7 +107,7 @@ class NamespaceTransitionTests(unittest.TestCase):
             directory = Path(temporary)
             for path in FIXTURE.iterdir():
                 (directory / path.name).write_bytes(path.read_bytes())
-            result = P.resolve('CybexHQ/james', '0.2.42', self.anchor['public_key'], directory)
+            result = P.resolve('CybexHQ/james', self.anchor['successor_version'], self.anchor['public_key'], directory)
             self.assertEqual(result['update_contract'], 'reinstall-only')
             self.assertEqual(result['namespace_transition_sha256'], P.sha(P.TRANSITION))
             self.assertFalse((directory / P.MANIFEST).exists())
