@@ -4,6 +4,7 @@ from copy import deepcopy
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -142,6 +143,8 @@ class CacheTests(unittest.TestCase):
     def test_source_and_policy_invalidate_and_eviction_is_bounded(self):
         C.warm(self.args, self.p)
         first = self.entries()[0]
+        # Fast tmpfs writes can share one mtime; make the LRU order explicit.
+        os.utime(first, ns=(1, 1))
         self.args.directory = self.root / 'second'
         with patch.object(C, 'source_digest', return_value='f' * 64):
             self.assertEqual(C.warm(self.args, self.p)['cache'], 'miss')
