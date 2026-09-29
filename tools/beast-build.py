@@ -15,7 +15,8 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-STATE = Path.home() / '.local/state/tiaris-nest-build'
+# Dedicated cache is an existing host resource, independent of product naming.
+STATE = Path.home() / '.local/state/cybex-james-build'
 PUBLIC_ENV = ('TIARIS_NEST_BUILD_MANAGE_ORIGIN', 'TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY',
               'TIARIS_NEST_PROVISIONING_PUBLIC_KEYS',
               'GITHUB_REF_NAME', 'BUILD_VERSION', 'BUILD_BUNDLE', 'BUILD_RUNTIME',
@@ -29,7 +30,7 @@ def run(*args, **kwargs):
 def canonical_origin(origin):
     # actions/checkout uses SSH for the private Manage deploy key. Copy only the
     # canonical public repository identity, never its SSH configuration or key.
-    for repository in ('nest', 'development'):
+    for repository in ('james', 'development'):
         canonical = 'https://github.com/CybexHQ/' + repository
         if origin.removesuffix('.git') in (canonical, 'git@github.com:CybexHQ/' + repository,
                                           'ssh://git@github.com/CybexHQ/' + repository):

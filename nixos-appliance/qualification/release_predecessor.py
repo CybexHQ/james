@@ -28,6 +28,8 @@ def module(name, path):
 
 
 release = module('nest_release', ROOT / 'tools/nest-release.py')
+transition = module('namespace_transition', Path(__file__).with_name('namespace_transition.py'))
+TRANSITION = ROOT / 'release/namespace-transition.json'
 
 
 def canonical(value):
@@ -46,11 +48,14 @@ def checked_json(path, limit=1024 * 1024):
 def latest(releases, candidate_tag):
     candidates = []
     for value in releases:
-        if value.get('prerelease') and 'Tiaris-Cold-Qualification: required' in (value.get('body') or ''):
+        if value.get('prerelease') and any(marker in (value.get('body') or '') for marker in
+                ('Tiaris-Cold-Qualification: required', 'Cybex-Cold-Qualification: required')):
             continue
         names = [a['name'] for a in value['assets']]
-        if not value['draft'] and value['tag_name'] != candidate_tag and {MANIFEST, COMPATIBILITY} <= set(names):
-            if any(names.count(name) != 1 for name in (MANIFEST, COMPATIBILITY)):
+        pairs = ((MANIFEST, COMPATIBILITY), (transition.MANIFEST, transition.COMPATIBILITY))
+        present = [pair for pair in pairs if set(pair) <= set(names)]
+        if not value['draft'] and value['tag_name'] != candidate_tag and present:
+            if len(present) != 1 or any(names.count(name) != 1 for name in present[0]):
                 raise ValueError('Published release has ambiguous signed assets')
             candidates.append(value)
     return max(candidates, key=lambda v: (v.get('published_at') or v['created_at'], v['id']), default=None)
@@ -192,7 +197,9 @@ def resolve(repository, candidate, trusted_key, directory, authorization=None, r
     if previous['target_commitish'] != commit:
         raise ValueError('Published tag moved or lacks its exact source commit')
     base = f'https://github.com/{repository}/releases/download/{tag}/'
-    for name in (MANIFEST, COMPATIBILITY):
+    legacy = any(a['name'] == transition.MANIFEST for a in previous['assets'])
+    names = (transition.MANIFEST, transition.COMPATIBILITY) if legacy else (MANIFEST, COMPATIBILITY)
+    for name in names:
         assets = [a for a in previous['assets'] if a['name'] == name]
         if len(assets) != 1 or assets[0]['browser_download_url'] != base + name:
             raise ValueError('Published asset URL does not bind repository and tag')
@@ -201,6 +208,16 @@ def resolve(repository, candidate, trusted_key, directory, authorization=None, r
         if digest and not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
             raise ValueError('Invalid GitHub asset digest')
         fetch(base + name, directory / name, digest[7:] if digest else None, asset['size'], 1024**2)
+    if legacy:
+        anchor, manifest, _asset = transition.authenticate(release, directory, TRANSITION,
+            trusted_key, repository, candidate, previous)
+        return {'schema': 'tiaris.nest.published-predecessor.v3', 'release_id': manifest['version'],
+            'manifest_sha256': sha(directory / transition.MANIFEST),
+            'compatibility_sha256': sha(directory / transition.COMPATIBILITY),
+            'appliance_schema': manifest['appliance_release_v1']['schema'],
+            'github_release_id': previous['id'], 'tag_name': tag,
+            'authority_public_key': anchor['published']['public_key'], 'update_contract': 'reinstall-only',
+            'namespace_transition_sha256': sha(TRANSITION)}
     authority = historical_authority(authorization, trusted_key, previous, directory, candidate, repository) if authorization else trusted_key
     manifest = verify_pair(directory, authority, base + MANIFEST)
     source = manifest['appliance_release_v1'].get('source_revision')
@@ -272,6 +289,7 @@ def main():
     parser.set_defaults(authorization=ROOT / 'release/recovery-adoption.json')
     parser.add_argument('--qualification-predecessor-manifest-sha256')
     parser.add_argument('--download-media', action='store_true')
+    parser.add_argument('--current-compatibility', type=Path)
     args = parser.parse_args()
     if args.retain_manage_source_to:
         parser.error('--retain-manage-source-to is retired; historical source stays with its signed release')
@@ -285,6 +303,14 @@ def main():
             expected, body = checked_json(args.expected_identity)
             if value != expected or body != canonical(expected):
                 raise ValueError('Published ancestry changed since the candidate build')
+        if args.current_compatibility and value:
+            if value.get('namespace_transition_sha256'):
+                transition.verify_successor(release, ancestry_dir, TRANSITION, args.trusted_public_key,
+                    args.repository, args.current_compatibility)
+            else:
+                release._verify_release_successor_command(argparse.Namespace(
+                    current_compatibility=args.current_compatibility, previous_compatibility=ancestry_dir / COMPATIBILITY,
+                    trusted_public_key=args.trusted_public_key, historical_authorization=args.authorization))
         if args.download_media:
             value = qualify(args.directory, args.candidate_version, args.trusted_public_key,
                 args.qualification_predecessor_dir, args.qualification_predecessor_manifest_sha256)

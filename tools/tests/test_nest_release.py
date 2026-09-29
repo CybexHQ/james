@@ -1020,7 +1020,7 @@ class NestReleaseToolTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("group: nest-release-publish", workflow)
-        predecessor_check = workflow.rfind("verify-successor")
+        predecessor_check = workflow.rfind("--current-compatibility dist/tiaris-nest-release-compatibility.json")
         immutable_publish = workflow.rfind(
             'gh release edit "$GITHUB_REF_NAME" --draft=false'
         )

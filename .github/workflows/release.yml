@@ -91,7 +91,7 @@ jobs:
     name: Build and sign release candidate once
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [contracts, rust-release, nix]
-    runs-on: [self-hosted, linux, x64, tiaris-nest-lab]
+    runs-on: [self-hosted, linux, x64, cybex-james-lab]
     environment: production-release
     timeout-minutes: 240
     concurrency:
@@ -116,9 +116,9 @@ jobs:
       contents: read
       actions: read
     env:
-      TIARIS_NEST_BUILD_MANAGE_ORIGIN: ${{ vars.TIARIS_NEST_BUILD_MANAGE_ORIGIN }}
-      TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY }}
-      TIARIS_NEST_PROVISIONING_PUBLIC_KEYS: ${{ vars.TIARIS_NEST_PROVISIONING_PUBLIC_KEYS }}
+      TIARIS_NEST_BUILD_MANAGE_ORIGIN: ${{ vars.CYBEX_JAMES_BUILD_MANAGE_ORIGIN }}
+      TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
+      TIARIS_NEST_PROVISIONING_PUBLIC_KEYS: ${{ vars.CYBEX_JAMES_PROVISIONING_PUBLIC_KEYS }}
       TIARIS_NEST_RELEASE_ARTIFACT: tiaris-nest-release-candidate-${{ github.run_id }}
     steps:
       - name: Checkout exact tag
@@ -176,7 +176,7 @@ jobs:
         shell: bash
         env:
           # The sealed secret keeps its pre-rename storage key until it is rotated.
-          GH_TOKEN: ${{ secrets.TIARIS_FORGE_RELEASE_POLICY_TOKEN }}
+          GH_TOKEN: ${{ secrets.CYBEX_FORGE_RELEASE_POLICY_TOKEN }}
         run: |
           set -euo pipefail
           : "${GH_TOKEN:?configure TIARIS_NEST_RELEASE_POLICY_TOKEN with repository Administration read permission}"
@@ -238,7 +238,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           # The sealed secret keeps its pre-rename storage key until it is rotated.
-          ssh-key: ${{ secrets.TIARIS_DEVELOPMENT_SOURCE_SSH_KEY }}
+          ssh-key: ${{ secrets.CYBEX_DEVELOPMENT_SOURCE_SSH_KEY }}
 
       - name: Verify pinned Manage source and runtime version
         if: steps.release-candidate.outputs.reuse != 'true'
@@ -258,7 +258,7 @@ jobs:
         shell: bash
         env:
           # The sealed secret keeps its pre-rename storage key until it is rotated.
-          TIARIS_NEST_RELEASE_PRIVATE_KEY_B64: ${{ secrets.TIARIS_FORGE_RELEASE_PRIVATE_KEY_B64 }}
+          TIARIS_NEST_RELEASE_PRIVATE_KEY_B64: ${{ secrets.CYBEX_FORGE_RELEASE_PRIVATE_KEY_B64 }}
         run: |
           set -euo pipefail
           test -n "$TIARIS_NEST_RELEASE_PRIVATE_KEY_B64"
@@ -315,8 +315,10 @@ jobs:
             --directory "$directory" --output "$identity" \
             --github-output "$GITHUB_OUTPUT" "${arguments[@]}"
           if [ -f "$identity" ]; then
-            install -m 0444 "$directory/tiaris-nest-release-compatibility.json" \
-              "$RUNNER_TEMP/tiaris-nest-previous-release-compatibility.json"
+            if [ -f "$directory/tiaris-nest-release-compatibility.json" ]; then
+              install -m 0444 "$directory/tiaris-nest-release-compatibility.json" \
+                "$RUNNER_TEMP/tiaris-nest-previous-release-compatibility.json"
+            fi
             if [ "${{ steps.release-candidate.outputs.reuse }}" != true ]; then
               install -m 0444 "$identity" dist/tiaris-nest-build-predecessor.json
             fi
@@ -400,7 +402,7 @@ jobs:
         shell: bash
         env:
           # The sealed secret keeps its pre-rename storage key until it is rotated.
-          TIARIS_NEST_RELEASE_PRIVATE_KEY_B64: ${{ secrets.TIARIS_FORGE_RELEASE_PRIVATE_KEY_B64 }}
+          TIARIS_NEST_RELEASE_PRIVATE_KEY_B64: ${{ secrets.CYBEX_FORGE_RELEASE_PRIVATE_KEY_B64 }}
         run: |
           set -euo pipefail
           version="${{ steps.release-version.outputs.version }}"
@@ -559,7 +561,7 @@ jobs:
     name: Boot, install, adopt, and reboot exact candidate
     if: startsWith(github.ref, 'refs/tags/v')
     needs: release_build
-    runs-on: [self-hosted, linux, x64, tiaris-nest-lab]
+    runs-on: [self-hosted, linux, x64, cybex-james-lab]
     environment: production-release-qualification
     concurrency:
       group: nest-nixos-production-qualification
@@ -571,24 +573,24 @@ jobs:
       contents: read
       actions: read
     env:
-      TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN }}
-      TIARIS_NEST_QUALIFICATION_SUBNET: ${{ vars.TIARIS_NEST_QUALIFICATION_SUBNET }}
-      TIARIS_NEST_QUALIFICATION_CONFIG: ${{ vars.TIARIS_NEST_QUALIFICATION_CONFIG }}
-      TIARIS_NEST_QUALIFICATION_STATE_ROOT: ${{ vars.TIARIS_NEST_QUALIFICATION_STATE_ROOT }}
+      TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN }}
+      TIARIS_NEST_QUALIFICATION_SUBNET: ${{ vars.CYBEX_JAMES_QUALIFICATION_SUBNET }}
+      TIARIS_NEST_QUALIFICATION_CONFIG: ${{ vars.CYBEX_JAMES_QUALIFICATION_CONFIG }}
+      TIARIS_NEST_QUALIFICATION_STATE_ROOT: ${{ vars.CYBEX_JAMES_QUALIFICATION_STATE_ROOT }}
       TIARIS_NEST_RELEASE_VERSION: ${{ needs.release_build.outputs.version }}
       TIARIS_NEST_RELEASE_ARTIFACT_ID: ${{ needs.release_build.outputs.artifact_id }}
       TIARIS_NEST_WORKSTATION_BUNDLE_NAME: ${{ needs.release_build.outputs.workstation_bundle_name }}
       TIARIS_NEST_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
-      TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY }}
+      TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
       TIARIS_NEST_HAS_PREDECESSOR: ${{ needs.release_build.outputs.has_predecessor }}
       TIARIS_NEST_PUBLISHED_PREDECESSOR_IDENTITY_B64: ${{ needs.release_build.outputs.predecessor_identity_b64 }}
       TIARIS_NEST_PUBLISHED_PREDECESSOR_IDENTITY_SHA256: ${{ needs.release_build.outputs.predecessor_identity_sha256 }}
       TIARIS_NEST_PUBLISHED_PREDECESSOR_RELEASE: ${{ needs.release_build.outputs.predecessor_release }}
       TIARIS_NEST_PUBLISHED_PREDECESSOR_SNAPSHOT: ${{ needs.release_build.outputs.predecessor_snapshot }}
       TIARIS_NEST_PUBLISHED_PREDECESSOR_UPDATE_CONTRACT: ${{ needs.release_build.outputs.predecessor_update_contract }}
-      TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR: ${{ vars.TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR }}
-      TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256: ${{ vars.TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256 }}
-      TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT: ${{ vars.TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT }}
+      TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR: ${{ vars.CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR }}
+      TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256: ${{ vars.CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256 }}
+      TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT: ${{ vars.CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT }}
     steps:
       - name: Checkout exact qualification source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -784,7 +786,7 @@ jobs:
     name: Attest and stage immutable candidate
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [release_build, release_qualify]
-    runs-on: [self-hosted, linux, x64, tiaris-nest-lab]
+    runs-on: [self-hosted, linux, x64, cybex-james-lab]
     environment: production-release
     concurrency:
       # Predecessor verification and immutable publication are one
@@ -807,7 +809,7 @@ jobs:
       TIARIS_NEST_QUALIFICATION_ARTIFACT_DIGEST: ${{ needs.release_qualify.outputs.artifact_digest }}
       TIARIS_NEST_WORKSTATION_BUNDLE_NAME: ${{ needs.release_build.outputs.workstation_bundle_name }}
       TIARIS_NEST_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
-      TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY }}
+      TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
       TIARIS_NEST_HAS_PREDECESSOR: ${{ needs.release_build.outputs.has_predecessor }}
     steps:
       - name: Require production-bound artifacts for publication
@@ -979,7 +981,7 @@ jobs:
         shell: bash
         env:
           # The sealed secret keeps its pre-rename storage key until it is rotated.
-          GH_TOKEN: ${{ secrets.TIARIS_FORGE_RELEASE_POLICY_TOKEN }}
+          GH_TOKEN: ${{ secrets.CYBEX_FORGE_RELEASE_POLICY_TOKEN }}
         run: |
           set -euo pipefail
           : "${GH_TOKEN:?configure TIARIS_NEST_RELEASE_POLICY_TOKEN with repository Administration read permission}"
@@ -1206,14 +1208,9 @@ jobs:
             --candidate-version "$TIARIS_NEST_RELEASE_VERSION" \
             --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
             --directory "$predecessor" --output "$predecessor/identity.json" \
+            --current-compatibility dist/tiaris-nest-release-compatibility.json \
             "${arguments[@]}"
-          if [ "$TIARIS_NEST_HAS_PREDECESSOR" = true ]; then
-            python3 -B tools/nest-release.py verify-successor \
-              --previous-compatibility "$predecessor/tiaris-nest-release-compatibility.json" \
-              --current-compatibility dist/tiaris-nest-release-compatibility.json \
-              --historical-authorization release/recovery-adoption.json \
-              --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
-          else
+          if [ "$TIARIS_NEST_HAS_PREDECESSOR" != true ]; then
             test ! -e "$predecessor/identity.json"
             test ! -e dist/tiaris-nest-build-predecessor.json
           fi
@@ -1252,7 +1249,7 @@ jobs:
   release_cold_qualify:
     name: Verify published NixOS release in an isolated fixture
     needs: [release_build, release_publish]
-    runs-on: [self-hosted, linux, x64, tiaris-nest-lab]
+    runs-on: [self-hosted, linux, x64, cybex-james-lab]
     environment: production-release-qualification
     concurrency:
       group: nest-nixos-production-qualification
@@ -1265,10 +1262,10 @@ jobs:
       artifact_digest: ${{ steps.cold-evidence.outputs.artifact-digest }}
     env:
       TIARIS_NEST_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
-      TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN }}
-      TIARIS_NEST_QUALIFICATION_SUBNET: ${{ vars.TIARIS_NEST_QUALIFICATION_SUBNET }}
-      TIARIS_NEST_QUALIFICATION_CONFIG: ${{ vars.TIARIS_NEST_QUALIFICATION_CONFIG }}
-      TIARIS_NEST_QUALIFICATION_STATE_ROOT: ${{ vars.TIARIS_NEST_QUALIFICATION_STATE_ROOT }}
+      TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN }}
+      TIARIS_NEST_QUALIFICATION_SUBNET: ${{ vars.CYBEX_JAMES_QUALIFICATION_SUBNET }}
+      TIARIS_NEST_QUALIFICATION_CONFIG: ${{ vars.CYBEX_JAMES_QUALIFICATION_CONFIG }}
+      TIARIS_NEST_QUALIFICATION_STATE_ROOT: ${{ vars.CYBEX_JAMES_QUALIFICATION_STATE_ROOT }}
     steps:
       - name: Checkout exact published source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -1316,7 +1313,7 @@ jobs:
         shell: bash
         timeout-minutes: 60
         env:
-          TRUSTED_KEY: ${{ vars.TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY }}
+          TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
         run: |
           set -Eeuo pipefail
           public_dir="$RUNNER_TEMP/tiaris-nest-public-closure-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -1336,7 +1333,7 @@ jobs:
         timeout-minutes: 240
         env:
           GH_TOKEN: ${{ github.token }}
-          TRUSTED_KEY: ${{ vars.TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY }}
+          TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
         run: |
           set -Eeuo pipefail
           (cd dist && sha256sum --check --strict SHA256SUMS)
@@ -1428,7 +1425,7 @@ jobs:
       - name: Authenticate cold acceptance and promote unchanged assets
         env:
           GH_TOKEN: ${{ github.token }}
-          TRUSTED_KEY: ${{ vars.TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY }}
+          TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
           COLD_ID: ${{ needs.release_cold_qualify.outputs.artifact_id }}
           COLD_DIGEST: ${{ needs.release_cold_qualify.outputs.artifact_digest }}
           CANDIDATE_ID: ${{ needs.release_build.outputs.artifact_id }}

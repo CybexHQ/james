@@ -50,7 +50,7 @@ class BuildIsolationTests(unittest.TestCase):
                 (source / 'cache').chmod(0o700)
 
     def test_origin_admission_is_exact_for_https_and_ssh(self):
-        for repository in ('nest', 'development'):
+        for repository in ('james', 'development'):
             for base in ('https://github.com/CybexHQ/', 'git@github.com:CybexHQ/',
                          'ssh://git@github.com/CybexHQ/'):
                 for suffix in ('', '.git'):
