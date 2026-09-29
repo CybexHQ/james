@@ -6,13 +6,7 @@ let
   '';
   key = pkgs.writeText "release-public-key" (a.releasePublicKey + "\n");
   keys = pkgs.writeText "provisioning-public-keys" (lib.concatStringsSep "\n" a.provisioningPublicKeys + "\n");
-  theme = pkgs.runCommand "tiaris-nest-setup-theme" {} ''
-    mkdir -p $out
-    cp ${a.themeSource}/theme.txt $out/theme.txt
-    cp ${../assets/pxe-menu.png} $out/background.png
-    substituteInPlace $out/theme.txt --replace 'background.svg' 'background.png'
-    cp ${pkgs.grub2_efi}/share/grub/unicode.pf2 $out/unicode.pf2
-  '';
+  setupStatus = "/run/tiaris-nest-setup/status.json";
 in {
   disabledModules = [ "installer/cd-dvd/iso-image.nix" ];
   imports = [
@@ -35,8 +29,11 @@ in {
     makeUsbBootable = true;
     makeBiosBootable = false;
     volumeID = "TIARIS_NEST_SETUP";
-    grubTheme = theme;
-    prependToMenuLabel = "Boot Tiaris ";
+    grubTheme = a.grubTheme;
+    # The pinned module labels its entry prepend + distroName + " " + label.
+    # single-menu-iso-module.nix removes every other entry, so the menu is
+    # exactly "Install Tiaris Nest".
+    prependToMenuLabel = "Install ";
     appendToMenuLabel = "";
     squashfsCompression = "zstd -Xcompression-level 10";
     contents = [
@@ -48,8 +45,8 @@ in {
     ];
   };
   image.baseName = lib.mkForce "tiaris-nest-appliance-template-${a.package.version}-x86_64-linux";
-  system.nixos.distroName = lib.mkForce "Nest";
-  system.nixos.label = lib.mkForce "Setup";
+  system.nixos.distroName = lib.mkForce "Tiaris";
+  system.nixos.label = lib.mkForce "Nest";
   networking.networkmanager.enable = lib.mkForce false;
   networking.useDHCP = lib.mkForce false;
   networking.useNetworkd = true;
@@ -73,20 +70,29 @@ in {
       mkdir -p /cdrom
       mountpoint -q /cdrom || mount --bind /iso /cdrom
     '';
-    serviceConfig = { Type = "simple"; ExecStart = "${a.package}/bin/tiaris-nest-bootstrap prepare"; Restart = "on-failure"; RestartSec = "15s"; StandardOutput = "journal"; StandardError = "journal"; UMask = "0077"; TimeoutStartSec = "infinity"; };
+    # The public setup projection for the tty1 kiosk. Preserve it across
+    # restarts so a stopped or failed screen stays readable meanwhile.
+    serviceConfig = { Type = "simple"; ExecStart = "${a.package}/bin/tiaris-nest-bootstrap prepare --setup-status ${setupStatus}"; Restart = "on-failure"; RestartSec = "15s"; StandardOutput = "journal"; StandardError = "journal"; UMask = "0077"; TimeoutStartSec = "infinity"; RuntimeDirectory = "tiaris-nest-setup"; RuntimeDirectoryMode = "0755"; RuntimeDirectoryPreserve = "yes"; };
   };
   systemd.services."getty@tty1".enable = false;
   # getty.target and logind use this alias, not getty@tty1. Mask the exact
   # instance as well so neither boot nor a VT switch starts a login prompt.
   systemd.services."autovt@tty1".enable = false;
+  # Native Canopy setup screen (Slint software renderer straight to KMS).
+  # Without a usable DRM output it prints its own line-oriented text feed,
+  # so tty1 stays readable on nomodeset and serial-only machines.
   systemd.services.tiaris-nest-setup-console = {
+    description = "Tiaris Nest setup screen";
     wantedBy = [ "multi-user.target" ];
-    serviceConfig = { ExecStart = pkgs.writeShellScript "tiaris-nest-setup-console" ''
-      while true; do
-        # Graphics initialization or a VT reset can erase an unchanged screen.
-        printf '\033[2J\033[HTiaris Nest Setup\nContinue in Tiaris.\n'
-        ${pkgs.coreutils}/bin/sleep 10
-      done
-    ''; Restart = "always"; RestartSec = "2s"; StandardInput = "null"; StandardOutput = "tty"; StandardError = "journal"; TTYPath = "/dev/tty1"; TTYReset = true; TTYVHangup = true; TTYVTDisallocate = true; };
+    after = [ "systemd-logind.service" "systemd-user-sessions.service" ];
+    environment = {
+      TIARIS_NEST_SETUP_STATUS = setupStatus;
+      # Slint embeds the Canopy faces but builds its fallback map through
+      # Fontconfig; the ISO has no global Fontconfig profile.
+      FONTCONFIG_FILE = "${pkgs.fontconfig.out}/etc/fonts/fonts.conf";
+      XDG_RUNTIME_DIR = "/run/tiaris-nest-setup-console";
+      HOME = "/root";
+    };
+    serviceConfig = { Type = "simple"; ExecStart = "${a.installerKiosk}/bin/tiaris-installer-kiosk --nest-setup"; Restart = "always"; RestartSec = "2s"; StandardInput = "tty"; StandardOutput = "tty"; StandardError = "journal"; TTYPath = "/dev/tty1"; TTYReset = true; TTYVHangup = true; TTYVTDisallocate = true; UtmpIdentifier = "tty1"; UtmpMode = "user"; PAMName = "login"; RuntimeDirectory = "tiaris-nest-setup-console"; RuntimeDirectoryMode = "0700"; };
   };
 }

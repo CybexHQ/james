@@ -1,5 +1,7 @@
 # Evaluate the real appliance modules without compiling Nest or an ISO.
-{ nixpkgs }:
+# `installerKiosk` defaults to a placeholder; the tty1 VM passes the real
+# kiosk so its units run the packaged binary.
+{ nixpkgs, installerKiosk ? null }:
 let
   pkgs = import nixpkgs { system = "x86_64-linux"; };
   placeholder = pkgs.runCommand "nest-console-evaluation-placeholder" { version = "0.0.0"; } "mkdir -p $out";
@@ -9,7 +11,8 @@ let
     sourceArchive = placeholder;
     sourceArchiveFile = placeholder;
     migrations = placeholder;
-    themeSource = placeholder;
+    grubTheme = placeholder;
+    installerKiosk = if installerKiosk == null then placeholder else installerKiosk;
     releasePublicKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     provisioningPublicKeys = [ "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" ];
     sourceRevision = builtins.concatStringsSep "" (builtins.genList (_: "a") 40);
@@ -24,6 +27,7 @@ let
     inherit modules;
   }).config;
 in {
+  inherit appliance;
   setup = evaluate [ ../iso.nix ];
   installed = evaluate [ ../module.nix {
     services.tiaris-nest = { enable = true; inherit appliance; };

@@ -83,7 +83,7 @@ def inspect_template(iso, package, args, work):
     extract(iso, '/EFI/BOOT/grub.cfg', grub)
     content = grub.read_text()
     entries = re.findall(r'^\s*menuentry\s+[\'"]([^\'"]+)[\'"]', content, re.MULTILINE)
-    if entries != ['Boot Tiaris Nest Setup'] or re.search(r'^\s*submenu\s', content, re.MULTILINE):
+    if entries != ['Install Tiaris Nest'] or re.search(r'^\s*submenu\s', content, re.MULTILINE):
         raise ValueError('ISO must expose exactly one branded installer entry')
     report = subprocess.run(['xorriso', '-indev', str(iso), '-find', '/TIARIS_PROVISIONING.BIN', '-exec', 'report_lba', '--'],
                             check=True, text=True, capture_output=True)

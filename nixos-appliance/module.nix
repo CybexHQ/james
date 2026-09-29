@@ -151,7 +151,11 @@ in {
       requires = [ "tiaris-nest-first-boot.service" "tiaris-nest-network-runtime.service" ]; wants = [ "network-online.target" "nginx.service" "tftpd-hpa.service" "nix-daemon.service" ];
       environment = { HOME = "/var/cache/tiaris-nest/agent/home"; XDG_CACHE_HOME = "/var/cache/tiaris-nest/agent/cache"; XDG_CONFIG_HOME = "/var/cache/tiaris-nest/agent/config"; XDG_STATE_HOME = "/var/cache/tiaris-nest/agent/state"; TMPDIR = "/var/cache/tiaris-nest/agent/tmp"; NIX_USER_CONF_FILES = "/dev/null"; };
       path = [ pkgs.nix pkgs.git pkgs.openssh pkgs.coreutils pkgs.iproute2 a.udpcast ];
-      serviceConfig = { Type = "notify"; NotifyAccess = "all"; WatchdogSec = "30s"; User = "tiaris-nest"; Group = "tiaris-nest"; ExecStart = "${a.package}/bin/tiaris-nest --config /etc/tiaris-nest/config.toml serve"; Restart = "always"; RestartSec = "3s"; UMask = "0077"; NoNewPrivileges = true; PrivateTmp = true; PrivateDevices = true; ProtectSystem = "strict"; ProtectHome = true; ProtectKernelTunables = true; ProtectKernelModules = true; ProtectControlGroups = true; CapabilityBoundingSet = ""; AmbientCapabilities = ""; RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ]; ReadWritePaths = [ "/var/lib/tiaris-nest/state/agent" "/var/lib/tiaris-nest/state/inbox" "/var/cache/tiaris-nest" "/run/lock/tiaris-nest/maintenance.lock" ]; };
+      serviceConfig = { Type = "notify"; NotifyAccess = "all"; WatchdogSec = "30s"; User = "tiaris-nest"; Group = "tiaris-nest"; ExecStart = "${a.package}/bin/tiaris-nest --config /etc/tiaris-nest/config.toml serve"; Restart = "always"; RestartSec = "3s"; UMask = "0077"; NoNewPrivileges = true; PrivateTmp = true; PrivateDevices = true; ProtectSystem = "strict"; ProtectHome = true; ProtectKernelTunables = true; ProtectKernelModules = true; ProtectControlGroups = true; CapabilityBoundingSet = ""; AmbientCapabilities = ""; RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ]; ReadWritePaths = [ "/var/lib/tiaris-nest/state/agent" "/var/lib/tiaris-nest/state/inbox" "/var/cache/tiaris-nest" "/run/lock/tiaris-nest/maintenance.lock" "/run/tiaris-nest" ];
+        # Public console projection (console-status.json, 0644) for the root
+        # tty1 kiosk. Preserved across restarts so a stopped daemon leaves a
+        # visibly stale status instead of an apparent first boot.
+        RuntimeDirectory = "tiaris-nest"; RuntimeDirectoryMode = "0755"; RuntimeDirectoryPreserve = "yes"; };
     };
     systemd.services.tiaris-nest-pxe = {
       wantedBy = [ "multi-user.target" ]; after = [ "tiaris-nest.service" ]; wants = [ "tiaris-nest.service" ];
@@ -174,6 +178,19 @@ in {
     # template ExecStart override replacing our console command with agetty.
     systemd.services."autovt@tty1".enable = false;
     systemd.services."getty@tty1".enable = false;
-    systemd.services.tiaris-nest-console = { wantedBy = [ "getty.target" ]; conflicts = [ "rescue.service" ]; before = [ "getty.target" "rescue.service" ]; serviceConfig = { Type = "idle"; ExecStart = command "console"; Restart = "always"; RestartSec = "2s"; StandardInput = "tty"; StandardOutput = "tty"; StandardError = "journal"; TTYPath = "/dev/tty1"; TTYReset = true; TTYVHangup = true; TTYVTDisallocate = true; }; };
+    # Native Canopy appliance screen; it falls back to its own text feed on
+    # tty1 when no DRM output is usable. Status comes from the daemon.
+    systemd.services.tiaris-nest-console = {
+      description = "Tiaris Nest console";
+      wantedBy = [ "getty.target" ]; conflicts = [ "rescue.service" ]; before = [ "getty.target" "rescue.service" ];
+      after = [ "systemd-logind.service" "systemd-user-sessions.service" ];
+      environment = {
+        TIARIS_NEST_CONSOLE_STATUS = "/run/tiaris-nest/console-status.json";
+        FONTCONFIG_FILE = "${pkgs.fontconfig.out}/etc/fonts/fonts.conf";
+        XDG_RUNTIME_DIR = "/run/tiaris-nest-console";
+        HOME = "/root";
+      };
+      serviceConfig = { Type = "idle"; ExecStart = "${a.installerKiosk}/bin/tiaris-installer-kiosk --appliance"; Restart = "always"; RestartSec = "2s"; StandardInput = "tty"; StandardOutput = "tty"; StandardError = "journal"; TTYPath = "/dev/tty1"; TTYReset = true; TTYVHangup = true; TTYVTDisallocate = true; UtmpIdentifier = "tty1"; UtmpMode = "user"; PAMName = "login"; RuntimeDirectory = "tiaris-nest-console"; RuntimeDirectoryMode = "0700"; };
+    };
   };
 }

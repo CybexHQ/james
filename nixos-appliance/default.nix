@@ -29,14 +29,27 @@ let
     inherit pkgs;
     repoRoot = builtins.toPath manageRepo;
   };
+  # The Canopy tty1 screens: `--nest-setup` on the setup ISO and
+  # `--appliance` on the installed Nest. Both read bounded JSON projections
+  # written by tiaris-nest-bootstrap and the tiaris-nest daemon.
+  installerKiosk = import (builtins.toPath manageRepo + "/deploy/nixos/tiaris-installer-kiosk-package.nix") {
+    inherit pkgs;
+    repoRoot = builtins.toPath manageRepo;
+  };
   common = {
-    inherit package sourceArchive migrations workstationAgent sourceRevision manageSourceRevision manageOrigin sourceDateEpoch releasePublicKey;
+    inherit package sourceArchive migrations workstationAgent installerKiosk sourceRevision manageSourceRevision manageOrigin sourceDateEpoch releasePublicKey;
     sourceArchiveFile = archiveInput;
     provisioningPublicKeys = publicKeys;
     nixpkgsRevision = pin.revision;
     nixpkgsPath = nixpkgs;
     udpcast = import (builtins.toPath manageRepo + "/deploy/nixos/udpcast-pinned.nix") { inherit pkgs; };
-    themeSource = builtins.path { path = builtins.toPath manageRepo + "/deploy/nixos/tiaris-grub-theme"; name = "tiaris-grub-theme"; };
+    # Presentation-only GRUB theme directory (theme.txt, images, .pf2 fonts).
+    grubTheme = import (builtins.toPath manageRepo + "/deploy/nixos/tiaris-grub-theme.nix") {
+      inherit pkgs;
+      repoRoot = builtins.toPath manageRepo;
+      variant = "nest-installer";
+      footerLeft = "NIXOS 26.05 · UEFI";
+    };
   };
   installed = import (nixpkgs + "/nixos/lib/eval-config.nix") {
     inherit system;
@@ -84,7 +97,7 @@ assert builtins.match "[0-9a-f]{40}" manageSourceRevision != null;
 assert builtins.length publicKeys >= 1 && builtins.length publicKeys <= 8;
 assert publicKeys == lib.sort builtins.lessThan (lib.unique publicKeys);
 {
-  inherit package unsignedCache buildMetadata workstationAgent;
+  inherit package unsignedCache buildMetadata workstationAgent installerKiosk;
   system = installed.config.system.build.toplevel;
   iso = live.config.system.build.isoImage;
   inherit (installed) config;
