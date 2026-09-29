@@ -9,14 +9,12 @@ use super::{
     NestProvisioningInventory, SignedInstallPlan,
     inventory::{MIN_DISK_BYTES, NestProvisioningDisk, NestProvisioningEthernetInterface},
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use std::{
-    fs::{self, File, OpenOptions},
-    io::Write,
+    fs,
     net::Ipv4Addr,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::Mutex,
     time::{Duration, Instant},
@@ -1069,42 +1067,7 @@ fn bounded(value: &str, maximum: usize) -> String {
 /// Atomically replace `path` with a world-readable status document.
 pub(super) fn write_status(path: &Path, status: &SetupStatus) -> Result<()> {
     let body = serde_json::to_vec(status).context("serialize Nest setup status")?;
-    if body.len() > MAX_STATUS_BYTES {
-        bail!("Nest setup status exceeds its 16 KiB bound")
-    }
-    let parent = path
-        .parent()
-        .context("Nest setup status path has no parent")?;
-    match fs::symlink_metadata(parent) {
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => bail!("Nest setup status directory is not a directory"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir_all(parent).context("create Nest setup status directory")?;
-            fs::set_permissions(parent, fs::Permissions::from_mode(0o755))?;
-        }
-        Err(error) => return Err(error).context("inspect Nest setup status directory"),
-    }
-    let temporary = parent.join(format!(".status.{}.tmp", uuid::Uuid::new_v4().simple()));
-    let result = (|| -> Result<()> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o644)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&temporary)
-            .context("create Nest setup status")?;
-        // The bootstrap runs with UMask=0077; the kiosk reads as another unit.
-        file.set_permissions(fs::Permissions::from_mode(0o644))?;
-        file.write_all(&body)?;
-        file.sync_all()?;
-        fs::rename(&temporary, path).context("replace Nest setup status")?;
-        File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
+    crate::public_status::write_public_json(path, &body, MAX_STATUS_BYTES)
 }
 
 #[cfg(test)]

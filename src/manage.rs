@@ -1402,6 +1402,7 @@ async fn report_nest_state(
             .ok_or_else(|| anyhow!("managed fingerprint missing"))?,
         &state.config.manage.api_url,
     )?;
+    crate::console_status::notify_changed();
     accept_workstation_multicast_receipt(state, &response, &body).await;
     if let Err(error) = crate::wake_on_lan::acknowledge(&state.db, &response.wake_on_lan).await {
         debug!(error = %error, "Wake-on-LAN receipts remain queued for acknowledgement");

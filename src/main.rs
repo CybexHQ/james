@@ -247,6 +247,7 @@ async fn run_server(
     if state.config.manage.enabled {
         tiaris_nest::manage::spawn(state.clone());
     }
+    tiaris_nest::console_status::spawn(state.clone());
     let app = router(state.clone());
 
     info!(%listen_addr, "tiaris-nest listening");
