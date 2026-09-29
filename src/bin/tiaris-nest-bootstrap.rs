@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tiaris_nest::provisioning::{
     FinalizeOptions, NetworkRuntimeOptions, PrepareOptions, REQUIRED_MANAGE_ORIGIN,
-    commit_network_change, finalize_target, prepare, reconcile_network_runtime,
+    SETUP_STATUS_PATH, commit_network_change, finalize_target, prepare, reconcile_network_runtime,
     report_install_stage, validate_installed_state, validate_legacy_state_promotion,
     verify_committed_network_change,
 };
@@ -35,6 +35,9 @@ enum Command {
         autoinstall: PathBuf,
         #[arg(long, default_value = "/run/tiaris-state")]
         state_mount: PathBuf,
+        /// Public progress projection read by the tty1 setup kiosk.
+        #[arg(long, default_value = SETUP_STATUS_PATH)]
+        setup_status: PathBuf,
     },
     /// Report a late Subiquity stage using the installed device identity.
     Event {
@@ -119,6 +122,7 @@ async fn main() -> Result<()> {
             release_public_key,
             autoinstall,
             state_mount,
+            setup_status,
         } => {
             require_root()?;
             let options = PrepareOptions {
@@ -127,6 +131,7 @@ async fn main() -> Result<()> {
                 release_public_key_path: release_public_key,
                 autoinstall_path: autoinstall,
                 state_mount,
+                setup_status_path: Some(setup_status),
                 ..PrepareOptions::default()
             };
             prepare(options).await

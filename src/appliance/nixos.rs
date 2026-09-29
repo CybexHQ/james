@@ -217,6 +217,19 @@ pub async fn download(
     path: &Path,
     allow_private: bool,
 ) -> Result<()> {
+    download_with_progress(release, transport, path, allow_private, &mut |_, _| {}).await
+}
+
+/// Download the signed closure, reporting `(received, signed_total)` bytes
+/// after each chunk. The callback observes progress only; it cannot affect
+/// the signed size and hash checks.
+pub async fn download_with_progress(
+    release: &NixosRelease,
+    transport: &str,
+    path: &Path,
+    allow_private: bool,
+    progress: &mut (dyn FnMut(u64, u64) + Send),
+) -> Result<()> {
     let mut response = crate::release_transport::get(
         transport,
         allow_private,
@@ -257,6 +270,7 @@ pub async fn download(
             );
             hash.update(&chunk);
             file.write_all(&chunk).await?;
+            progress(size, release.system_closure.size_bytes);
         }
         ensure!(
             size == release.system_closure.size_bytes

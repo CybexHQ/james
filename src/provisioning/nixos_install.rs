@@ -1,6 +1,7 @@
 //! Direct NixOS installation of one fully authenticated offline closure.
 use super::{
     DurableProvisioningState, SignedInstallPlan,
+    setup_status::{InstallStep, SetupStatusReporter},
     storage::{self, PreparedStorage},
 };
 use crate::appliance::{
@@ -54,7 +55,11 @@ fn validate_closure_transport(transport: &str, artifact: &SystemClosure) -> Resu
     )
 }
 
-pub(super) async fn stage_closure(plan: &SignedInstallPlan, key_path: &Path) -> Result<()> {
+pub(super) async fn stage_closure(
+    plan: &SignedInstallPlan,
+    key_path: &Path,
+    status: &SetupStatusReporter,
+) -> Result<()> {
     let release = release(plan)?;
     let key = release.verify_file(key_path)?;
     let transport = plan
@@ -91,9 +96,11 @@ pub(super) async fn stage_closure(plan: &SignedInstallPlan, key_path: &Path) -> 
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(archive)
     {
+        status.step(InstallStep::VerifyRelease);
         if available >= 2 * GIB && closure::verify_archive(&mut file, release, &key, None).is_ok() {
             return Ok(());
         }
+        status.step(InstallStep::StageRelease);
         fs::remove_file(archive)?;
     }
     ensure!(
@@ -110,13 +117,15 @@ pub(super) async fn stage_closure(plan: &SignedInstallPlan, key_path: &Path) -> 
             >= release.system_closure.size_bytes,
         "insufficient tmpfs capacity"
     );
-    nixos::download(
+    nixos::download_with_progress(
         release,
         transport,
         archive,
         transport != release.system_closure.url,
+        &mut |received, total| status.download_progress(received, total),
     )
     .await?;
+    status.step(InstallStep::VerifyRelease);
     let mut file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -287,7 +296,11 @@ async fn mount(source: &Path, target: &Path, options: &str) -> Result<()> {
     );
     Ok(())
 }
-pub(super) async fn install(prepared: &PreparedStorage, key_path: &Path) -> Result<()> {
+pub(super) async fn install(
+    prepared: &PreparedStorage,
+    key_path: &Path,
+    status: &SetupStatusReporter,
+) -> Result<()> {
     let mut state = storage::load_durable_state(&prepared.state_mount)?;
     ensure!(state.identity_active, "permanent identity not yet active");
     let release = release(&state.plan)?.clone();
@@ -430,6 +443,7 @@ pub(super) async fn install(prepared: &PreparedStorage, key_path: &Path) -> Resu
     fs::remove_dir_all(&cache)?;
     File::open(&prepared.state_mount)?.sync_all()?;
     File::open(target)?.sync_all()?;
+    status.rebooting();
     boot_completed(&state, &prepared.state_mount)
 }
 

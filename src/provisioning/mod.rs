@@ -11,6 +11,7 @@ mod nixos_install;
 mod packages;
 pub(crate) mod protocol;
 mod recovery;
+mod setup_status;
 mod storage;
 
 use anyhow::{Context, Result, bail};
@@ -32,6 +33,8 @@ pub use network_runtime::{
     reconcile_network_runtime,
 };
 pub use protocol::{ProvisioningEnvelope, SignedInstallPlan};
+use setup_status::{InstallStep, SetupStatusReporter};
+pub use setup_status::{SETUP_STATUS_PATH, SETUP_STATUS_SCHEMA};
 
 pub const PRODUCTION_MANAGE_ORIGIN: &str = "https://manage.cybex.net";
 pub const REQUIRED_MANAGE_ORIGIN: &str = match option_env!("TIARIS_NEST_BUILD_MANAGE_ORIGIN") {
@@ -54,6 +57,8 @@ pub struct PrepareOptions {
     pub autoinstall_path: PathBuf,
     pub state_mount: PathBuf,
     pub required_manage_origin: String,
+    /// Public kiosk projection; `None` disables it (tests and tooling).
+    pub setup_status_path: Option<PathBuf>,
 }
 
 impl Default for PrepareOptions {
@@ -65,6 +70,7 @@ impl Default for PrepareOptions {
             autoinstall_path: PathBuf::from(DEFAULT_AUTOINSTALL_PATH),
             state_mount: PathBuf::from(DEFAULT_STATE_MOUNT),
             required_manage_origin: REQUIRED_MANAGE_ORIGIN.to_string(),
+            setup_status_path: Some(PathBuf::from(SETUP_STATUS_PATH)),
         }
     }
 }
@@ -311,7 +317,20 @@ pub(crate) fn read_bounded_nofollow(path: &Path, maximum: u64, label: &str) -> R
 
 /// Claim the media, wait for approval, create state first, rotate identity,
 /// then replace Subiquity's autoinstall document.
+///
+/// Progress is projected best-effort for the tty1 setup kiosk. The projection
+/// never changes this flow: a failed status write is logged and ignored.
 pub async fn prepare(options: PrepareOptions) -> Result<()> {
+    let status = SetupStatusReporter::new(options.setup_status_path.clone());
+    status.begin();
+    let result = prepare_with_status(&options, &status).await;
+    if result.is_err() {
+        status.process_failed();
+    }
+    result
+}
+
+async fn prepare_with_status(options: &PrepareOptions, status: &SetupStatusReporter) -> Result<()> {
     let media_layout = packages::inspect_media_layout()?;
     let trusted_keys = protocol::load_trusted_provisioning_keys(&options.provisioning_keys_path)?;
     let verified = protocol::load_and_verify_envelope(
@@ -325,12 +344,15 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
         if !probe.state.installation_complete {
             protocol::require_current_envelope(&verified)?;
         }
-        return resume_prepare(&options, &verified, probe, media_layout).await;
+        status.media_verified(&verified.envelope.manage_origin);
+        return resume_prepare(options, &verified, probe, media_layout, status).await;
     }
     protocol::require_current_envelope(&verified)?;
+    status.media_verified(&verified.envelope.manage_origin);
 
     let provisioning_key = protocol::derive_provisioning_key(&verified.envelope.media_secret)?;
     let inventory = inventory::collect_inventory().await?;
+    status.inventory_collected(&inventory);
     let hardware_digest = inventory::hardware_digest(&inventory)?;
     let client = protocol::ProvisioningClient::new(
         &verified.envelope.manage_origin,
@@ -346,10 +368,15 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
         &hardware_digest,
     )
     .await?;
+    status.session_claimed(&inventory);
     let mut signed_plan = if recovering {
-        recovery::active_plan(&session, &verified, &inventory)?
+        let plan = recovery::active_plan(&session, &verified, &inventory)?;
+        // Sequence 1 may already be committed and disk preparation may
+        // already have started. Never describe this attempt as untouched.
+        status.resumed(&plan, &inventory);
+        plan
     } else {
-        wait_for_approved_plan(
+        let plan = wait_for_approved_plan(
             &client,
             &provisioning_key,
             &verified,
@@ -357,7 +384,9 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
             &mut session,
             None,
         )
-        .await?
+        .await?;
+        status.plan_approved(&plan, &inventory);
+        plan
     };
     let (package_delivery, fresh_inventory) = loop {
         match prepare_approved_plan(
@@ -365,6 +394,7 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
             media_layout,
             &options.release_public_key_path,
             &verified.envelope.manage_origin,
+            status,
         )
         .await
         {
@@ -375,6 +405,7 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
                     // may already have started. Never describe this as untouched.
                     return Err(failure.source).context("Interrupted approved installation could not be revalidated; earlier disk preparation may already have changed the target");
                 }
+                status.pre_destructive_stop(failure.code, failure.public_message);
                 signed_plan = report_failure_and_wait_for_retry(
                     &client,
                     &provisioning_key,
@@ -384,16 +415,19 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
                     failure,
                 )
                 .await?;
+                status.plan_approved(&signed_plan, &inventory);
             }
         }
     };
 
     // Both acknowledgements must succeed before any target write. Recovery
     // replays identical evidence, including the deterministic event IDs.
+    status.step(InstallStep::PrepareDisk);
     client
         .authorize_storage_creation(&provisioning_key, &signed_plan)
         .await?;
 
+    status.disk_write_started();
     let prepared =
         storage::create_state_partition_first(&signed_plan, &fresh_inventory, &options.state_mount)
             .await?;
@@ -463,8 +497,9 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
         .await?;
     durable.next_event_sequence = 6;
     storage::save_durable_state(&prepared.state_mount, &durable)?;
+    status.step(InstallStep::InstallSystem);
     if package_delivery == packages::PackageDelivery::SystemClosure {
-        return nixos_install::install(&prepared, &options.release_public_key_path).await;
+        return nixos_install::install(&prepared, &options.release_public_key_path, status).await;
     }
     storage::write_autoinstall(
         &options.autoinstall_path,
@@ -500,10 +535,12 @@ async fn prepare_approved_plan(
     media_layout: packages::MediaLayout,
     release_public_key_path: &Path,
     manage_origin: &str,
+    status: &SetupStatusReporter,
 ) -> std::result::Result<
     (packages::PackageDelivery, NestProvisioningInventory),
     PreDestructiveFailure,
 > {
+    status.step(InstallStep::StageRelease);
     let fresh_inventory = inventory::collect_inventory().await.map_err(|error| {
         PreDestructiveFailure::new(
             "hardware_revalidation_failed",
@@ -536,7 +573,7 @@ async fn prepare_approved_plan(
             )
         })?;
     if package_delivery == packages::PackageDelivery::SystemClosure {
-        nixos_install::stage_closure(plan, release_public_key_path)
+        nixos_install::stage_closure(plan, release_public_key_path, status)
             .await
             .map_err(|error| {
                 PreDestructiveFailure::new(
@@ -556,7 +593,9 @@ async fn prepare_approved_plan(
                     error,
                 )
             })?;
+        status.step(InstallStep::VerifyRelease);
     }
+    status.step(InstallStep::RecheckHardware);
     let fresh_inventory = inventory::collect_inventory().await.map_err(|error| {
         PreDestructiveFailure::new(
             "hardware_revalidation_failed",
@@ -701,13 +740,17 @@ async fn resume_prepare(
     verified: &protocol::VerifiedEnvelope,
     probe: storage::ExistingStateProbe,
     media_layout: packages::MediaLayout,
+    status: &SetupStatusReporter,
 ) -> Result<()> {
     let mut durable = probe.state.clone();
     let inventory = inventory::collect_inventory().await?;
+    status.inventory_collected(&inventory);
     let signed_plan = recovery::durable_plan(&durable, verified, &inventory)?;
+    status.resumed(&signed_plan, &inventory);
     let package_delivery = packages::validate_plan_delivery(&signed_plan, media_layout)?;
     if durable.installation_complete {
         storage::validate_completed_state_probe(&options.state_mount, &probe)?;
+        status.rebooting();
         if package_delivery != packages::PackageDelivery::SystemClosure {
             return storage::boot_installed_appliance();
         }
@@ -716,15 +759,19 @@ async fn resume_prepare(
     inventory::preflight_network(&signed_plan, &inventory, &verified.envelope.manage_origin)
         .await?;
     if package_delivery == packages::PackageDelivery::SystemClosure {
-        nixos_install::stage_closure(&signed_plan, &options.release_public_key_path).await?;
+        nixos_install::stage_closure(&signed_plan, &options.release_public_key_path, status)
+            .await?;
     }
     if package_delivery == packages::PackageDelivery::NetworkSnapshot {
         packages::stage_network_snapshot(&signed_plan, &options.release_public_key_path).await?;
+        status.step(InstallStep::VerifyRelease);
     }
+    status.step(InstallStep::RecheckHardware);
     let inventory = inventory::collect_inventory().await?;
     inventory::revalidate_durable_plan_hardware(&signed_plan, &inventory)?;
     inventory::preflight_network(&signed_plan, &inventory, &verified.envelope.manage_origin)
         .await?;
+    status.step(InstallStep::PrepareDisk);
     let prepared =
         storage::resume_prepared_storage(&signed_plan, &inventory, &options.state_mount).await?;
     durable = storage::activate_existing_state(&options.state_mount, &probe)?;
@@ -794,8 +841,9 @@ async fn resume_prepare(
         durable.next_event_sequence = 6;
         storage::save_durable_state(&prepared.state_mount, &durable)?;
     }
+    status.step(InstallStep::InstallSystem);
     if package_delivery == packages::PackageDelivery::SystemClosure {
-        return nixos_install::install(&prepared, &options.release_public_key_path).await;
+        return nixos_install::install(&prepared, &options.release_public_key_path, status).await;
     }
     storage::write_autoinstall(
         &options.autoinstall_path,
