@@ -21,6 +21,7 @@ import uuid
 ROOT = Path('/var/lib/nest-memory')
 DB = ROOT / 'data/nest.sqlite'
 URL = 'http://127.0.0.1:8080'
+TARGETS = tuple(f'target-{index}' for index in range(32))
 
 
 def run(*args):
@@ -46,9 +47,14 @@ def sql(statement, args=()):
         return connection.execute(statement, args).fetchall()
 
 
-def queue(nonce):
+def job_rows(columns, jobs):
+    placeholders = ','.join('?' for _ in jobs)
+    return sql(f'SELECT {columns} FROM nest_build_jobs WHERE id IN ({placeholders})', jobs)
+
+
+def queue(nonce, targets=TARGETS):
     jobs = []
-    for target in ('a', 'b'):
+    for target in targets:
         digest = hashlib.sha256(f'{nonce}-{target}'.encode()).hexdigest()
         spec = dict(schema_version=1, artifact_type='nixos_closure', target=target,
                     system='x86_64-linux', input_revision='a'*40,
@@ -90,7 +96,7 @@ def cancel_probe(nonce):
     flake = Path('/etc/nest-memory-flake').read_text().replace('NONCE', nonce).replace('mkdir -p $out;', 'sleep 60; mkdir -p $out;')
     (ROOT/'flake/flake.nix').write_text(flake)
     run('chown', '-R', 'nest:nest', str(ROOT/'flake'))
-    jobs = queue(nonce)
+    jobs = queue(nonce, TARGETS[:2])
     deadline = time.monotonic()+30
     while not sql("SELECT id FROM nest_build_jobs WHERE id IN (?,?) AND status='running' AND progress_stage='building'", jobs):
         if time.monotonic()>deadline: raise RuntimeError('cancel probe never reached a running build')
@@ -160,6 +166,13 @@ def prepare(external_traffic=False):
     payload = bytes(range(256)) * 65536
     (ROOT/'www/probe.bin').write_bytes(payload)
     (ROOT/'www/cache/nar'/('0'*52+'.nar.zst')).write_bytes(payload)
+    targets = '\n'.join(f'''[[build.targets]]
+artifact_type = "nixos_closure"
+target = "{target}"
+system = "x86_64-linux"
+flake = "path:{ROOT}/flake"
+attr = "packages.x86_64-linux.{target}"
+''' for target in TARGETS)
     (ROOT/'config.toml').write_text(f'''
 [server]
 listen_addr = "{'0.0.0.0' if external_traffic else '127.0.0.1'}:8080"
@@ -181,18 +194,7 @@ max_artifact_size_bytes = 1073741824
 work_dir = "{ROOT}/build"
 output_dir = "{ROOT}/outputs"
 timeout_seconds = 1200
-[[build.targets]]
-artifact_type = "nixos_closure"
-target = "a"
-system = "x86_64-linux"
-flake = "path:{ROOT}/flake"
-attr = "packages.x86_64-linux.a"
-[[build.targets]]
-artifact_type = "nixos_closure"
-target = "b"
-system = "x86_64-linux"
-flake = "path:{ROOT}/flake"
-attr = "packages.x86_64-linux.b"
+{targets}
 [cache]
 root_dir = "{ROOT}/www/cache"
 private_key_path = "{ROOT}/data/cache-private"
@@ -237,14 +239,14 @@ def trial(mode, cycles, soak_hours=0, checkpoint=None, external_traffic=False):
             jobs = queue(nonce)
             try:
                 while True:
-                    rows = sql('SELECT id,status,error FROM nest_build_jobs WHERE id IN (?,?)', jobs)
-                    stages = sql('SELECT id,status,progress_stage FROM nest_build_jobs WHERE id IN (?,?)', jobs)
+                    rows = job_rows('id,status,error', jobs)
+                    stages = job_rows('id,status,progress_stage', jobs)
                     if stages != last_stages:
                         transitions.append(dict(seconds=time.monotonic()-started, jobs=stages))
                         last_stages = stages
                     if any(row[1] in ('failed', 'cancelled') for row in rows):
-                        raise RuntimeError(f'Build failure: {rows}; logs={sql("SELECT logs FROM nest_build_jobs WHERE id IN (?,?)", jobs)}')
-                    if len(rows) == 2 and all(row[1] == 'succeeded' for row in rows): break
+                        raise RuntimeError(f'Build failure: {rows}; logs={job_rows("logs", jobs)}')
+                    if len(rows) == len(jobs) and all(row[1] == 'succeeded' for row in rows): break
                     if time.monotonic()-started > 1200: raise RuntimeError('build timeout')
                     time.sleep(.05)
                 build_duration = time.monotonic()-started
@@ -278,13 +280,13 @@ def trial(mode, cycles, soak_hours=0, checkpoint=None, external_traffic=False):
                          transitions=transitions,
                          job_evidence=[dict(id=row[0], started_at=row[1], completed_at=row[2], logs=row[3],
                                             phase_peaks=json.loads(row[4]).get('resource_phase_peaks'))
-                                       for row in sql('SELECT id,started_at,completed_at,logs,cache_metadata FROM nest_build_jobs WHERE id IN (?,?)', jobs)]))
+                                       for row in job_rows('id,started_at,completed_at,logs,cache_metadata', jobs)]))
         if checkpoint:
             write_evidence(checkpoint, dict(mode=mode, cycles=cycle+1, elapsed_seconds=time.monotonic()-trial_started,
                                             runs=runs, quiescent=samples))
         # Clean only this fixture's completed build outputs. The binary cache
         # and its authenticated inventory remain for later serving/scrub cycles.
-        for (output,) in sql('SELECT output_path FROM nest_build_jobs WHERE id IN (?,?)', jobs):
+        for (output,) in job_rows('output_path', jobs):
             if output.startswith('/nix/store/') and '-nest-memory-' in output:
                 run('nix-store', '--delete', output)
         if soak_hours and cycle % 10 == 9:
@@ -321,7 +323,7 @@ def main():
     prepare(args.external_traffic)
     order = ('candidate', 'baseline') if args.candidate_first else ('baseline', 'candidate')
     evidence = dict(schema='tiaris.nest.memory-component-qualification.v1', kernel=run('uname','-r'), nix=run('nix','--version'), order=order,
-                    traffic_source='separate_vm' if args.external_traffic else 'same_guest')
+                    traffic_source='separate_vm' if args.external_traffic else 'same_guest', jobs_per_cycle=len(TARGETS))
     write_evidence(args.output, evidence)
     write_evidence(args.output.with_suffix('.checkpoint.json'), dict(mode='starting', cycles=0))
     try:

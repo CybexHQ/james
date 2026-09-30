@@ -105,6 +105,11 @@ two vCPUs and 2 GiB RAM. Client-side request/response processing therefore does
 not consume the Nest's four vCPUs. The isolated test network exposes only the
 fixture's public serving endpoint to that client; it never enrolls in Manage.
 Use `--arg candidateFirst true` to reverse binary order when checking variation.
+Each cycle queues 32 distinct builds so both workers have a sustained backlog.
+Two-job bursts disproportionately measure the phase of the existing two-second
+idle queue poll; retain individual execution times and stage transitions as well
+as complete batch time when interpreting a result. Earlier two-job fixture runs
+must not be combined numerically with this sustained-throughput workload.
 
 All build dependencies are already in the fixture's closure; remote substituters
 are disabled there to avoid measuring unreachable-network retry delays. Normal
