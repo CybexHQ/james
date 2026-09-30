@@ -1,9 +1,11 @@
 pub mod appliance;
 pub mod assets;
 pub mod boot;
+pub(crate) mod bounded_io;
 pub mod build;
 pub mod cache;
 pub mod cache_egress;
+pub(crate) mod cache_usage;
 pub mod config;
 pub mod console_status;
 pub mod db;
@@ -25,7 +27,10 @@ pub mod pxe_discovery;
 pub mod readiness;
 pub(crate) mod redact;
 pub(crate) mod release_transport;
+pub mod resources;
 pub mod routes;
+pub(crate) mod subprocess;
+pub(crate) mod verification_io;
 pub mod wake_on_lan;
 
 use std::sync::{Arc, RwLock};
@@ -44,6 +49,7 @@ pub struct AppState {
     /// `/cache/*` egress totals since process start; shared by every clone of
     /// the state so the report task sees what the file route counted.
     pub cache_egress: Arc<CacheEgressCounters>,
+    pub(crate) build_admission: Arc<resources::Admission>,
 }
 
 impl AppState {
@@ -55,6 +61,7 @@ impl AppState {
             netboot_multicast: netboot_multicast::NetbootMulticast::new(),
             runtime: Arc::new(RwLock::new(runtime)),
             cache_egress: Arc::new(CacheEgressCounters::new()),
+            build_admission: Arc::new(resources::Admission::default()),
         }
     }
 

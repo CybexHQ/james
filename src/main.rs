@@ -248,6 +248,10 @@ async fn run_server(
         tiaris_nest::manage::spawn(state.clone());
     }
     tiaris_nest::console_status::spawn(state.clone());
+    tiaris_nest::resources::spawn(
+        state.db.clone(),
+        state.config.paths.data_dir.join("resources.json"),
+    );
     let app = router(state.clone());
 
     info!(%listen_addr, "tiaris-nest listening");

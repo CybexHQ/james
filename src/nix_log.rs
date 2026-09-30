@@ -11,6 +11,9 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::Value;
 
+const MAX_TRACKED_ACTIVITIES: usize = 4096;
+const MAX_ACTIVITY_NAME_BYTES: usize = 512;
+
 const NIX_JSON_PREFIX: &str = "@nix ";
 
 // Activity types (nix src/libutil/logging.hh).
@@ -70,10 +73,10 @@ impl BuildProgressSnapshot {
         if self.builds_expected > 0 || self.builds_done > 0 || self.builds_running > 0 {
             let expected = self
                 .builds_expected
-                .max(self.builds_done + self.builds_running)
+                .max(self.builds_done.saturating_add(self.builds_running))
                 .max(1);
             let done = self.builds_done.min(expected);
-            let percent = range_start + (span * done / expected) as i32;
+            let percent = range_start + (span.saturating_mul(done) / expected) as i32;
             let mut message = format!("Built {done}/{expected} derivations");
             if let Some(current) = self.current_build.as_deref() {
                 message.push_str(&format!(" · building {current}"));
@@ -86,7 +89,7 @@ impl BuildProgressSnapshot {
         if self.fetches_expected > 0 || self.fetches_done > 0 {
             let expected = self.fetches_expected.max(self.fetches_done).max(1);
             let done = self.fetches_done.min(expected);
-            let percent = range_start + (span * done / expected) as i32;
+            let percent = range_start + (span.saturating_mul(done) / expected) as i32;
             let message = format!("Fetched {done}/{expected} store paths from cache");
             return Some((percent.clamp(range_start, range_end), message));
         }
@@ -163,12 +166,32 @@ impl InternalJsonParser {
     }
 
     fn handle_start(&mut self, event: NixJsonEvent) -> Option<String> {
+        let text = event.text.trim_end();
+        if !matches!(
+            event.activity_type,
+            ACT_COPY_PATH | ACT_COPY_PATHS | ACT_BUILDS | ACT_BUILD
+        ) || (self.activities.len() >= MAX_TRACKED_ACTIVITIES
+            && !self.activities.contains_key(&event.id))
+        {
+            return (event.level <= LVL_INFO && !text.is_empty()).then(|| text.to_string());
+        }
+        if self.activities.contains_key(&event.id) {
+            self.build_start_order.retain(|id| *id != event.id);
+        }
         let build_name = if event.activity_type == ACT_BUILD {
             let name = event
                 .fields
                 .first()
                 .and_then(Value::as_str)
                 .map(derivation_display_name)
+                .map(|mut name| {
+                    let mut end = name.len().min(MAX_ACTIVITY_NAME_BYTES);
+                    while !name.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    name.truncate(end);
+                    name
+                })
                 .unwrap_or_default();
             self.build_start_order.push(event.id);
             name
@@ -189,8 +212,12 @@ impl InternalJsonParser {
     fn handle_stop(&mut self, event: NixJsonEvent) -> Option<String> {
         if let Some(activity) = self.activities.remove(&event.id) {
             match activity.activity_type {
-                ACT_BUILD => self.observed_builds_done += 1,
-                ACT_COPY_PATH => self.observed_fetches_done += 1,
+                ACT_BUILD => {
+                    self.observed_builds_done = self.observed_builds_done.saturating_add(1)
+                }
+                ACT_COPY_PATH => {
+                    self.observed_fetches_done = self.observed_fetches_done.saturating_add(1)
+                }
                 _ => {}
             }
         }
@@ -277,6 +304,25 @@ mod tests {
         parser.feed_line(&format!(
             r#"@nix {{"action":"start","id":{id},"level":3,"parent":0,"text":"building '{drv}'","type":105,"fields":["{drv}","",1,1]}}"#
         ))
+    }
+
+    #[test]
+    fn repeated_and_unfinished_activities_are_bounded() {
+        let mut parser = InternalJsonParser::new();
+        for _ in 0..10000 {
+            start_build(&mut parser, 1, "build");
+        }
+        assert_eq!(parser.build_start_order.len(), 1);
+        for id in 0..10000 {
+            start_build(&mut parser, id, "build");
+        }
+        assert_eq!(parser.activities.len(), MAX_TRACKED_ACTIVITIES);
+        assert_eq!(parser.build_start_order.len(), MAX_TRACKED_ACTIVITIES);
+        for id in 0..10000 {
+            parser.feed_line(&format!(r#"@nix {{"action":"stop","id":{id}}}"#));
+        }
+        assert!(parser.activities.is_empty());
+        assert!(parser.build_start_order.is_empty());
     }
 
     #[test]
