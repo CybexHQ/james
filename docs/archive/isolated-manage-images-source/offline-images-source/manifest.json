@@ -1,0 +1,46 @@
+{
+  "schema": "tiaris.historical-source-archive.v1",
+  "archive_state": "inactive",
+  "original_worktree": "/home/john/Code/Cybex/dev/var/james-nixos/offline-images-source",
+  "original_base_revision": "308e2b49de3f201afccbd2f1f193c79b6163ec3b",
+  "reconstruction_base_revision": "c2a9fbef432ec2eb8826ea71e6796da3dec726b7",
+  "qualification_main_at_review": "5643a38f315e46106a6884574b2fa55a26897e22",
+  "historical_patch": "historical-source.patch.txt",
+  "historical_patch_sha256": "3fa74d4d72f3b016825f1f396833a65ec1105acedd39c8963a76b54e21ca46d7",
+  "files": [
+    {
+      "original_path": "nixos-appliance/qualification/isolated_manage.py",
+      "original_status": " M",
+      "sha256": "6635eae6ee4f2f6c38586a5490218a31b286189e2143072d4b45c99de2c4c873",
+      "bytes": 38504,
+      "mode": "0o600",
+      "archived_text": null
+    },
+    {
+      "original_path": "nixos-appliance/qualification/isolated_manage_config.py",
+      "original_status": " M",
+      "sha256": "9b0fadfad9e90d197fa47e5359c246fab34e18580c6de0f63bfdf1587ff94fd2",
+      "bytes": 11248,
+      "mode": "0o600",
+      "archived_text": null
+    },
+    {
+      "original_path": "nixos-appliance/qualification/isolated_manage_resources.py",
+      "original_status": " M",
+      "sha256": "097c4665a3f04eeebe21d320283a3d1700dd6df0854808f2c2cc779d0a6e6482",
+      "bytes": 13058,
+      "mode": "0o600",
+      "archived_text": null
+    },
+    {
+      "original_path": "tools/tests/test_isolated_manage.py",
+      "original_status": " M",
+      "sha256": "647bef01f61dbed27e2845b1483450abd279471a01239db2e35b1b0e32290ed7",
+      "bytes": 53781,
+      "mode": "0o600",
+      "archived_text": null
+    }
+  ],
+  "runtime_configs_or_evidence_included": false,
+  "historical_patch_apply_option": "--unidiff-zero"
+}

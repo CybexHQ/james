@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Build exact-source Manage images for two authenticated James projections."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+
+
+def sibling(name):
+    spec = importlib.util.spec_from_file_location('_james_images_' + name,
+                                                  Path(__file__).with_name(name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+inputs = sibling('isolated_manage_config')
+releases = sibling('release_predecessor')
+SCHEMA = 'cybex.james.isolated-manage-images.v1'
+ROLES = ('predecessor', 'candidate')
+DOCKER = ['docker', '--host', 'unix:///var/run/docker.sock']
+IMAGE = re.compile(r'sha256:[0-9a-f]{64}')
+MAX_CONTEXT = 256 * 1024 * 1024
+
+
+def command(arguments, *, data=None):
+    result = subprocess.run([str(value) for value in arguments], input=data, capture_output=True,
+                            env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/nonexistent',
+                                 'LANG': 'C', 'GIT_CONFIG_NOSYSTEM': '1', 'DOCKER_BUILDKIT': '1'},
+                            check=False)
+    if result.returncode:
+        raise ValueError('isolated Manage image command failed: ' + str(arguments[0]))
+    return result.stdout
+
+
+class Builder:
+    def __init__(self, run=command, verifier=releases):
+        self.run = run
+        self.verifier = verifier
+
+    def authenticated_release(self, role, directory, trusted_key, manage_origin):
+        directory = inputs.ordinary_path(directory)
+        snapshot = self.verifier.verify_pair_snapshot(directory, trusted_key)
+        if (not isinstance(snapshot, dict)
+                or set(snapshot) != {'manifest', 'manifest_body', 'compatibility', 'compatibility_body'}
+                or not isinstance(snapshot['manifest_body'], bytes)
+                or not isinstance(snapshot['compatibility_body'], bytes)):
+            raise ValueError('release verifier returned an invalid authenticated snapshot')
+        manifest, asset = snapshot['manifest'], snapshot['compatibility']
+        descriptor = manifest.get('appliance_release_v1') if isinstance(manifest, dict) else None
+        workstation = manifest.get('workstation_netboot') if isinstance(manifest, dict) else None
+        installer = manifest.get('installer_iso_template_v3') if isinstance(manifest, dict) else None
+        manage_source_revision = descriptor.get('manage_source_revision') \
+            if isinstance(descriptor, dict) else None
+        if (not isinstance(manage_source_revision, str)
+                or not re.fullmatch(r'[0-9a-f]{40}', manage_source_revision)
+                or not isinstance(workstation, dict)
+                or workstation.get('manage_source_revision') != manage_source_revision):
+            raise ValueError(role + ' signed appliance and workstation Manage provenance differ')
+        if not isinstance(installer, dict) or installer.get('manage_origin') != manage_origin:
+            raise ValueError(role + ' release differs from the fixture Manage origin')
+        contract_sha256, projection_sha256 = inputs.compatibility_identities(asset)
+        manifest_sha256 = hashlib.sha256(snapshot['manifest_body']).hexdigest()
+        manifest_identity = asset.get('release_manifest') if isinstance(asset, dict) else None
+        if (asset.get('james_release_version') != manifest.get('version')
+                or not isinstance(manifest_identity, dict)
+                or manifest_identity.get('sha256') != manifest_sha256):
+            raise ValueError(role + ' authenticated compatibility does not bind its release manifest')
+        return {'version': manifest['version'], 'compatibility_sha256': contract_sha256,
+                'compatibility_projection_sha256': projection_sha256,
+                'manifest_sha256': manifest_sha256,
+                'manage_source_revision': manage_source_revision}
+
+    def source(self, checkout, revision):
+        settings = {'manage_checkout': str(checkout), 'manage_revision': revision}
+        inputs.check_source(settings, self.run)
+        checkout = inputs.ordinary_path(checkout)
+        git = ['git', '-c', 'safe.directory=' + str(checkout), '-C', checkout]
+        archive = self.run(git + ['archive', '--format=tar', revision])
+        if not archive or len(archive) > MAX_CONTEXT:
+            raise ValueError('reviewed Manage source archive is empty or oversized')
+        created = self.run(git + ['show', '-s', '--format=%cI', revision]).decode().strip()
+        if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}', created):
+            raise ValueError('reviewed Manage commit timestamp is not canonical')
+        return checkout, archive, created
+
+    def image_ids(self):
+        result = set(self.run(DOCKER + ['image', 'ls', '--no-trunc', '--quiet']).decode().splitlines())
+        if any(not IMAGE.fullmatch(value) for value in result):
+            raise ValueError('Docker returned a malformed existing image identity')
+        return result
+
+    def inspect(self, identity, revision, projection):
+        try:
+            values = json.loads(self.run(DOCKER + ['image', 'inspect', identity]))
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise ValueError('Docker returned malformed image inspection data') from error
+        if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict):
+            raise ValueError('Docker did not return one exact built image')
+        value = values[0]
+        config = value.get('Config')
+        labels = config.get('Labels') if isinstance(config, dict) else None
+        if (value.get('Id') != identity or not isinstance(labels, dict)
+                or labels.get('org.opencontainers.image.source') != inputs.SOURCE
+                or labels.get('org.opencontainers.image.revision') != revision
+                or labels.get('net.cybex.manage.james-compatibility-projection-sha256') != projection
+                or set(config.get('Volumes') or {})):
+            raise ValueError('built Manage image lacks exact source or projection labels')
+        return identity
+
+    def build_image(self, role, release, revision, created, archive):
+        version = release['version']
+        projection = release['compatibility_projection_sha256']
+        release_id = f'isolated-{role}-{version}-{revision[:12]}'
+        arguments = DOCKER + [
+            'build', '--quiet', '--file', 'Dockerfile',
+            '--build-arg', 'CYBEX_RELEASE_ID=' + release_id,
+            '--build-arg', 'CYBEX_RELEASE_LABEL=' + release_id,
+            '--build-arg', 'CYBEX_RELEASE_GIT_SHA=' + revision,
+            '--build-arg', 'CYBEX_RELEASE_BUILT_AT=' + created,
+            '--build-arg', 'CYBEX_SOURCE_REVISION=' + revision,
+            '--build-arg', 'CYBEX_SOURCE_DIRTY=0',
+            '--build-arg', 'CYBEX_PRODUCTION_RELEASE_BUILD=1',
+            '--build-arg', 'CYBEX_BUILD_JAMES_COMPATIBILITY_PROJECTION_SHA256=' + projection,
+            '--label', 'org.opencontainers.image.title=Cybex Manage isolated qualification',
+            '--label', 'org.opencontainers.image.source=' + inputs.SOURCE,
+            '--label', 'org.opencontainers.image.revision=' + revision,
+            '--label', 'org.opencontainers.image.version=' + release_id,
+            '--label', 'org.opencontainers.image.created=' + created,
+            '--label', 'net.cybex.manage.james-compatibility-projection-sha256=' + projection,
+            '-']
+        lines = self.run(arguments, data=archive).decode().splitlines()
+        if len(lines) != 1 or not IMAGE.fullmatch(lines[0]):
+            raise ValueError('Docker build did not return one exact image identity')
+        return lines[0]
+
+    def cleanup(self, built, baseline):
+        failures = []
+        for identity in reversed(tuple(dict.fromkeys(built))):
+            if identity in baseline:
+                continue
+            try:
+                self.run(DOCKER + ['image', 'rm', identity])
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                failures.append(error)
+        if failures:
+            raise ValueError('isolated Manage image cleanup failed') from failures[0]
+
+    def build(self, checkout, revision, manage_origin, trusted_key, predecessor_dir, candidate_dir):
+        if not re.fullmatch(r'[0-9a-f]{40}', revision):
+            raise ValueError('builder needs an exact reviewed Manage revision')
+        inputs.origin(manage_origin)
+        inputs.raw_key(trusted_key)
+        checkout, archive, created = self.source(checkout, revision)
+        authenticated = {
+            'predecessor': self.authenticated_release(
+                'predecessor', predecessor_dir, trusted_key, manage_origin),
+            'candidate': self.authenticated_release(
+                'candidate', candidate_dir, trusted_key, manage_origin),
+        }
+        self.verifier.advance(authenticated['candidate']['version'], authenticated['predecessor']['version'])
+        baseline, built = self.image_ids(), []
+        try:
+            for role in ROLES:
+                identity = self.build_image(role, authenticated[role], revision, created, archive)
+                built.append(identity)
+                self.inspect(identity, revision, authenticated[role]['compatibility_projection_sha256'])
+            if len(set(built)) != len(ROLES):
+                raise ValueError('per-release Manage builds did not produce distinct image identities')
+            inputs.check_source({'manage_checkout': str(checkout), 'manage_revision': revision}, self.run)
+        except BaseException:
+            try:
+                self.cleanup(built, baseline)
+            except BaseException as cleanup_error:
+                raise ValueError('Manage image build failed and cleanup was incomplete') from cleanup_error
+            raise
+        return {'schema': SCHEMA, 'source': inputs.SOURCE, 'manage_revision': revision,
+                'app_images': dict(zip(ROLES, built)), 'releases': authenticated}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument('--manage-checkout', type=Path, required=True)
+    parser.add_argument('--manage-revision', required=True)
+    parser.add_argument('--manage-origin', required=True)
+    parser.add_argument('--release-public-key', required=True)
+    parser.add_argument('--predecessor-dir', type=Path, required=True)
+    parser.add_argument('--candidate-dir', type=Path, required=True)
+    args = parser.parse_args()
+    result = Builder().build(args.manage_checkout, args.manage_revision, args.manage_origin,
+                             args.release_public_key, args.predecessor_dir, args.candidate_dir)
+    print(inputs.canonical(result).decode(), end='')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        raise SystemExit('Isolated Manage image build failed: ' + str(error)) from None

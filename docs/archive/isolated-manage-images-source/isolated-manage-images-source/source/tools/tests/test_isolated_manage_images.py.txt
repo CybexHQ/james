@@ -1,0 +1,262 @@
+"""Exact-source, authenticated-projection Manage image builder tests."""
+import base64
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+
+SOURCE = Path(__file__).resolve().parents[2] / 'nixos-appliance/qualification/isolated_manage_images.py'
+spec = importlib.util.spec_from_file_location('isolated_manage_images_tests', SOURCE)
+images = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(images)
+
+
+def contract(marker):
+    return {
+        'schema': 'cybex.component-compatibility.v1', 'protocol_version': 4,
+        'manage': {'minimum_james_protocol': 4, 'maximum_james_protocol': 4},
+        'james': {'minimum_manage_protocol': 4, 'maximum_manage_protocol': 4},
+        'workstation_runtime': {
+            'compatibility_epoch': 1, 'descriptor_schema': 'cybex.james.workstation-netboot.v1',
+            'manifest_schema': 'cybex.james.workstation-netboot-manifest.v1',
+            'architecture': 'x86_64-linux', 'format': 'split-squashfs-v1',
+            'required_james_protocol': 4, 'import_states': [marker],
+            'import_error_codes': [marker], 'resolution_states': [marker],
+            'resolution_error_codes': [marker], 'report_receipt_states': [marker],
+            'report_receipt_error_codes': [marker],
+        },
+    }
+
+
+class Verifier:
+    def __init__(self, revision, origin):
+        self.revision, self.origin = revision, origin
+        self.signature_failure = False
+        self.mismatched_source_role = None
+        self.wrong_origin = None
+        self.advanced = []
+
+    def verify_pair_snapshot(self, directory, _key):
+        if self.signature_failure:
+            raise ValueError('invalid release signature')
+        role = Path(directory).name
+        version = '1.2.2' if role == 'predecessor' else '1.2.3'
+        body = ('manifest-' + role).encode()
+        value = contract(role)
+        compatibility = {
+            'james_release_version': version,
+            'compatibility': value,
+            'compatibility_sha256': hashlib.sha256(images.inputs.canonical(value)).hexdigest(),
+            'release_manifest': {'url': 'https://example.test/' + role,
+                                 'sha256': hashlib.sha256(body).hexdigest()},
+        }
+        manifest = {
+            'version': version,
+            'installer_iso_template_v3': {'manage_origin': self.wrong_origin or self.origin},
+            'appliance_release_v1': {'manage_source_revision': self.revision[role]},
+            'workstation_netboot': {'manage_source_revision':
+                                    ('f' * 40 if role == self.mismatched_source_role
+                                     else self.revision[role])},
+        }
+        return {'manifest': manifest, 'manifest_body': body,
+                'compatibility': compatibility,
+                'compatibility_body': images.inputs.canonical(compatibility)}
+
+    def advance(self, candidate, predecessor):
+        self.advanced.append((candidate, predecessor))
+        if candidate <= predecessor:
+            raise ValueError('candidate did not advance')
+
+
+class Runner:
+    def __init__(self, revision):
+        self.revision = revision
+        self.remote = images.inputs.SOURCE
+        self.dirty = False
+        self.dirty_after_build = False
+        self.archive = b'exact git archive bytes'
+        self.baseline = set()
+        self.fail_role = None
+        self.bad_projection_role = None
+        self.bad_source_role = None
+        self.cleanup_failure = False
+        self.calls, self.builds, self.removed = [], [], []
+        self.identities = {'predecessor': 'sha256:' + '1' * 64,
+                           'candidate': 'sha256:' + '2' * 64}
+        self.labels = {}
+
+    def __call__(self, arguments, *, data=None):
+        args = [str(value) for value in arguments]
+        self.calls.append((args, data))
+        if args[0] == 'git':
+            if 'remote' in args:
+                return (self.remote + '\n').encode()
+            if 'rev-parse' in args:
+                return (self.revision + '\n').encode()
+            if 'status' in args:
+                return b' M changed\n' if self.dirty or (self.dirty_after_build and self.builds) else b''
+            if 'archive' in args:
+                return self.archive
+            if 'show' in args:
+                return b'2026-09-21T12:34:56+00:00\n'
+        if args[:len(images.DOCKER)] != images.DOCKER:
+            raise AssertionError(args)
+        operation = args[len(images.DOCKER):]
+        if operation[:4] == ['image', 'ls', '--no-trunc', '--quiet']:
+            return ('\n'.join(sorted(self.baseline)) + ('\n' if self.baseline else '')).encode()
+        if operation[:2] == ['build', '--quiet']:
+            role = next(value.split('=')[1].split('-', 2)[1]
+                        for value in operation if value.startswith('CYBEX_RELEASE_ID='))
+            if role == self.fail_role:
+                raise ValueError('simulated Docker build failure')
+            self.assert_archive(data)
+            labels = {}
+            for index, value in enumerate(operation):
+                if value == '--label':
+                    key, label = operation[index + 1].split('=', 1)
+                    labels[key] = label
+            self.labels[role] = labels
+            self.builds.append((role, operation, data))
+            return (self.identities[role] + '\n').encode()
+        if operation[:2] == ['image', 'inspect']:
+            identity = operation[2]
+            role = next(role for role, value in self.identities.items() if value == identity)
+            labels = dict(self.labels[role])
+            if role == self.bad_projection_role:
+                labels['net.cybex.manage.james-compatibility-projection-sha256'] = \
+                    hashlib.sha256(images.inputs.canonical(contract(role))).hexdigest()
+            if role == self.bad_source_role:
+                labels['org.opencontainers.image.source'] = 'https://github.com/CybexHQ/manage'
+            return json.dumps([{'Id': identity, 'Config': {'Labels': labels}}]).encode()
+        if operation[:2] == ['image', 'rm']:
+            if self.cleanup_failure:
+                raise ValueError('simulated image cleanup failure')
+            self.removed.append(operation[2])
+            return b''
+        raise AssertionError(args)
+
+    def assert_archive(self, data):
+        if data != self.archive:
+            raise AssertionError('Docker did not receive the exact Git archive')
+
+
+class BuilderTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='isolated-manage-images-')
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.checkout = self.root / 'development'
+        self.predecessor = self.root / 'predecessor'
+        self.candidate = self.root / 'candidate'
+        for path in (self.checkout, self.predecessor, self.candidate):
+            path.mkdir()
+        self.revision = 'a' * 40
+        self.origin = 'https://dev.example.test'
+        self.key = base64.b64encode(b'k' * 32).decode()
+        self.runner = Runner(self.revision)
+        self.release_revisions = {'predecessor': 'b' * 40, 'candidate': 'c' * 40}
+        self.verifier = Verifier(self.release_revisions, self.origin)
+        self.builder = images.Builder(self.runner, self.verifier)
+
+    def build(self):
+        return self.builder.build(self.checkout, self.revision, self.origin, self.key,
+                                  self.predecessor, self.candidate)
+
+    def test_two_images_share_exact_source_and_bind_distinct_authenticated_projections(self):
+        result = self.build()
+        self.assertEqual(result['app_images'], self.runner.identities)
+        self.assertEqual(self.verifier.advanced, [('1.2.3', '1.2.2')])
+        self.assertEqual([role for role, _args, _data in self.runner.builds],
+                         ['predecessor', 'candidate'])
+        self.assertEqual({role: result['releases'][role]['manage_source_revision']
+                          for role in images.ROLES}, self.release_revisions)
+        for role, arguments, archive in self.runner.builds:
+            projection = result['releases'][role]['compatibility_projection_sha256']
+            self.assertEqual(archive, self.runner.archive)
+            self.assertIn('CYBEX_SOURCE_REVISION=' + self.revision, arguments)
+            self.assertIn('CYBEX_SOURCE_DIRTY=0', arguments)
+            self.assertIn('CYBEX_PRODUCTION_RELEASE_BUILD=1', arguments)
+            self.assertIn('CYBEX_BUILD_JAMES_COMPATIBILITY_PROJECTION_SHA256=' + projection,
+                          arguments)
+            self.assertEqual(self.runner.labels[role]['org.opencontainers.image.source'],
+                             images.inputs.SOURCE)
+            self.assertEqual(self.runner.labels[role][
+                'net.cybex.manage.james-compatibility-projection-sha256'], projection)
+            self.assertNotEqual(result['releases'][role]['compatibility_sha256'], projection)
+            self.assertNotEqual(result['releases'][role]['manage_source_revision'], self.revision)
+        self.assertEqual(self.runner.removed, [])
+
+    def test_wrong_repository_or_dirty_source_fails_before_authentication_or_build(self):
+        self.runner.remote = 'https://github.com/CybexHQ/manage'
+        with self.assertRaisesRegex(ValueError, 'development repository'):
+            self.build()
+        self.assertEqual(self.runner.builds, [])
+        self.runner.remote = images.inputs.SOURCE
+        self.runner.dirty = True
+        with self.assertRaisesRegex(ValueError, 'clean at the exact reviewed revision'):
+            self.build()
+        self.assertEqual(self.runner.builds, [])
+
+    def test_release_signature_and_origin_must_match_before_build(self):
+        self.verifier.signature_failure = True
+        with self.assertRaisesRegex(ValueError, 'signature'):
+            self.build()
+        self.verifier.signature_failure = False
+        self.verifier.wrong_origin = 'https://other.example.test'
+        with self.assertRaisesRegex(ValueError, 'fixture Manage origin'):
+            self.build()
+        self.assertEqual(self.runner.builds, [])
+
+    def test_release_provenance_mismatch_fails_before_docker_mutation(self):
+        self.verifier.mismatched_source_role = 'predecessor'
+        with self.assertRaisesRegex(ValueError, 'appliance and workstation Manage provenance differ'):
+            self.build()
+        self.assertEqual(self.runner.builds, [])
+        self.assertFalse(any(args[:len(images.DOCKER)] == images.DOCKER
+                             for args, _data in self.runner.calls))
+
+    def test_full_contract_digest_cannot_replace_projection_label_and_image_is_removed(self):
+        self.runner.bad_projection_role = 'predecessor'
+        with self.assertRaisesRegex(ValueError, 'exact source or projection labels'):
+            self.build()
+        self.assertEqual(self.runner.removed, [self.runner.identities['predecessor']])
+
+    def test_wrong_source_label_is_rejected_and_image_is_removed(self):
+        self.runner.bad_source_role = 'predecessor'
+        with self.assertRaisesRegex(ValueError, 'exact source or projection labels'):
+            self.build()
+        self.assertEqual(self.runner.removed, [self.runner.identities['predecessor']])
+
+    def test_source_change_during_build_removes_both_new_images(self):
+        self.runner.dirty_after_build = True
+        with self.assertRaisesRegex(ValueError, 'clean at the exact reviewed revision'):
+            self.build()
+        self.assertEqual(self.runner.removed, [self.runner.identities['candidate'],
+                                               self.runner.identities['predecessor']])
+
+    def test_second_build_failure_removes_only_new_partial_image(self):
+        self.runner.fail_role = 'candidate'
+        with self.assertRaisesRegex(ValueError, 'simulated Docker build failure'):
+            self.build()
+        self.assertEqual(self.runner.removed, [self.runner.identities['predecessor']])
+
+        self.runner = Runner(self.revision)
+        self.runner.fail_role = 'candidate'
+        self.runner.baseline.add(self.runner.identities['predecessor'])
+        self.builder = images.Builder(self.runner, self.verifier)
+        with self.assertRaisesRegex(ValueError, 'simulated Docker build failure'):
+            self.build()
+        self.assertEqual(self.runner.removed, [])
+
+    def test_cleanup_failure_is_reported_without_claiming_success(self):
+        self.runner.fail_role = 'candidate'
+        self.runner.cleanup_failure = True
+        with self.assertRaisesRegex(ValueError, 'cleanup was incomplete'):
+            self.build()
+
+
+if __name__ == '__main__':
+    unittest.main()

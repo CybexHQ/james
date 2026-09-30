@@ -1,0 +1,158 @@
+diff --git a/nixos-appliance/qualification/isolated_manage.py b/nixos-appliance/qualification/isolated_manage.py
+index 8802fbb..62c4519 100644
+--- a/nixos-appliance/qualification/isolated_manage.py
++++ b/nixos-appliance/qualification/isolated_manage.py
+@@ -222 +222 @@ class Owner:
+-                                           releases[role]['compatibility_sha256'])
++                                           releases[role]['compatibility_projection_sha256'])
+@@ -447 +447 @@ class Owner:
+-            'CYBEX_JAMES_COMPATIBILITY_PROJECTION_SHA256': release['compatibility_sha256'],
++            'CYBEX_JAMES_COMPATIBILITY_PROJECTION_SHA256': release['compatibility_projection_sha256'],
+diff --git a/nixos-appliance/qualification/isolated_manage_config.py b/nixos-appliance/qualification/isolated_manage_config.py
+index c911864..b6f7e47 100644
+--- a/nixos-appliance/qualification/isolated_manage_config.py
++++ b/nixos-appliance/qualification/isolated_manage_config.py
+@@ -21,0 +22,2 @@ FIELDS = {'schema', 'manage_origin', 'manage_checkout', 'manage_revision', 'app_
++PROJECTION_FIELDS = ('compatibility_epoch', 'descriptor_schema', 'manifest_schema',
++                     'architecture', 'format', 'required_james_protocol')
+@@ -27,0 +30,24 @@ def canonical(value):
++def compatibility_identities(asset):
++    """Return the authenticated full-contract and compiled-projection identities."""
++    if not isinstance(asset, dict) or not isinstance(asset.get('compatibility'), dict):
++        raise ValueError('signed release compatibility contract is missing')
++    contract = asset['compatibility']
++    if set(contract) != {'schema', 'protocol_version', 'manage', 'james', 'workstation_runtime'}:
++        raise ValueError('signed release compatibility contract has unexpected fields')
++    runtime = contract['workstation_runtime']
++    if not isinstance(runtime, dict) or any(field not in runtime for field in PROJECTION_FIELDS):
++        raise ValueError('signed release compatibility runtime projection is incomplete')
++    projection = {
++        'schema': contract['schema'],
++        'protocol_version': contract['protocol_version'],
++        'manage': contract['manage'],
++        'james': contract['james'],
++        'workstation_runtime': {field: runtime[field] for field in PROJECTION_FIELDS},
++    }
++    contract_sha256 = hashlib.sha256(canonical(contract)).hexdigest()
++    projection_sha256 = hashlib.sha256(canonical(projection)).hexdigest()
++    if asset.get('compatibility_sha256') != contract_sha256:
++        raise ValueError('signed release compatibility contract identity is inconsistent')
++    return contract_sha256, projection_sha256
++
++
+@@ -185,0 +212 @@ def signed_releases(config, secrets, candidate_dir, predecessor_dir, *, verifier
++        compatibility_sha256, projection_sha256 = compatibility_identities(asset)
+@@ -186,0 +214,3 @@ def signed_releases(config, secrets, candidate_dir, predecessor_dir, *, verifier
++        appliance = manifest['appliance_release_v1']
++        workstation = manifest['workstation_netboot']
++        manage_source_revision = appliance.get('manage_source_revision')
+@@ -189 +219 @@ def signed_releases(config, secrets, candidate_dir, predecessor_dir, *, verifier
+-                or manifest['appliance_release_v1']['schema'] != predecessor.release.appliance_v3.SCHEMA):
++                or appliance['schema'] != predecessor.release.appliance_v3.SCHEMA):
+@@ -190,0 +221,4 @@ def signed_releases(config, secrets, candidate_dir, predecessor_dir, *, verifier
++        if (not isinstance(manage_source_revision, str)
++                or not re.fullmatch(r'[0-9a-f]{40}', manage_source_revision)
++                or workstation.get('manage_source_revision') != manage_source_revision):
++            raise ValueError(role + ' signed appliance and workstation Manage provenance differ')
+@@ -195,2 +229,2 @@ def signed_releases(config, secrets, candidate_dir, predecessor_dir, *, verifier
+-                manifest['appliance_release_v1']['system_closure']['url']).path.rsplit('/', 1)[-1],
+-            'bundle_transport_url': urlsplit(manifest['workstation_netboot']['url']).path.rsplit('/', 1)[-1],
++                appliance['system_closure']['url']).path.rsplit('/', 1)[-1],
++            'bundle_transport_url': urlsplit(workstation['url']).path.rsplit('/', 1)[-1],
+@@ -204 +238,3 @@ def signed_releases(config, secrets, candidate_dir, predecessor_dir, *, verifier
+-                        'compatibility_sha256': asset['compatibility_sha256'],
++                        'compatibility_sha256': compatibility_sha256,
++                        'compatibility_projection_sha256': projection_sha256,
++                        'manage_source_revision': manage_source_revision,
+@@ -206,2 +241,0 @@ def signed_releases(config, secrets, candidate_dir, predecessor_dir, *, verifier
+-        if manifest['appliance_release_v1']['manage_source_revision'] != config['manage_revision']:
+-            raise ValueError('release Manage provenance differs from the reviewed fixture image')
+diff --git a/nixos-appliance/qualification/isolated_manage_resources.py b/nixos-appliance/qualification/isolated_manage_resources.py
+index c1e7c16..0adc6c2 100644
+--- a/nixos-appliance/qualification/isolated_manage_resources.py
++++ b/nixos-appliance/qualification/isolated_manage_resources.py
+@@ -53 +53 @@ def environment(config, secrets, release, transports, db_password, ssh_ca, proxy
+-        'CYBEX_JAMES_COMPATIBILITY_PROJECTION_SHA256': release['compatibility_sha256'],
++        'CYBEX_JAMES_COMPATIBILITY_PROJECTION_SHA256': release['compatibility_projection_sha256'],
+diff --git a/tools/tests/test_isolated_manage.py b/tools/tests/test_isolated_manage.py
+index 03d236e..84da46a 100644
+--- a/tools/tests/test_isolated_manage.py
++++ b/tools/tests/test_isolated_manage.py
+@@ -42,0 +43,17 @@ def configuration():
++def compatibility_contract(marker='c'):
++    return {
++        'schema': 'cybex.component-compatibility.v1', 'protocol_version': 4,
++        'manage': {'minimum_james_protocol': 4, 'maximum_james_protocol': 4},
++        'james': {'minimum_manage_protocol': 4, 'maximum_manage_protocol': 4},
++        'workstation_runtime': {
++            'compatibility_epoch': 1, 'descriptor_schema': 'cybex.james.workstation-netboot.v1',
++            'manifest_schema': 'cybex.james.workstation-netboot-manifest.v1',
++            'architecture': 'x86_64-linux', 'format': 'split-squashfs-v1',
++            'required_james_protocol': 4, 'import_states': [marker],
++            'import_error_codes': [marker], 'resolution_states': [marker],
++            'resolution_error_codes': [marker], 'report_receipt_states': [marker],
++            'report_receipt_error_codes': [marker],
++        },
++    }
++
++
+@@ -67,0 +85 @@ def release_receipt():
++            'compatibility_projection_sha256': ('3' if role == 'predecessor' else '4') * 64,
+@@ -80,0 +99,10 @@ class InputTests(unittest.TestCase):
++    def test_authenticated_contract_and_compiled_projection_identities_are_distinct(self):
++        value = compatibility_contract()
++        full = hashlib.sha256(config.canonical(value)).hexdigest()
++        asset = {'compatibility': value, 'compatibility_sha256': full}
++        contract_sha256, projection_sha256 = config.compatibility_identities(asset)
++        self.assertEqual(contract_sha256, full)
++        self.assertNotEqual(projection_sha256, full)
++        with self.assertRaisesRegex(ValueError, 'contract identity is inconsistent'):
++            config.compatibility_identities(asset | {'compatibility_sha256': projection_sha256})
++
+@@ -161,0 +190,5 @@ for mode in (0o444, 0o400, 0o600):
++        # The full signed contract digest is not interchangeable with the
++        # smaller projection digest compiled into the Manage binary.
++        docker.run = lambda args: json.dumps([image]).encode()
++        with self.assertRaisesRegex(ValueError, 'exact reviewed development source labels'):
++            docker.image(image['Id'], 'app', 'a' * 40, 'd' * 64)
+@@ -168 +201 @@ for mode in (0o444, 0o400, 0o600):
+-            'appliance_release_v1': {'schema': 'v3', 'manage_source_revision': 'a' * 40,
++            'appliance_release_v1': {'schema': 'v3', 'manage_source_revision': 'b' * 40,
+@@ -170 +203,2 @@ for mode in (0o444, 0o400, 0o600):
+-            'workstation_netboot': {'url': 'https://example.org/workstation.tar.zst'}}
++            'workstation_netboot': {'manage_source_revision': 'b' * 40,
++                                    'url': 'https://example.org/workstation.tar.zst'}}
+@@ -171,0 +206,3 @@ for mode in (0o444, 0o400, 0o600):
++        manifests[1]['appliance_release_v1']['manage_source_revision'] = 'c' * 40
++        manifests[1]['workstation_netboot']['manage_source_revision'] = 'c' * 40
++        contract = compatibility_contract()
+@@ -174 +211,2 @@ for mode in (0o444, 0o400, 0o600):
+-            'compatibility_sha256': 'c' * 64}
++            'compatibility': contract,
++            'compatibility_sha256': hashlib.sha256(config.canonical(contract)).hexdigest()}
+@@ -192,0 +231,6 @@ for mode in (0o444, 0o400, 0o600):
++        self.assertNotEqual(result['candidate']['compatibility_sha256'],
++                            result['candidate']['compatibility_projection_sha256'])
++        self.assertEqual(result['candidate']['manage_source_revision'], 'b' * 40)
++        self.assertEqual(result['predecessor']['manage_source_revision'], 'c' * 40)
++        self.assertNotEqual(result['candidate']['manage_source_revision'],
++                            configuration()['manage_revision'])
+@@ -205 +249 @@ for mode in (0o444, 0o400, 0o600):
+-            bad[role]['appliance_release_v1']['manage_source_revision'] = 'b' * 40
++            bad[role]['workstation_netboot']['manage_source_revision'] = 'd' * 40
+@@ -208 +252 @@ for mode in (0o444, 0o400, 0o600):
+-                    self.assertRaisesRegex(ValueError, 'reviewed fixture image'):
++                    self.assertRaisesRegex(ValueError, 'appliance and workstation Manage provenance differ'):
+@@ -221 +265,3 @@ for mode in (0o444, 0o400, 0o600):
+-                    'manifest_sha256': 'digest', 'version': '1.2.3', 'compatibility_sha256': 'compat'},
++                    'manifest_sha256': 'digest', 'version': '1.2.3',
++                    'compatibility_sha256': 'contract',
++                    'compatibility_projection_sha256': 'projection'},
+@@ -227,0 +274 @@ for mode in (0o444, 0o400, 0o600):
++        self.assertEqual(values['CYBEX_JAMES_COMPATIBILITY_PROJECTION_SHA256'], 'projection')
+@@ -555,0 +603 @@ class GuardTests(unittest.TestCase):
++            self.assertIn('CYBEX_JAMES_COMPATIBILITY_PROJECTION_SHA256=' + ('4' * 64) + '\n', body)
+@@ -716 +764,2 @@ class GuardTests(unittest.TestCase):
+-            releases = {role: {'compatibility_sha256': letter * 64}
++            releases = {role: {'compatibility_sha256': letter * 64,
++                               'compatibility_projection_sha256': (letter * 63) + 'f'}

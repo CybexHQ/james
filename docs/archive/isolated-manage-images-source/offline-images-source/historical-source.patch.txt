@@ -1,0 +1,30 @@
+diff --git a/nixos-appliance/qualification/isolated_manage_resources.py b/nixos-appliance/qualification/isolated_manage_resources.py
+index c1e7c16..e58680a 100644
+--- a/nixos-appliance/qualification/isolated_manage_resources.py
++++ b/nixos-appliance/qualification/isolated_manage_resources.py
+@@ -19,3 +18,0 @@ def write(path, body, *, uid=0, mode=0o400):
+-        # The owning runner keeps umask 0077. Public launch/configuration files
+-        # still need their explicit read mode for the unprivileged containers.
+-        os.fchmod(fd, mode)
+diff --git a/tools/tests/test_isolated_manage.py b/tools/tests/test_isolated_manage.py
+index 03d236e..01bd48a 100644
+--- a/tools/tests/test_isolated_manage.py
++++ b/tools/tests/test_isolated_manage.py
+@@ -14 +13,0 @@ import subprocess
+-import sys
+@@ -81,15 +79,0 @@ class InputTests(unittest.TestCase):
+-    def test_materialized_file_modes_survive_private_parent_umask(self):
+-        with tempfile.TemporaryDirectory() as temporary:
+-            script = '''
+-import importlib.util, os, pathlib, sys
+-spec = importlib.util.spec_from_file_location('fixture_resources', sys.argv[1])
+-module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+-os.umask(0o077)
+-for mode in (0o444, 0o400, 0o600):
+-    module.write(pathlib.Path(sys.argv[2]) / str(mode), b'fixture', uid=os.getuid(), mode=mode)
+-'''
+-            subprocess.run([sys.executable, '-B', '-c', script,
+-                            str(HELPERS / 'isolated_manage_resources.py'), temporary], check=True)
+-            for mode in (0o444, 0o400, 0o600):
+-                self.assertEqual((Path(temporary) / str(mode)).stat().st_mode & 0o777, mode)
+-

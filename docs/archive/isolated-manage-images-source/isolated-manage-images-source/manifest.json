@@ -1,0 +1,62 @@
+{
+  "schema": "tiaris.historical-source-archive.v1",
+  "archive_state": "inactive",
+  "original_worktree": "/home/john/Code/Cybex/james/var/james-nixos/isolated-manage-images-source",
+  "original_base_revision": "033566055cd4a6171f5b84d24099c939a41e023d",
+  "reconstruction_base_revision": "033566055cd4a6171f5b84d24099c939a41e023d",
+  "qualification_main_at_review": "5643a38f315e46106a6884574b2fa55a26897e22",
+  "historical_patch": "historical-source.patch.txt",
+  "historical_patch_sha256": "e91efe90682437a07103ddf3ba5f63679d26cb8b8fac50d238036594984dc2d8",
+  "files": [
+    {
+      "original_path": "nixos-appliance/qualification/isolated_manage.py",
+      "original_status": " M",
+      "sha256": "02e02e20f3ed30c127d7d82733e2a23f1f06d42718cfd210367703cd50ac69f1",
+      "bytes": 38526,
+      "mode": "0o644",
+      "archived_text": null
+    },
+    {
+      "original_path": "nixos-appliance/qualification/isolated_manage_config.py",
+      "original_status": " M",
+      "sha256": "1cb1b1b1e4ee8ef74c6ccb04da469572cdc4c370f5b191ec66a62205240c0946",
+      "bytes": 13238,
+      "mode": "0o644",
+      "archived_text": null
+    },
+    {
+      "original_path": "nixos-appliance/qualification/isolated_manage_resources.py",
+      "original_status": " M",
+      "sha256": "65781dbc2fe8a77552363a6e4863ec2316ca29742f7a7e86fbe5f7fd381d3a2e",
+      "bytes": 13256,
+      "mode": "0o644",
+      "archived_text": null
+    },
+    {
+      "original_path": "tools/tests/test_isolated_manage.py",
+      "original_status": " M",
+      "sha256": "fb22fcbf719a0c31711c3444a18dedcb8752625be29b4b9c0967ec216762b2bc",
+      "bytes": 57791,
+      "mode": "0o644",
+      "archived_text": null
+    },
+    {
+      "original_path": "nixos-appliance/qualification/isolated_manage_images.py",
+      "original_status": "??",
+      "sha256": "79450e31ea71e83836650dc5dddb5b2409add032d21d52e9463d08171e6f4182",
+      "bytes": 11163,
+      "mode": "0o755",
+      "archived_text": "source/nixos-appliance/qualification/isolated_manage_images.py.txt"
+    },
+    {
+      "original_path": "tools/tests/test_isolated_manage_images.py",
+      "original_status": "??",
+      "sha256": "6350cb3da84f0c732a739fceb14900f9c866e461c5d3acbeb4161bd90db070d1",
+      "bytes": 12734,
+      "mode": "0o644",
+      "archived_text": "source/tools/tests/test_isolated_manage_images.py.txt"
+    }
+  ],
+  "runtime_configs_or_evidence_included": false,
+  "historical_patch_apply_option": "--unidiff-zero"
+}
