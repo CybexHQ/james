@@ -121,25 +121,8 @@ fn open_cache_mutation_lock(cache_root: &Path) -> Result<fs::File> {
     Ok(lock)
 }
 
-fn command_output_with_transient_exec_retry(command: &mut Command) -> io::Result<Output> {
-    const MAX_ATTEMPTS: usize = 8;
-
-    for attempt in 0..MAX_ATTEMPTS {
-        match command.output() {
-            Ok(output) => return Ok(output),
-            Err(error)
-                if error.raw_os_error() == Some(libc::ETXTBSY) && attempt + 1 < MAX_ATTEMPTS =>
-            {
-                // A concurrent fork can briefly inherit an executable's
-                // just-closed writer until exec honors CLOEXEC. Retry only
-                // that transient kernel error; every other launch failure is
-                // returned immediately.
-                std::thread::sleep(Duration::from_millis(1_u64 << attempt.min(6)));
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    unreachable!("command output retry loop returns on its final attempt")
+fn command_output_with_transient_exec_retry(command: &mut Command) -> Result<Output> {
+    crate::subprocess::blocking_output(command, Duration::from_secs(30), &Default::default())
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -257,7 +240,7 @@ pub async fn status_report(
             counters_since,
         };
     }
-    let artifacts = db::list_cache_artifacts(pool).await.unwrap_or_default();
+    let artifact_count = db::count_cache_artifacts(pool).await.unwrap_or_default() as usize;
     // Artifact rows only record each export's top-level NAR; the closure NARs
     // written by `nix copy` dominate disk usage, so measure the cache root itself.
     let total_size_bytes = cache_disk_usage(config).await;
@@ -269,7 +252,7 @@ pub async fn status_report(
             public_key,
             base_url: cache_base_url(config),
             total_size_bytes,
-            artifact_count: artifacts.len(),
+            artifact_count,
             error: String::new(),
             served_bytes_total,
             served_requests_total,
@@ -283,7 +266,7 @@ pub async fn status_report(
             public_key_fingerprint: String::new(),
             base_url: cache_base_url(config),
             total_size_bytes,
-            artifact_count: artifacts.len(),
+            artifact_count,
             error: sanitize_error(&err),
             served_bytes_total,
             served_requests_total,
@@ -318,6 +301,7 @@ pub async fn initialize(config: &AppConfig) -> Result<()> {
 }
 
 fn initialize_cache_root_blocking(cache_dir: &Path) -> Result<()> {
+    let _usage_change = crate::cache_usage::Mutation::new(cache_dir);
     fs::create_dir_all(cache_dir)
         .with_context(|| format!("create cache directory {}", cache_dir.display()))?;
     let path = cache_dir.join("nix-cache-info");
@@ -369,6 +353,8 @@ pub async fn export_output(
     let evaluated_derivation = evaluated_derivation.map(str::to_string);
     let managed_job_id = job.managed_job_id.clone();
     let artifact_hash = artifact_hash.to_string();
+    let export_timeout = Duration::from_secs(config.build.timeout_seconds);
+    let cancellation = crate::subprocess::current_cancellation();
     task::spawn_blocking(move || {
         fs::create_dir_all(&cache_dir)
             .with_context(|| format!("create cache directory {}", cache_dir.display()))?;
@@ -384,14 +370,17 @@ pub async fn export_output(
             private_key_path.display(),
             CACHE_EXPORT_NAR_COMPRESSION
         );
-        copy_store_path_to_cache(
+        copy_store_path_to_cache_controlled(
             &nix_binary,
             &destination,
             &cache_dir,
             &quarantine_dir,
             &private_key_path,
             &store_path,
+            export_timeout,
+            &cancellation,
         )?;
+        cancellation_check(&cancellation)?;
         let cache_info = read_nix_cache_info(&cache_dir)?;
         let verified = build_or_quarantine_closure_manifest(
             &cache_dir,
@@ -488,6 +477,7 @@ pub async fn import_replica_closure(
     if !config.cache.enabled {
         bail!("Nest Cache is disabled");
     }
+    let _usage_change = crate::cache_usage::Mutation::new(&config.cache.root_dir);
     let mutation_lock = acquire_cache_mutation_lock(config).await?;
     if db::protected_build_job_remediation_exists(pool, job.id).await? {
         bail!("build is quarantined by the protected-material boundary");
@@ -697,20 +687,10 @@ async fn fetch_replica_narinfo(
             response.status().as_u16()
         );
     }
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_NARINFO_BYTES)
-    {
-        bail!("origin NARInfo {narinfo_filename} exceeds the bounded size");
-    }
-    let body = response
-        .bytes()
+    let body = crate::bounded_io::response_bytes(response, MAX_NARINFO_BYTES as usize)
         .await
-        .with_context(|| format!("read origin NARInfo {narinfo_filename}"))?;
-    if body.len() as u64 > MAX_NARINFO_BYTES {
-        bail!("origin NARInfo {narinfo_filename} exceeds the bounded size");
-    }
-    String::from_utf8(body.to_vec()).context("origin NARInfo was not UTF-8")
+        .with_context(|| format!("read bounded origin NARInfo {narinfo_filename}"))?;
+    String::from_utf8(body).context("origin NARInfo was not UTF-8")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -853,6 +833,7 @@ fn append_own_signature(
 }
 
 fn write_replica_narinfo(cache_dir: &Path, narinfo_filename: &str, content: &str) -> Result<()> {
+    let _usage_change = crate::cache_usage::Mutation::new(cache_dir);
     if narinfo_filename.contains('/') || !narinfo_filename.ends_with(".narinfo") {
         bail!("NARInfo filename was not a safe cache-root member");
     }
@@ -865,6 +846,7 @@ fn write_replica_narinfo(cache_dir: &Path, narinfo_filename: &str, content: &str
     Ok(())
 }
 
+#[cfg(test)]
 fn copy_store_path_to_cache(
     nix_binary: &str,
     destination: &str,
@@ -873,14 +855,50 @@ fn copy_store_path_to_cache(
     private_key_path: &Path,
     store_path: &str,
 ) -> Result<()> {
+    copy_store_path_to_cache_controlled(
+        nix_binary,
+        destination,
+        cache_root,
+        quarantine_root,
+        private_key_path,
+        store_path,
+        Duration::from_secs(3600),
+        &Default::default(),
+    )
+}
+
+fn cancellation_check(token: &tokio_util::sync::CancellationToken) -> Result<()> {
+    if token.is_cancelled() {
+        bail!("cache export cancelled");
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn copy_store_path_to_cache_controlled(
+    nix_binary: &str,
+    destination: &str,
+    cache_root: &Path,
+    quarantine_root: &Path,
+    private_key_path: &Path,
+    store_path: &str,
+    time_limit: Duration,
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Result<()> {
+    let _usage_change = crate::cache_usage::Mutation::new(cache_root);
+    let started = std::time::Instant::now();
     for attempt in 0..CACHE_EXPORT_COPY_MAX_ATTEMPTS {
+        cancellation_check(cancellation)?;
+        let remaining = time_limit
+            .checked_sub(started.elapsed())
+            .ok_or_else(|| anyhow!("cache export timed out"))?;
         let mut command = crate::nix_command::std_command(nix_binary);
         command
             .arg("copy")
             .arg("--to")
             .arg(destination)
             .arg(store_path);
-        let output = command_output_with_transient_exec_retry(&mut command)
+        let output = crate::subprocess::blocking_output(&mut command, remaining, cancellation)
             .with_context(|| format!("run {nix_binary} copy to local binary cache"))?;
         if output.status.success() {
             return Ok(());
@@ -1224,6 +1242,7 @@ fn hash_safe_cache_member(cache_root: &Path, relative: &str) -> Result<(PathBuf,
     if !metadata.file_type().is_file() {
         bail!("generated NAR was not a regular file");
     }
+    crate::verification_io::sequential(&file);
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 128 * 1024];
     let mut bytes_read = 0u64;
@@ -1479,6 +1498,7 @@ fn quarantine_narinfo_records(
     quarantine_root: &Path,
     paths: &[PathBuf],
 ) -> Result<usize> {
+    let _usage_change = crate::cache_usage::Mutation::new(cache_root);
     let mut seen = HashSet::new();
     let candidates = paths
         .iter()
@@ -1632,7 +1652,7 @@ async fn remediate_protected_build_job_locked(
     quarantine_root: &Path,
     remediation: &db::ProtectedBuildJobRemediation,
 ) -> Result<()> {
-    let artifacts = db::list_cache_artifacts(pool).await?;
+    let artifacts = db::list_cache_artifact_roots(pool).await?;
     let mut doomed_ids = artifacts
         .iter()
         .filter(|artifact| artifact_matches_protected_job(artifact, remediation))
@@ -1707,7 +1727,7 @@ async fn remediate_protected_build_job_locked(
 }
 
 fn artifact_matches_protected_job(
-    artifact: &crate::models::CacheArtifact,
+    artifact: &db::CacheArtifactRoot,
     remediation: &db::ProtectedBuildJobRemediation,
 ) -> bool {
     remediation
@@ -1717,10 +1737,7 @@ fn artifact_matches_protected_job(
         || (!remediation.output_path.is_empty() && artifact.store_path == remediation.output_path)
 }
 
-fn cache_artifact_roots_alias(
-    left: &crate::models::CacheArtifact,
-    right: &crate::models::CacheArtifact,
-) -> bool {
+fn cache_artifact_roots_alias(left: &db::CacheArtifactRoot, right: &db::CacheArtifactRoot) -> bool {
     (!left.store_path.is_empty() && left.store_path == right.store_path)
         || (!left.path.is_empty() && left.path == right.path)
         || (!left.narinfo_path.is_empty() && left.narinfo_path == right.narinfo_path)
@@ -1739,7 +1756,7 @@ pub async fn remove_artifacts_by_key(
         return Ok(());
     }
     let _mutation_lock = acquire_cache_mutation_lock(config).await?;
-    let artifacts = db::list_cache_artifacts(pool).await?;
+    let artifacts = db::list_cache_artifact_roots(pool).await?;
     let doomed = artifacts
         .iter()
         .filter(|artifact| {
@@ -1815,7 +1832,7 @@ async fn enforce_retention_locked(pool: &SqlitePool, config: &AppConfig) -> Resu
     if reclaim_bytes == 0 {
         return Ok(());
     }
-    let mut candidates = db::list_cache_artifacts(pool).await?;
+    let mut candidates = db::list_cache_artifact_roots(pool).await?;
     candidates.sort_by(|left, right| {
         left.created_at
             .cmp(&right.created_at)
@@ -1841,7 +1858,7 @@ async fn enforce_retention_locked(pool: &SqlitePool, config: &AppConfig) -> Resu
         return Ok(());
     }
 
-    let build_jobs = db::list_build_jobs(pool).await?;
+    let build_jobs = db::build_job_retention_states(pool).await?;
     let managed_protections = db::list_managed_cache_protections(pool).await?;
     let candidate_sources = candidates
         .iter()
@@ -1864,7 +1881,7 @@ async fn enforce_retention_locked(pool: &SqlitePool, config: &AppConfig) -> Resu
     // Tiaris-desired artifacts and outputs of active jobs are hard fences.
     // Recent terminal outputs are a preference: consider every other artifact
     // first, then use the oldest recent outputs if the cache is still too big.
-    let hard_protected = |artifact: &crate::models::CacheArtifact| {
+    let hard_protected = |artifact: &db::CacheArtifactRoot| {
         managed_protections.contains(&(artifact.artifact_type.clone(), artifact.hash.clone()))
             || artifact
                 .source_build_job_id
@@ -1983,13 +2000,19 @@ async fn scrub_cache_artifacts_locked(
     config: &AppConfig,
     limit: i64,
 ) -> Result<u64> {
-    let candidates = db::cache_artifacts_due_for_verification(pool, limit).await?;
+    let mut candidates = db::cache_artifacts_due_for_verification(pool, 1).await?;
     if candidates.is_empty() {
         return Ok(0);
     }
     let public_key = ensure_signing_key(config).await?;
     let mut invalid_count = 0u64;
-    for artifact in &candidates {
+    for index in 0..limit.max(1) {
+        if index != 0 {
+            candidates = db::cache_artifacts_due_for_verification(pool, 1).await?;
+        }
+        let Some(artifact) = candidates.first() else {
+            break;
+        };
         if scrub_cache_artifact(pool, config, artifact, &public_key).await? {
             invalid_count += 1;
         }
@@ -2000,12 +2023,14 @@ async fn scrub_cache_artifacts_locked(
         // sample incomplete. Corruption is exceptional, so pay the one-time
         // cost of checking every remaining root and withdraw every affected
         // publication before reporting a complete inventory to Tiaris.
-        for artifact in db::list_cache_artifacts(pool).await? {
+        let mut cursor = 0;
+        while let Some(artifact) = db::next_cache_artifact(pool, cursor).await? {
+            cursor = artifact.id;
             if scrub_cache_artifact(pool, config, &artifact, &public_key).await? {
                 invalid_count += 1;
             }
         }
-        let retained = db::list_cache_artifacts(pool)
+        let retained = db::list_cache_artifact_roots(pool)
             .await?
             .iter()
             .map(RetainedArtifactFiles::from)
@@ -2177,6 +2202,17 @@ impl From<&crate::models::CacheArtifact> for RetainedArtifactFiles {
     }
 }
 
+impl From<&db::CacheArtifactRoot> for RetainedArtifactFiles {
+    fn from(artifact: &db::CacheArtifactRoot) -> Self {
+        Self {
+            store_path: artifact.store_path.clone(),
+            nar_path: PathBuf::from(&artifact.path),
+            narinfo_path: PathBuf::from(&artifact.narinfo_path),
+            nar_url: artifact.nar_url.trim_start_matches('/').to_string(),
+        }
+    }
+}
+
 async fn sweep_unreachable_locked(
     config: &AppConfig,
     retained: Vec<RetainedArtifactFiles>,
@@ -2195,6 +2231,7 @@ fn sweep_unreachable_blocking(
     cache_root: &Path,
     retained: &[RetainedArtifactFiles],
 ) -> Result<u64> {
+    let _usage_change = crate::cache_usage::Mutation::new(cache_root);
     let mut live_files: HashSet<PathBuf> = HashSet::new();
     let mut live_nar_urls: HashSet<String> = HashSet::new();
     let mut live_narinfo_hashes: HashSet<String> = HashSet::new();
@@ -2328,10 +2365,11 @@ pub fn cache_base_url(config: &AppConfig) -> String {
 }
 
 async fn cache_disk_usage(config: &AppConfig) -> u64 {
-    let root = config.cache.root_dir.clone();
-    task::spawn_blocking(move || directory_size_bytes(&root))
-        .await
-        .unwrap_or(0)
+    crate::cache_usage::measure(&config.cache.root_dir).await
+}
+
+pub(crate) fn measure_cache_disk_usage(root: &Path) -> u64 {
+    directory_size_bytes(root)
 }
 
 fn directory_size_bytes(root: &Path) -> u64 {
@@ -4287,6 +4325,25 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0].hash, "b".repeat(64));
         fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn empty_integrity_scrub_does_not_require_or_create_signing_keys() {
+        let pool = db::connect_with_url("sqlite::memory:").await.unwrap();
+        db::migrate(&pool).await.unwrap();
+        let root = test_temp_dir("empty-scrub");
+        let mut config = AppConfig::default();
+        config.cache.private_key_path = root.join("absent-private-key");
+        config.cache.public_key_path = root.join("absent-public-key");
+        config.build.nix_binary = root.join("absent-nix").display().to_string();
+        assert_eq!(
+            scrub_cache_artifacts_locked(&pool, &config, 16)
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(!config.cache.private_key_path.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

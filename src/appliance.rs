@@ -1892,7 +1892,7 @@ async fn local_health(readiness: crate::readiness::ApplianceReadiness) -> Value 
         } else {
             "degraded"
         };
-    json!({"status":status,"checks":checks,"pxe_discovery":pxe})
+    json!({"status":status,"checks":checks,"pxe_discovery":pxe,"resources":crate::resources::latest()})
 }
 
 fn secure_boot_enabled() -> bool {

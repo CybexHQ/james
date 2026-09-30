@@ -2233,7 +2233,7 @@ dependencies = [
 
 [[package]]
 name = "tiaris-nest"
-version = "0.2.12"
+version = "0.2.45"
 dependencies = [
  "anyhow",
  "axum",
@@ -2349,6 +2349,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

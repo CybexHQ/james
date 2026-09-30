@@ -1,9 +1,9 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fs::{self, OpenOptions},
-    io::{self, Write},
+    io::Write,
     path::{Path, PathBuf},
-    process::{ExitStatus, Stdio},
+    process::Stdio,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -13,9 +13,10 @@ use rand::{RngCore, rngs::OsRng};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use tokio::process::Command;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader},
-    process::Command,
+    io::AsyncRead,
     sync::Mutex,
     time::{sleep, timeout},
 };
@@ -29,6 +30,7 @@ use crate::{
     nix_log::{InternalJsonParser, derivation_display_name},
     protected_material,
     redact::{contains_sensitive_key_value, redact_sensitive_key_values},
+    subprocess::{PIPE_DRAIN_TIMEOUT, ProcessGroup, run_bounded_command},
 };
 
 const BLUEPRINT_BUILD_INPUT_KIND: &str = "blueprint_nixos_module";
@@ -312,12 +314,36 @@ async fn worker_loop(state: AppState, worker_index: usize) {
                 continue;
             }
         };
+        let Some(_memory_lease) = state.build_admission.try_acquire(&state.config.build) else {
+            drop(_maintenance_lease);
+            sleep(Duration::from_secs(2)).await;
+            continue;
+        };
         match db::claim_next_build_job(&state.db).await {
             Ok(Some(job)) => {
                 claim_failures = 0;
                 let job_id = job.id;
                 info!(job_id, worker_index, "claimed Nest build job");
-                if let Err(err) = execute_claimed_job(&state, job).await {
+                let cancellation = tokio_util::sync::CancellationToken::new();
+                let _cancel_on_drop = cancellation.clone().drop_guard();
+                let watched = cancellation.clone();
+                let pool = state.db.clone();
+                let _watcher = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+                    loop {
+                        if matches!(
+                            db::build_job_cancel_requested(&pool, job_id).await,
+                            Ok(true)
+                        ) {
+                            watched.cancel();
+                            break;
+                        }
+                        sleep(Duration::from_millis(500)).await;
+                    }
+                }));
+                if let Err(err) = crate::subprocess::BUILD_CANCELLATION
+                    .scope(cancellation, execute_claimed_job(&state, job))
+                    .await
+                {
                     warn!(error = %safe_error(&err), worker_index, "Nest build job execution failed");
                     recover_failed_job_execution(&state, job_id, worker_index).await;
                 }
@@ -325,11 +351,13 @@ async fn worker_loop(state: AppState, worker_index: usize) {
             }
             Ok(None) => {
                 drop(_maintenance_lease);
+                drop(_memory_lease);
                 claim_failures = 0;
                 sleep(Duration::from_secs(2)).await;
             }
             Err(err) => {
                 drop(_maintenance_lease);
+                drop(_memory_lease);
                 claim_failures = claim_failures.saturating_add(1);
                 let delay = (5u64 << claim_failures.saturating_sub(1).min(5)).min(120);
                 warn!(error = %err, worker_index, retry_in_seconds = delay, "failed to claim Nest build job");
@@ -1849,6 +1877,12 @@ fn build_target_names_compatible(configured: &str, requested: &str) -> bool {
 }
 
 fn build_capacity() -> Result<BuildCapacity> {
+    if let Some((memory_bytes, swap_bytes)) = crate::resources::capacity() {
+        return Ok(BuildCapacity {
+            memory_bytes,
+            swap_bytes,
+        });
+    }
     // Hardened systemd units may hide /proc/meminfo, so retain sysinfo(2) as a
     // fallback when the cgroup controller reports an unbounded root.
     let sysinfo = kernel_sysinfo_capacity();
@@ -1921,12 +1955,10 @@ fn parse_meminfo_bytes(raw: &str, field: &str) -> Option<u64> {
 }
 
 fn cgroup_oom_kill_count() -> u64 {
-    fs::read_to_string("/sys/fs/cgroup/memory.events")
-        .ok()
-        .and_then(|raw| parse_memory_event(&raw, "oom_kill"))
-        .unwrap_or(0)
+    crate::resources::oom_kills()
 }
 
+#[cfg(test)]
 fn parse_memory_event(raw: &str, event: &str) -> Option<u64> {
     raw.lines().find_map(|line| {
         let mut fields = line.split_whitespace();
@@ -2080,177 +2112,6 @@ impl Default for SoftwareInventoryLimits {
             stderr_max_bytes: SOFTWARE_INVENTORY_STDERR_MAX_BYTES,
         }
     }
-}
-
-struct BoundedCommandOutput {
-    status: ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
-
-async fn read_bounded_command_stream<R>(
-    mut stream: R,
-    limit: usize,
-    label: &'static str,
-) -> Result<Vec<u8>>
-where
-    R: AsyncRead + Unpin,
-{
-    let mut output = Vec::with_capacity(limit.min(16 * 1024));
-    let mut buffer = [0_u8; 16 * 1024];
-    loop {
-        let read = stream
-            .read(&mut buffer)
-            .await
-            .with_context(|| format!("read {label}"))?;
-        if read == 0 {
-            return Ok(output);
-        }
-        if output.len().saturating_add(read) > limit {
-            bail!("{label} exceeded the {limit} byte source-policy limit");
-        }
-        output.extend_from_slice(&buffer[..read]);
-    }
-}
-
-/// Capture both pipes concurrently and enforce bounds while bytes arrive. A
-/// completed `Command::output` can already have allocated attacker-controlled
-/// output, so source-policy subprocesses use this streaming primitive instead.
-#[cfg(unix)]
-fn command_spawn_is_transient(error: &io::Error) -> bool {
-    error.raw_os_error() == Some(libc::ETXTBSY)
-}
-
-#[cfg(not(unix))]
-fn command_spawn_is_transient(_error: &io::Error) -> bool {
-    false
-}
-
-async fn spawn_bounded_command(
-    command: &mut Command,
-    label: &'static str,
-) -> Result<tokio::process::Child> {
-    const MAX_ATTEMPTS: usize = 8;
-
-    for attempt in 0..MAX_ATTEMPTS {
-        match command.spawn() {
-            Ok(child) => return Ok(child),
-            Err(error) if command_spawn_is_transient(&error) && attempt + 1 < MAX_ATTEMPTS => {
-                // CLOEXEC takes effect at exec, so a concurrently forked
-                // process can briefly retain a writer for an executable that
-                // was just prepared. Retry only Linux/Unix ETXTBSY, with a
-                // short bound; all other spawn failures remain fail-closed.
-                sleep(Duration::from_millis(1_u64 << attempt.min(6))).await;
-            }
-            Err(error) => return Err(error).with_context(|| format!("run {label}")),
-        }
-    }
-    unreachable!("bounded command spawn loop returns on its final attempt")
-}
-
-async fn run_bounded_command(
-    mut command: Command,
-    time_limit: Duration,
-    stdout_limit: usize,
-    stderr_limit: usize,
-    label: &'static str,
-) -> Result<BoundedCommandOutput> {
-    command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(unix)]
-    command.process_group(0);
-    let mut child = spawn_bounded_command(&mut command, label).await?;
-    let process_group = child.id();
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("capture {label} stdout"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow!("capture {label} stderr"))?;
-    let mut stdout_capture = Box::pin(read_bounded_command_stream(
-        stdout,
-        stdout_limit,
-        "source-policy command stdout",
-    ));
-    let mut stderr_capture = Box::pin(read_bounded_command_stream(
-        stderr,
-        stderr_limit,
-        "source-policy command stderr",
-    ));
-    let deadline = sleep(time_limit);
-    tokio::pin!(deadline);
-    let mut status = None;
-    let mut captured_stdout = None;
-    let mut captured_stderr = None;
-
-    enum CaptureEvent {
-        Stdout(Result<Vec<u8>>),
-        Stderr(Result<Vec<u8>>),
-        Exit(std::io::Result<ExitStatus>),
-        Timeout,
-    }
-
-    loop {
-        let event = tokio::select! {
-            result = &mut stdout_capture, if captured_stdout.is_none() => {
-                CaptureEvent::Stdout(result)
-            }
-            result = &mut stderr_capture, if captured_stderr.is_none() => {
-                CaptureEvent::Stderr(result)
-            }
-            result = child.wait(), if status.is_none() => CaptureEvent::Exit(result),
-            _ = &mut deadline => CaptureEvent::Timeout,
-        };
-        match event {
-            CaptureEvent::Stdout(Ok(output)) => captured_stdout = Some(output),
-            CaptureEvent::Stderr(Ok(output)) => captured_stderr = Some(output),
-            CaptureEvent::Exit(Ok(exit_status)) => status = Some(exit_status),
-            CaptureEvent::Exit(Err(error)) => {
-                terminate_bounded_command(&mut child, process_group).await;
-                return Err(error).with_context(|| format!("wait for {label}"));
-            }
-            CaptureEvent::Stdout(Err(error)) | CaptureEvent::Stderr(Err(error)) => {
-                terminate_bounded_command(&mut child, process_group).await;
-                return Err(error).with_context(|| format!("capture {label}"));
-            }
-            CaptureEvent::Timeout => {
-                terminate_bounded_command(&mut child, process_group).await;
-                bail!("{label} timed out");
-            }
-        }
-        if status.is_some() && captured_stdout.is_some() && captured_stderr.is_some() {
-            let (Some(status), Some(stdout), Some(stderr)) = (
-                status.take(),
-                captured_stdout.take(),
-                captured_stderr.take(),
-            ) else {
-                unreachable!("bounded command completion state was checked")
-            };
-            return Ok(BoundedCommandOutput {
-                status,
-                stdout,
-                stderr,
-            });
-        }
-    }
-}
-
-async fn terminate_bounded_command(child: &mut tokio::process::Child, process_group: Option<u32>) {
-    #[cfg(unix)]
-    if let Some(process_group) = process_group.and_then(|pid| i32::try_from(pid).ok()) {
-        // The child is placed in a fresh process group before exec. Kill the
-        // whole group so a helper that inherited stdout/stderr cannot outlive
-        // a timed-out or overflowing source-policy command.
-        unsafe {
-            libc::kill(-process_group, libc::SIGKILL);
-        }
-    }
-    let _ = child.start_kill();
-    let _ = child.wait().await;
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -5127,11 +4988,16 @@ where
 }
 
 async fn ensure_nix_daemon_available(config: &AppConfig) -> Result<()> {
-    let output = crate::nix_command::tokio_command(&config.build.nix_binary)
-        .args(["store", "ping", "--store", "daemon"])
-        .output()
-        .await
-        .with_context(|| format!("run {} store ping", config.build.nix_binary))?;
+    let mut command = crate::nix_command::tokio_command(&config.build.nix_binary);
+    command.args(["store", "ping", "--store", "daemon"]);
+    let output = run_bounded_command(
+        command,
+        Duration::from_secs(30),
+        4096,
+        65536,
+        "nix store ping",
+    )
+    .await?;
     if !output.status.success() {
         bail!(
             "{}",
@@ -5154,6 +5020,15 @@ fn build_result_metadata(
     metadata.insert(
         "result_schema".to_string(),
         json!("tiaris.nest.build.result.v1"),
+    );
+    metadata.insert(
+        "resource_phase_peaks".into(),
+        json!(crate::resources::job_peaks(job.id)),
+    );
+    metadata.insert("max_nix_jobs".into(), json!(config.build.max_nix_jobs));
+    metadata.insert(
+        "memory_per_build_bytes".into(),
+        json!(config.build.memory_per_build_bytes),
     );
     metadata.insert(
         "max_build_cores".to_string(),
@@ -5363,6 +5238,12 @@ fn nix_build_command(
         installable.clone(),
         "--cores".to_string(),
         config.build.max_build_cores.to_string(),
+        "--max-jobs".to_string(),
+        if config.build.max_nix_jobs == 0 {
+            "auto".to_string()
+        } else {
+            config.build.max_nix_jobs.to_string()
+        },
         "--system".to_string(),
         spec.system.clone(),
         "--out-link".to_string(),
@@ -5506,6 +5387,12 @@ fn blueprint_nix_build_command(
         installable.clone(),
         "--cores".to_string(),
         config.build.max_build_cores.to_string(),
+        "--max-jobs".to_string(),
+        if config.build.max_nix_jobs == 0 {
+            "auto".to_string()
+        } else {
+            config.build.max_nix_jobs.to_string()
+        },
         "--out-link".to_string(),
         out_link.display().to_string(),
         "--print-build-logs".to_string(),
@@ -5795,8 +5682,10 @@ async fn run_nix_build(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
+        .process_group(0)
         .spawn()
         .with_context(|| format!("spawn {}", command.program))?;
+    let process_group = ProcessGroup::new(child.id());
     let stdout = child
         .stdout
         .take()
@@ -5809,23 +5698,26 @@ async fn run_nix_build(
     let stderr_log = log.clone();
     let progress = Arc::new(Mutex::new(InternalJsonParser::new()));
     let stderr_progress = progress.clone();
-    let stdout_task = tokio::spawn(async move { read_log_stream(stdout, stdout_log).await });
-    let stderr_task = tokio::spawn(async move {
+    let mut stdout_task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        read_log_stream(stdout, stdout_log).await
+    }));
+    let mut stderr_task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         read_internal_json_log_stream(stderr, stderr_log, stderr_progress).await
-    });
+    }));
     let started = Instant::now();
     let mut last_log_update = Instant::now();
     let mut last_progress_sent: Option<(i32, String)> = None;
     let outcome = loop {
         match db::build_job_cancel_requested(pool, job.id).await {
             Ok(true) => {
-                terminate_child(&mut child);
+                process_group.signal(libc::SIGTERM);
                 let _ = timeout(
                     Duration::from_secs(config.build.cancel_grace_seconds),
                     child.wait(),
                 )
                 .await;
-                let _ = child.kill().await;
+                process_group.signal(libc::SIGKILL);
+                let _ = timeout(PIPE_DRAIN_TIMEOUT, child.wait()).await;
                 break ProcessOutcome::Cancelled;
             }
             Ok(false) => {}
@@ -5838,13 +5730,14 @@ async fn run_nix_build(
             }
         }
         if started.elapsed() >= Duration::from_secs(config.build.timeout_seconds) {
-            terminate_child(&mut child);
+            process_group.signal(libc::SIGTERM);
             let _ = timeout(
                 Duration::from_secs(config.build.cancel_grace_seconds),
                 child.wait(),
             )
             .await;
-            let _ = child.kill().await;
+            process_group.signal(libc::SIGKILL);
+            let _ = timeout(PIPE_DRAIN_TIMEOUT, child.wait()).await;
             break ProcessOutcome::TimedOut;
         }
         if let Some(status) = child.try_wait().context("poll nix build child")? {
@@ -5897,8 +5790,20 @@ async fn run_nix_build(
         }
         sleep(Duration::from_millis(500)).await;
     };
-    let _ = stdout_task.await;
-    let _ = stderr_task.await;
+    // A helper may retain the pipes after its parent exits. Drain finite output,
+    // then kill our group and abort readers on every return/cancellation path.
+    let drained = timeout(PIPE_DRAIN_TIMEOUT, async {
+        let (out, err) = tokio::join!(&mut stdout_task, &mut stderr_task);
+        out.context("join build stdout reader")??;
+        err.context("join build stderr reader")??;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await;
+    process_group.signal(libc::SIGKILL);
+    match drained {
+        Ok(result) => result?,
+        Err(_) => bail!("nix build output pipes remained open after child exit"),
+    }
     db::update_build_job_logs(pool, job.id, &log.snapshot().await).await?;
     Ok(outcome)
 }
@@ -5930,16 +5835,22 @@ async fn inspect_build_output(
 }
 
 async fn run_nix_hash(config: &AppConfig, path: &str) -> Result<String> {
-    let output = crate::nix_command::tokio_command(&config.build.nix_binary)
+    let mut command = crate::nix_command::tokio_command(&config.build.nix_binary);
+    command
         .arg("hash")
         .arg("path")
         .arg("--type")
         .arg("sha256")
         .arg("--base16")
-        .arg(path)
-        .output()
-        .await
-        .with_context(|| format!("run {} hash path", config.build.nix_binary))?;
+        .arg(path);
+    let output = run_bounded_command(
+        command,
+        Duration::from_secs(config.build.timeout_seconds),
+        4096,
+        65536,
+        "nix hash path",
+    )
+    .await?;
     if !output.status.success() {
         bail!(
             "nix hash path failed: {}",
@@ -5954,15 +5865,21 @@ async fn run_nix_hash(config: &AppConfig, path: &str) -> Result<String> {
 }
 
 async fn run_nix_path_info(config: &AppConfig, path: &str) -> Result<(i64, i64, Option<String>)> {
-    let output = crate::nix_command::tokio_command(&config.build.nix_binary)
+    let mut command = crate::nix_command::tokio_command(&config.build.nix_binary);
+    command
         .arg("path-info")
         .arg("--json")
         .arg("--closure-size")
         .arg("--size")
-        .arg(path)
-        .output()
-        .await
-        .with_context(|| format!("run {} path-info", config.build.nix_binary))?;
+        .arg(path);
+    let output = run_bounded_command(
+        command,
+        Duration::from_secs(config.build.timeout_seconds),
+        1048576,
+        65536,
+        "nix path-info",
+    )
+    .await?;
     if !output.status.success() {
         bail!(
             "nix path-info failed: {}",
@@ -6028,27 +5945,37 @@ async fn read_internal_json_log_stream<R>(
 where
     R: AsyncRead + Unpin,
 {
-    let mut lines = BufReader::new(reader).lines();
-    while let Some(line) = lines.next_line().await? {
-        let rendered = progress.lock().await.feed_line(&line);
-        if let Some(text) = rendered {
-            log.append(&format!("{text}\n")).await;
+    let mut lines = crate::bounded_io::Lines::new(reader, MAX_PENDING_LOG_LINE_BYTES);
+    while let Some(frame) = lines.next().await? {
+        match frame {
+            crate::bounded_io::Frame::Line(line) => {
+                let rendered = progress.lock().await.feed_line(&line);
+                if let Some(text) = rendered {
+                    log.append(&format!("{text}\n")).await;
+                }
+            }
+            crate::bounded_io::Frame::Oversized | crate::bounded_io::Frame::InvalidEncoding => {
+                log.append("[... oversized or invalid build log frame redacted ...]\n")
+                    .await;
+            }
         }
     }
     Ok(())
 }
 
-async fn read_log_stream<R>(mut reader: R, log: SharedLog) -> Result<()>
+async fn read_log_stream<R>(reader: R, log: SharedLog) -> Result<()>
 where
     R: AsyncRead + Unpin,
 {
-    let mut buf = [0u8; 8192];
-    loop {
-        let read = reader.read(&mut buf).await?;
-        if read == 0 {
-            break;
+    let mut lines = crate::bounded_io::Lines::new(reader, MAX_PENDING_LOG_LINE_BYTES);
+    while let Some(frame) = lines.next().await? {
+        match frame {
+            crate::bounded_io::Frame::Line(line) => log.append(&format!("{line}\n")).await,
+            crate::bounded_io::Frame::Oversized | crate::bounded_io::Frame::InvalidEncoding => {
+                log.append("[... oversized or invalid build log frame redacted ...]\n")
+                    .await;
+            }
         }
-        log.append(&String::from_utf8_lossy(&buf[..read])).await;
     }
     Ok(())
 }
@@ -6148,17 +6075,6 @@ fn utf8_tail_start(value: &str, keep_bytes: usize) -> usize {
         start += 1;
     }
     start
-}
-
-fn terminate_child(child: &mut tokio::process::Child) {
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = child.start_kill();
 }
 
 fn normalize_artifact_type(value: &str) -> Result<String> {

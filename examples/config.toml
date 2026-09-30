@@ -22,6 +22,12 @@ menu_timeout_ms = 0
 enabled = true
 max_concurrent_builds = 2
 max_build_cores = 4
+# 0 explicitly preserves NixOS auto concurrency; cores and jobs are independent.
+max_nix_jobs = 0
+# Admission estimates; reserve serving capacity without throttling active jobs.
+memory_per_build_bytes = 4294967296
+serving_memory_reserve_bytes = 2147483648
+memory_pressure_full_percent = 5
 minimum_memory_bytes = 17179869184
 minimum_swap_bytes = 8589934592
 timeout_seconds = 3600

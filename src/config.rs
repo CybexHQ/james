@@ -115,6 +115,11 @@ pub struct BuildConfig {
     pub enabled: bool,
     pub max_concurrent_builds: usize,
     pub max_build_cores: usize,
+    /// Zero preserves NixOS auto job concurrency; positive values explicitly cap it.
+    pub max_nix_jobs: usize,
+    pub memory_per_build_bytes: u64,
+    pub serving_memory_reserve_bytes: u64,
+    pub memory_pressure_full_percent: u8,
     pub minimum_memory_bytes: u64,
     pub minimum_swap_bytes: u64,
     pub timeout_seconds: u64,
@@ -360,6 +365,17 @@ impl AppConfig {
         validate_menu_timeout_ms(self.boot.menu_timeout_ms)?;
         self.build.max_concurrent_builds = self.build.max_concurrent_builds.clamp(1, 16);
         self.build.max_build_cores = self.build.max_build_cores.clamp(1, 128);
+        self.build.max_nix_jobs = self.build.max_nix_jobs.min(128);
+        self.build.memory_per_build_bytes = self
+            .build
+            .memory_per_build_bytes
+            .clamp(256 * 1024 * 1024, 1024_u64.pow(4));
+        self.build.serving_memory_reserve_bytes = self
+            .build
+            .serving_memory_reserve_bytes
+            .clamp(256 * 1024 * 1024, 1024_u64.pow(4));
+        self.build.memory_pressure_full_percent =
+            self.build.memory_pressure_full_percent.clamp(1, 100);
         self.build.minimum_memory_bytes = self
             .build
             .minimum_memory_bytes
@@ -914,6 +930,10 @@ impl Default for BuildConfig {
             enabled: true,
             max_concurrent_builds: 2,
             max_build_cores: 4,
+            max_nix_jobs: 0,
+            memory_per_build_bytes: 4 * 1024 * 1024 * 1024,
+            serving_memory_reserve_bytes: 2 * 1024 * 1024 * 1024,
+            memory_pressure_full_percent: 5,
             minimum_memory_bytes: 16 * 1024 * 1024 * 1024,
             minimum_swap_bytes: 8 * 1024 * 1024 * 1024,
             timeout_seconds: 60 * 60,
