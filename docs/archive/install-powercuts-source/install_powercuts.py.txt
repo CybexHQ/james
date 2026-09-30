@@ -1,0 +1,876 @@
+#!/usr/bin/env python3
+"""Q04 installation power-cut controller for an already-owned disposable VM.
+
+The lifecycle runner remains the process owner.  For Q04 it starts each resume
+paused (QEMU ``-S``), passes the exact PID/QMP socket to this controller, and
+does not replace the disk, ISO, firmware variables, or hardware arguments.
+This module never injects a fault into the appliance.  After reviewed QEMU stop
+semantics drain and flush block I/O, it copies STATE through a read-only loop,
+replays the journal only on that private copy, and issues QMP ``quit`` only at
+an exact recovered boundary.
+
+Model tests exercise the state machine only.  They are not Q04 evidence.
+"""
+from __future__ import annotations
+
+import base64
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import stat
+import struct
+import subprocess
+import time
+import uuid
+
+
+SCHEMA = 'cybex.james.install-powercuts.v1'
+EVIDENCE_SCHEMA = 'cybex.james.install-powercuts-qualification.v1'
+BOUNDARIES = ('state_creation', 'identity_activation', 'install_completion')
+EXPECTED_STATE = {
+    # These values follow the persisted transitions in provisioning/mod.rs and
+    # provisioning/nixos_install.rs.  A later state is a missed boundary.
+    'state_creation': (3, False, False),
+    'identity_activation': (5, True, False),
+    'install_completion': (9, True, True),
+}
+EVENTS = (
+    (1, 'plan_acknowledged', 'succeeded'),
+    (2, 'partitioning', 'started'),
+    (3, 'state_partition_created', 'succeeded'),
+    (4, 'identity_persisted', 'succeeded'),
+    (5, 'partitioning', 'succeeded'),
+    (6, 'installing_packages', 'succeeded'),
+    (7, 'installing_bootloader', 'succeeded'),
+    (8, 'rebooting', 'succeeded'),
+)
+SHA = re.compile(r'[0-9a-f]{64}\Z')
+DEVICE = re.compile(r'dev_[0-9a-f]{32}\Z')
+MAC = re.compile(r'(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\Z')
+LOOP = re.compile(r'/dev/loop[0-9]+\Z')
+COMMAND_ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C'}
+GIB = 1024 ** 3
+QEMU_VERSION = (10, 0, 13)
+ED25519_PKCS8 = bytes.fromhex('302e020100300506032b657004220420')
+ED25519_SPKI = bytes.fromhex('302a300506032b6570032100')
+
+
+class StateNotReady(Exception):
+    """The exact durable STATE marker does not exist yet."""
+
+
+def canonical(value):
+    return (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()
+
+
+def canonical_sha256(value):
+    return hashlib.sha256(canonical(value)).hexdigest()
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def digest(path):
+    result = hashlib.sha256()
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise ValueError('Q04 immutable input is not an ordinary single-link file')
+        while True:
+            block = os.read(fd, 1024 * 1024)
+            if not block:
+                break
+            result.update(block)
+        after = os.fstat(fd)
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            raise ValueError('Q04 immutable input changed while hashing')
+        return result.hexdigest()
+    finally:
+        os.close(fd)
+
+
+def file_identity(path, *, content=False):
+    path = Path(path)
+    if not path.is_absolute() or path.is_symlink() or path.resolve(strict=True) != path:
+        raise ValueError('Q04 fixture inputs require exact absolute paths without symlinks')
+    info = os.lstat(path)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or info.st_nlink != 1 or info.st_size <= 0):
+        raise ValueError('Q04 fixture input ownership changed')
+    value = {'path': str(path), 'device': info.st_dev, 'inode': info.st_ino,
+             'size_bytes': info.st_size, 'uid': info.st_uid}
+    if content:
+        value['sha256'] = digest(path)
+    return value
+
+
+def _drive(arguments, identity):
+    matches = []
+    for index, value in enumerate(arguments[:-1]):
+        if value == '-drive':
+            fields = dict(part.split('=', 1) for part in arguments[index + 1].split(',') if '=' in part)
+            if fields.get('id') == identity or fields.get('unit') == identity:
+                matches.append(fields)
+    if len(matches) != 1 or 'file' not in matches[0]:
+        raise ValueError('Q04 QEMU drive identity is missing or ambiguous')
+    return matches[0]
+
+
+def qemu_identity(arguments):
+    """Extract the stable hardware/media identity from a QEMU argv vector."""
+    if not isinstance(arguments, list) or not arguments or Path(arguments[0]).name != 'qemu-system-x86_64':
+        raise ValueError('Q04 process is not the owned x86-64 QEMU')
+    def option(name):
+        values = [arguments[index + 1] for index, value in enumerate(arguments[:-1]) if value == name]
+        if len(values) != 1:
+            raise ValueError('Q04 QEMU option is missing or ambiguous: ' + name)
+        return values[0]
+    devices = [arguments[index + 1] for index, value in enumerate(arguments[:-1]) if value == '-device']
+    disk = [dict(part.split('=', 1) for part in value.split(',')[1:] if '=' in part)
+            for value in devices if value.split(',', 1)[0] == 'scsi-hd']
+    nic = [dict(part.split('=', 1) for part in value.split(',')[1:] if '=' in part)
+           for value in devices if value.split(',', 1)[0] == 'virtio-net-pci']
+    if len(disk) != 1 or len(nic) != 1 or disk[0].get('drive') != 'system':
+        raise ValueError('Q04 QEMU disk or NIC identity is ambiguous')
+    system = _drive(arguments, 'system')
+    ovmf_code = _drive(arguments, '0')
+    ovmf_vars = _drive(arguments, '1')
+    if ovmf_code.get('readonly') != 'on' or ovmf_vars.get('readonly') == 'on':
+        raise ValueError('Q04 QEMU firmware drive modes are invalid')
+    value = {'uuid': option('-uuid'), 'disk': system['file'],
+             'iso': option('-cdrom'), 'ovmf_code': ovmf_code['file'],
+             'ovmf_vars': ovmf_vars['file'],
+             'serial': disk[0].get('serial'), 'mac': nic[0].get('mac')}
+    try:
+        value['uuid'] = str(uuid.UUID(value['uuid']))
+    except (ValueError, TypeError):
+        raise ValueError('Q04 QEMU UUID is invalid') from None
+    if (not isinstance(value['serial'], str) or not value['serial']
+            or not isinstance(value['mac'], str) or not MAC.fullmatch(value['mac'])):
+        raise ValueError('Q04 QEMU hardware identity is invalid')
+    return value
+
+
+def process_arguments(pid):
+    if type(pid) is not int or pid <= 1:
+        raise ValueError('Q04 QEMU PID is invalid')
+    body = Path(f'/proc/{pid}/cmdline').read_bytes()
+    return [part.decode() for part in body.rstrip(b'\0').split(b'\0')]
+
+
+def process_state_starttime(pid):
+    body = Path(f'/proc/{pid}/stat').read_text()
+    fields = body.rsplit(')', 1)
+    if len(fields) != 2:
+        raise ValueError('Q04 QEMU process identity is unavailable')
+    try:
+        values = fields[1].split()
+        return values[0], int(values[19])
+    except (IndexError, ValueError):
+        raise ValueError('Q04 QEMU process identity is invalid') from None
+
+
+def process_starttime(pid):
+    return process_state_starttime(pid)[1]
+
+
+def wait_process_exit(pid, starttime, *, timeout=30, interval=.05):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            state, current = process_state_starttime(pid)
+        except FileNotFoundError:
+            return now()
+        if current != starttime or state == 'Z':
+            return now()
+        time.sleep(interval)
+    raise TimeoutError('Q04 QEMU process did not exit after the host power cut')
+
+
+def verify_qmp_peer(connection, pid):
+    """Bind the connected Unix QMP monitor to the supplied QEMU process."""
+    if type(pid) is not int or pid <= 1:
+        raise ValueError('Q04 QEMU PID is invalid')
+    size = struct.calcsize('3i')
+    try:
+        credentials = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, size)
+        peer_pid, _peer_uid, _peer_gid = struct.unpack('3i', credentials)
+    except (AttributeError, OSError, struct.error):
+        raise ValueError('Q04 QMP peer credentials are unavailable') from None
+    if peer_pid != pid:
+        raise ValueError('Q04 QMP socket is not owned by the supplied QEMU PID')
+    return True
+
+
+def _paths(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in {'file', 'filename'} and isinstance(child, str):
+                yield child
+            yield from _paths(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _paths(child)
+
+
+def verify_qmp_attachments(blocks, disk, iso, ovmf_code, ovmf_vars):
+    if not isinstance(blocks, list):
+        raise ValueError('Q04 QMP block inventory is invalid')
+    disk_blocks = [value for value in blocks if str(disk) in set(_paths(value))]
+    iso_blocks = [value for value in blocks if str(iso) in set(_paths(value))]
+    code_blocks = [value for value in blocks if str(ovmf_code) in set(_paths(value))]
+    vars_blocks = [value for value in blocks if str(ovmf_vars) in set(_paths(value))]
+    exact = disk_blocks + iso_blocks + code_blocks + vars_blocks
+    if (any(len(values) != 1 for values in (disk_blocks, iso_blocks, code_blocks, vars_blocks))
+            or len({id(value) for value in exact}) != 4):
+        raise ValueError('Q04 QMP does not expose each exact disk, ISO, and firmware file once')
+    if iso_blocks[0].get('inserted', {}).get('ro') is not True:
+        raise ValueError('Q04 attached ISO is not read-only')
+    if disk_blocks[0].get('io-status') != 'ok':
+        raise ValueError('Q04 system disk has a non-ok block I/O status')
+    if code_blocks[0].get('inserted', {}).get('ro') is not True:
+        raise ValueError('Q04 OVMF CODE attachment is not read-only')
+    if vars_blocks[0].get('inserted', {}).get('ro') is True:
+        raise ValueError('Q04 OVMF variables attachment is unexpectedly read-only')
+    return True
+
+
+def deterministic_event_id(session_id, plan_id, sequence):
+    value = hashlib.sha256(b'CYBEX-JAMES-PROVISIONING-EVENT-ID-V1\0'
+                           + uuid.UUID(session_id).bytes + uuid.UUID(plan_id).bytes
+                           + sequence.to_bytes(8, 'big', signed=True)).digest()
+    raw = bytearray(value[:16]); raw[6] = (raw[6] & 0x0f) | 0x40; raw[8] = (raw[8] & 0x3f) | 0x80
+    return str(uuid.UUID(bytes=bytes(raw)))
+
+
+def verify_device_key(durable, *, run=subprocess.run):
+    try:
+        private = base64.b64decode(durable['device_private_key_b64'], validate=True)
+        public = base64.b64decode(durable['device_public_key_b64'], validate=True)
+    except (KeyError, ValueError):
+        raise ValueError('Q04 permanent identity key material is invalid') from None
+    fingerprint = hashlib.sha256(public).hexdigest()
+    if (len(private) != 32 or len(public) != 32
+            or durable.get('device_public_key_fingerprint') != fingerprint):
+        raise ValueError('Q04 permanent identity key material is inconsistent')
+    derived = run(['openssl', 'pkey', '-inform', 'DER', '-pubout', '-outform', 'DER'],
+                  input=ED25519_PKCS8 + private, capture_output=True, check=False,
+                  env=COMMAND_ENV)
+    if derived.returncode or derived.stdout != ED25519_SPKI + public:
+        raise ValueError('Q04 permanent private and public identity keys do not match')
+    return fingerprint
+
+
+def read_json(path, maximum):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1
+                or info.st_mode & 0o022 or not 0 < info.st_size <= maximum):
+            raise ValueError('Q04 STATE document is unsafe')
+        body = os.read(fd, maximum + 1)
+        if len(body) != info.st_size:
+            raise ValueError('Q04 STATE document changed while reading')
+        return json.loads(body), hashlib.sha256(body).hexdigest()
+    finally:
+        os.close(fd)
+
+
+def durable_state_path(state_mount):
+    """Mirror DurableProvisioningState::path protected/legacy precedence."""
+    state_mount = Path(state_mount)
+    protected = state_mount / 'control/provisioning-state.json'
+    if protected.exists() or protected.is_symlink():
+        return protected
+    flat = state_mount / 'provisioning-state.json'
+    if flat.exists() or flat.is_symlink():
+        return flat
+    raise StateNotReady('durable provisioning state does not exist yet')
+
+
+def copy_partition(source, destination, size):
+    """Copy one exact block-device range into a private sparse regular file."""
+    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    destination_fd = None
+    try:
+        source_before = os.fstat(source_fd)
+        if not stat.S_ISBLK(source_before.st_mode):
+            raise ValueError('Q04 snapshot source is not the exact STATE block device')
+        destination_fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                                 | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        hashed = hashlib.sha256()
+        remaining = size
+        while remaining:
+            block = os.read(source_fd, min(4 * 1024 * 1024, remaining))
+            if not block:
+                raise ValueError('Q04 STATE snapshot source ended before its exact range')
+            hashed.update(block)
+            if block.count(0) == len(block):
+                os.lseek(destination_fd, len(block), os.SEEK_CUR)
+            else:
+                view = memoryview(block)
+                while view:
+                    written = os.write(destination_fd, view)
+                    if written <= 0:
+                        raise ValueError('Q04 STATE snapshot write made no progress')
+                    view = view[written:]
+            remaining -= len(block)
+        os.ftruncate(destination_fd, size)
+        os.fsync(destination_fd)
+        copied = os.fstat(destination_fd)
+        source_after = os.fstat(source_fd)
+        if ((source_before.st_dev, source_before.st_ino, source_before.st_rdev)
+                != (source_after.st_dev, source_after.st_ino, source_after.st_rdev)
+                or not stat.S_ISREG(copied.st_mode) or copied.st_nlink != 1
+                or copied.st_uid != os.geteuid() or copied.st_size != size):
+            raise ValueError('Q04 STATE snapshot identity changed during the exact copy')
+        return {'sha256': hashed.hexdigest(), 'size_bytes': size,
+                'source_device': source_before.st_rdev}
+    finally:
+        if destination_fd is not None:
+            os.close(destination_fd)
+        os.close(source_fd)
+
+
+def unlink_owned(path):
+    info = os.lstat(path)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or info.st_nlink != 1):
+        raise ValueError('Q04 refusing to remove replaced snapshot')
+    Path(path).unlink()
+
+
+class ReadOnlyStateInspector:
+    """Recover a private STATE copy; never replay the original disk journal."""
+    def __init__(self, private_directory, *, run=subprocess.run, copy=copy_partition):
+        self.directory = Path(private_directory)
+        self.run = run
+        self.copy = copy
+
+    def command(self, arguments):
+        result = self.run(arguments, capture_output=True, text=True, check=False, env=COMMAND_ENV)
+        if result.returncode:
+            raise ValueError('Q04 read-only disk inspection command failed: ' + arguments[0])
+        return result.stdout.strip()
+
+    def __call__(self, disk):
+        if os.geteuid() != 0:
+            raise ValueError('Q04 read-only STATE inspection requires root')
+        disk_identity = file_identity(disk)
+        directory_info = os.lstat(self.directory)
+        if (not self.directory.is_absolute() or self.directory.is_symlink()
+                or self.directory.resolve(strict=True) != self.directory
+                or not stat.S_ISDIR(directory_info.st_mode)
+                or directory_info.st_uid != os.geteuid() or directory_info.st_mode & 0o077):
+            raise ValueError('Q04 snapshot directory is not private and owned')
+        mountpoint = self.directory / 'q04-state-inspection'
+        mountpoint.mkdir(mode=0o700, exist_ok=True)
+        mountpoint_info = os.lstat(mountpoint)
+        if (mountpoint.is_symlink() or not stat.S_ISDIR(mountpoint_info.st_mode)
+                or mountpoint_info.st_uid != os.geteuid() or mountpoint_info.st_mode & 0o077
+                or any(mountpoint.iterdir())):
+            raise ValueError('Q04 inspection mountpoint is unsafe or nonempty')
+        snapshot = self.directory / ('q04-state-snapshot.' + os.urandom(8).hex() + '.ext4')
+        source_loop = self.command(
+            ['losetup', '--find', '--show', '--read-only', '--partscan', str(disk)])
+        snapshot_loop = None
+        mounted = False
+        try:
+            if not LOOP.fullmatch(source_loop):
+                raise ValueError('Q04 did not acquire a new bounded loop device')
+            sector = int(self.command(['blockdev', '--getss', source_loop]))
+            inspected = self.run(['sgdisk', '-i', '1', source_loop], capture_output=True, text=True,
+                                 check=False, env=COMMAND_ENV)
+            if inspected.returncode:
+                raise StateNotReady('CYBEX_STATE partition does not exist yet')
+            details = inspected.stdout
+            field = lambda label: next((line.split(':', 1)[1].strip() for line in details.splitlines()
+                                        if line.strip().startswith(label + ':')), None)
+            first = int((field('First sector') or '').split()[0])
+            last = int((field('Last sector') or '').split()[0])
+            code = (field('Partition GUID code') or '').split()[0].lower()
+            name = (field('Partition name') or '').strip("'")
+            if (sector not in {512, 4096} or first != 1024 * 1024 // sector
+                    or (last - first + 1) * sector != 16 * GIB
+                    or code != '8300' or name != 'CYBEX_STATE'):
+                raise ValueError('Q04 STATE GPT range differs from the NixOS installation contract')
+            partition = source_loop + 'p1'
+            self.command(['udevadm', 'settle'])
+            metadata = json.loads(self.command([
+                'lsblk', '-J', '-b', '-o', 'PATH,TYPE,PARTLABEL,PARTUUID,FSTYPE,UUID,RO', partition]))
+            rows = metadata.get('blockdevices')
+            if (not isinstance(rows, list) or len(rows) != 1 or rows[0].get('path') != partition
+                    or rows[0].get('type') != 'part' or rows[0].get('partlabel') != 'CYBEX_STATE'
+                    or rows[0].get('ro') is not True or not rows[0].get('partuuid')):
+                raise ValueError('Q04 read-only STATE partition identity is invalid')
+            if rows[0].get('fstype') != 'ext4' or not rows[0].get('uuid'):
+                raise StateNotReady('CYBEX_STATE filesystem is not durable yet')
+            size = int(self.command(['blockdev', '--getsize64', partition]))
+            if size != 16 * GIB:
+                raise ValueError('Q04 STATE block device length differs from its GPT range')
+            snapshot_evidence = self.copy(partition, snapshot, size)
+            if (snapshot_evidence.get('size_bytes') != size
+                    or not SHA.fullmatch(snapshot_evidence.get('sha256', ''))):
+                raise ValueError('Q04 recovered STATE snapshot evidence is invalid')
+            if file_identity(disk) != disk_identity:
+                raise ValueError('Q04 raw disk identity changed during paused snapshot')
+            self.command(['losetup', '--detach', source_loop])
+            source_loop = None
+            snapshot_loop = self.command(['losetup', '--find', '--show', str(snapshot)])
+            if not LOOP.fullmatch(snapshot_loop):
+                raise ValueError('Q04 did not acquire the private snapshot loop device')
+            replay = self.run(['e2fsck', '-E', 'journal_only', '-p', snapshot_loop],
+                              capture_output=True, text=True, check=False, env=COMMAND_ENV)
+            if replay.returncode not in {0, 1}:
+                raise StateNotReady('Q04 private STATE snapshot journal recovery failed')
+            attached = self.run(['mount', '-t', 'ext4', '-o', 'ro,noload,nodev,nosuid,noexec',
+                                 snapshot_loop, str(mountpoint)], capture_output=True, text=True,
+                                check=False, env=COMMAND_ENV)
+            if attached.returncode:
+                raise StateNotReady('CYBEX_STATE cannot yet be inspected without journal replay')
+            mounted = True
+            source = self.command(['findmnt', '-rn', '-M', str(mountpoint), '-o', 'SOURCE,OPTIONS'])
+            source_fields = source.split()
+            options = source_fields[1].split(',') if len(source_fields) == 2 else []
+            if (len(source_fields) != 2 or source_fields[0] != snapshot_loop
+                    or not all(flag in options for flag in ('ro', 'nodev', 'nosuid', 'noexec'))
+                    or not {'noload', 'norecovery'}.intersection(options)):
+                raise ValueError('Q04 STATE inspection mount lost its read-only contract')
+            state_path = durable_state_path(mountpoint)
+            if not state_path.is_file() or state_path.is_symlink():
+                raise ValueError('Q04 durable provisioning state path is unsafe')
+            durable, durable_sha = read_json(state_path, 512 * 1024)
+            release_path = mountpoint / 'control/appliance-release.json'
+            release = None
+            if release_path.exists():
+                _, release_sha = read_json(release_path, 512 * 1024)
+                release = {'sha256': release_sha}
+            snapshot_evidence['journal_replay'] = 'e2fsck-journal-only'
+            return {'durable': durable, 'durable_sha256': durable_sha,
+                    'partition': {'first_sector': first, 'last_sector': last,
+                                  'sector_size': sector, 'partuuid': rows[0]['partuuid'],
+                                  'filesystem_uuid': rows[0]['uuid'], 'label': 'CYBEX_STATE'},
+                    'appliance_release': release, 'snapshot': snapshot_evidence}
+        finally:
+            cleanup_error = None
+            unmounted = not mounted
+            if mounted:
+                try:
+                    self.command(['umount', str(mountpoint)])
+                    mounted = False
+                    unmounted = True
+                except BaseException as error:
+                    cleanup_error = cleanup_error or error
+            if unmounted and snapshot_loop is not None:
+                try:
+                    self.command(['losetup', '--detach', snapshot_loop])
+                    snapshot_loop = None
+                except BaseException as error:
+                    cleanup_error = cleanup_error or error
+            if source_loop is not None:
+                try:
+                    self.command(['losetup', '--detach', source_loop])
+                    source_loop = None
+                except BaseException as error:
+                    cleanup_error = cleanup_error or error
+            if unmounted and snapshot_loop is None and (snapshot.exists() or snapshot.is_symlink()):
+                try:
+                    unlink_owned(snapshot)
+                except BaseException as error:
+                    cleanup_error = cleanup_error or error
+            if cleanup_error is not None:
+                residual = []
+                if mounted:
+                    residual.append('mount=' + str(mountpoint))
+                if snapshot_loop is not None:
+                    residual.append('snapshot_loop=' + snapshot_loop)
+                if source_loop is not None:
+                    residual.append('source_loop=' + source_loop)
+                if snapshot.exists() or snapshot.is_symlink():
+                    residual.append('snapshot=' + str(snapshot))
+                raise ValueError('Q04 residual private STATE resources require cleanup: '
+                                 + ' '.join(residual)) from cleanup_error
+
+
+class Controller:
+    def __init__(self, receipt, *, session_id, plan_id, device_id, disk, iso,
+                 ovmf_code, ovmf_vars,
+                 hardware, manage_origin, management_signing_public_key_b64,
+                 api, qmp_factory, inspector, argv=process_arguments, peer=verify_qmp_peer,
+                 key_validator=verify_device_key,
+                 process_start=process_starttime, wait_exit=wait_process_exit,
+                 sleep=time.sleep, clock=time.monotonic):
+        self.receipt = Path(receipt)
+        self.session_id = str(uuid.UUID(session_id)); self.plan_id = str(uuid.UUID(plan_id))
+        if not DEVICE.fullmatch(device_id):
+            raise ValueError('Q04 reserved device identity is invalid')
+        self.device_id = device_id
+        self.disk, self.iso, self.ovmf_code, self.ovmf = map(
+            Path, (disk, iso, ovmf_code, ovmf_vars))
+        self.hardware = dict(hardware)
+        try:
+            management_key = base64.b64decode(management_signing_public_key_b64, validate=True)
+        except (TypeError, ValueError):
+            management_key = b''
+        if (not isinstance(manage_origin, str) or not manage_origin or len(management_key) != 32):
+            raise ValueError('Q04 authenticated Management authority is missing')
+        self.manage_origin = manage_origin
+        self.management_signing_public_key_b64 = management_signing_public_key_b64
+        self.management_signing_public_key_sha256 = hashlib.sha256(management_key).hexdigest()
+        self.api, self.qmp_factory, self.inspector = api, qmp_factory, inspector
+        self.argv, self.peer, self.key_validator = argv, peer, key_validator
+        self.process_start, self.wait_exit = process_start, wait_exit
+        self.sleep, self.clock, self.active = sleep, clock, None
+
+    def save(self, value, *, exclusive=False):
+        body = canonical(value)
+        temporary = self.receipt.with_name(self.receipt.name + '.' + os.urandom(8).hex())
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            view = memoryview(body)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise ValueError('Q04 receipt write made no progress')
+                view = view[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            if exclusive:
+                try:
+                    os.link(temporary, self.receipt, follow_symlinks=False)
+                except FileExistsError:
+                    raise ValueError('refusing to adopt existing Q04 evidence') from None
+                temporary.unlink()
+            else:
+                os.replace(temporary, self.receipt)
+            directory = os.open(self.receipt.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try: os.fsync(directory)
+            finally: os.close(directory)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def load(self):
+        info = os.lstat(self.receipt)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 1024 * 1024):
+            raise ValueError('Q04 receipt is unsafe')
+        value = json.loads(self.receipt.read_bytes())
+        if (value.get('schema') != SCHEMA or value.get('session_id') != self.session_id
+                or value.get('plan_id') != self.plan_id or value.get('device_id') != self.device_id):
+            raise ValueError('Q04 receipt differs from this installation')
+        return value
+
+    def _pins(self):
+        return {'disk': file_identity(self.disk), 'iso': file_identity(self.iso, content=True),
+                'ovmf_code': file_identity(self.ovmf_code, content=True),
+                'ovmf_vars': file_identity(self.ovmf), 'hardware': self.hardware}
+
+    def _live(self, pid, monitor, expected, *, paused=True):
+        self.peer(monitor.socket, pid)
+        starttime = self.process_start(pid)
+        if self._pins() != expected:
+            raise ValueError('Q04 disk, ISO, firmware, or hardware pin changed')
+        identity = qemu_identity(self.argv(pid))
+        wanted = {**self.hardware, 'disk': str(self.disk), 'iso': str(self.iso),
+                  'ovmf_code': str(self.ovmf_code),
+                  'ovmf_vars': str(self.ovmf)}
+        if identity != wanted:
+            raise ValueError('Q04 restarted QEMU changed hardware or media')
+        status = monitor.call('query-status')
+        if status.get('running') not in {True, False}:
+            raise ValueError('Q04 QEMU run state is invalid')
+        if paused and status.get('running') is not False:
+            raise ValueError('Q04 inspection requires an exactly paused guest')
+        version = monitor.call('query-version').get('qemu', {})
+        if tuple(version.get(key) for key in ('major', 'minor', 'micro')) != QEMU_VERSION:
+            raise ValueError('Q04 QEMU version differs from the reviewed stop/drain contract')
+        verify_qmp_attachments(monitor.call('query-block'), self.disk, self.iso,
+                               self.ovmf_code, self.ovmf)
+        return status, starttime
+
+    def _session(self, expected_plan_sha256=None):
+        value = self.api('/v1/james/provisioning-sessions/' + self.session_id)
+        plan = value.get('install_plan') or {}
+        if (value.get('id') != self.session_id or value.get('reserved_device_id') != self.device_id
+                or plan.get('id') != self.plan_id or plan.get('session_id') != self.session_id
+                or plan.get('reserved_device_id') != self.device_id
+                or not isinstance(plan.get('signature'), str) or not plan.get('signature')):
+            raise ValueError('Q04 Management session, plan, or reserved identity changed')
+        plan_sha256 = canonical_sha256(plan)
+        if expected_plan_sha256 is not None and plan_sha256 != expected_plan_sha256:
+            raise ValueError('Q04 signed Management install plan changed')
+        return value, plan_sha256
+
+    def _node(self):
+        value = self.api('/v1/james/nodes/' + self.device_id)
+        node = value.get('node') if isinstance(value, dict) else None
+        if not isinstance(node, dict) or node.get('device_id') != self.device_id:
+            raise ValueError('Q04 Management James node identity changed')
+        return node
+
+    def _verify_installed_report(self, before, final, receipt):
+        session, _ = self._session(receipt['install_plan_sha256'])
+        plan = session['install_plan']
+        release = plan.get('appliance_release') or {}
+        closure = release.get('system_closure') or {}
+        if (not final.get('james_reported_at')
+                or final.get('james_reported_at') == before.get('james_reported_at')
+                or final.get('appliance_base_os') != plan.get('base_os')
+                or final.get('appliance_release') != plan.get('release_version')
+                or final.get('nixpkgs_revision') != release.get('nixpkgs_revision')
+                or final.get('system_toplevel') != release.get('system_toplevel')
+                or final.get('system_closure_sha256') != closure.get('sha256')
+                or not re.fullmatch(r'[1-9][0-9]*', str(final.get('system_generation', '')))):
+            raise ValueError('Q04 fresh installed James report differs from the signed plan')
+        return True
+
+    def _state(self, observed, receipt):
+        durable = observed.get('durable') if isinstance(observed, dict) else None
+        plan = durable.get('plan') if isinstance(durable, dict) else None
+        key = self.key_validator(durable) if isinstance(durable, dict) else None
+        sequence = durable.get('next_event_sequence') if isinstance(durable, dict) else None
+        active = durable.get('identity_active') if isinstance(durable, dict) else None
+        complete = durable.get('installation_complete') if isinstance(durable, dict) else None
+        partition = observed.get('partition') if isinstance(observed, dict) else None
+        snapshot = observed.get('snapshot') if isinstance(observed, dict) else None
+        if (not isinstance(plan, dict)
+                or durable.get('schema') != 'cybex.james.provisioning-state.v1'
+                or str(durable.get('session_id')) != self.session_id
+                or str(plan.get('id')) != self.plan_id or plan.get('reserved_device_id') != self.device_id
+                or canonical_sha256(plan) != receipt.get('install_plan_sha256')
+                or durable.get('manage_origin') != self.manage_origin
+                or durable.get('management_signing_public_key_b64')
+                != self.management_signing_public_key_b64
+                or not isinstance(key, str) or not SHA.fullmatch(key)
+                or type(sequence) is not int or type(active) is not bool or type(complete) is not bool
+                or not SHA.fullmatch(observed.get('durable_sha256', ''))
+                or not isinstance(partition, dict) or partition.get('label') != 'CYBEX_STATE'
+                or not partition.get('partuuid') or not partition.get('filesystem_uuid')
+                or not isinstance(snapshot, dict) or not SHA.fullmatch(snapshot.get('sha256', ''))
+                or snapshot.get('size_bytes') != 16 * GIB
+                or snapshot.get('journal_replay') != 'e2fsck-journal-only'):
+            raise ValueError('Q04 durable STATE differs from the exact installation')
+        return durable, key
+
+    def initialize(self, pid):
+        if self.receipt.exists() or self.receipt.is_symlink():
+            raise ValueError('refusing to adopt existing Q04 evidence')
+        pins = self._pins()
+        monitor = self.qmp_factory()
+        keep_monitor = False
+        try:
+            (status, _) = self._live(pid, monitor, pins, paused=False)
+            if status.get('running') is not False:
+                monitor.call('stop')
+            self._live(pid, monitor, pins)
+            session, plan_sha256 = self._session()
+            value = {'schema': SCHEMA, 'status': 'observing', 'session_id': self.session_id,
+                     'plan_id': self.plan_id, 'device_id': self.device_id, 'pins': pins,
+                     'cuts': [], 'resumes': [], 'permanent_key_fingerprint': None,
+                     'install_plan_sha256': plan_sha256, 'state_partition': None,
+                     'manage_origin': self.manage_origin,
+                     'management_signing_public_key_sha256':
+                         self.management_signing_public_key_sha256,
+                     'started_at': now(), 'initial_session_revision': session.get('session_revision')}
+            self.save(value, exclusive=True)
+            monitor.call('cont')
+            self.active = (pid, monitor)
+            keep_monitor = True
+            return value
+        finally:
+            if not keep_monitor:
+                monitor.socket.close()
+
+    def cut(self, boundary, pid, *, timeout=900, interval=.05):
+        if boundary not in BOUNDARIES:
+            raise ValueError('unknown Q04 boundary')
+        receipt = self.load()
+        expected_index = len(receipt['cuts'])
+        if expected_index >= len(BOUNDARIES) or BOUNDARIES[expected_index] != boundary:
+            raise ValueError('Q04 cuts must follow the frozen boundary order')
+        if self.active is None or self.active[0] != pid:
+            raise ValueError('Q04 exact cut requires the continuous QMP monitor from cont')
+        monitor = self.active[1]
+        self.active = None
+        deadline = self.clock() + timeout
+        try:
+            while self.clock() < deadline:
+                status, starttime = self._live(pid, monitor, receipt['pins'], paused=False)
+                if status.get('running') is not True:
+                    raise ValueError('Q04 continuously observed guest stopped unexpectedly')
+                monitor.call('stop')
+                _, stopped_starttime = self._live(pid, monitor, receipt['pins'])
+                if stopped_starttime != starttime:
+                    raise ValueError('Q04 QEMU process changed while stopping')
+                events = monitor.events()
+                names = [event.get('event') for event in events]
+                if 'RESET' in names:
+                    raise ValueError('Q04 guest reset before the exact power-cut boundary')
+                if 'BLOCK_IO_ERROR' in names:
+                    raise ValueError('Q04 block I/O failed before the exact power-cut boundary')
+                try:
+                    observed = self.inspector(self.disk)
+                except StateNotReady:
+                    monitor.call('cont')
+                    self.sleep(interval)
+                    continue
+                durable, key = self._state(observed, receipt)
+                actual = (durable.get('next_event_sequence'), durable.get('identity_active'),
+                          durable.get('installation_complete'))
+                desired = EXPECTED_STATE[boundary]
+                if actual == desired:
+                    if receipt['permanent_key_fingerprint'] not in (None, key):
+                        raise ValueError('Q04 permanent identity drifted between cuts')
+                    if receipt['state_partition'] not in (None, observed['partition']):
+                        raise ValueError('Q04 STATE partition identity drifted between cuts')
+                    if boundary == 'install_completion' and observed.get('appliance_release') is None:
+                        raise ValueError('Q04 completion lacks the durable appliance release receipt')
+                    self._session(receipt['install_plan_sha256'])
+                    monitor.call('quit')
+                    exited_at = self.wait_exit(pid, starttime)
+                    cut = {'boundary': boundary, 'state_sha256': observed['durable_sha256'],
+                           'next_event_sequence': actual[0], 'identity_active': actual[1],
+                           'installation_complete': actual[2], 'partition': observed['partition'],
+                           'iso_attached': True, 'observed_at': now(),
+                           'recovered_snapshot': observed['snapshot'],
+                           'qmp_stop_drained_and_flushed': True,
+                           'host_poweroff': {'method': 'qmp-quit', 'pid': pid,
+                                             'process_starttime': starttime,
+                                             'process_exited_at': exited_at},
+                           'qmp_events_before_cut': names}
+                    receipt['cuts'].append(cut)
+                    receipt['permanent_key_fingerprint'] = key
+                    receipt['state_partition'] = observed['partition']
+                    self.save(receipt)
+                    return cut
+                if (actual[0] > desired[0]) or (
+                        actual[1] and not desired[1]) or (
+                        actual[2] and not desired[2]):
+                    raise ValueError('Q04 exact boundary was missed')
+                monitor.call('cont')
+                self.sleep(interval)
+            raise TimeoutError('Q04 exact boundary was not observed before its deadline')
+        finally:
+            monitor.socket.close()
+
+    def resume(self, boundary, pid):
+        receipt = self.load()
+        if (not receipt['cuts'] or receipt['cuts'][-1]['boundary'] != boundary
+                or len(receipt['resumes']) != len(receipt['cuts']) - 1
+                or boundary == 'install_completion'):
+            raise ValueError('Q04 resume does not match the latest nonterminal cut')
+        monitor = self.qmp_factory()
+        keep_monitor = False
+        try:
+            self._live(pid, monitor, receipt['pins'])
+            observed = self.inspector(self.disk)
+            durable, key = self._state(observed, receipt)
+            cut = receipt['cuts'][-1]
+            actual = (durable.get('next_event_sequence'), durable.get('identity_active'),
+                      durable.get('installation_complete'))
+            if key != receipt['permanent_key_fingerprint']:
+                raise ValueError('Q04 resumed STATE changed permanent identity')
+            if (actual != EXPECTED_STATE[boundary]
+                    or observed['durable_sha256'] != cut['state_sha256']
+                    or observed['partition'] != cut['partition']):
+                raise ValueError('Q04 resumed STATE differs from the exact stopped cut')
+            self._session(receipt['install_plan_sha256'])
+            receipt['resumes'].append({'boundary': boundary, 'state_sha256': observed['durable_sha256'],
+                                       'resumed_at': now(), 'same_identity': True})
+            self.save(receipt)
+            monitor.call('cont')
+            self.active = (pid, monitor)
+            keep_monitor = True
+            return receipt['resumes'][-1]
+        finally:
+            if not keep_monitor:
+                monitor.socket.close()
+
+    def finish(self, pid, *, timeout=600, interval=.25):
+        receipt = self.load()
+        if ([cut['boundary'] for cut in receipt['cuts']] != list(BOUNDARIES)
+                or [resume['boundary'] for resume in receipt['resumes']] != list(BOUNDARIES[:2])):
+            raise ValueError('Q04 cannot finish before all exact cuts and resumes')
+        monitor = self.qmp_factory()
+        reset = False
+        try:
+            self._live(pid, monitor, receipt['pins'])
+            observed = self.inspector(self.disk)
+            durable, key = self._state(observed, receipt)
+            completion = receipt['cuts'][-1]
+            if ((durable.get('next_event_sequence'), durable.get('identity_active'),
+                 durable.get('installation_complete')) != EXPECTED_STATE['install_completion']
+                    or key != receipt['permanent_key_fingerprint']
+                    or observed['durable_sha256'] != completion['state_sha256']
+                    or observed['partition'] != completion['partition']):
+                raise ValueError('Q04 completion resume lost its exact durable identity')
+            before, _ = self._session(receipt['install_plan_sha256'])
+            if before.get('state') != 'rebooting':
+                raise ValueError('Q04 session was already Ready before the installed boot')
+            before_node = self._node()
+            monitor.call('cont')
+            deadline = self.clock() + timeout
+            final = None
+            while self.clock() < deadline:
+                for event in monitor.events():
+                    if event.get('event') != 'RESET':
+                        continue
+                    if event.get('data', {}).get('guest') is not True:
+                        raise ValueError('Q04 reset was not initiated by the appliance guest')
+                    reset = True
+                session, _ = self._session(receipt['install_plan_sha256'])
+                if (reset and session.get('state') == 'ready'
+                        and isinstance(session.get('session_revision'), int)
+                        and session['session_revision'] > before.get('session_revision', -1)
+                        and session.get('ready_at')):
+                    final = session; break
+                self.sleep(interval)
+            if final is None or not reset:
+                raise ValueError('Q04 did not observe guest-initiated reset and installed Ready')
+            monitor.call('stop')
+            self._live(pid, monitor, receipt['pins'])
+            verify_events(final.get('progress'), self.session_id, self.plan_id)
+            final_node = self._node()
+            self._verify_installed_report(before_node, final_node, receipt)
+            device = self.api('/v1/devices/' + self.device_id)
+            if device.get('public_key_fingerprint') != receipt['permanent_key_fingerprint']:
+                raise ValueError('Q04 final Management identity differs from durable STATE')
+            evidence = {**receipt, 'schema': EVIDENCE_SCHEMA, 'ok': True, 'status': 'complete',
+                        'guest_initiated_reset_observed': True,
+                        'iso_attached_through_installed_ready': True,
+                        'visible_event_sequence_exact': True,
+                        'deterministic_event_ids_observed': False,
+                        'identity_preserved': True,
+                        'intentional_host_poweroffs': len(receipt['cuts']),
+                        'installed_report': {key: final_node.get(key) for key in (
+                            'james_reported_at', 'appliance_base_os', 'appliance_release',
+                            'nixpkgs_revision', 'system_toplevel', 'system_generation',
+                            'system_closure_sha256')},
+                        'final_session_revision': final.get('session_revision'),
+                        'completed_at': now()}
+            self.save(evidence)
+            return evidence
+        finally:
+            monitor.socket.close()
+
+
+def verify_events(progress, session_id, plan_id):
+    if not isinstance(progress, list) or len(progress) != len(EVENTS):
+        raise ValueError('Q04 final progress does not contain one exact event per sequence')
+    ordered = sorted(progress, key=lambda value: value.get('sequence', -1))
+    for value, (sequence, stage, status) in zip(ordered, EVENTS):
+        if (value.get('sequence'), value.get('stage'), value.get('status')) != (sequence, stage, status):
+            raise ValueError('Q04 final event replay differs from the installation contract')
+        expected = deterministic_event_id(session_id, plan_id, sequence)
+        if value.get('event_id') not in (None, expected):
+            raise ValueError('Q04 final event has a non-deterministic identity')
+    return True

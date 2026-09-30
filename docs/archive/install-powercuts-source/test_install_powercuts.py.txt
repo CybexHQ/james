@@ -1,0 +1,445 @@
+"""Model the Q04 controller; these tests are not VM qualification evidence."""
+import copy
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import types
+import unittest
+from unittest import mock
+import uuid
+
+
+HELPER = Path(__file__).resolve().parents[2] / 'nixos-appliance/qualification/install_powercuts.py'
+spec = importlib.util.spec_from_file_location('install_powercuts_tests', HELPER)
+q04 = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(q04)
+
+SESSION = '11111111-1111-4111-8111-111111111111'
+PLAN = '22222222-2222-4222-8222-222222222222'
+DEVICE = 'dev_' + '3' * 32
+PRIVATE_KEY = 'nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A='
+PUBLIC_KEY = '11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo='
+KEY = '21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9'
+MANAGE_ORIGIN = 'https://dev.cybex.net'
+MANAGEMENT_KEY = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8='
+HARDWARE = {'uuid': '55555555-5555-4555-8555-555555555555',
+            'serial': 'JNQ0123456789abcdefa', 'mac': '02:11:22:33:44:55'}
+PLAN_BODY = {'id': PLAN, 'session_id': SESSION, 'reserved_device_id': DEVICE,
+             'schema': 'cybex.james.install-plan.v3', 'signature': 'signed-plan',
+             'base_os': 'nixos', 'release_version': '0.2.1-dev.26',
+             'appliance_release': {'nixpkgs_revision': 'a' * 40,
+                 'system_toplevel': '/nix/store/' + 'b' * 32 + '-cybex-james',
+                 'system_closure': {'sha256': 'c' * 64}}}
+
+
+def durable(sequence, active, complete):
+    return {'schema': 'cybex.james.provisioning-state.v1', 'session_id': SESSION,
+            'plan': copy.deepcopy(PLAN_BODY), 'manage_origin': MANAGE_ORIGIN,
+            'management_signing_public_key_b64': MANAGEMENT_KEY,
+            'device_private_key_b64': PRIVATE_KEY, 'device_public_key_b64': PUBLIC_KEY,
+            'device_public_key_fingerprint': KEY, 'next_event_sequence': sequence,
+            'identity_active': active, 'installation_complete': complete}
+
+
+def observed(sequence, active, complete, *, release=False):
+    return {'durable': durable(sequence, active, complete),
+            'durable_sha256': str(sequence) * 64,
+            'partition': {'label': 'CYBEX_STATE', 'partuuid': 'part',
+                          'filesystem_uuid': 'filesystem', 'first_sector': 2048,
+                          'last_sector': 33556479, 'sector_size': 512},
+            'snapshot': {'sha256': 'd' * 64, 'size_bytes': 16 * q04.GIB,
+                         'journal_replay': 'e2fsck-journal-only'},
+            'appliance_release': {'sha256': 'a' * 64} if release else None}
+
+
+def progress():
+    return [{'sequence': sequence, 'stage': stage, 'status': status,
+             'event_id': q04.deterministic_event_id(SESSION, PLAN, sequence)}
+            for sequence, stage, status in q04.EVENTS]
+
+
+class VM:
+    def __init__(self, disk, iso, code, ovmf):
+        self.running = True
+        self.reset = False
+        self.reset_observed = False
+        self.quit_count = 0
+        self.disk, self.iso, self.code, self.ovmf = disk, iso, code, ovmf
+
+
+class Monitor:
+    def __init__(self, vm):
+        self.vm = vm
+        self.socket = types.SimpleNamespace(close=lambda: None)
+
+    def call(self, command, arguments=None):
+        if command == 'query-status':
+            return {'running': self.vm.running}
+        if command == 'query-version':
+            return {'qemu': {'major': 10, 'minor': 0, 'micro': 13}}
+        if command == 'stop':
+            self.vm.running = False; return {}
+        if command == 'cont':
+            self.vm.running = True
+            self.vm.reset = self.vm.quit_count == 3
+            return {}
+        if command == 'quit':
+            self.vm.running = False; self.vm.quit_count += 1; return {}
+        if command == 'query-block':
+            return [
+                {'device': 'system', 'inserted': {'file': str(self.vm.disk), 'ro': False,
+                                                  'image': {'filename': str(self.vm.disk)}},
+                 'io-status': 'ok'},
+                {'device': 'ide1-cd0', 'inserted': {'file': str(self.vm.iso), 'ro': True,
+                                                    'image': {'filename': str(self.vm.iso)}}},
+                {'device': 'pflash0', 'inserted': {'file': str(self.vm.code), 'ro': True,
+                                                  'image': {'filename': str(self.vm.code)}}},
+                {'device': 'pflash1', 'inserted': {'file': str(self.vm.ovmf), 'ro': False,
+                                                  'image': {'filename': str(self.vm.ovmf)}}},
+            ]
+        raise AssertionError(command)
+
+    def events(self):
+        if self.vm.reset:
+            self.vm.reset = False
+            self.vm.reset_observed = True
+            return [{'event': 'RESET', 'data': {'guest': True, 'reason': 'guest-reset'}}]
+        return []
+
+
+class InstallationPowerCutTests(unittest.TestCase):
+    def inspector_fixture(self, root, *, fail_unmount=False):
+        calls = []
+        def run(arguments, **_kwargs):
+            calls.append(arguments)
+            command = arguments[0]
+            if command == 'losetup':
+                if '--detach' in arguments:
+                    return subprocess.CompletedProcess(arguments, 0, '', '')
+                loop = '/dev/loop9\n' if '--read-only' in arguments else '/dev/loop10\n'
+                return subprocess.CompletedProcess(arguments, 0, loop, '')
+            if command == 'blockdev':
+                output = '512\n' if '--getss' in arguments else str(16 * q04.GIB) + '\n'
+                return subprocess.CompletedProcess(arguments, 0, output, '')
+            outputs = {
+                'sgdisk': "First sector: 2048\nLast sector: 33556479\n"
+                          "Partition GUID code: 8300 (Linux filesystem)\n"
+                          "Partition name: 'CYBEX_STATE'\n",
+                'udevadm': '',
+                'lsblk': json.dumps({'blockdevices': [{'path': '/dev/loop9p1', 'type': 'part',
+                    'partlabel': 'CYBEX_STATE', 'partuuid': 'part', 'fstype': 'ext4',
+                    'uuid': 'filesystem', 'ro': True}]}),
+                'e2fsck': '', 'mount': '',
+                'findmnt': '/dev/loop10 ro,norecovery,nodev,nosuid,noexec\n',
+                'umount': '',
+            }
+            return subprocess.CompletedProcess(arguments, 1 if command == 'umount' and fail_unmount else 0,
+                                               outputs[command], '')
+        def copy_snapshot(_source, destination, size):
+            Path(destination).write_bytes(b'private-snapshot')
+            return {'sha256': 'd' * 64, 'size_bytes': size, 'source_device': 9}
+        return q04.ReadOnlyStateInspector(root, run=run, copy=copy_snapshot), calls
+
+    def fixture(self, root, inspections):
+        disk, iso = root / 'appliance.raw', root / 'personalized.iso'
+        code, ovmf = root / 'OVMF_CODE.fd', root / 'OVMF_VARS.fd'
+        disk.write_bytes(b'disk'); iso.write_bytes(b'iso')
+        code.write_bytes(b'code'); ovmf.write_bytes(b'vars')
+        vm = VM(disk, iso, code, ovmf)
+        state = {'ready': False}
+        def api(path):
+            if path.startswith('/v1/james/nodes/'):
+                return {'node': {'device_id': DEVICE,
+                    'james_reported_at': '2026-09-21T00:01:00Z' if state['ready'] else None,
+                    'appliance_base_os': 'nixos', 'appliance_release': '0.2.1-dev.26',
+                    'nixpkgs_revision': 'a' * 40,
+                    'system_toplevel': '/nix/store/' + 'b' * 32 + '-cybex-james',
+                    'system_generation': '7', 'system_closure_sha256': 'c' * 64}}
+            if path.startswith('/v1/devices/'):
+                return {'public_key_fingerprint': KEY}
+            return {'id': SESSION, 'reserved_device_id': DEVICE,
+                    'session_revision': 13 if state['ready'] else 12,
+                    'state': 'ready' if state['ready'] else 'rebooting',
+                    'ready_at': '2026-09-21T00:01:00Z' if state['ready'] else None,
+                    'install_plan': copy.deepcopy(PLAN_BODY),
+                    'progress': progress() if state['ready'] else []}
+        def inspect(_disk):
+            return copy.deepcopy(inspections.pop(0))
+        arguments = ['qemu-system-x86_64', '-uuid', HARDWARE['uuid'],
+                     '-drive', f'if=pflash,format=raw,unit=0,readonly=on,file={code}',
+                     '-drive', f'if=pflash,format=raw,unit=1,file={ovmf}',
+                     '-drive', f'if=none,id=system,format=raw,file={disk},cache=none',
+                     '-device', f'scsi-hd,drive=system,serial={HARDWARE["serial"]}',
+                     '-device', f'virtio-net-pci,netdev=net0,id=nic0,mac={HARDWARE["mac"]}',
+                     '-cdrom', str(iso)]
+        controller = q04.Controller(root / 'q04.json', session_id=SESSION, plan_id=PLAN,
+            device_id=DEVICE, disk=disk, iso=iso, ovmf_vars=ovmf, hardware=HARDWARE,
+            ovmf_code=code,
+            manage_origin=MANAGE_ORIGIN,
+            management_signing_public_key_b64=MANAGEMENT_KEY,
+            api=api, qmp_factory=lambda: Monitor(vm), inspector=inspect,
+            argv=lambda _pid: arguments,
+            peer=lambda _connection, _pid: True,
+            process_start=lambda pid: pid * 10,
+            wait_exit=lambda _pid, _start: '2026-09-21T00:00:00Z',
+            sleep=lambda _seconds: state.update(ready=vm.reset_observed),
+            clock=Clock())
+        return controller, vm, state
+
+    def test_three_exact_cuts_resume_same_identity_and_finish_after_reset(self):
+        inspections = [observed(3, False, False), observed(3, False, False),
+                       observed(5, True, False), observed(5, True, False),
+                       observed(9, True, True, release=True),
+                       observed(9, True, True, release=True)]
+        with tempfile.TemporaryDirectory() as temporary:
+            controller, vm, state = self.fixture(Path(temporary), inspections)
+            controller.initialize(100)
+            controller.cut('state_creation', 100)
+            vm.running = False
+            controller.resume('state_creation', 101)
+            controller.cut('identity_activation', 101)
+            vm.running = False
+            controller.resume('identity_activation', 102)
+            controller.cut('install_completion', 102)
+            vm.running = False
+            evidence = controller.finish(103)
+        self.assertTrue(evidence['ok'])
+        self.assertEqual([value['boundary'] for value in evidence['cuts']], list(q04.BOUNDARIES))
+        self.assertEqual(vm.quit_count, 3)
+        self.assertTrue(evidence['guest_initiated_reset_observed'])
+        self.assertTrue(evidence['iso_attached_through_installed_ready'])
+        self.assertTrue(evidence['visible_event_sequence_exact'])
+        self.assertFalse(evidence['deterministic_event_ids_observed'])
+        self.assertEqual(evidence['intentional_host_poweroffs'], 3)
+        self.assertTrue(all(cut['host_poweroff']['process_exited_at'] for cut in evidence['cuts']))
+        self.assertEqual(inspections, [])
+
+    def test_later_state_never_satisfies_an_earlier_boundary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            controller, _vm, _state = self.fixture(Path(temporary), [observed(5, True, False)])
+            controller.initialize(100)
+            with self.assertRaisesRegex(ValueError, 'boundary was missed'):
+                controller.cut('state_creation', 100)
+
+    def test_resume_rejects_permanent_key_drift(self):
+        changed = observed(3, False, False)
+        changed['durable']['device_public_key_fingerprint'] = 'f' * 64
+        with tempfile.TemporaryDirectory() as temporary:
+            controller, vm, _state = self.fixture(
+                Path(temporary), [observed(3, False, False), changed])
+            controller.initialize(100)
+            controller.cut('state_creation', 100)
+            vm.running = False
+            with self.assertRaisesRegex(ValueError, 'identity'):
+                controller.resume('state_creation', 101)
+
+    def test_resume_requires_the_exact_stopped_state_snapshot(self):
+        changed = observed(3, False, False)
+        changed['durable_sha256'] = 'f' * 64
+        with tempfile.TemporaryDirectory() as temporary:
+            controller, vm, _state = self.fixture(
+                Path(temporary), [observed(3, False, False), changed])
+            controller.initialize(100)
+            controller.cut('state_creation', 100)
+            vm.running = False
+            with self.assertRaisesRegex(ValueError, 'exact stopped cut'):
+                controller.resume('state_creation', 101)
+
+    def test_resume_rejects_same_id_signed_plan_drift(self):
+        changed = observed(3, False, False)
+        changed['durable']['plan']['display_name'] = 'changed-with-same-id'
+        with tempfile.TemporaryDirectory() as temporary:
+            controller, vm, _state = self.fixture(
+                Path(temporary), [observed(3, False, False), changed])
+            controller.initialize(100)
+            controller.cut('state_creation', 100)
+            vm.running = False
+            with self.assertRaisesRegex(ValueError, 'durable STATE'):
+                controller.resume('state_creation', 101)
+
+    def test_later_cut_rejects_state_partition_identity_drift(self):
+        later = observed(5, True, False)
+        later['partition']['partuuid'] = 'replaced-partition'
+        inspections = [observed(3, False, False), observed(3, False, False), later]
+        with tempfile.TemporaryDirectory() as temporary:
+            controller, vm, _state = self.fixture(Path(temporary), inspections)
+            controller.initialize(100)
+            controller.cut('state_creation', 100)
+            vm.running = False
+            controller.resume('state_creation', 101)
+            with self.assertRaisesRegex(ValueError, 'partition identity drifted'):
+                controller.cut('identity_activation', 101)
+
+    def test_continuous_monitor_rejects_reset_before_cut(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            controller, vm, _state = self.fixture(
+                Path(temporary), [observed(3, False, False)])
+            controller.initialize(100)
+            vm.reset = True
+            with self.assertRaisesRegex(ValueError, 'reset before'):
+                controller.cut('state_creation', 100)
+
+    def test_finish_rejects_a_host_initiated_reset(self):
+        inspections = [observed(3, False, False), observed(3, False, False),
+                       observed(5, True, False), observed(5, True, False),
+                       observed(9, True, True, release=True),
+                       observed(9, True, True, release=True)]
+        with tempfile.TemporaryDirectory() as temporary:
+            controller, vm, _state = self.fixture(Path(temporary), inspections)
+            controller.initialize(100)
+            controller.cut('state_creation', 100); vm.running = False
+            controller.resume('state_creation', 101)
+            controller.cut('identity_activation', 101); vm.running = False
+            controller.resume('identity_activation', 102)
+            controller.cut('install_completion', 102); vm.running = False
+            monitor = Monitor(vm)
+            monitor.events = lambda: [{'event': 'RESET', 'data': {'guest': False}}]
+            controller.qmp_factory = lambda: monitor
+            with self.assertRaisesRegex(ValueError, 'not initiated'):
+                controller.finish(103)
+
+    def test_finish_rejects_a_session_that_was_already_ready(self):
+        inspections = [observed(3, False, False), observed(3, False, False),
+                       observed(5, True, False), observed(5, True, False),
+                       observed(9, True, True, release=True),
+                       observed(9, True, True, release=True)]
+        with tempfile.TemporaryDirectory() as temporary:
+            controller, vm, state = self.fixture(Path(temporary), inspections)
+            controller.initialize(100)
+            controller.cut('state_creation', 100); vm.running = False
+            controller.resume('state_creation', 101)
+            controller.cut('identity_activation', 101); vm.running = False
+            controller.resume('identity_activation', 102)
+            controller.cut('install_completion', 102); vm.running = False
+            state['ready'] = True
+            with self.assertRaisesRegex(ValueError, 'already Ready'):
+                controller.finish(103)
+
+    def test_initialize_verifies_qmp_peer_before_mutating_monitor(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            controller, vm, _state = self.fixture(Path(temporary), [])
+            controller.peer = lambda _connection, _pid: (_ for _ in ()).throw(
+                ValueError('wrong QMP peer'))
+            with self.assertRaisesRegex(ValueError, 'wrong QMP peer'):
+                controller.initialize(100)
+            self.assertTrue(vm.running)
+
+    def test_qemu_and_qmp_bind_exact_hardware_disk_iso_and_firmware(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            controller, vm, _state = self.fixture(root, [])
+            arguments = controller.argv(100)
+            identity = q04.qemu_identity(arguments)
+            self.assertEqual(identity, {**HARDWARE, 'disk': str(vm.disk), 'iso': str(vm.iso),
+                                        'ovmf_code': str(root / 'OVMF_CODE.fd'),
+                                        'ovmf_vars': str(root / 'OVMF_VARS.fd')})
+            pins = controller._pins()
+            (root / 'OVMF_CODE.fd').write_bytes(b'CODE')
+            self.assertNotEqual(controller._pins(), pins)
+            (root / 'OVMF_CODE.fd').write_bytes(b'code')
+            blocks = Monitor(vm).call('query-block')
+            self.assertTrue(q04.verify_qmp_attachments(
+                blocks, vm.disk, vm.iso, root / 'OVMF_CODE.fd', root / 'OVMF_VARS.fd'))
+            blocks[1]['inserted']['ro'] = False
+            with self.assertRaisesRegex(ValueError, 'not read-only'):
+                q04.verify_qmp_attachments(
+                    blocks, vm.disk, vm.iso, root / 'OVMF_CODE.fd', root / 'OVMF_VARS.fd')
+            blocks[1]['inserted']['ro'] = True
+            blocks[2]['inserted']['ro'] = False
+            with self.assertRaisesRegex(ValueError, 'OVMF CODE'):
+                q04.verify_qmp_attachments(
+                    blocks, vm.disk, vm.iso, root / 'OVMF_CODE.fd', root / 'OVMF_VARS.fd')
+
+    def test_qmp_socket_is_bound_to_the_supplied_qemu_pid(self):
+        class Peer:
+            def __init__(self, pid):
+                self.pid = pid
+            def getsockopt(self, level, option, size):
+                self_args = (level, option, size)
+                if self_args != (q04.socket.SOL_SOCKET, q04.socket.SO_PEERCRED,
+                                  q04.struct.calcsize('3i')):
+                    raise AssertionError(self_args)
+                return q04.struct.pack('3i', self.pid, 1000, 1000)
+        self.assertTrue(q04.verify_qmp_peer(Peer(123), 123))
+        with self.assertRaisesRegex(ValueError, 'supplied QEMU PID'):
+            q04.verify_qmp_peer(Peer(124), 123)
+
+    def test_wait_process_exit_accepts_the_exact_unreaped_zombie(self):
+        process = subprocess.Popen(['sleep', '60'])
+        try:
+            starttime = q04.process_starttime(process.pid)
+            process.terminate()
+            self.assertTrue(q04.wait_process_exit(
+                process.pid, starttime, timeout=2, interval=.01))
+            self.assertEqual(q04.process_state_starttime(process.pid), ('Z', starttime))
+        finally:
+            process.wait()
+
+    def test_durable_state_path_matches_installer_layout_transition(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            flat = root / 'provisioning-state.json'
+            flat.write_text('{}')
+            self.assertEqual(q04.durable_state_path(root), flat)
+            protected = root / 'control/provisioning-state.json'
+            protected.parent.mkdir()
+            protected.write_text('{}')
+            self.assertEqual(q04.durable_state_path(root), protected)
+            protected.unlink(); flat.unlink()
+            with self.assertRaises(q04.StateNotReady):
+                q04.durable_state_path(root)
+
+    def test_event_replay_requires_one_exact_deterministic_sequence(self):
+        self.assertTrue(q04.verify_events(progress(), SESSION, PLAN))
+        for changed in (progress()[:-1], progress() + [progress()[0]],
+                        [*progress()[:4], progress()[4] | {'stage': 'other'}, *progress()[5:]],
+                        [progress()[0] | {'event_id': str(uuid.uuid4())}, *progress()[1:]]):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                q04.verify_events(changed, SESSION, PLAN)
+
+    def test_permanent_private_public_and_fingerprint_identity_match(self):
+        state = durable(3, False, False)
+        self.assertEqual(q04.verify_device_key(state), KEY)
+        state['device_private_key_b64'] = 'A' * 43 + '='
+        with self.assertRaisesRegex(ValueError, 'do not match'):
+            q04.verify_device_key(state)
+
+    def test_read_only_inspector_always_detaches_partial_state_attachment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); disk = root / 'disk.raw'; disk.write_bytes(b'disk')
+            inspector, calls = self.inspector_fixture(root)
+            real_euid = q04.os.geteuid()
+            with mock.patch.object(q04.os, 'geteuid', side_effect=[0] + [real_euid] * 8):
+                with self.assertRaises(q04.StateNotReady):
+                    inspector(disk)
+        self.assertIn(['mount', '-t', 'ext4', '-o', 'ro,noload,nodev,nosuid,noexec',
+                       '/dev/loop10', str(root / 'q04-state-inspection')], calls)
+        self.assertIn(['e2fsck', '-E', 'journal_only', '-p', '/dev/loop10'], calls)
+        self.assertEqual(calls[-2][0], 'umount')
+        self.assertEqual(calls[-1], ['losetup', '--detach', '/dev/loop10'])
+
+    def test_read_only_inspector_detaches_even_when_unmount_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); disk = root / 'disk.raw'; disk.write_bytes(b'disk')
+            inspector, calls = self.inspector_fixture(root, fail_unmount=True)
+            real_euid = q04.os.geteuid()
+            with mock.patch.object(q04.os, 'geteuid', side_effect=[0] + [real_euid] * 8):
+                with self.assertRaisesRegex(ValueError, 'residual private STATE resources'):
+                    inspector(disk)
+            self.assertEqual(len(list(root.glob('q04-state-snapshot.*.ext4'))), 1)
+            self.assertEqual(calls[-1][0], 'umount')
+            self.assertNotIn(['losetup', '--detach', '/dev/loop10'], calls)
+
+
+class Clock:
+    def __init__(self):
+        self.value = 0
+    def __call__(self):
+        self.value += .01
+        return self.value
+
+
+if __name__ == '__main__':
+    unittest.main()
