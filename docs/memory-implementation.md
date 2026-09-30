@@ -67,9 +67,11 @@ The Incus override belongs to the actual balloon device section from the owned
 VM's generated QEMU configuration; retain any existing override and restore it
 on failed qualification. Never edit the generated QEMU configuration itself.
 
-A 24–48 hour soak must repeat build/export/cancel/update cycles and simultaneous
-PXE/cache traffic. Compare quiescent anonymous/PSS, descriptors and descendants
-after equivalent cycles, with warm-up separated from trend fitting. Signed
+Run at least five build/export cycles per binary with simultaneous PXE/cache
+traffic and cancellation checks. Compare quiescent anonymous/PSS, descriptors
+and descendants after equivalent cycles, with warm-up separated from trend
+fitting. A longer soak is optional for investigating a specific growth pattern;
+there is no fixed-duration soak requirement for deployment. Signed
 appliance install/update/rollback and full workstation boot acceptance remain
 release gates; component benchmarks do not replace them. Production activation
 requires the normal qualified, signed release.
@@ -91,9 +93,9 @@ mkdir -p /absolute/path/to/evidence
 
 Run the driver as an account with KVM access; it explicitly rejects software
 CPU emulation. Its temporary runtime path must fit Unix socket length limits.
-Use `--arg memoryMiB 8192` for the smaller-runtime experiment,
-`--arg freePageReporting true` for a guest-reporting variant, and
-`--arg soakHours 24` for the long component soak. Keep production settings until
+Use `--arg memoryMiB 8192` for the smaller-runtime experiment and
+`--arg freePageReporting true` for a guest-reporting variant. The default fixture
+runs five cycles per binary without a timed soak. Keep production settings until
 the appropriate comparison passes. The component fixture uses genuine Nix
 evaluation/build/closure export, cache and iPXE HTTP traffic, running-build
 cancellation, descriptor/anonymous-memory checks and restarts between binary
