@@ -16,6 +16,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+import uuid
 
 ROOT = Path('/var/lib/nest-memory')
 DB = ROOT / 'data/nest.sqlite'
@@ -124,7 +125,35 @@ def serve_load(stop, results):
         time.sleep(.02)  # Representative concurrent traffic; do not starve Nix CPU.
 
 
-def prepare():
+def wait_json(path):
+    deadline = time.monotonic()+60
+    while not path.exists():
+        if time.monotonic() > deadline: raise RuntimeError(f'external traffic did not respond: {path.name}')
+        time.sleep(.02)
+    return json.loads(path.read_text())
+
+
+def start_external_load():
+    control = Path('/tmp/shared/nest-memory-traffic')
+    control.mkdir(exist_ok=True)
+    identity = str(uuid.uuid4())
+    temporary = control/'request.tmp'
+    temporary.write_text(json.dumps({'id': identity}))
+    temporary.replace(control/'request.json')
+    wait_json(control/(identity+'.ready.json'))
+    return control/identity
+
+
+def stop_external_load(identity):
+    identity.with_suffix('.stop').touch()
+    result = wait_json(identity.with_suffix('.result.json'))
+    for suffix in ('.stop', '.ready.json', '.result.json'):
+        identity.with_suffix(suffix).unlink()
+    if 'error' in result: raise RuntimeError(result['error'])
+    return result
+
+
+def prepare(external_traffic=False):
     ROOT.mkdir(mode=0o700, exist_ok=True)
     for child in ('data', 'www/cache/nar', 'www/assets', 'tftp', 'flake', 'build', 'outputs'):
         (ROOT/child).mkdir(parents=True, exist_ok=True)
@@ -133,7 +162,7 @@ def prepare():
     (ROOT/'www/cache/nar'/('0'*52+'.nar.zst')).write_bytes(payload)
     (ROOT/'config.toml').write_text(f'''
 [server]
-listen_addr = "127.0.0.1:8080"
+listen_addr = "{'0.0.0.0' if external_traffic else '127.0.0.1'}:8080"
 public_base_url = "http://127.0.0.1:8080"
 [paths]
 data_dir = "{ROOT}/data"
@@ -176,7 +205,7 @@ state_path = "{ROOT}/data/manage-state.json"
     run('chown', '-R', 'nest:nest', str(ROOT))
 
 
-def trial(mode, cycles, soak_hours=0, checkpoint=None):
+def trial(mode, cycles, soak_hours=0, checkpoint=None, external_traffic=False):
     run('systemctl', 'stop', 'nest-memory')
     active = ROOT/'active-nest'
     active.unlink(missing_ok=True)
@@ -201,7 +230,10 @@ def trial(mode, cycles, soak_hours=0, checkpoint=None):
         stop = threading.Event()
         started = time.monotonic()
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-            readers = [pool.submit(serve_load, stop, loads) for _ in range(3)]
+            external = start_external_load() if external_traffic else None
+            external_result = None
+            readers = [] if external else [pool.submit(serve_load, stop, loads) for _ in range(3)]
+            started = time.monotonic()
             jobs = queue(nonce)
             try:
                 while True:
@@ -223,7 +255,10 @@ def trial(mode, cycles, soak_hours=0, checkpoint=None):
             finally:
                 stop.set()
                 for reader in readers: reader.result()
-        duration = time.monotonic()-started
+                if external:
+                    external_result = stop_external_load(external)
+                    loads = external_result['samples']
+        duration = external_result['seconds'] if external_result else time.monotonic()-started
         time.sleep(12)  # Allow Tokio blocking workers and pipe reapers to become idle.
         samples.append(counters())
         if mode == 'candidate':
@@ -277,19 +312,22 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--soak-hours', type=float, default=0)
     parser.add_argument('--candidate-first', action='store_true')
+    parser.add_argument('--external-traffic', action='store_true')
     args = parser.parse_args()
     if Path('/etc/nest-memory-fixture').read_text() != 'disposable component fixture\n':
         raise RuntimeError('Requires owned disposable fixture')
     if not 2 <= args.cycles <= 10000: raise ValueError('cycles outside qualification range')
     if not 0 <= args.soak_hours <= 48: raise ValueError('soak hours outside range')
-    prepare()
+    prepare(args.external_traffic)
     order = ('candidate', 'baseline') if args.candidate_first else ('baseline', 'candidate')
-    evidence = dict(schema='tiaris.nest.memory-component-qualification.v1', kernel=run('uname','-r'), nix=run('nix','--version'), order=order)
+    evidence = dict(schema='tiaris.nest.memory-component-qualification.v1', kernel=run('uname','-r'), nix=run('nix','--version'), order=order,
+                    traffic_source='separate_vm' if args.external_traffic else 'same_guest')
     write_evidence(args.output, evidence)
     write_evidence(args.output.with_suffix('.checkpoint.json'), dict(mode='starting', cycles=0))
     try:
         for mode in order:
-            evidence[mode] = trial(mode, args.cycles, args.soak_hours if mode == 'candidate' else 0, args.output.with_suffix('.checkpoint.json'))
+            evidence[mode] = trial(mode, args.cycles, args.soak_hours if mode == 'candidate' else 0,
+                                   args.output.with_suffix('.checkpoint.json'), args.external_traffic)
             write_evidence(args.output, evidence)
         # Exclude first-cycle cold evaluation/cache seeding from warm comparison.
         baseline = statistics.median(row['seconds'] for row in evidence['baseline']['runs'][1:])

@@ -100,6 +100,12 @@ cancellation, descriptor/anonymous-memory checks and restarts between binary
 versions. It is deliberately not presented as a signed appliance upgrade or a
 full workstation installation.
 
+The fixture places its HTTP traffic generator in a second, disposable VM with
+two vCPUs and 2 GiB RAM. Client-side request/response processing therefore does
+not consume the Nest's four vCPUs. The isolated test network exposes only the
+fixture's public serving endpoint to that client; it never enrolls in Manage.
+Use `--arg candidateFirst true` to reverse binary order when checking variation.
+
 All build dependencies are already in the fixture's closure; remote substituters
 are disabled there to avoid measuring unreachable-network retry delays. Normal
 production substitution remains enabled. Results retain per-job phase transitions

@@ -4343,6 +4343,7 @@ CA: text:sha256:02ip8n5zbxc22shv5832dwhiaci5r9c306882a058savij6rnn7s\n";
             0
         );
         assert!(!config.cache.private_key_path.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
