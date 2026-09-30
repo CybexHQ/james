@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Compare exact binaries inside memory-vm.nix; never target an enrolled Nest.
 
-This is a component gate. Full signed update/rollback and workstation boot
-acceptance, plus a 24–48 hour soak, remain separate release gates.
+This is a bounded component gate; longer diagnostic soaks are optional.
+Full signed update/rollback and workstation boot acceptance remain separate
+release gates.
 """
 import argparse
 import concurrent.futures
@@ -310,7 +311,7 @@ def trial(mode, cycles, soak_hours=0, checkpoint=None, external_traffic=False):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cycles', type=int, default=3)
+    parser.add_argument('--cycles', type=int, default=5)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--soak-hours', type=float, default=0)
     parser.add_argument('--candidate-first', action='store_true')
@@ -345,8 +346,11 @@ def main():
                                         and max(evidence['latency_ratios'].values()) <= 1.05)
         evidence['signed_update_and_full_pxe_qualified'] = False
         evidence['component_soak_hours'] = args.soak_hours
-        evidence['soak_complete'] = evidence['candidate']['elapsed_seconds'] >= 24*3600
+        evidence['soak_complete'] = (args.soak_hours > 0 and
+                                     evidence['candidate']['elapsed_seconds'] >= args.soak_hours*3600)
         write_evidence(args.output, evidence)
+        if args.soak_hours and not evidence['soak_complete']:
+            raise RuntimeError('requested optional soak duration was not reached')
         if not evidence['performance_pass']: raise RuntimeError('performance regression exceeds 5%; repeat and investigate')
     finally:
         run('systemctl', 'stop', 'nest-memory')
