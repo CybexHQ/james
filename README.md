@@ -235,3 +235,6 @@ root-service immediate-update override are not NixOS policy inputs.
 ## Production releases
 
 Only NixOS Nest V3 is built and released. See [production qualification](nixos-appliance/qualification/PRODUCTION.md) for isolated exact-origin verification and the separate production approval step. Ubuntu appliance execution support has been removed; historical signed releases remain ancestry evidence, and existing Ubuntu appliances require reinstallation.
+
+Memory accounting, bounded build/cache I/O, admission settings and the performance
+qualification procedure are documented in [Nest memory](docs/memory-implementation.md).

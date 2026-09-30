@@ -1881,6 +1881,74 @@ pub async fn update_build_job_report(
     get_build_job_by_managed_id(pool, &managed_job_id).await
 }
 
+/// Summary paths must never deserialize multi-megabyte closure manifests.
+pub async fn count_cache_artifacts(pool: &SqlitePool) -> AppResult<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT COUNT(*) FROM nest_cache_artifacts")
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
+#[derive(Debug, FromRow)]
+pub(crate) struct CacheArtifactRoot {
+    pub id: i64,
+    pub artifact_type: String,
+    pub hash: String,
+    pub path: String,
+    pub store_path: String,
+    pub narinfo_path: String,
+    pub nar_url: String,
+    pub source_build_job_id: Option<String>,
+    pub size_bytes: i64,
+    pub closure_file_size_bytes: i64,
+    pub created_at: String,
+}
+
+/// Only graph roots and eviction attributes; no logs or JSON metadata.
+pub(crate) async fn list_cache_artifact_roots(
+    pool: &SqlitePool,
+) -> AppResult<Vec<CacheArtifactRoot>> {
+    Ok(sqlx::query_as::<_, CacheArtifactRoot>(
+        "SELECT id, artifact_type, hash, path, store_path, narinfo_path, nar_url,
+                source_build_job_id, size_bytes, closure_file_size_bytes, created_at
+         FROM nest_cache_artifacts ORDER BY created_at DESC, id DESC",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+#[derive(FromRow)]
+pub(crate) struct BuildJobRetentionState {
+    pub managed_job_id: Option<String>,
+    pub status: String,
+}
+
+pub(crate) async fn build_job_retention_states(
+    pool: &SqlitePool,
+) -> AppResult<Vec<BuildJobRetentionState>> {
+    Ok(sqlx::query_as::<_, BuildJobRetentionState>(
+        "SELECT managed_job_id, status FROM nest_build_jobs ORDER BY created_at DESC, id DESC",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+/// One full manifest at a time during exceptional corruption cascades.
+pub(crate) async fn next_cache_artifact(
+    pool: &SqlitePool,
+    after: i64,
+) -> AppResult<Option<CacheArtifact>> {
+    sqlx::query_as::<_, CacheArtifactRow>(
+        "SELECT * FROM nest_cache_artifacts WHERE id > ? ORDER BY id LIMIT 1",
+    )
+    .bind(after)
+    .fetch_optional(pool)
+    .await?
+    .map(CacheArtifact::try_from)
+    .transpose()
+}
+
 pub async fn list_cache_artifacts(pool: &SqlitePool) -> AppResult<Vec<CacheArtifact>> {
     let rows = sqlx::query_as::<_, CacheArtifactRow>(
         "SELECT * FROM nest_cache_artifacts ORDER BY created_at DESC, id DESC",
@@ -2991,6 +3059,20 @@ mod tests {
                 },
             },
         })
+    }
+
+    #[tokio::test]
+    async fn cache_summary_and_cleanup_ignore_large_or_malformed_metadata() {
+        let pool = connect_with_url("sqlite::memory:").await.unwrap();
+        migrate(&pool).await.unwrap();
+        // The summary and graph roots must remain usable without decoding any
+        // metadata. This also detects accidentally reverting to SELECT *.
+        sqlx::query("INSERT INTO nest_cache_artifacts (artifact_type, hash, path, created_at, updated_at, cache_metadata, references_json) VALUES ('nixos_closure', ?, '/cache/root', '2026-09-30', '2026-09-30', ?, 'malformed')")
+            .bind("a".repeat(64)).bind("x".repeat(16 * 1024 * 1024)).execute(&pool).await.unwrap();
+        assert_eq!(count_cache_artifacts(&pool).await.unwrap(), 1);
+        let roots = list_cache_artifact_roots(&pool).await.unwrap();
+        assert_eq!(roots[0].path, "/cache/root");
+        assert!(list_cache_artifacts(&pool).await.is_err());
     }
 
     #[tokio::test]

@@ -2993,6 +2993,7 @@ fn sha256_regular_file(path: &Path) -> Result<String> {
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
     let mut file = options.open(path)?;
+    crate::verification_io::sequential(&file);
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 1024 * 1024];
     loop {
