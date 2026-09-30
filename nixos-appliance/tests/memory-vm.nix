@@ -29,6 +29,7 @@ in import (nixpkgs + "/nixos/tests/make-test-python.nix") ({ ... }: {
   name = "nest-memory-${toString memoryMiB}-${if freePageReporting then "reporting" else "baseline"}";
   nodes.machine = { lib, ... }: {
     system.stateVersion = "26.05";
+    networking.firewall.allowedTCPPorts = [ 8080 ];
     virtualisation = {
       memorySize = memoryMiB; cores = 4; diskSize = 65536;
       qemu.options = [ "-no-user-config" ] ++ pkgs.lib.optional freePageReporting "-global virtio-balloon-pci.free-page-reporting=on";
@@ -58,12 +59,25 @@ in import (nixpkgs + "/nixos/tests/make-test-python.nix") ({ ... }: {
     environment.etc."nest-memory-flake".source = flake;
     environment.etc."nest-memory-qualification.py".source = ../../tools/qualify-memory.py;
   };
+  nodes.traffic = { ... }: {
+    system.stateVersion = "26.05";
+    virtualisation = { memorySize = 2048; cores = 2; qemu.options = [ "-no-user-config" ]; };
+    environment.etc."nest-memory-fixture".text = "disposable traffic fixture\n";
+    environment.etc."nest-memory-traffic.py".source = ../../tools/memory-traffic.py;
+    systemd.services.nest-memory-traffic = {
+      wantedBy = [ "multi-user.target" ]; after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+      serviceConfig = { ExecStart = "${pkgs.python3}/bin/python3 /etc/nest-memory-traffic.py"; Restart = "no"; };
+    };
+  };
   globalTimeout = 3600 + soakHours * 3600;
   testScript = ''
-    machine.start()
+    start_all()
     machine.wait_for_unit("multi-user.target")
+    traffic.wait_for_unit("nest-memory-traffic.service")
     machine.succeed("test $(systemd-detect-virt) = kvm")
-    status, output = machine.execute("python3 /etc/nest-memory-qualification.py --cycles ${toString cycles} --soak-hours ${toString soakHours} ${pkgs.lib.optionalString candidateFirst "--candidate-first"} --output /var/lib/nest-memory-results.json", timeout=${toString (3600 + soakHours * 3600)})
+    traffic.succeed("test $(systemd-detect-virt) = kvm")
+    status, output = machine.execute("python3 /etc/nest-memory-qualification.py --external-traffic --cycles ${toString cycles} --soak-hours ${toString soakHours} ${pkgs.lib.optionalString candidateFirst "--candidate-first"} --output /var/lib/nest-memory-results.json", timeout=${toString (3600 + soakHours * 3600)})
     print(output)
     machine.copy_from_machine("/var/lib/nest-memory-results.json", ".")
     machine.copy_from_machine("/var/lib/nest-memory-results.checkpoint.json", ".")
