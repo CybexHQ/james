@@ -133,3 +133,38 @@ seed|legacy|count DATABASE [rows] [manifest_MiB]`. Use separate processes for
 `legacy` and `count` to compare process high-water marks. Generated SQLite
 fixtures and VM disks are disposable; retain the small JSON receipts, then
 remove only the resources created for that run.
+
+## Production rollout on 30 September 2026
+
+Signed release [v0.2.45](https://github.com/CybexHQ/james/releases/tag/v0.2.45),
+source `fa173c3f830df6d5c40fe6b9f9129fe081a4f4c2`, was installed on
+`demo-arnold-james-01` and `james-greenfield-install`. Both committed generation 2
+and reported healthy local services and working PXE/cache endpoints. The offline
+physical Arnold Nest was excluded. Both VMs retain 18 GiB RAM and four CPUs;
+the earlier reduction from 20 GiB saves 4 GiB of combined allocation.
+
+Before deployment, the exact signed 0.2.43 and 0.2.45 appliance binaries each
+completed five 32-build cycles. Candidate build duration was +0.2%, serving
+throughput -1.0%, and file/cache/iPXE p95 latency +2.8%/+3.2%/+4.3%, within the
+existing 5% gate. There were no OOM kills, unexpected service restarts or FD
+growth in that comparison. These bounded measurements do not establish
+long-term leak freedom or guarantee every workload's performance.
+
+The administrator explicitly instructed: "Stop validation and deploy
+immediately." Remaining qualification was cancelled, not recorded as passed.
+Native upgrade and automatic rollback qualification had completed; final
+fresh-install acceptance and published cold/workstation qualification had not.
+The original signed artifacts were published unchanged as a prerelease and
+installed directly on the two authorized Nests without an extended stability
+wait. This records that specific exception to the normal release gates above.
+
+Automatic appliance updates were temporarily disabled to enforce the two-Nest
+scope, then immediately restored after Greenfield completed. Both organizations
+reported automation running, with no update or maintenance holds. Manage's
+original image and global release selection were restored; the two updated
+Nests remain on 0.2.45. No workstation deployment was performed.
+
+The release uses workstation runtime 1.0.87 from development source
+`4735edd1e945b4b450283acc8bf829718612cf88`. Bringing these release commits back
+to main preserves the published tag and artifact identities; main also retains
+its newer console implementation and optional-soak tooling.
