@@ -1,0 +1,263 @@
+"""Contract tests only: no API, SQL, signed reports, guest, or acceptance output."""
+from copy import deepcopy
+import importlib.util
+from pathlib import Path
+import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+SPEC = importlib.util.spec_from_file_location(
+    'nixos_admission_scenarios', ROOT / 'nixos-appliance/qualification/admission_scenarios.py')
+A = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(A)
+
+DEVICE = 'dev_' + 'a' * 32
+INCARNATION = '11111111-2222-4333-8444-555555555555'
+ATTEMPT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+OTHER = 'ffffffff-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+SCOPE = {'organization_id': '99999999-2222-4333-8444-555555555555',
+         'server_device_id': DEVICE, 'device_incarnation_id': INCARNATION}
+SINCE = '2026-09-21T12:00:00Z'
+END = '2026-09-21T12:03:00Z'
+SCHEDULE = {'timezone': 'Europe/Amsterdam', 'weekdays': [0, 2, 4],
+            'start': '02:00', 'duration_minutes': 120}
+
+
+def policy(revision=4):
+    return {'supported': True, 'revision': revision, 'applied_revision': revision,
+            'schedule': deepcopy(SCHEDULE), 'run_now_attempt_id': None}
+
+
+def pair(when):
+    node = {'device_id': DEVICE, 'appliance_base_os': 'nixos', 'state_schema': 3,
+            'appliance_release': '1.2.3', 'nixpkgs_revision': 'b' * 40,
+            'system_toplevel': '/nix/store/' + 'c' * 32 + '-nixos-system-james',
+            'system_closure_sha256': 'd' * 64, 'system_generation': '7',
+            'sqlite_migrations_sha256': 'e' * 64, 'james_reported_at': when,
+            'update_attempt_id': ATTEMPT, 'update_target_version': '1.2.4',
+            'desired_update_version': '1.2.4', 'update_status': 'waiting',
+            'update_stage': 'maintenance_window', 'update_started_at': None,
+            'update_completed_at': None, 'update_hold': True,
+            'running_build_count': 1, 'queued_build_count': 0,
+            'appliance_package_update': {'attempt_id': ATTEMPT, 'target_release': '1.2.4',
+                                        'status': 'waiting_window', 'stage': 'maintenance_window'}}
+    preflight = {k: node[k] for k in ('nixpkgs_revision', 'system_toplevel',
+                                    'system_closure_sha256', 'system_generation')}
+    preflight.update(device_incarnation_id=INCARNATION, current_release=node['appliance_release'])
+    return node, preflight
+
+
+def deferred(observations=None, **overrides):
+    args = {'device_id': DEVICE, 'incarnation': INCARNATION, 'attempt_id': ATTEMPT,
+            'target_release': '1.2.4', 'cause': 'schedule', 'since': SINCE, 'observed_at': END}
+    args.update(overrides)
+    if observations is None:
+        observations = [pair('2026-09-21T12:00:10Z'), pair('2026-09-21T12:01:10Z')]
+    return A.verify_deferred(pair('2026-09-21T11:59:59Z'), observations, **args)
+
+
+def legacy():
+    node = {'device_id': DEVICE, 'appliance_base_os': 'ubuntu', 'state_schema': None,
+            'update_supported': False, 'update_available': False, 'update_active': False,
+            'update_status': 'unsupported', 'update_stage': 'reinstall_required',
+            'desired_update_version': '', 'desired_update_requested_at': None,
+            'update_error': 'This older James cannot update. Install the current James ISO.',
+            'update_attempt_id': ATTEMPT, 'james_reported_at': '2026-09-21T12:00:01Z'}
+    before = []
+    after = []
+    for attempt in (ATTEMPT, OTHER):
+        old = {**SCOPE, 'attempt_id': attempt, 'release_id': '1.2.4', 'state': 'requested',
+               'completed_at': None, 'rollback_reason': '',
+               'evidence': {'update_contract': 'appliance_update_v2',
+                            'descriptor': {'schema': 'cybex.james.appliance-release.v2',
+                                           'minimum_state_schema': 2}}}
+        new = deepcopy(old)
+        new.update(state='cancelled', rollback_reason='reinstall_required',
+                   completed_at='2026-09-21T12:00:02Z')
+        new['evidence']['manage_terminalization'] = {
+            'reason': 'reinstall_required', 'stage': 'reinstall_required',
+            'required_capability': 'appliance_update_v3', 'terminalized_at': '2026-09-21T12:00:02Z'}
+        before.append(old)
+        after.append(new)
+    return node, deepcopy(SCOPE), before, after
+
+
+class ScheduleTests(unittest.TestCase):
+    def test_saved_schedule_clears_immediate_and_can_require_applied_revision(self):
+        before, after = policy(), policy(5)
+        before['run_now_attempt_id'] = ATTEMPT
+        A.verify_schedule_saved(before, after, SCHEDULE, applied=True)
+        after['applied_revision'] = 4
+        with self.assertRaises(ValueError):
+            A.verify_schedule_saved(before, after, SCHEDULE, applied=True)
+
+    def test_lost_revisions_wrong_policy_and_stale_run_now_fail(self):
+        for changes in ({'revision': 6}, {'run_now_attempt_id': ATTEMPT},
+                        {'schedule': {**SCHEDULE, 'start': '03:00'}}, {'supported': False}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                A.verify_schedule_saved(policy(), {**policy(5), **changes}, SCHEDULE)
+
+    def test_invalid_schedule_is_not_normalized_into_success(self):
+        for changes in ({'weekdays': [2, 0]}, {'weekdays': [0, 0]}, {'weekdays': [True]},
+                        {'timezone': 'No/Such/Zone'}, {'duration_minutes': True},
+                        {'duration_minutes': 14}, {'start': '2:00'}, {'unexpected': 'x'}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                invalid = {**SCHEDULE, **changes}
+                A.verify_schedule_saved(policy(), {**policy(5), 'schedule': invalid}, invalid)
+
+    def test_update_now_binds_exact_attempt_and_preserves_schedule(self):
+        after = {**policy(5), 'run_now_attempt_id': ATTEMPT}
+        A.verify_update_now(policy(), after, ATTEMPT)
+        for changes in ({'run_now_attempt_id': OTHER}, {'revision': 4},
+                        {'schedule': {**SCHEDULE, 'weekdays': [1]}}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                A.verify_update_now(policy(), {**after, **changes}, ATTEMPT)
+
+
+class AdmissionTests(unittest.TestCase):
+    def test_scope_requires_exact_org_device_and_incarnation(self):
+        A.verify_scope(SCOPE, deepcopy(SCOPE))
+        for key, value in (('organization_id', OTHER), ('device_incarnation_id', OTHER),
+                           ('server_device_id', 'dev_' + 'f' * 32)):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                A.verify_scope(SCOPE, {**SCOPE, key: value})
+
+    def test_conflict_requires_the_expected_reason(self):
+        body = {'error': 'James build admission is paused for maintenance',
+                'diagnostic_code': 'james_maintenance_hold'}
+        A.verify_conflict(409, body, diagnostic_code='james_maintenance_hold')
+        A.verify_conflict(409, body, message=body['error'])
+        for status in (200, 400, 401, 403, 404, 500):
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                A.verify_conflict(status, body, diagnostic_code='james_maintenance_hold')
+        with self.assertRaises(ValueError):
+            A.verify_conflict(409, body, message='Another conflict')
+        with self.assertRaises(ValueError):
+            A.verify_conflict(409, body)
+
+    def test_lease_must_be_owned_fresh_and_exact(self):
+        node = {'device_id': DEVICE, 'maintenance_hold': True,
+                'maintenance_hold_lease_id': ATTEMPT, 'maintenance_hold_reason': 'Qualification',
+                'maintenance_hold_acquired_at': '2026-09-21T12:00:01Z'}
+        def verify(value):
+            A.verify_maintenance_lease(value, DEVICE, ATTEMPT, 'Qualification', since=SINCE, observed_at=END)
+        verify(node)
+        for changes in ({'maintenance_hold_lease_id': OTHER}, {'maintenance_hold': False},
+                        {'maintenance_hold_reason': 'Another owner'},
+                        {'maintenance_hold_acquired_at': '2026-09-21T11:59:59Z'}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                verify({**node, **changes})
+        node.update(maintenance_hold=False, maintenance_hold_lease_id=None,
+                    maintenance_hold_reason='', maintenance_hold_acquired_at=None)
+        A.verify_maintenance_released(node, DEVICE)
+        node['maintenance_hold_lease_id'] = OTHER
+        with self.assertRaises(ValueError):
+            A.verify_maintenance_released(node, DEVICE)
+
+
+class DeferralTests(unittest.TestCase):
+    def test_each_defer_cause_with_fresh_unchanged_reports(self):
+        for cause in ('schedule', 'update_hold', 'active_build'):
+            with self.subTest(cause=cause):
+                deferred(cause=cause)
+
+    def test_stale_duplicate_future_and_too_short_observations_fail(self):
+        for times in (['2026-09-21T11:59:59Z', '2026-09-21T12:01:10Z'],
+                      ['2026-09-21T12:00:10Z'] * 2,
+                      ['2026-09-21T12:00:10Z', '2026-09-21T12:00:11Z'],
+                      ['2026-09-21T12:00:10Z', '2026-09-21T12:03:01Z']):
+            with self.subTest(times=times), self.assertRaises(ValueError):
+                deferred([pair(t) for t in times])
+        with self.assertRaises(ValueError):
+            deferred([pair(SINCE)])
+
+    def test_identity_closure_and_generation_change_fail(self):
+        for key, value in (('device_id', 'dev_' + 'b' * 32), ('system_generation', '8'),
+                           ('system_toplevel', '/nix/store/changed'),
+                           ('sqlite_migrations_sha256', 'f' * 64)):
+            observations = [pair(SINCE), pair('2026-09-21T12:01:10Z')]
+            observations[1][0][key] = value
+            if key in observations[1][1]:
+                observations[1][1][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                deferred(observations)
+        observations = [pair(SINCE), pair('2026-09-21T12:01:10Z')]
+        observations[1][1]['device_incarnation_id'] = OTHER
+        with self.assertRaises(ValueError):
+            deferred(observations)
+
+    def test_lost_replaced_or_started_request_fails(self):
+        for changes in ({'update_attempt_id': OTHER}, {'desired_update_version': ''},
+                        {'update_target_version': '1.2.5'}, {'update_status': 'preflight'},
+                        {'update_started_at': SINCE}, {'update_completed_at': SINCE}):
+            observations = [pair(SINCE), pair('2026-09-21T12:01:10Z')]
+            observations[1][0].update(changes)
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                deferred(observations)
+
+    def test_missing_defer_reason_and_active_package_cannot_pass(self):
+        for cause, changes in (('schedule', {'update_stage': 'importing_closure'}),
+                               ('update_hold', {'update_hold': False}),
+                               ('active_build', {'running_build_count': 0, 'queued_build_count': 0}),
+                               ('active_build', {'running_build_count': True})):
+            observations = [pair(SINCE), pair('2026-09-21T12:01:10Z')]
+            observations[1][0].update(changes)
+            with self.subTest(cause=cause, changes=changes), self.assertRaises(ValueError):
+                deferred(observations, cause=cause)
+        observations = [pair(SINCE), pair('2026-09-21T12:01:10Z')]
+        observations[1][0]['appliance_package_update']['status'] = 'preparing'
+        with self.assertRaises(ValueError):
+            deferred(observations, cause='update_hold')
+
+
+class LegacyTests(unittest.TestCase):
+    def check(self, values):
+        return A.verify_legacy_reinstall(*values, since=SINCE, observed_at=END)
+
+    def test_complete_recorded_projection_and_cancelled_attempts(self):
+        self.check(legacy())
+
+    def test_ui_projection_alone_does_not_prove_cancellation(self):
+        for mode in ('empty', 'missing', 'duplicate', 'pending'):
+            values = legacy()
+            if mode == 'empty':
+                values[2].clear()
+                values[3].clear()
+            elif mode == 'missing':
+                values[3].pop()
+            elif mode == 'duplicate':
+                values[3].append(deepcopy(values[3][0]))
+            else:
+                values[3][0]['state'] = 'requested'
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                self.check(values)
+
+    def test_wrong_incarnation_reason_timestamp_and_v3_attempt_fail(self):
+        changes = [('device_incarnation_id', OTHER), ('rollback_reason', 'another_reason'),
+                   ('completed_at', '2026-09-21T11:59:59Z'), ('release_id', '1.2.5')]
+        for key, value in changes:
+            values = legacy()
+            values[3][0][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.check(values)
+        values = legacy()
+        values[2][0]['evidence']['update_contract'] = 'appliance_update_v3'
+        with self.assertRaises(ValueError):
+            self.check(values)
+
+    def test_missing_terminal_evidence_and_incomplete_projection_fail(self):
+        values = legacy()
+        del values[3][0]['evidence']['manage_terminalization']
+        with self.assertRaises(ValueError):
+            self.check(values)
+        for changes in ({'update_active': True}, {'update_supported': True},
+                        {'desired_update_version': '1.2.4'}, {'update_attempt_id': INCARNATION},
+                        {'appliance_base_os': 'nixos'}, {'state_schema': 3},
+                        {'james_reported_at': '2026-09-21T11:59:59Z'}):
+            values = legacy()
+            values[0].update(changes)
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.check(values)
+
+
+if __name__ == '__main__':
+    unittest.main()

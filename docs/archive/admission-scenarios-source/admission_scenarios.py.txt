@@ -1,0 +1,268 @@
+"""Pure assertions for Q07/Q15 observations; these do not run qualification.
+
+Callers own development-origin/account/fixture admission and collect authentic
+API responses. No function signs reports, seeds SQL, mutates an API, or emits a
+release-acceptance result. A sampled defer check cannot establish race freedom,
+disk-pressure safety, or subsequent successful activation.
+
+Q15 cannot be created through the current public API: new V2 requests are
+rejected and node projections do not expose historical attempt cancellation.
+Use a disposable Manage database fixture to obtain before/after attempt rows;
+never synthesize a signed device report or use an existing Ubuntu appliance.
+"""
+import datetime
+import re
+import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+UTC = datetime.timezone.utc
+PENDING = {'requested', 'waiting_window', 'preparing', 'applying', 'rebooting', 'health_checking'}
+SOURCE_FIELDS = ('appliance_release', 'nixpkgs_revision', 'system_toplevel',
+                 'system_closure_sha256', 'system_generation', 'sqlite_migrations_sha256')
+
+
+def _require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def _uuid(value):
+    _require(isinstance(value, str), 'Identity must be a canonical nonzero UUID')
+    parsed = uuid.UUID(value)
+    _require(str(parsed) == value and parsed.int != 0, 'Identity must be a canonical nonzero UUID')
+    return value
+
+
+def _time(value):
+    _require(isinstance(value, str), 'Observation needs an RFC3339 timestamp')
+    parsed = datetime.datetime.fromisoformat(value.replace('Z', '+00:00'))
+    _require(parsed.tzinfo is not None, 'Observation timestamp needs a timezone')
+    return parsed.astimezone(UTC)
+
+
+def verify_scope(expected, observed):
+    """Compare independently obtained fixture/DB identity, not node display names."""
+    for value in (expected, observed):
+        _uuid(value.get('organization_id'))
+        _uuid(value.get('device_incarnation_id'))
+        _require(re.fullmatch(r'dev_[0-9a-f]{32}', value.get('server_device_id', '')),
+                 'Fixture needs an exact disposable device ID')
+    _require(all(observed[k] == expected[k] for k in
+                 ('organization_id', 'server_device_id', 'device_incarnation_id')),
+             'Observation changed fixture organization, device, or incarnation')
+
+
+def _schedule(value):
+    _require(isinstance(value, dict) and set(value) ==
+             {'timezone', 'weekdays', 'start', 'duration_minutes'}, 'Invalid schedule fields')
+    try:
+        ZoneInfo(value['timezone'])
+    except (ZoneInfoNotFoundError, TypeError, ValueError) as error:
+        raise ValueError('Invalid schedule timezone') from error
+    days = value['weekdays']
+    _require(isinstance(days, list) and 1 <= len(days) <= 7
+             and all(type(day) is int and 0 <= day <= 6 for day in days)
+             and days == sorted(set(days)), 'Invalid Sunday-zero schedule weekdays')
+    _require(isinstance(value['start'], str)
+             and re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', value['start'])
+             and type(value['duration_minutes']) is int
+             and 15 <= value['duration_minutes'] <= 1440, 'Invalid schedule time or duration')
+
+
+def _policy(value):
+    _require(value.get('supported') is True and type(value.get('revision')) is int
+             and value['revision'] >= 0, 'Schedule is unsupported or revision is invalid')
+    applied = value.get('applied_revision')
+    _require(applied is None or (type(applied) is int and 0 <= applied <= value['revision']),
+             'Invalid applied schedule revision')
+    _require('run_now_attempt_id' in value, 'Missing immediate-update binding')
+    if value['run_now_attempt_id'] is not None:
+        _uuid(value['run_now_attempt_id'])
+    _schedule(value.get('schedule'))
+
+
+def verify_schedule_saved(before, after, requested, *, applied=False):
+    """Check POST/GET policy responses, including revocation of old Update now."""
+    _policy(before)
+    _policy(after)
+    _schedule(requested)
+    _require(after['revision'] == before['revision'] + 1
+             and after['schedule'] == requested and after['run_now_attempt_id'] is None,
+             'Saved schedule lost a revision, changed policy, or retained Update now')
+    if applied:
+        _require(after.get('applied_revision') == after['revision'],
+                 'Appliance has not acknowledged this schedule revision')
+
+
+def verify_update_now(before, after, attempt_id):
+    """Check the one-attempt exception without treating it as an activated update."""
+    _uuid(attempt_id)
+    _policy(before)
+    _policy(after)
+    _require(after['revision'] == before['revision'] + 1
+             and after['schedule'] == before['schedule']
+             and after['run_now_attempt_id'] == attempt_id,
+             'Update now changed the schedule or did not bind the exact attempt')
+
+
+def verify_conflict(status, body, *, message=None, diagnostic_code=None):
+    """A 401/404/500 is not evidence that a specific admission fence worked."""
+    _require(message is not None or diagnostic_code is not None, 'Expected conflict reason is required')
+    _require(status == 409 and isinstance(body, dict), 'Expected admission conflict')
+    if message is not None:
+        _require(body.get('error') == message, 'Admission failed for another reason')
+    if diagnostic_code is not None:
+        _require(body.get('diagnostic_code') == diagnostic_code, 'Admission diagnostic differs')
+
+
+def verify_hold(node, device_id, held):
+    _require(type(held) is bool and node.get('device_id') == device_id
+             and node.get('update_hold') is held, 'Update hold projection differs')
+
+
+def verify_maintenance_lease(node, device_id, lease_id, reason, *, since, observed_at):
+    """Only the exact active lease is suitable for a caller-owned cleanup request."""
+    _uuid(lease_id)
+    _require(isinstance(reason, str) and bool(reason), 'Maintenance reason is missing')
+    _require(node.get('device_id') == device_id and node.get('maintenance_hold') is True
+             and node.get('maintenance_hold_lease_id') == lease_id
+             and node.get('maintenance_hold_reason') == reason,
+             'Maintenance lease belongs to another request')
+    _require(_time(since) <= _time(node.get('maintenance_hold_acquired_at')) <= _time(observed_at),
+             'Maintenance lease acquisition is outside this observation')
+
+
+def verify_maintenance_released(node, device_id):
+    _require(node.get('device_id') == device_id and node.get('maintenance_hold') is False
+             and node.get('maintenance_hold_lease_id') is None
+             and node.get('maintenance_hold_acquired_at') is None
+             and node.get('maintenance_hold_reason') == '', 'Maintenance lease was not released')
+
+
+def _source(node, preflight, device_id, incarnation):
+    _uuid(incarnation)
+    _require(node.get('device_id') == device_id
+             and preflight.get('device_incarnation_id') == incarnation,
+             'Deferred observation changed device or incarnation')
+    _require(node.get('appliance_base_os') == 'nixos' and node.get('state_schema') == 3,
+             'Deferred observation is not NixOS STATE v3')
+    _require(all(isinstance(node.get(k), str) and node[k] for k in SOURCE_FIELDS)
+             and re.fullmatch('[1-9][0-9]*', node['system_generation']),
+             'Deferred observation lacks installed closure identity')
+    mapping = {'current_release': 'appliance_release', **{k: k for k in SOURCE_FIELDS[1:-1]}}
+    _require(all(preflight.get(k) == node[v] for k, v in mapping.items()),
+             'Preflight and accepted node report disagree')
+    return {k: node[k] for k in SOURCE_FIELDS}
+
+
+def verify_deferred(before, observations, *, device_id, incarnation, attempt_id,
+                    target_release, cause, since, observed_at, minimum_seconds=60):
+    """Assert sampled deferral from (node, qualification-preflight) pairs.
+
+    Causes are schedule, update_hold, and active_build. Maintenance acquisition
+    itself rejects active updates: test that fence with verify_conflict instead.
+    Samples must span at least minimum_seconds with distinct accepted reports.
+    Fetching the qualification preflight also fences an incarnation change.
+    """
+    _uuid(attempt_id)
+    _require(cause in {'schedule', 'update_hold', 'active_build'}, 'Unknown deferral cause')
+    _require(isinstance(target_release, str) and bool(target_release), 'Missing target release')
+    _require(type(minimum_seconds) is int and minimum_seconds >= 60,
+             'Deferral requires at least a minute of accepted reports')
+    _require(len(observations) >= 2, 'Deferral requires multiple accepted reports')
+    source = _source(*before, device_id, incarnation)
+    start, end = _time(since), _time(observed_at)
+    previous = _time(before[0].get('james_reported_at'))
+    times = []
+    for node, preflight in observations:
+        _require(_source(node, preflight, device_id, incarnation) == source,
+                 'Appliance changed installed closure while deferred')
+        seen = _time(node.get('james_reported_at'))
+        _require(previous < seen and start <= seen <= end,
+                 'Deferral report is stale, duplicated, or outside the observation')
+        previous = seen
+        times.append(seen)
+        _require(node.get('update_attempt_id') == attempt_id
+                 and node.get('update_target_version') == target_release
+                 and node.get('desired_update_version') == target_release
+                 and node.get('update_status') in {'requested', 'waiting'}
+                 and node.get('update_started_at') is None
+                 and node.get('update_completed_at') is None,
+                 'Deferred request was lost, replaced, or activated')
+        package = node.get('appliance_package_update', {})
+        if cause == 'schedule':
+            _require(node.get('update_status') == 'waiting'
+                     and node.get('update_stage') == 'maintenance_window'
+                     and package.get('attempt_id') == attempt_id
+                     and package.get('target_release') == target_release
+                     and package.get('status') == 'waiting_window'
+                     and package.get('stage') == 'maintenance_window',
+                     'Appliance did not report the exact attempt waiting for its window')
+        elif cause == 'update_hold':
+            verify_hold(node, device_id, True)
+        else:
+            counts = [node.get(k) for k in ('running_build_count', 'queued_build_count')]
+            _require(all(type(v) is int and v >= 0 for v in counts) and sum(counts) > 0,
+                     'No active build explains the deferral')
+        if package.get('attempt_id') == attempt_id:
+            _require(package.get('status') in {'requested', 'waiting_window'},
+                     'Package report shows activation during deferral')
+    _require((times[-1] - times[0]).total_seconds() >= minimum_seconds,
+             'Accepted reports do not span the required deferral interval')
+
+
+def verify_legacy_reinstall(node, scope, before_attempts, after_attempts, *, since, observed_at):
+    """Check API projection plus actual disposable-DB cancellation observations.
+
+    Attempt rows contain organization_id, server_device_id,
+    device_incarnation_id, attempt_id, release_id, state, rollback_reason,
+    completed_at and evidence. Both lists must be complete for this fixture;
+    their nonempty exact ID set must match. This checks supplied observations,
+    not report ingestion, SQL transaction atomicity, or browser rendering.
+    """
+    verify_scope(scope, scope)
+    # Recorded V2 reports predate the optional NixOS state_schema projection.
+    # Their historical signed descriptor below is the positive schema binding.
+    _require(node.get('device_id') == scope['server_device_id']
+             and node.get('appliance_base_os') == 'ubuntu' and node.get('state_schema') in (None, 2),
+             'Reinstall projection is not the recorded V2 fixture')
+    _require(node.get('update_supported') is False and node.get('update_available') is False
+             and node.get('update_active') is False and node.get('update_status') == 'unsupported'
+             and node.get('update_stage') == 'reinstall_required'
+             and node.get('desired_update_version') == ''
+             and node.get('desired_update_requested_at') is None
+             and 'Install the current James ISO' in node.get('update_error', ''),
+             'V2 fixture lacks the complete reinstall-required projection')
+    start, end = _time(since), _time(observed_at)
+    _require(start <= _time(node.get('james_reported_at')) <= end,
+             'V2 projection has no fresh accepted fixture report')
+    groups = []
+    for rows in (before_attempts, after_attempts):
+        indexed = {}
+        for row in rows:
+            verify_scope(scope, row)
+            attempt = _uuid(row.get('attempt_id'))
+            _require(attempt not in indexed, 'Duplicate fixture attempt')
+            indexed[attempt] = row
+        groups.append(indexed)
+    before, after = groups
+    _require(bool(before) and before.keys() == after.keys(), 'Cancellation attempt set is empty or incomplete')
+    _require(node.get('update_attempt_id') in before, 'Reinstall projection belongs to another attempt')
+    for attempt, old in before.items():
+        row = after[attempt]
+        _require(old.get('state') in PENDING and old.get('completed_at') is None
+                 and old.get('evidence', {}).get('update_contract') == 'appliance_update_v2'
+                 and old.get('evidence', {}).get('descriptor', {}).get('schema') == 'cybex.james.appliance-release.v2'
+                 and old.get('evidence', {}).get('descriptor', {}).get('minimum_state_schema') == 2
+                 and isinstance(old.get('release_id'), str) and bool(old['release_id']),
+                 'Before row is not a pending recorded V2 request')
+        terminal = row.get('evidence', {}).get('manage_terminalization', {})
+        _require(row.get('release_id') == old['release_id'] and row.get('state') == 'cancelled'
+                 and row.get('rollback_reason') == 'reinstall_required'
+                 and terminal.get('reason') == 'reinstall_required'
+                 and terminal.get('stage') == 'reinstall_required'
+                 and terminal.get('required_capability') == 'appliance_update_v3',
+                 'Pending V2 request lacks durable reinstall cancellation')
+        _require(start <= _time(row.get('completed_at')) <= end
+                 and start <= _time(terminal.get('terminalized_at')) <= end,
+                 'Attempt cancellation predates this fixture observation')
