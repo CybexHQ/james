@@ -60,6 +60,9 @@ in {
       auto-optimise-store = false; # source exposure explicitly preserves nlink=1
     };
     nix.gc.automatic = false;
+    # Include daemon-side builders in diagnostics. No throttling/OOM limits:
+    # smaller budgets require the performance qualification gate first.
+    systemd.services.nix-daemon.serviceConfig.MemoryAccounting = true;
     environment.systemPackages = [ a.package runtime a.udpcast pkgs.iproute2 pkgs.iputils pkgs.curl pkgs.jq pkgs.nftables pkgs.dnsmasq pkgs.openssh pkgs.python3 pkgs.tftp-hpa ];
     # The privileged supervisor intentionally refuses symlink configuration.
     environment.etc."tiaris-nest/pxe-discovery.json" = { text = ''{"mode":"automatic"}''; mode = "0644"; };
@@ -150,8 +153,8 @@ in {
       wantedBy = [ "multi-user.target" ]; after = [ "network-online.target" "tiaris-nest-first-boot.service" "tiaris-nest-network-runtime.service" "nginx.service" "tftpd-hpa.service" "nix-daemon.service" ];
       requires = [ "tiaris-nest-first-boot.service" "tiaris-nest-network-runtime.service" ]; wants = [ "network-online.target" "nginx.service" "tftpd-hpa.service" "nix-daemon.service" ];
       environment = { HOME = "/var/cache/tiaris-nest/agent/home"; XDG_CACHE_HOME = "/var/cache/tiaris-nest/agent/cache"; XDG_CONFIG_HOME = "/var/cache/tiaris-nest/agent/config"; XDG_STATE_HOME = "/var/cache/tiaris-nest/agent/state"; TMPDIR = "/var/cache/tiaris-nest/agent/tmp"; NIX_USER_CONF_FILES = "/dev/null"; };
-      path = [ pkgs.nix pkgs.git pkgs.openssh pkgs.coreutils pkgs.iproute2 a.udpcast ];
-      serviceConfig = { Type = "notify"; NotifyAccess = "all"; WatchdogSec = "30s"; User = "tiaris-nest"; Group = "tiaris-nest"; ExecStart = "${a.package}/bin/tiaris-nest --config /etc/tiaris-nest/config.toml serve"; Restart = "always"; RestartSec = "3s"; UMask = "0077"; NoNewPrivileges = true; PrivateTmp = true; PrivateDevices = true; ProtectSystem = "strict"; ProtectHome = true; ProtectKernelTunables = true; ProtectKernelModules = true; ProtectControlGroups = true; CapabilityBoundingSet = ""; AmbientCapabilities = ""; RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ]; ReadWritePaths = [ "/var/lib/tiaris-nest/state/agent" "/var/lib/tiaris-nest/state/inbox" "/var/cache/tiaris-nest" "/run/lock/tiaris-nest/maintenance.lock" ]; };
+      path = [ pkgs.nix pkgs.git pkgs.openssh pkgs.coreutils pkgs.iproute2 pkgs.systemd a.udpcast ];
+      serviceConfig = { MemoryAccounting = true; Type = "notify"; NotifyAccess = "all"; WatchdogSec = "30s"; User = "tiaris-nest"; Group = "tiaris-nest"; ExecStart = "${a.package}/bin/tiaris-nest --config /etc/tiaris-nest/config.toml serve"; Restart = "always"; RestartSec = "3s"; UMask = "0077"; NoNewPrivileges = true; PrivateTmp = true; PrivateDevices = true; ProtectSystem = "strict"; ProtectHome = true; ProtectKernelTunables = true; ProtectKernelModules = true; ProtectControlGroups = true; CapabilityBoundingSet = ""; AmbientCapabilities = ""; RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ]; ReadWritePaths = [ "/var/lib/tiaris-nest/state/agent" "/var/lib/tiaris-nest/state/inbox" "/var/cache/tiaris-nest" "/run/lock/tiaris-nest/maintenance.lock" ]; };
     };
     systemd.services.tiaris-nest-pxe = {
       wantedBy = [ "multi-user.target" ]; after = [ "tiaris-nest.service" ]; wants = [ "tiaris-nest.service" ];
