@@ -28,6 +28,23 @@ def step_script(body, name):
 
 
 class ReleaseSpeedWorkflowTests(unittest.TestCase):
+    def test_failure_diagnostics_upload_without_admitting_failed_qualification(self):
+        for body, name, success_name in (
+                (self.warm, 'Retain qualification failure diagnostics', 'Upload bounded qualification evidence'),
+                (self.cold, 'Retain cold qualification failure diagnostics',
+                 'Retain published cold-install qualification evidence')):
+            with self.subTest(name=name):
+                diagnostic = body.split('      - name: ' + name + '\n', 1)[1].split('      - name:', 1)[0]
+                self.assertIn('if: always()', diagnostic)
+                self.assertIn('tiaris-nest-*-diagnostics.json', diagnostic)
+                self.assertIn('github.run_attempt', diagnostic)
+                self.assertIn('if-no-files-found: ignore', diagnostic)
+                self.assertNotIn('config.json', diagnostic)
+                acceptance = body.split('      - name: ' + success_name + '\n', 1)[1].split('      - name:', 1)[0]
+                self.assertNotIn('if: always()', acceptance)
+                self.assertIn('if-no-files-found: error', acceptance)
+
+
     @classmethod
     def setUpClass(cls):
         cls.body = WORKFLOW.read_text()

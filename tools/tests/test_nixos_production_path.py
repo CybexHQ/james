@@ -25,6 +25,92 @@ def load(name):
 
 
 class ProductionTests(unittest.TestCase):
+    def test_exception_evidence_redacts_multiline_credentials(self):
+        diagnostics = load('listener_diagnostics')
+        with tempfile.TemporaryDirectory() as temporary:
+            error = ValueError('TLS failed: -----BEGIN PRIVATE KEY-----\nprivate-material\n'
+                               '-----END PRIVATE KEY-----\nAuthorization: Bearer hidden-token')
+            path = diagnostics.save_failure(Path(temporary), 'fresh', 'release-credentials', error, [])
+            body = path.read_text()
+            self.assertIn('TLS failed', body)
+            self.assertNotIn('private-material', body)
+            self.assertNotIn('hidden-token', body)
+
+    def test_listener_startup_diagnostics_survive_failed_fixture_cleanup(self):
+        fixture = load('production_fixture')
+        for phase in ('rollback', 'cold'):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                state, evidence = root / ('test-' + phase), root / 'evidence'
+                state.mkdir(mode=0o700)
+                evidence.mkdir(mode=0o700)
+                (state / 'manage.json').write_text('{}')
+                value = {'manage_origin': 'https://manage.cybex.net',
+                         'app_images': {'candidate': 'image'}}
+                for field in ('tls_certificate', 'tls_private_key', 'provisioning_seed_file'):
+                    source = root / field
+                    source.write_text('private fixture input')
+                    source.chmod(0o600)
+                    value[field] = str(source)
+                owner = Mock()
+                owner.prepare.side_effect = ValueError('listener exited: Address already in use; token=hidden')
+                owner.artifacts.diagnostic_records.return_value = [{
+                    'listener': 'candidate-backend', 'bind': '127.0.0.1', 'port': 18083,
+                    'exit_code': 1, 'elapsed_seconds': 0.05,
+                    'output': 'OSError: Address already in use', 'truncated': False}]
+                with patch.object(fixture.config, 'load', return_value=(value, None)), \
+                     patch.object(fixture.config, 'read_file', return_value=b'private fixture input'), \
+                     patch.object(fixture.isolated_manage, 'Owner', return_value=owner):
+                    with self.assertRaisesRegex(ValueError, 'Address already in use'):
+                        with fixture.fixture(state, root / 'config', root / 'candidate',
+                                             root / 'predecessor', phase, evidence_dir=evidence):
+                            self.fail('Failed fixture must not enter qualification')
+                owner.cleanup.assert_called_once_with(purge=True)
+                self.assertFalse((state / 'fixture-config').exists())
+                path = evidence / state.name / f'tiaris-nest-{phase}-diagnostics.json'
+                body = path.read_text()
+                document = json.loads(body)
+                self.assertEqual(document['phase'], phase)
+                self.assertEqual(document['listeners'][0]['exit_code'], 1)
+                self.assertIn('Address already in use', document['error'])
+                self.assertNotIn('hidden', body)
+                self.assertNotIn('private fixture input', body)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+
+    def test_diagnostic_attempts_are_separate_private_and_never_overwritten(self):
+        diagnostics = load('listener_diagnostics')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = diagnostics.save_failure(root, 'rollback', 'release-1-1-rollback',
+                                             ValueError('first failure'), [])
+            second = diagnostics.save_failure(root, 'rollback', 'release-1-2-rollback',
+                                              ValueError('second failure'), [])
+            self.assertNotEqual(first, second)
+            self.assertEqual(first.parent.stat().st_mode & 0o777, 0o700)
+            with self.assertRaises(FileExistsError):
+                diagnostics.save_failure(root, 'rollback', 'release-1-1-rollback',
+                                         ValueError('overwrite'), [])
+            self.assertEqual(json.loads(first.read_text())['error'], 'first failure')
+            for run in ('../escape', '.', '..', 'run/escape'):
+                with self.assertRaises(ValueError):
+                    diagnostics.save_failure(root, 'rollback', run, ValueError('unsafe'), [])
+
+
+    @unittest.skipUnless(os.geteuid() == 0, 'requires root to verify sudo runner ownership')
+    def test_failed_diagnostics_are_readable_by_the_sudo_artifact_runner(self):
+        diagnostics = load('listener_diagnostics')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evidence = root / 'evidence'
+            evidence.mkdir(mode=0o700)
+            with patch.dict(os.environ, {'SUDO_UID': '1000', 'SUDO_GID': '1000'}):
+                path = diagnostics.save_failure(evidence, 'rollback', 'release-1-1-rollback',
+                                                ValueError('bind failed'), [])
+            for owned in (path, path.parent, evidence):
+                self.assertEqual((owned.stat().st_uid, owned.stat().st_gid), (1000, 1000))
+
+
     def test_signed_appliance_cache_requires_exact_workstation_agent(self):
         build = runpy.run_path(str(HELPERS.parent / 'build.py'))
         agent = Path('/nix/store/' + 'a' * 32 + '-tiaris-agent-0.1.0')

@@ -758,6 +758,15 @@ jobs:
           compression-level: 0
           retention-days: 30
 
+      - name: Retain qualification failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tiaris-nest-qualification-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/release-${{ github.run_id }}-${{ github.run_attempt }}-*/tiaris-nest-*-diagnostics.json
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Upload bounded qualification evidence
         id: upload-qualification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -1371,6 +1380,15 @@ jobs:
             --evidence "$RUNNER_TEMP/tiaris-nest-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tiaris-nest-published-cold-qualification.json" \
             --public-closure "$RUNNER_TEMP/tiaris-nest-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tiaris-nest-public-closure-qualification.json" \
             --workstation "$RUNNER_TEMP/tiaris-nest-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tiaris-nest-published-workstation-qualification.json"
+
+      - name: Retain cold qualification failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tiaris-nest-cold-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tiaris-nest-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/published-${{ github.run_id }}-${{ github.run_attempt }}-*/tiaris-nest-*-diagnostics.json
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Retain published cold-install qualification evidence
         id: cold-evidence

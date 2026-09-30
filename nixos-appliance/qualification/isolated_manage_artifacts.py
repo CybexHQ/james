@@ -34,6 +34,7 @@ def sibling(name):
 
 
 server = sibling('verified_artifact_server')
+diagnostics = sibling('listener_diagnostics')
 release_verifier = sibling('release_predecessor')
 egress = sibling('tls_client_hello')
 SCHEMA = 'tiaris.nest.isolated-manage-artifacts.v1'
@@ -144,10 +145,11 @@ def _set_parent_death(parent_pid):
         os._exit(127)
 
 
-def spawn_direct(command):
+def spawn_direct(command, *, capture=False):
     parent = os.getpid()
-    child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL,
+    child = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                             stderr=subprocess.STDOUT if capture else subprocess.DEVNULL,
                              preexec_fn=lambda: _set_parent_death(parent))
     try:
         pidfd = os.pidfd_open(child.pid)
@@ -162,6 +164,8 @@ class Child:
     def __init__(self, process, pidfd):
         self.process, self.pidfd = process, pidfd
         self.receipt, self.receipt_identity = None, None
+        self.started = time.monotonic()
+        self.output = diagnostics.Output(process.stdout) if process.stdout is not None else None
 
     def stop(self):
         # The Popen object and pidfd were captured directly at fork. Cleanup
@@ -180,6 +184,8 @@ class Child:
         finally:
             os.close(self.pidfd)
             self.pidfd = None
+            if self.output:
+                self.output.finish()
 
 
 class Coordinator:
@@ -397,15 +403,21 @@ finally: s.server_close()
                  'artifacts': [{key: artifact[key] for key in ('filename', 'path', 'sha256', 'size_bytes')}
                                for artifact in artifacts]}
         self.known_files[config] = exclusive_write(config, server.canonical(value), self.uid)
-        process, pidfd = spawn_direct(self._server_command(config, receipt_path))
+        process, pidfd = spawn_direct(self._server_command(config, receipt_path), capture=True)
         child = Child(process, pidfd)
         self.children[name] = child
         deadline = time.monotonic() + START_TIMEOUT
         while not receipt_path.exists():
             if process.poll() is not None:
-                raise ValueError('artifact listener exited before publishing its receipt')
+                child.output.finish()
+                detail = child.output.snapshot()['output'].strip()
+                raise ValueError(f'artifact listener {name} at {bind}:{port} exited before publishing '
+                                 f'its receipt (exit {process.returncode}, '
+                                 f'{time.monotonic() - child.started:.2f}s): {detail}')
             if time.monotonic() >= deadline:
-                raise TimeoutError('artifact listener did not publish its receipt')
+                raise TimeoutError(f'artifact listener {name} at {bind}:{port} did not publish '
+                                   f'its receipt within {START_TIMEOUT}s: '
+                                   + child.output.snapshot()['output'].strip())
             time.sleep(0.02)
         receipt, receipt_identity = read_private_json(receipt_path, self.uid)
         self.known_files[receipt_path] = {key: receipt_identity[key] for key in
@@ -532,6 +544,12 @@ finally: s.server_close()
             self._validate_listener_receipt(name, listener['server'], config,
                                             listener['artifacts'], child)
         return self._urls(receipt)
+
+    def diagnostic_records(self):
+        return [{'listener': name, 'bind': self.endpoints[name][0],
+                 'port': self.endpoints[name][1], 'exit_code': child.process.poll(),
+                 'elapsed_seconds': round(time.monotonic() - child.started, 3),
+                 **child.output.snapshot()} for name, child in self.children.items()]
 
     def _stop_children(self):
         errors = []
