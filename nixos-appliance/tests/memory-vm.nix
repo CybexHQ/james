@@ -22,7 +22,8 @@ let
         # Real Nix evaluation, daemon builders, closure hashing, signing and
         # zstd export. A repeated nonce prevents a build-result cache hit.
         make = name: pkgs.runCommand ("nest-memory-" + name + "-NONCE") {} "mkdir -p $out; head -c 33554432 /dev/zero > $out/payload; ln -s ${pkgs.bash}/bin/bash $out/bash";
-      in { packages.x86_64-linux = { a = make "a"; b = make "b"; }; };
+      in { packages.x86_64-linux = pkgs.lib.genAttrs
+        (builtins.genList (index: "target-" + toString index) 32) make; };
     }
   '';
 in import (nixpkgs + "/nixos/tests/make-test-python.nix") ({ ... }: {
