@@ -8,7 +8,8 @@ runtime imports them.
 The experiment was based on James commit
 `fe61c08eaee83db4a07f963cfdab0ac90ebec57c`. Both files were untracked when reviewed
 for source consolidation on 2026-09-30 against current main
-`5643a38f315e46106a6884574b2fa55a26897e22`. The original experiment remains unchanged.
+`5643a38f315e46106a6884574b2fa55a26897e22`. The source bytes are preserved verbatim.
+The obsolete worktree can be retired after this archive is verified on main.
 
 | Original source path | Archived exact bytes | SHA-256 |
 | --- | --- | --- |

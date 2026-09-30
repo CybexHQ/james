@@ -3,7 +3,8 @@
 These files preserve the exact uncommitted source from the historical
 `scenario-source` worktree, based on James commit `54f3c664a9377d017f0693e8fdb97ac96ba7282d`.
 They were archived on 2026-09-30 from the preserved checkout at
-`var/james-nixos/scenario-source`; the original worktree remains unchanged.
+`var/james-nixos/scenario-source`. The source bytes are preserved verbatim; the
+obsolete worktree can be retired after this archive is verified on main.
 The `.py.txt` extension keeps both files outside executable modules and test discovery.
 No release or qualification workflow loads this archive.
 
