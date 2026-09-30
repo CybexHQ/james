@@ -469,6 +469,14 @@ Remove temporary build output, `result*`, closure caches and owned VM disks afte
 successful use; keep only necessary evidence. Never commit raw evidence, secrets,
 generated archives or customer configuration.
 
+Failed isolated qualification keeps bounded listener diagnostics after fixture
+cleanup. Each record identifies the listener endpoint, exit code and elapsed
+time, with at most 8 KiB of redacted stdout/stderr per listener. Credentials,
+PEM material and oversized lines are omitted. A private, run-specific
+`tiaris-nest-<phase>-diagnostics.json` survives both startup failures and later
+qualification errors. Warm and published-cold workflows upload these records
+on failure for 30 days; successful release evidence remains a separate gate.
+
 Retain the Ubuntu implementation until the complete NixOS qualification matrix
 passes. Only then remove Ubuntu-only code and update the security/support policy.
 Human release operators publish the qualified release and later reinstall existing

@@ -204,7 +204,8 @@ def qualify(args):
                 staged = Path(resources.enter_context(tempfile.TemporaryDirectory(prefix='jnq-inputs-', dir=args.state_root)))
                 candidate_dir = stage_artifacts(args.candidate_dir, staged / 'candidate')
                 predecessor_dir = stage_artifacts(args.predecessor_dir, staged / 'predecessor') if not args.published_cold else candidate_dir
-                owner = resources.enter_context(fixture(state, args.isolated_manage_config, candidate_dir, predecessor_dir, phase))
+                owner = resources.enter_context(fixture(state, args.isolated_manage_config, candidate_dir,
+                    predecessor_dir, phase, evidence_dir=args.evidence_dir))
             else:
                 copy_private(args.token_file, state / 'session')
             environment = dict(os.environ)

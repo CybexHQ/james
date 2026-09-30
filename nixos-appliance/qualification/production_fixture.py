@@ -6,16 +6,18 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import sys
 
 import isolated_manage
 import isolated_manage_artifacts
 import isolated_manage_config as config
 import isolated_manage_network
 import isolated_manage_rpc
+import listener_diagnostics
 
 
 @contextlib.contextmanager
-def fixture(state, config_path, candidate, predecessor, phase):
+def fixture(state, config_path, candidate, predecessor, phase, *, evidence_dir=None):
     value, _ = config.load(config_path)
     if phase not in {'fresh', 'update', 'rollback', 'cold'}:
         raise ValueError('unsupported production qualification phase')
@@ -47,6 +49,18 @@ def fixture(state, config_path, candidate, predecessor, phase):
         fixture_blueprints.prepare(owner)
         with isolated_manage_rpc.Server(owner):
             yield owner
+    except Exception as error:
+        # Capture before purge, including failures while entering this context.
+        if evidence_dir is not None:
+            try:
+                records = owner.artifacts.diagnostic_records() if owner.artifacts else []
+                evidence = listener_diagnostics.save_failure(
+                    evidence_dir, phase, state.name, error, records)
+                print(f'Qualification {phase} failed; diagnostics: {evidence}', file=sys.stderr, flush=True)
+            except Exception as diagnostic_error:
+                print('Could not retain qualification diagnostics: '
+                      + listener_diagnostics.redact(str(diagnostic_error)), file=sys.stderr, flush=True)
+        raise
     finally:
         if (state / 'manage.json').exists():
             owner.cleanup(purge=True)

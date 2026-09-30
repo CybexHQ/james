@@ -299,13 +299,67 @@ class CoordinatorTests(unittest.TestCase):
         blocked.listen(1)
         try:
             self.coordinator = self.create()
-            with self.assertRaisesRegex(ValueError, 'exited before publishing'):
+            with self.assertRaisesRegex(ValueError, 'exited before publishing') as failure:
                 self.coordinator.prepare(self.scope)
+            self.assertIn('candidate-backend', str(failure.exception))
+            self.assertIn(str(self.endpoints['candidate-backend'][1]), str(failure.exception))
+            self.assertIn('exit 1', str(failure.exception))
+            self.assertIn('Address already in use', str(failure.exception))
             self.assertIn('predecessor-backend', self.coordinator.children)
             self.assertTrue(all(child.process.poll() is not None for child in self.coordinator.children.values()))
             self.assertFalse(self.coordinator.directory.exists())
+            records = self.coordinator.diagnostic_records()
+            self.assertIn('Address already in use', records[-1]['output'])
+            self.assertEqual(records[-1]['exit_code'], 1)
+            self.assertGreater(records[-1]['elapsed_seconds'], 0)
         finally:
             blocked.close()
+
+    def test_update_rollback_and_fresh_listeners_restart_on_the_same_endpoints(self):
+        for phase in ('update', 'rollback', 'fresh'):
+            with self.subTest(phase=phase):
+                self.state = self.root / phase
+                self.state.mkdir(mode=0o700)
+                self.scope = dict(self.scope, owner=str(uuid.uuid4()))
+                self.coordinator = self.create()
+                self.coordinator.prepare(self.scope)
+                for endpoint in self.endpoints.values():
+                    with socket.create_connection(endpoint, timeout=2) as client:
+                        client.sendall(b'GET /missing HTTP/1.1\r\nHost: localhost\r\n\r\n')
+                        while client.recv(8192):
+                            pass
+                self.coordinator.cleanup(self.scope, purge=True)
+                self.assertTrue(all(child.process.poll() is not None
+                                    for child in self.coordinator.children.values()))
+                self.assertFalse(self.coordinator.directory.exists())
+                self.coordinator = None
+
+    def test_verbose_failing_listener_keeps_bounded_redacted_output_without_blocking(self):
+        class Verbose(A.Coordinator):
+            def _server_command(self, _config, _receipt):
+                return [sys.executable, '-c', '''
+import sys
+print('noise\\n' * 20000)
+print('secret=' + 's' * 10000)
+print('Authorization: Bearer super-secret-token', file=sys.stderr)
+print('password="private-password"', file=sys.stderr)
+print('-----BEGIN PRIVATE KEY-----', file=sys.stderr)
+print('private-key-material', file=sys.stderr)
+print('-----END PRIVATE KEY-----', file=sys.stderr)
+print('startup failed', file=sys.stderr)
+sys.exit(17)
+''']
+        self.coordinator = self.create(coordinator=Verbose)
+        with self.assertRaisesRegex(ValueError, 'exit 17') as failure:
+            self.coordinator.prepare(self.scope)
+        text = str(failure.exception)
+        self.assertIn('startup failed', text)
+        for secret in ('super-secret-token', 'private-password', 'private-key-material', 's' * 100):
+            self.assertNotIn(secret, text)
+        record = self.coordinator.diagnostic_records()[0]
+        self.assertTrue(record['truncated'])
+        self.assertLessEqual(len(record['output'].encode()), A.diagnostics.LIMIT)
+        self.assertFalse(self.coordinator.directory.exists())
 
     def test_unpublished_and_malformed_receipts_cannot_strand_owned_children(self):
         class Unpublished(A.Coordinator):

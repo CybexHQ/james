@@ -116,13 +116,20 @@ class ProductionQualificationWorkflowTests(unittest.TestCase):
                     path = Path(json.loads(result.stdout))
                     self.assertEqual(path, root / f'{prefix}-{run_id}-{attempt}')
                     paths.append(path)
-                    uploads = [line.strip() for line in workflow_job(job).splitlines()
+                    uploads = [line.strip().removeprefix('path: ') for line in workflow_job(job).splitlines()
                                if '${{ runner.temp }}/' + prefix in line]
                     self.assertTrue(uploads)
                     for upload in uploads:
                         resolved = upload.replace('${{ runner.temp }}', temporary).replace(
                             '${{ github.run_id }}', run_id).replace('${{ github.run_attempt }}', attempt)
-                        self.assertEqual(Path(resolved).parent, path)
+                        if resolved.endswith('/tiaris-nest-*-diagnostics.json'):
+                            # Listener diagnostics belong to individual fixture
+                            # phases within this run's private evidence root.
+                            phase = 'published' if job == 'release_cold_qualify' else 'release'
+                            self.assertEqual(Path(resolved), path /
+                                f'{phase}-{run_id}-{attempt}-*' / 'tiaris-nest-*-diagnostics.json')
+                        else:
+                            self.assertEqual(Path(resolved).parent, path)
                 self.assertEqual(len(set(paths)), 3)
                 self.assertTrue(all((path / 'receipt.json').read_text() == 'completed' for path in paths))
             if job == 'release_cold_qualify':
