@@ -1,6 +1,7 @@
 { config, lib, pkgs, appliance, ... }:
 {
   imports = [ ./module.nix ];
+  services.qemuGuest.enable = true;
   services.tiaris-nest = { enable = true; inherit appliance; };
   # Keep the exact workstation agent as a cache seed without starting its
   # service on Nest. The signed system closure exports only reachable paths.
