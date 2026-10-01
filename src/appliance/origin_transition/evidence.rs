@@ -150,14 +150,19 @@ fn compatibility_contract(v: &Value) -> Result<()> {
             .as_array()
             .ok_or_else(|| anyhow!("runtime vocabulary"))?;
         ensure!(
-            !entries.is_empty() && entries.len() <= 128,
+            !entries.is_empty() && entries.len() <= 64,
             "vocabulary bound"
         );
         let mut seen = std::collections::BTreeSet::new();
         for entry in entries {
             let s = entry.as_str().ok_or_else(|| anyhow!("vocabulary string"))?;
+            // Match nest-release.py: [a-z][a-z0-9_]{0,63}, unique but not sorted.
             ensure!(
-                release_v3::safe_token(s, 128) && seen.insert(s),
+                s.len() <= 64
+                    && s.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+                    && s.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                    && seen.insert(s),
                 "invalid/duplicate vocabulary"
             );
         }

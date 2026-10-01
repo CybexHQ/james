@@ -57,6 +57,96 @@ fn check(f: &Value) -> Result<VerifiedEvidence> {
         &release_key(f),
     )
 }
+// Exercise all six vocabularies in both signed releases, not just a token helper.
+fn check_vocabularies(values: &[Value], accepted: bool) {
+    let mut failures = Vec::new();
+    for side in ["source", "target"] {
+        for field in [
+            "import_states",
+            "import_error_codes",
+            "resolution_states",
+            "resolution_error_codes",
+            "report_receipt_states",
+            "report_receipt_error_codes",
+        ] {
+            for value in values {
+                let mut f = release_fixture();
+                f[side]["compatibility"]["compatibility"]["workstation_runtime"][field] =
+                    value.clone();
+                rebind(&mut f);
+                match check(&f) {
+                    Ok(_) if accepted => {}
+                    Err(error) if !accepted && error.to_string().contains("vocabulary") => {}
+                    Ok(_) => failures.push(format!("accepted {side}/{field}: {value}")),
+                    Err(error) => failures.push(format!("{side}/{field} {value}: {error}")),
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn fully_signed_vocabulary_rejects_uppercase() {
+    check_vocabularies(&[json!(["Ready"]), json!(["rEady"])], false);
+}
+
+#[test]
+fn fully_signed_vocabulary_rejects_punctuation() {
+    let values: Vec<_> = ['+', '.', '?', '=', '-']
+        .into_iter()
+        .map(|c| json!([format!("ready{c}state")]))
+        .collect();
+    check_vocabularies(&values, false);
+}
+
+#[test]
+fn fully_signed_vocabulary_rejects_65_character_identifier() {
+    check_vocabularies(&[json!(["a".repeat(65)])], false);
+}
+
+#[test]
+fn fully_signed_vocabulary_rejects_65_entries() {
+    let entries: Vec<_> = (0..65).map(|i| format!("state_{i}")).collect();
+    check_vocabularies(&[json!(entries)], false);
+}
+
+#[test]
+fn fully_signed_vocabulary_requires_initial_lowercase_letter() {
+    check_vocabularies(&[json!(["0ready"]), json!(["_ready"])], false);
+}
+
+#[test]
+fn fully_signed_vocabulary_preserves_shape_and_uniqueness_rules() {
+    check_vocabularies(
+        &[
+            json!([]),
+            json!([""]),
+            json!(["ready", "ready"]),
+            json!("ready"),
+            json!([1]),
+            json!([null]),
+            json!(["réady"]),
+            json!(["ready\n"]),
+        ],
+        false,
+    );
+}
+
+#[test]
+fn fully_signed_vocabulary_accepts_release_boundaries_without_sorting() {
+    let entries: Vec<_> = (0..64).rev().map(|i| format!("state_{i}")).collect();
+    check_vocabularies(
+        &[
+            json!(["a"]),
+            json!(["a".repeat(64)]),
+            json!(["z_09", "a"]),
+            json!(entries),
+        ],
+        true,
+    );
+}
+
 #[test]
 fn authentic_outer_artifacts_cannot_hide_invalid_leaf_signatures() {
     for side in ["source", "target"] {
