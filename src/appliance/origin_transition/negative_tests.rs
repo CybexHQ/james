@@ -104,10 +104,52 @@ fn nested_duplicates_unknowns_floats_exponents_and_replay_mutations_fail() {
         assert!(verify_signed(&canonical(&changed).unwrap(), &key.verifying_key()).is_err());
     }
 }
+pub(super) fn origin_profile_vectors() -> Vec<Value> {
+    let bytes = include_bytes!("origin-profile-v1.json");
+    assert_eq!(
+        digest(bytes),
+        "fe129ccdfe5ffa633df3a46a7a18eca940c1e3f68ff049b457ee0a49d86ef956"
+    );
+    serde_json::from_slice::<Value>(bytes).unwrap()["vectors"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
 #[test]
-fn ipv4_mapped_ipv6_uses_release_tools_hex_canonical_form() {
-    assert!(wire::origin("https://[::ffff:c000:201]").is_ok());
-    assert!(wire::origin("https://[::ffff:192.0.2.1]").is_err());
+fn origin_profile_vectors_apply_to_signed_objects() {
+    let f = vectors();
+    let key = test_signer(&f);
+    let mut failures = Vec::new();
+    for vector in origin_profile_vectors() {
+        let origin = vector["origin"].as_str().unwrap();
+        let accepted = vector["accepted"].as_bool().unwrap();
+        if wire::origin(origin).is_ok() != accepted {
+            failures.push(format!("primitive {origin}, expected {accepted}"));
+        }
+        for original in f["vectors"].as_array().unwrap() {
+            for field in ["source_origin", "target_origin"] {
+                if original["signed_object"].get(field).is_none() {
+                    continue;
+                }
+                let mut v = original["signed_object"].clone();
+                v[field] = origin.into();
+                sign_new(&mut v, &key);
+                if verify_signed(&canonical(&v).unwrap(), &key.verifying_key()).is_ok() != accepted
+                {
+                    failures.push(format!(
+                        "{} {field} {origin}, expected {accepted}",
+                        v["schema"]
+                    ));
+                }
+            }
+        }
+        let mut request = f["contact_request"].clone();
+        request["target_origin"] = origin.into();
+        if wire::validate("OriginContactRequest", &request).is_ok() != accepted {
+            failures.push(format!("contact request {origin}, expected {accepted}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 #[test]
 fn origins_and_scalar_encodings_are_canonical() {

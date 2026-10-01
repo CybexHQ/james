@@ -266,6 +266,15 @@ fn manifest(
     for k in keys {
         let k = k.as_str().ok_or_else(|| anyhow!("ISO key text"))?;
         release_v3::canonical_base64(k, 32)?;
+        // Match nest-release.py's exact weak-encoding deny set. These ISO
+        // metadata keys are not evidence signers; do not substitute dalek's
+        // point parser for the historical format contract.
+        ensure!(
+            !include_str!("../../../trust/ed25519-weak-public-keys.txt")
+                .lines()
+                .any(|weak| weak == k),
+            "ISO provisioning public key is weak"
+        );
         key_texts.push(k);
     }
     ensure!(

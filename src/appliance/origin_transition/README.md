@@ -21,6 +21,36 @@ closure payloads, prove an actual boot, persist state, or admit a transition.
 `verify_acknowledgement` verifies management authority and exact root-request
 correspondence. Its result does **not** prove TLS reachability or authorize COMMIT.
 
+## Transition-v1 origin profile
+
+`origin-profile-v1.json` is the separate proposed narrowing addendum, copied
+byte-for-byte from the shared profile. It requires independent SPEC and QUALITY
+review; it does not revise the original contract or shared signature vectors.
+This module intentionally does **not** claim complete legacy origin parity:
+
+- Keep canonical ASCII DNS/IPv4 and unscoped, non-IPv4-mapped IPv6, with exact
+  lowercase compressed spelling, HTTPS and nondefault canonical ports.
+- Reject **all** IPv4-mapped IPv6 spellings (hexadecimal and dotted tails) and
+  all scoped IPv6 (raw `%` and encoded `%25` zones). Legacy Python formatting
+  varies by supported runtime version; runtime selection is not protocol policy.
+- Apply the same profile to source/target signed objects, contact requests and
+  release/evidence crosslinks. Compare signed text exactly; never normalize it.
+- Ordinary legacy release tooling and deployed same-origin update validation
+  remain unchanged. **Legacy releases outside this profile cannot use the new
+  transition-v1 protocol.** Do not relabel their signed origins. Mapped/scoped
+  support requires a separately reviewed future profile. Known Manage/dev
+  `cybex.net` to `tiaris.com` migration DNS origins are supported.
+
+The profile is a grammar, not a transport allowlist or deployment approval.
+Exact environment binding and all caller requirements below remain mandatory.
+
+ISO provisioning-key metadata follows the historical canonical-base64 plus
+`trust/ed25519-weak-public-keys.txt` deny-set semantics, including all fourteen
+encodings. An arbitrary non-denied encoding is not thereby an authenticated
+signer: actual evidence signers still require parsed non-weak keys and strict
+signature verification. Do not replace the metadata rule with a different
+library's point-validity rule.
+
 ## Required callers in the next reviewed slice
 
 - Under the existing root maintenance lock, take a bounded nofollow regular-file
@@ -59,3 +89,29 @@ serve as lifecycle qualification. Mutation tests re-sign outer compatibility and
 pair objects while corrupting leaf signatures, so rejection cannot be explained
 by stale outer hashes alone. No production keys, release artifacts or signatures
 were used or changed.
+
+`origin-profile-v1.json` has SHA-256
+`fe129ccdfe5ffa633df3a46a7a18eca940c1e3f68ff049b457ee0a49d86ef956`.
+Rust consumes its exact vectors in the primitive, every signed-object origin,
+contact request and re-signed source/target evidence tests. `legacy_oracle.py`
+is test-only: it explicitly excludes mapped/scoped origins before invoking the
+unchanged authoritative Python validator, and separately checks every accepted
+vector directly with that validator. The key regression sends its actual
+re-signed ISO/compatibility/pair fixtures to this oracle for OpenSSL signature,
+raw-hash and legacy semantic checks. Other leaf signatures remain unchanged.
+
+Tests require Python >= 3.11 and OpenSSL, already used by release-tool tests:
+
+```sh
+cargo test --offline --locked -j2 origin_transition -- --nocapture
+NEST_TRANSITION_TEST_PYTHON=python3.11 cargo test --offline --locked -j2 fully_signed_iso_keys_follow_legacy_deny_set -- --nocapture
+python3.13 -B src/appliance/origin_transition/legacy_oracle.py --profile-only
+```
+
+Correction verification exercised Python **3.11.15, 3.13.5 and 3.13.14**: all
+26 profile vectors matched (9 accepted), and all 32 re-signed key cases matched
+(14 deny encodings on both sides rejected, strong-key and non-denied off-curve
+metadata controls accepted on both sides). These particular interpreters all
+accepted the dotted mapped and raw/encoded scoped legacy origins and rejected
+the hexadecimal mapped legacy origin. This observation is not a version-based
+protocol rule or a claim about untested interpreter patch versions.

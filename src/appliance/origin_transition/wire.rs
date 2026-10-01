@@ -278,8 +278,9 @@ pub(super) fn version(s: &str) -> Result<semver::Version> {
     ensure!(v.to_string() == s, "noncanonical version");
     Ok(v)
 }
-// Match the release-tool origin grammar without URL parser normalization of
-// IPv4 shorthand, explicit default ports, empty paths or DNS labels.
+// New transition-v1 origin profile (origin-profile-v1.json), deliberately
+// narrower than legacy release inputs. Never normalize supplied signed text.
+// DNS/IPv4 rules avoid URL parser normalization of shorthand and default ports.
 pub(super) fn origin(s: &str) -> Result<()> {
     ensure!(s.len() <= 2048 && s.is_ascii(), "origin bound");
     let authority = s
@@ -289,16 +290,13 @@ pub(super) fn origin(s: &str) -> Result<()> {
         let (h, p) = authority
             .split_once(']')
             .ok_or_else(|| anyhow!("IPv6 origin"))?;
+        ensure!(!h.contains('%'), "scoped IPv6 outside transition profile");
         let ip: std::net::Ipv6Addr = h[1..].parse()?;
-        // Python ipaddress.compressed (the normative release tool) uses hex
-        // for mapped IPv4 addresses; Rust Display uses dotted decimal there.
-        let host = if ip.to_ipv4_mapped().is_some() {
-            let segments = ip.segments();
-            format!("::ffff:{:x}:{:x}", segments[6], segments[7])
-        } else {
-            ip.to_string()
-        };
-        ensure!(format!("[{host}") == h, "noncanonical IPv6");
+        ensure!(
+            ip.to_ipv4_mapped().is_none(),
+            "IPv4-mapped IPv6 outside transition profile"
+        );
+        ensure!(format!("[{ip}") == h, "noncanonical IPv6");
         (format!("{h}]"), p)
     } else if let Some((h, _)) = authority.split_once(':') {
         (h.to_owned(), &authority[h.len()..])

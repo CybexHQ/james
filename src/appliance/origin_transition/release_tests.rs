@@ -49,6 +49,158 @@ fn rebind(f: &mut Value) {
     seal_r(&mut f["pair"], b"TIARIS-NEST-ORIGIN-TRANSITION-V1\n", &key);
     f["pair_bytes"] = STANDARD.encode(r(&f["pair"])).into();
 }
+fn resign_iso(f: &mut Value, side: &str) {
+    let key = signer(f);
+    let iso = &mut f[side]["manifest"]["installer_iso_template_v3"];
+    let mut message = String::from("TIARIS-NEST-INSTALLER-ISO-TEMPLATE-V3\n");
+    for field in [
+        "version",
+        "architecture",
+        "base_os",
+        "base_os_version",
+        "url",
+        "size_bytes",
+        "template_sha256",
+        "personalization_offset",
+        "personalization_size",
+        "placeholder_sha256",
+        "provisioning_public_keys",
+        "package_delivery",
+        "manage_origin",
+    ] {
+        if field == "provisioning_public_keys" {
+            message.push_str(
+                &iso[field]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|k| k.as_str().unwrap())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        } else if let Some(s) = iso[field].as_str() {
+            message.push_str(s);
+        } else {
+            message.push_str(&iso[field].to_string());
+        }
+        message.push('\n');
+    }
+    iso["signature"] = STANDARD
+        .encode(key.sign(message.as_bytes()).to_bytes())
+        .into();
+    rebind(f);
+}
+fn legacy_oracle(cases: &[Value]) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(
+        std::env::var("NEST_TRANSITION_TEST_PYTHON").unwrap_or_else(|_| "python3".into()),
+    )
+    .arg("-B")
+    .arg(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/appliance/origin_transition/legacy_oracle.py"
+    ))
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(cases).unwrap())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+}
+#[test]
+fn fully_signed_iso_keys_follow_legacy_deny_set() {
+    let denied: Vec<_> = include_str!("../../../trust/ed25519-weak-public-keys.txt")
+        .lines()
+        .collect();
+    assert_eq!(denied.len(), 14);
+    assert_eq!(
+        denied
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        14
+    );
+    let strong = STANDARD.encode(SigningKey::from_bytes(&[83; 32]).verifying_key().as_bytes());
+    // The legacy rule is an exact encoding deny set, not a point parser. Keep
+    // non-denied off-curve input as a format control, never a trusted signer.
+    let off_curve = (2..=255)
+        .map(|b| [b; 32])
+        .find(|bytes| VerifyingKey::from_bytes(bytes).is_err())
+        .unwrap();
+    let off_curve = STANDARD.encode(off_curve);
+    assert!(!denied.contains(&off_curve.as_str()));
+    let mut cases = Vec::new();
+    let mut failures = Vec::new();
+    for side in ["source", "target"] {
+        for (key, accepted) in denied
+            .iter()
+            .map(|k| (*k, false))
+            .chain([(strong.as_str(), true), (off_curve.as_str(), true)])
+        {
+            let mut f = release_fixture();
+            f[side]["manifest"]["installer_iso_template_v3"]["provisioning_public_keys"] =
+                json!([key]);
+            resign_iso(&mut f, side);
+            match check(&f) {
+                Ok(_) if accepted => {}
+                Err(error) if !accepted && error.to_string().contains("weak") => {}
+                Ok(_) => failures.push(format!("accepted denied {side} key {key}")),
+                Err(error) => failures.push(format!("{side} key {key}: {error}")),
+            }
+            cases.push(json!({"fixture":f,"side":side,"accepted":accepted}));
+        }
+    }
+    // Independently verify the *same* freshly signed ISO/compatibility/pair
+    // bytes in the historical Python tool, including its precise rejection.
+    legacy_oracle(&cases);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+#[test]
+fn origin_profile_vectors_apply_to_both_evidence_sides() {
+    let mut failures = Vec::new();
+    for vector in super::negative_tests::origin_profile_vectors() {
+        let origin = vector["origin"].as_str().unwrap();
+        let accepted = vector["accepted"].as_bool().unwrap();
+        for side in ["source", "target"] {
+            let mut f = release_fixture();
+            f[side]["manifest"]["installer_iso_template_v3"]["manage_origin"] = origin.into();
+            f[side]["compatibility"]["artifacts"]["appliance_iso_template"]["manage_origin"] =
+                origin.into();
+            f["pair"][side]["manage_origin"] = origin.into();
+            resign_iso(&mut f, side);
+            let e = evidence_fixture(&f);
+            let result = verify_evidence(
+                &e,
+                &release_identity(&f, "source"),
+                &release_identity(&f, "target"),
+                &digest(&STANDARD.decode(&e.pair_authorization).unwrap()),
+                f["pair"]["source"]["manage_origin"].as_str().unwrap(),
+                f["pair"]["target"]["manage_origin"].as_str().unwrap(),
+                &release_key(&f),
+            );
+            if result.is_ok() != accepted {
+                failures.push(format!(
+                    "{side} {origin}, expected {accepted}, error {:?}",
+                    result.err()
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
 fn check(f: &Value) -> Result<VerifiedEvidence> {
     check_evidence(
         &evidence_fixture(f),
