@@ -7,6 +7,15 @@ import re
 import tomllib
 
 
+def version_core(value):
+    match = re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
+                         r'(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?'
+                         r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?', value)
+    if not match:
+        raise ValueError('The Nest source version is not a semantic version')
+    return tuple(map(int, match.groups()))
+
+
 def validate(root):
     marker = root / 'release/coordinated.json'
     if not marker.exists():
@@ -31,7 +40,8 @@ def pin(root, revision, runtime, version):
             raise ValueError('A stable semantic version is required')
     manifest = root / 'Cargo.toml'
     old = tomllib.loads(manifest.read_text())['package']['version']
-    if tuple(map(int, version.split('.'))) <= tuple(map(int, old.split('.'))):
+    desired, previous = version_core(version), version_core(old)
+    if desired < previous or (desired == previous and '-' not in old.split('+', 1)[0]):
         raise ValueError('The candidate must advance the Nest source version')
     manifest.write_text(manifest.read_text().replace(f'version = "{old}"', f'version = "{version}"', 1))
     lock = root / 'Cargo.lock'

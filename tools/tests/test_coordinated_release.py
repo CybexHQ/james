@@ -157,6 +157,29 @@ class ProductionQualificationWorkflowTests(unittest.TestCase):
 
 
 class CoordinatedReleaseTests(unittest.TestCase):
+    def test_stable_candidate_can_advance_a_development_prerelease(self):
+        for candidate in ('0.2.48', '0.2.49'):
+            with self.subTest(candidate=candidate), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / 'release').mkdir()
+                (root / 'Cargo.toml').write_text('[package]\nname="tiaris-nest"\nversion = "0.2.48-dev.tiaris.1"\n')
+                (root / 'Cargo.lock').write_text('[[package]]\nname = "tiaris-nest"\nversion = "0.2.48-dev.tiaris.1"\n')
+                module['pin'](root, 'a' * 40, '1.0.89', candidate)
+                self.assertTrue(module['validate'](root))
+                self.assertIn('version = "' + candidate + '"', (root / 'Cargo.lock').read_text())
+
+    def test_candidate_rejects_same_stable_version_and_prerelease_downgrade(self):
+        for previous, candidate in (('0.2.48+build.1', '0.2.48'),
+                                    ('0.2.48-dev.tiaris.1', '0.2.47')):
+            with self.subTest(previous=previous), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / 'release').mkdir()
+                manifest = '[package]\nname="tiaris-nest"\nversion = "' + previous + '"\n'
+                (root / 'Cargo.toml').write_text(manifest)
+                with self.assertRaises(ValueError):
+                    module['pin'](root, 'a' * 40, '1.0.89', candidate)
+                self.assertEqual((root / 'Cargo.toml').read_text(), manifest)
+
     def test_pins_development_and_requires_explicit_promotion(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
