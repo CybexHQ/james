@@ -2233,7 +2233,7 @@ dependencies = [
 
 [[package]]
 name = "tiaris-nest"
-version = "0.2.48-dev.tiaris.1"
+version = "0.2.49"
 dependencies = [
  "anyhow",
  "axum",
