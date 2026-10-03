@@ -27,7 +27,7 @@ libc = "0.2"
 maud = { version = "0.27", features = ["axum"] }
 mime_guess = "2.0"
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json", "stream"] }
 semver = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

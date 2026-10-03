@@ -990,6 +990,9 @@ fn canonical_json(value: Value) -> Value {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod native_tls_tests;
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
