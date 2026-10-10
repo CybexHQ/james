@@ -508,7 +508,7 @@ impl Drop for StaticNetworkProbe {
 }
 
 async fn ensure_static_probe_namespace_available() -> Result<()> {
-    let rules = bounded_command_output("ip", &["-4", "rule", "show"], Duration::from_secs(5))
+    let rules = bounded_command_output("ip", &["-N", "-4", "rule", "show"], Duration::from_secs(5))
         .await
         .context("inspect IPv4 policy rules")?;
     let table_in_use = String::from_utf8(rules)
@@ -526,17 +526,47 @@ async fn ensure_static_probe_namespace_available() -> Result<()> {
     }
     let routes = bounded_command_output(
         "ip",
-        &["-4", "route", "show", "table", STATIC_PREFLIGHT_ROUTE_TABLE],
+        &["-N", "-j", "-4", "route", "show", "table", "all"],
         Duration::from_secs(5),
     )
     .await
-    .context("inspect static-network preflight route table")?;
-    if !String::from_utf8(routes)
-        .context("IPv4 route output is not UTF-8")?
-        .trim()
-        .is_empty()
+    .context("inspect IPv4 route tables")?;
+    check_static_preflight_route_inventory(&routes)
+}
+
+fn check_static_preflight_route_inventory(output: &[u8]) -> Result<()> {
+    // Querying a never-created table fails with "FIB table does not exist".
+    // A numeric dump of all tables both permits that safe initial state and
+    // finds occupied tables even when no policy rule references them.
+    let routes: Value = serde_json::from_slice(output).context("parse IPv4 route inventory")?;
+    for route in routes
+        .as_array()
+        .context("IPv4 route inventory is not an array")?
     {
-        bail!("reserved static-network preflight route table is already in use")
+        let route = route.as_object().context("IPv4 route is not an object")?;
+        if !route.get("dst").is_some_and(Value::is_string) {
+            bail!("IPv4 route destination metadata is missing or invalid")
+        }
+        let table = match route.get("table") {
+            // iproute2 omits the main table's identifier in JSON output.
+            None => 254,
+            Some(Value::Number(number)) => u32::try_from(
+                number
+                    .as_u64()
+                    .context("IPv4 route table is not unsigned")?,
+            )
+            .context("IPv4 route table is outside its numeric range")?,
+            Some(Value::String(table)) => table
+                .parse::<u32>()
+                .context("IPv4 route table is not numeric")?,
+            _ => bail!("IPv4 route table metadata is invalid"),
+        };
+        if table == 0 {
+            bail!("IPv4 route table is unspecified")
+        }
+        if table.to_string() == STATIC_PREFLIGHT_ROUTE_TABLE {
+            bail!("reserved static-network preflight route table is already in use")
+        }
     }
     Ok(())
 }
@@ -953,6 +983,132 @@ fn canonical_json(value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn static_preflight_route_inventory_accepts_unused_and_unrelated_tables() {
+        for output in [
+            "[]",
+            r#"[{"dst":"default","gateway":"192.0.2.1"}]"#,
+            r#"[{"dst":"192.0.2.0/24","table":40000}]"#,
+            r#"[{"dst":"127.0.0.1","table":"255"}]"#,
+        ] {
+            check_static_preflight_route_inventory(output.as_bytes()).unwrap();
+        }
+    }
+
+    #[test]
+    fn static_preflight_route_inventory_rejects_collisions_and_unknown_metadata() {
+        for output in [
+            r#"[{"dst":"192.0.2.0/24","table":42666}]"#,
+            r#"[{"dst":"default","table":"42666"}]"#,
+            r#"[{"dst":"default","table":"unknown"}]"#,
+            r#"[{"dst":"default","table":null}]"#,
+            r#"[{"dst":"default","table":true}]"#,
+            r#"[{"dst":"default","table":-1}]"#,
+            r#"[{"dst":"default","table":4294967296}]"#,
+            r#"[{"dst":"default","table":0}]"#,
+            "[{}]",
+            "[1]",
+            "{}",
+            "not JSON",
+        ] {
+            assert!(
+                check_static_preflight_route_inventory(output.as_bytes()).is_err(),
+                "{output}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires root in an empty disposable-guest network namespace"]
+    async fn static_preflight_namespace_checks_real_kernel_tables() {
+        assert_eq!(std::env::var("CI").as_deref(), Ok("true"));
+        assert_eq!(
+            std::env::var("TIARIS_DISPOSABLE_NETWORK_QUALIFICATION").as_deref(),
+            Ok("1")
+        );
+        // The qualification runner uses `unshare --net`; none of these routes
+        // or rules can reach the guest's ordinary network, much less the host.
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        let links: Value = serde_json::from_slice(
+            &bounded_command_output("ip", &["-j", "link", "show"], Duration::from_secs(5))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let links = links.as_array().unwrap();
+        assert_eq!(links.len(), 1, "qualification must own an empty namespace");
+        assert_eq!(links[0]["ifname"], "lo");
+
+        ensure_static_probe_namespace_available()
+            .await
+            .expect("a never-created routing table is available");
+        run_ip(&[
+            "route",
+            "add",
+            "blackhole",
+            "192.0.2.0/24",
+            "table",
+            "40000",
+        ])
+        .await
+        .unwrap();
+        ensure_static_probe_namespace_available().await.unwrap();
+
+        run_ip(&[
+            "route",
+            "add",
+            "blackhole",
+            "198.51.100.0/24",
+            "table",
+            STATIC_PREFLIGHT_ROUTE_TABLE,
+        ])
+        .await
+        .unwrap();
+        let routes_before = bounded_command_output(
+            "ip",
+            &["-N", "-j", "-4", "route", "show", "table", "all"],
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let error = ensure_static_probe_namespace_available().await.unwrap_err();
+        assert!(error.to_string().contains("route table is already in use"));
+        assert_eq!(
+            bounded_command_output(
+                "ip",
+                &["-N", "-j", "-4", "route", "show", "table", "all"],
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap(),
+            routes_before,
+            "collision inspection must not change existing routes"
+        );
+        run_ip(&["route", "flush", "table", STATIC_PREFLIGHT_ROUTE_TABLE])
+            .await
+            .unwrap();
+        ensure_static_probe_namespace_available().await.unwrap();
+
+        for (priority, table) in [
+            (STATIC_PREFLIGHT_RULE_PRIORITY, "40000"),
+            ("43000", STATIC_PREFLIGHT_ROUTE_TABLE),
+        ] {
+            run_ip(&["rule", "add", "priority", priority, "lookup", table])
+                .await
+                .unwrap();
+            let error = ensure_static_probe_namespace_available().await.unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("policy namespace is already in use")
+            );
+            run_ip(&["rule", "del", "priority", priority, "lookup", table])
+                .await
+                .unwrap();
+        }
+        ensure_static_probe_namespace_available().await.unwrap();
+    }
 
     fn stable_inventory_fixture() -> NestProvisioningInventory {
         NestProvisioningInventory {
