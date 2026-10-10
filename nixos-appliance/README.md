@@ -233,6 +233,12 @@ PATH include `arping`, `dig` and `curl` for static-address, approved-DNS and
 authenticated HTTPS safety checks before disk preparation. The module-evaluation
 regression in `tests/test_iso_preflight.py` catches an omitted DNS probe without
 building an ISO.
+Static-network preflight inspects all IPv4 route tables numerically: an unused
+reserved table is safe even when the kernel has never created it. Existing
+routes in that table or policy rules using its identifier/priority stop setup
+without changing them. Ordinary disposable-guest CI runs the real Rust check
+in a process-owned network namespace, including empty and occupied tables;
+`tests/test_static_network_preflight.py` rejects empty test selections.
 
 New `tiaris.nest.install-plan.v3` preserves every V2 field name, including
 `package_transport_url`, but binds NixOS, `system-closure-v1` and the V3
