@@ -61,7 +61,8 @@ in {
   systemd.services.systemd-time-wait-sync.serviceConfig.TimeoutStartSec = "60s";
   services.openssh.enable = lib.mkForce false;
   services.getty.autologinUser = lib.mkForce null;
-  environment.systemPackages = [ a.package pkgs.nix pkgs.nixos-install-tools pkgs.iputils pkgs.iproute2 pkgs.gptfdisk pkgs.e2fsprogs pkgs.dosfstools pkgs.util-linux pkgs.curl pkgs.jq pkgs.zstd pkgs.python3 ];
+  # Static admission queries the approved DNS server with dig before any disk write.
+  environment.systemPackages = [ a.package pkgs.nix pkgs.nixos-install-tools pkgs.iputils pkgs.iproute2 pkgs.bind.dnsutils pkgs.gptfdisk pkgs.e2fsprogs pkgs.dosfstools pkgs.util-linux pkgs.curl pkgs.jq pkgs.zstd pkgs.python3 ];
   nix.settings = { experimental-features = [ "nix-command" ]; substituters = lib.mkForce []; trusted-public-keys = lib.mkForce [ "tiaris-nest-appliance-1:${a.releasePublicKey}" ]; };
   systemd.services.tiaris-nest-bootstrap = {
     wantedBy = [ "multi-user.target" ]; after = [ "network-online.target" "systemd-time-wait-sync.service" ]; wants = [ "network-online.target" "systemd-time-wait-sync.service" ];
