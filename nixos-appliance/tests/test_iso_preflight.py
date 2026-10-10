@@ -11,7 +11,7 @@ class IsoPreflight(unittest.TestCase):
     def test_static_network_dns_probe_is_available_to_the_bootstrap(self):
         expression = Path(__file__).with_name("iso-preflight-evaluation.nix")
         result = subprocess.run(
-            ["nix-instantiate", "--eval", "--strict", "--json", "--expr",
+            ["nix-instantiate", "--eval", "--read-write-mode", "--strict", "--json", "--expr",
              "import (builtins.toPath " + json.dumps(str(expression)) + ") {}"],
             text=True, capture_output=True, timeout=60,
         )
