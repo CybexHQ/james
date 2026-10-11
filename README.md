@@ -108,6 +108,14 @@ Maintenance also repairs stale runtime evidence after an upgrade, even when
 the bundle was checked recently; a corrupt or predecessor bundle cannot renew
 the active runtime's evidence.
 
+Build progress, logs, terminal results and cache publication tolerate transient
+SQLite writer contention. These idempotent statements retry only `SQLITE_BUSY`
+(code 5), for at most eight attempts with 100 ms between attempts and the existing
+five-second SQLite busy wait per attempt. The journal records the operation and
+attempt count. Exhaustion preserves the database error; other errors return
+immediately. Retries do not rebuild or re-export artifacts, weaken durability,
+or override a cancellation committed while publication was waiting.
+
 The migration history retains the multicast state migration already used by
 the `.19` development appliances. Later builds must preserve that migration
 and its checksum even when the multicast capability is unavailable, so those
