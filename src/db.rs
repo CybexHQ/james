@@ -1739,7 +1739,7 @@ pub async fn finish_build_job(
     let cancel_override = i64::from(status != "cancelled");
     let progress_stage = terminal_build_progress_stage(status);
     let now = now_rfc3339();
-    busy::publish("build-result", || {
+    busy::publish_outcome("build-result", || {
         sqlx::query(
             "UPDATE nest_build_jobs
          SET status = CASE
@@ -2205,7 +2205,7 @@ pub async fn upsert_cache_artifact(
         MAX_CACHE_ARTIFACT_METADATA_BYTES,
     )?;
     let now = now_rfc3339();
-    busy::publish("cache-publication", || sqlx::query(
+    busy::publish_outcome("cache-publication", || sqlx::query(
         "INSERT INTO nest_cache_artifacts
          (managed_artifact_id, artifact_type, hash, size_bytes, path, store_path, narinfo_path, nar_url, file_hash, nar_hash, nar_size_bytes, closure_size_bytes, closure_file_size_bytes, compression, references_json, serving_url, source_build_job_id, cache_metadata, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

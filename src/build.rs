@@ -458,6 +458,28 @@ async fn sweep_stale_job_dirs(config: &AppConfig) {
     }
 }
 
+/// Stage progress is display-only. A slow or locked database must not discard
+/// a build: its result and cache record are published separately and remain
+/// fatal on failure.
+async fn report_stage_progress(
+    pool: &sqlx::SqlitePool,
+    job_id: i64,
+    percent: i32,
+    stage: &str,
+    message: &str,
+) {
+    if let Err(err) =
+        db::update_build_job_progress(pool, job_id, Some(percent), stage, message).await
+    {
+        warn!(
+            error = %safe_error(&err.into()),
+            job_id,
+            stage,
+            "could not persist Nest build progress; continuing the build"
+        );
+    }
+}
+
 async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
     let spec = match validate_build_spec(&state.config, &job) {
         Ok(spec) => spec,
@@ -483,14 +505,7 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
             return Ok(());
         }
     };
-    db::update_build_job_progress(
-        &state.db,
-        job.id,
-        Some(8),
-        "validating",
-        "Build spec validated",
-    )
-    .await?;
+    report_stage_progress(&state.db, job.id, 8, "validating", "Build spec validated").await;
     let target = match build_target(&state.config, &spec) {
         Ok(target) => target.clone(),
         Err(err) => {
@@ -516,14 +531,14 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
         }
     };
 
-    db::update_build_job_progress(
+    report_stage_progress(
         &state.db,
         job.id,
-        Some(12),
+        12,
         "preparing",
         "Checking builder capacity and preparing inputs",
     )
-    .await?;
+    .await;
     if let Err(err) = crate::disk::ensure_headroom(
         Path::new("/nix/store"),
         state.config.build.max_artifact_size_bytes,
@@ -646,14 +661,14 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
     }
     let command = nix_build_command(&state.config, &target, &spec, job.id)?;
     if !spec.allow_source_builds {
-        db::update_build_job_progress(
+        report_stage_progress(
             &state.db,
             job.id,
-            Some(18),
+            18,
             "checking_cache",
             "Checking binary cache coverage",
         )
-        .await?;
+        .await;
         match preflight_source_build_check(&state.config, &command).await {
             Ok(offenders) if !offenders.is_empty() => {
                 let mut metadata = build_result_metadata(
@@ -709,28 +724,21 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
         }
     }
     let log = SharedLog::new(state.config.build.max_log_bytes);
-    db::update_build_job_progress(
-        &state.db,
-        job.id,
-        Some(25),
-        "building",
-        "Building NixOS closure",
-    )
-    .await?;
+    report_stage_progress(&state.db, job.id, 25, "building", "Building NixOS closure").await;
     let oom_kills_before = cgroup_oom_kill_count();
     let outcome = run_nix_build(&state.db, &job, &command, &log, &state.config).await?;
     let oom_kills_after = cgroup_oom_kill_count();
     let logs = log.snapshot().await;
     match outcome {
         ProcessOutcome::Succeeded(exit_code) => {
-            db::update_build_job_progress(
+            report_stage_progress(
                 &state.db,
                 job.id,
-                Some(80),
+                80,
                 "inspecting",
                 "Inspecting build output",
             )
-            .await?;
+            .await;
             let output_info = match inspect_build_output(&state.config, &command).await {
                 Ok(info) => info,
                 Err(err) => {
@@ -777,14 +785,14 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                 return Ok(());
             }
             let software_inventory = evaluate_software_inventory(&state.config, &spec).await;
-            db::update_build_job_progress(
+            report_stage_progress(
                 &state.db,
                 job.id,
-                Some(90),
+                90,
                 "exporting",
                 "Exporting closure to Nest cache",
             )
-            .await?;
+            .await;
             let mut cached = match cache::export_output(
                 &state.db,
                 &state.config,
@@ -823,14 +831,14 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                 &mut cached.metadata,
                 &success_result_metadata(&state.config, &job, &target, &spec, &software_inventory),
             );
-            db::update_build_job_progress(
+            report_stage_progress(
                 &state.db,
                 job.id,
-                Some(96),
+                96,
                 "publishing",
                 "Publishing cache artifact metadata",
             )
-            .await?;
+            .await;
             cache::record_cached_artifact(
                 &state.db,
                 &state.config,
@@ -936,17 +944,17 @@ async fn execute_replica_copy(
     target: &BuildTargetConfig,
     source: &ValidatedClosureSource,
 ) -> Result<()> {
-    db::update_build_job_progress(
+    report_stage_progress(
         &state.db,
         job.id,
-        Some(25),
+        25,
         "copying",
         &format!(
             "Mirroring the verified closure from Nest {}",
             source.server_device_id
         ),
     )
-    .await?;
+    .await;
     let imported = cache::import_replica_closure(
         &state.db,
         &state.config,
@@ -1006,27 +1014,27 @@ async fn execute_replica_copy(
         .await?;
         return Ok(());
     }
-    db::update_build_job_progress(
+    report_stage_progress(
         &state.db,
         job.id,
-        Some(90),
+        90,
         "exporting",
         "Verified mirrored closure in Nest cache",
     )
-    .await?;
+    .await;
     let software_inventory = evaluate_software_inventory(&state.config, spec).await;
     merge_build_metadata(
         &mut cached.metadata,
         &success_result_metadata(&state.config, job, target, spec, &software_inventory),
     );
-    db::update_build_job_progress(
+    report_stage_progress(
         &state.db,
         job.id,
-        Some(96),
+        96,
         "publishing",
         "Publishing cache artifact metadata",
     )
-    .await?;
+    .await;
     cache::record_cached_artifact(&state.db, &state.config, job, &spec.artifact_type, cached)
         .await?;
     db::finish_build_job(
@@ -5804,7 +5812,14 @@ async fn run_nix_build(
         Ok(result) => result?,
         Err(_) => bail!("nix build output pipes remained open after child exit"),
     }
-    db::update_build_job_logs(pool, job.id, &log.snapshot().await).await?;
+    // The terminal result publishes these logs again; this is only the interim view.
+    if let Err(err) = db::update_build_job_logs(pool, job.id, &log.snapshot().await).await {
+        warn!(
+            error = %safe_error(&err.into()),
+            job_id = job.id,
+            "could not persist Nest build logs; the build result will retain them"
+        );
+    }
     Ok(outcome)
 }
 

@@ -110,9 +110,15 @@ the active runtime's evidence.
 
 Build progress, logs, terminal results and cache publication tolerate transient
 SQLite writer contention. These idempotent statements retry only `SQLITE_BUSY`
-(code 5), for at most eight attempts with 100 ms between attempts and the existing
-five-second SQLite busy wait per attempt. The journal records the operation and
-attempt count. Exhaustion preserves the database error; other errors return
+(code 5), with 100 ms between attempts and the existing five-second SQLite busy
+wait per attempt. Progress and logs stop after eight attempts; a completed
+build's terminal result and cache record keep retrying for up to five minutes,
+because losing them means rebuilding. Progress and interim logs are display
+only: if they still cannot be written, the build continues and its terminal
+result carries the logs. The journal records the operation, attempt count and
+elapsed time, and the default log filter keeps sqlx's slow-statement warnings
+so a statement holding the write lock is named. Exhaustion of a terminal or
+cache publication preserves the database error; other errors return
 immediately. Retries do not rebuild or re-export artifacts, weaken durability,
 or override a cancellation committed while publication was waiting.
 
