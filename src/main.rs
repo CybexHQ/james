@@ -321,8 +321,10 @@ async fn shutdown_signal() {
 }
 
 fn init_tracing() {
+    // sqlx warns about statements slower than one second. Keep that visible so
+    // a statement holding the SQLite write lock names itself in the journal.
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("tiaris_nest=info,tower_http=info"));
+        .unwrap_or_else(|_| EnvFilter::new("tiaris_nest=info,tower_http=info,sqlx::query=warn"));
     tracing_subscriber::registry()
         .with(env_filter)
         // Operational logs belong on stderr so one-shot commands can reserve

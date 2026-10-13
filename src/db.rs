@@ -1,3 +1,5 @@
+mod busy;
+
 use std::{collections::HashSet, fs, path::Path, str::FromStr, time::Duration};
 
 use chrono::Utc;
@@ -1665,15 +1667,17 @@ pub async fn build_job_cancel_requested(pool: &SqlitePool, id: i64) -> AppResult
 
 pub async fn update_build_job_logs(pool: &SqlitePool, id: i64, logs: &str) -> AppResult<()> {
     let now = now_rfc3339();
-    sqlx::query(
-        "UPDATE nest_build_jobs
+    busy::publish("build-logs", || {
+        sqlx::query(
+            "UPDATE nest_build_jobs
          SET logs = ?, updated_at = ?
          WHERE id = ? AND status = 'running'",
-    )
-    .bind(bounded_log_text(logs))
-    .bind(&now)
-    .bind(id)
-    .execute(pool)
+        )
+        .bind(bounded_log_text(logs))
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+    })
     .await?;
     Ok(())
 }
@@ -1686,23 +1690,25 @@ pub async fn update_build_job_progress(
     progress_message: &str,
 ) -> AppResult<()> {
     let now = now_rfc3339();
-    sqlx::query(
-        "UPDATE nest_build_jobs
+    busy::publish("build-progress", || {
+        sqlx::query(
+            "UPDATE nest_build_jobs
          SET progress_percent = ?,
              progress_stage = ?,
              progress_message = ?,
              updated_at = ?
          WHERE id = ? AND status = 'running'",
-    )
-    .bind(normalize_build_progress_percent(
-        progress_percent,
-        "running",
-    ))
-    .bind(bounded_progress_stage(progress_stage))
-    .bind(bounded_progress_message(progress_message))
-    .bind(&now)
-    .bind(id)
-    .execute(pool)
+        )
+        .bind(normalize_build_progress_percent(
+            progress_percent,
+            "running",
+        ))
+        .bind(bounded_progress_stage(progress_stage))
+        .bind(bounded_progress_message(progress_message))
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+    })
     .await?;
     Ok(())
 }
@@ -1733,8 +1739,9 @@ pub async fn finish_build_job(
     let cancel_override = i64::from(status != "cancelled");
     let progress_stage = terminal_build_progress_stage(status);
     let now = now_rfc3339();
-    sqlx::query(
-        "UPDATE nest_build_jobs
+    busy::publish_outcome("build-result", || {
+        sqlx::query(
+            "UPDATE nest_build_jobs
          SET status = CASE
                  WHEN cancel_requested_at IS NOT NULL AND ? = 1 THEN 'cancelled'
                  ELSE ?
@@ -1780,31 +1787,32 @@ pub async fn finish_build_job(
                SELECT 1 FROM protected_build_job_remediations remediation
                WHERE remediation.job_id = nest_build_jobs.id
            )",
-    )
-    .bind(cancel_override)
-    .bind(status)
-    .bind(logs)
-    .bind(cancel_override)
-    .bind(error)
-    .bind(cancel_override)
-    .bind(output_path)
-    .bind(cancel_override)
-    .bind(output_sha256)
-    .bind(cancel_override)
-    .bind(output_size_bytes)
-    .bind(cancel_override)
-    .bind(exit_code)
-    .bind(cancel_override)
-    .bind(cancelled_metadata)
-    .bind(cache_metadata)
-    .bind(cancel_override)
-    .bind(progress_stage)
-    .bind(cancel_override)
-    .bind(progress_message)
-    .bind(&now)
-    .bind(&now)
-    .bind(id)
-    .execute(pool)
+        )
+        .bind(cancel_override)
+        .bind(status)
+        .bind(&logs)
+        .bind(cancel_override)
+        .bind(&error)
+        .bind(cancel_override)
+        .bind(&output_path)
+        .bind(cancel_override)
+        .bind(&output_sha256)
+        .bind(cancel_override)
+        .bind(output_size_bytes)
+        .bind(cancel_override)
+        .bind(exit_code)
+        .bind(cancel_override)
+        .bind(&cancelled_metadata)
+        .bind(&cache_metadata)
+        .bind(cancel_override)
+        .bind(progress_stage)
+        .bind(cancel_override)
+        .bind(&progress_message)
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+    })
     .await?;
     get_build_job(pool, id).await
 }
@@ -2096,23 +2104,27 @@ pub async fn cache_artifacts_due_for_verification(
 }
 
 pub async fn mark_cache_artifact_verified(pool: &SqlitePool, id: i64) -> AppResult<()> {
-    sqlx::query(
-        "UPDATE nest_cache_artifacts
+    busy::publish("cache-verification", || {
+        sqlx::query(
+            "UPDATE nest_cache_artifacts
          SET verification_status = 'ready', last_verified_at = ?, updated_at = updated_at
          WHERE id = ?",
-    )
-    .bind(now_rfc3339())
-    .bind(id)
-    .execute(pool)
+        )
+        .bind(now_rfc3339())
+        .bind(id)
+        .execute(pool)
+    })
     .await?;
     Ok(())
 }
 
 pub async fn delete_cache_artifact(pool: &SqlitePool, id: i64) -> AppResult<()> {
-    sqlx::query("DELETE FROM nest_cache_artifacts WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    busy::publish("cache-retention", || {
+        sqlx::query("DELETE FROM nest_cache_artifacts WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+    })
+    .await?;
     Ok(())
 }
 
@@ -2193,7 +2205,7 @@ pub async fn upsert_cache_artifact(
         MAX_CACHE_ARTIFACT_METADATA_BYTES,
     )?;
     let now = now_rfc3339();
-    sqlx::query(
+    busy::publish_outcome("cache-publication", || sqlx::query(
         "INSERT INTO nest_cache_artifacts
          (managed_artifact_id, artifact_type, hash, size_bytes, path, store_path, narinfo_path, nar_url, file_hash, nar_hash, nar_size_bytes, closure_size_bytes, closure_file_size_bytes, compression, references_json, serving_url, source_build_job_id, cache_metadata, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -2216,27 +2228,27 @@ pub async fn upsert_cache_artifact(
              cache_metadata = excluded.cache_metadata,
              updated_at = excluded.updated_at",
     )
-    .bind(managed_artifact_id)
+    .bind(&managed_artifact_id)
     .bind(&artifact_type)
     .bind(&hash)
     .bind(size_bytes)
-    .bind(path)
-    .bind(store_path)
-    .bind(narinfo_path)
-    .bind(nar_url)
-    .bind(file_hash)
-    .bind(nar_hash)
+    .bind(&path)
+    .bind(&store_path)
+    .bind(&narinfo_path)
+    .bind(&nar_url)
+    .bind(&file_hash)
+    .bind(&nar_hash)
     .bind(nar_size_bytes)
     .bind(closure_size_bytes)
     .bind(closure_file_size_bytes)
-    .bind(compression)
-    .bind(references_json)
-    .bind(serving_url)
-    .bind(source_build_job_id)
-    .bind(cache_metadata)
+    .bind(&compression)
+    .bind(&references_json)
+    .bind(&serving_url)
+    .bind(&source_build_job_id)
+    .bind(&cache_metadata)
     .bind(&now)
     .bind(&now)
-    .execute(pool)
+    .execute(pool))
     .await?;
 
     get_cache_artifact_by_key(pool, &artifact_type, &hash).await
