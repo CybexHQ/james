@@ -636,9 +636,25 @@ fn reserved_account_blocks_are_canonical(source: &str) -> bool {
         let Some((block, _)) = rest.split_once("  };\n") else {
             return false;
         };
-        let with_networkmanager = "    isNormalUser = true;\n    description = \"Tiaris kiosk session\";\n    extraGroups = [ \"networkmanager\" \"video\" \"audio\" ];\n    hashedPassword = \"!\";\n";
-        let without_networkmanager = "    isNormalUser = true;\n    description = \"Tiaris kiosk session\";\n    extraGroups = [ \"video\" \"audio\" ];\n    hashedPassword = \"!\";\n";
-        if block != with_networkmanager && block != without_networkmanager {
+        let Some(groups) = block
+            .strip_prefix("    isNormalUser = true;\n    description = \"Tiaris kiosk session\";\n")
+            .and_then(|rest| rest.strip_suffix("    hashedPassword = \"!\";\n"))
+        else {
+            return false;
+        };
+        // Manage forces the locked Kiosk account's group list so the
+        // camera/microphone Policy and NetworkManager selection can withhold
+        // groups the desktop module grants. Accept only those exact subsets,
+        // in Manage's order; never parse an arbitrary group list here.
+        if !matches!(
+            groups,
+            "    extraGroups = [ \"networkmanager\" \"video\" \"audio\" ];\n"
+                | "    extraGroups = [ \"video\" \"audio\" ];\n"
+                | "    extraGroups = lib.mkForce [ \"networkmanager\" \"video\" \"audio\" ];\n"
+                | "    extraGroups = lib.mkForce [ \"networkmanager\" ];\n"
+                | "    extraGroups = lib.mkForce [ \"video\" \"audio\" ];\n"
+                | "    extraGroups = lib.mkForce [ ];\n"
+        ) {
             return false;
         }
     }
@@ -2077,6 +2093,149 @@ mod tests {
         spec["build_input"]["generated_nix"] = json!(generated);
 
         validate_build_spec(&spec).unwrap();
+    }
+
+    fn kiosk_block(groups_line: &str, password_line: &str) -> String {
+        format!(
+            "  users.users.tiaris-kiosk = {{\n    isNormalUser = true;\n    description = \"Tiaris kiosk session\";\n{groups_line}{password_line}  }};\n"
+        )
+    }
+
+    fn installer_target_spec_with_reserved_accounts(accounts: &str) -> Value {
+        let mut spec = installer_target_local_account_spec("derived");
+        let generated = spec["build_input"]["generated_nix"]
+            .as_str()
+            .unwrap()
+            .replacen(
+                "  # Dynamic local-account profile overlay\n",
+                &format!("{accounts}  # Dynamic local-account profile overlay\n"),
+                1,
+            );
+        spec["build_input"]["generated_nix"] = json!(generated);
+        spec
+    }
+
+    const KIOSK_LOCKED_PASSWORD: &str = "    hashedPassword = \"!\";\n";
+
+    #[test]
+    fn installer_target_accepts_locked_kiosk_with_manage_forced_group_subsets() {
+        for groups in [
+            // Manage forces the network x camera/microphone selection.
+            "[ \"networkmanager\" \"video\" \"audio\" ]",
+            "[ \"networkmanager\" ]",
+            "[ \"video\" \"audio\" ]",
+            "[ ]",
+        ] {
+            let spec = installer_target_spec_with_reserved_accounts(&kiosk_block(
+                &format!("    extraGroups = lib.mkForce {groups};\n"),
+                KIOSK_LOCKED_PASSWORD,
+            ));
+            assert!(validate_build_spec(&spec).is_ok(), "{groups}");
+        }
+        for groups in [
+            "[ \"networkmanager\" \"video\" \"audio\" ]",
+            "[ \"video\" \"audio\" ]",
+        ] {
+            let spec = installer_target_spec_with_reserved_accounts(&kiosk_block(
+                &format!("    extraGroups = {groups};\n"),
+                KIOSK_LOCKED_PASSWORD,
+            ));
+            assert!(validate_build_spec(&spec).is_ok(), "{groups}");
+        }
+    }
+
+    #[test]
+    fn installer_target_accepts_complete_manage_kiosk_module() {
+        let mut spec = installer_target_local_account_spec("derived");
+        let generated = spec["build_input"]["generated_nix"]
+            .as_str()
+            .unwrap()
+            .replacen(
+                "{ ... }:\n{\n",
+                concat!(
+                    "{ config, pkgs, lib, ... }:\nlet\n  tiarisManagedPackages = [];\nin\n{\n",
+                    "  environment.systemPackages = tiarisManagedPackages;\n",
+                    "  users.users.tiaris-kiosk = {\n",
+                    "    isNormalUser = true;\n",
+                    "    description = \"Tiaris kiosk session\";\n",
+                    "    extraGroups = lib.mkForce [ \"networkmanager\" ];\n",
+                    "    hashedPassword = \"!\";\n",
+                    "  };\n",
+                    "  environment.sessionVariables.TIARIS_KIOSK_URL = \"https://school.invalid/\";\n",
+                    "  environment.etc.\"xdg/autostart/tiaris-kiosk-browser.desktop\".text = ''\n",
+                    "    [Desktop Entry]\n",
+                    "    Type=Application\n",
+                    "    Name=Tiaris Kiosk Browser\n",
+                    "    Exec=${pkgs.bash}/bin/bash -lc 'if [ \"$USER\" = \"tiaris-kiosk\" ]; then exec ${pkgs.firefox-esr}/bin/firefox --kiosk \"$TIARIS_KIOSK_URL\"; fi'\n",
+                    "    X-GNOME-Autostart-enabled=true\n",
+                    "    NoDisplay=true\n",
+                    "  '';\n",
+                ),
+                1,
+            );
+        spec["build_input"]["generated_nix"] = json!(generated);
+
+        validate_build_spec(&spec).unwrap();
+    }
+
+    #[test]
+    fn installer_target_rejects_kiosk_blocks_outside_the_locked_group_contract() {
+        let forced_media = kiosk_block(
+            "    extraGroups = lib.mkForce [ \"video\" \"audio\" ];\n",
+            KIOSK_LOCKED_PASSWORD,
+        );
+        for accounts in [
+            kiosk_block(
+                "    extraGroups = lib.mkForce [ \"wheel\" ];\n",
+                KIOSK_LOCKED_PASSWORD,
+            ),
+            kiosk_block(
+                "    extraGroups = lib.mkForce [ \"wheel\" \"networkmanager\" \"video\" \"audio\" ];\n",
+                KIOSK_LOCKED_PASSWORD,
+            ),
+            kiosk_block(
+                "    extraGroups = lib.mkForce [ \"audio\" \"video\" ];\n",
+                KIOSK_LOCKED_PASSWORD,
+            ),
+            kiosk_block(
+                "    extraGroups = lib.mkForce [ \"networkmanager\" \"audio\" ];\n",
+                KIOSK_LOCKED_PASSWORD,
+            ),
+            kiosk_block(
+                "    extraGroups = lib.mkForce ([ \"video\" ] ++ [ \"wheel\" ]);\n",
+                KIOSK_LOCKED_PASSWORD,
+            ),
+            kiosk_block(
+                "    extraGroups = lib.mkOverride 0 [ \"video\" \"audio\" ];\n",
+                KIOSK_LOCKED_PASSWORD,
+            ),
+            // The unforced form still accepts only the two historical lists.
+            kiosk_block(
+                "    extraGroups = [ \"networkmanager\" ];\n",
+                KIOSK_LOCKED_PASSWORD,
+            ),
+            kiosk_block(
+                "    extraGroups = lib.mkForce [ \"video\" \"audio\" ];\n",
+                "    hashedPassword = lib.mkForce \"!\";\n",
+            ),
+            kiosk_block(
+                "    extraGroups = lib.mkForce [ \"video\" \"audio\" ];\n",
+                "    hashedPasswordFile = \"/run/secrets/kiosk\";\n",
+            ),
+            kiosk_block(
+                "    extraGroups = lib.mkForce [ \"video\" \"audio\" ];\n",
+                "    hashedPassword = \"!\";\n    extraGroups = [ \"wheel\" ];\n",
+            ),
+            forced_media.replace("users.users.tiaris-kiosk", "users.users.\"tiaris-kiosk\""),
+            format!("{forced_media}{forced_media}"),
+            format!(
+                "{forced_media}  users.users.tiaris-kiosk.extraGroups = lib.mkForce [ \"wheel\" ];\n"
+            ),
+            format!("{forced_media}  users.users.tiaris-kiosk.extraGroups = lib.mkForce [ ];\n"),
+        ] {
+            let spec = installer_target_spec_with_reserved_accounts(&accounts);
+            assert!(validate_build_spec(&spec).is_err(), "{accounts}");
+        }
     }
 
     #[test]
