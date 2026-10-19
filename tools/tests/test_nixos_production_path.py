@@ -139,6 +139,15 @@ class ProductionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'current Blueprint custom outputs'):
                 build['require_workstation_custom_cache'](cache, [])
 
+    def test_workstation_cache_seeds_follow_the_pinned_manage_contract(self):
+        # Manage CI checks its own seed selection against the closure Nest
+        # builds; Nest must use that selection at the same nixpkgs revision.
+        seeds = (HELPERS.parent / 'workstation-cache-seeds.nix').read_text()
+        self.assertIn('"/deploy/nixos/tiaris-workstation-cache-seeds.nix"', seeds)
+        self.assertIn('managePin.revision == nestPin.revision', seeds)
+        self.assertIn('import ../release/nixpkgs.nix', seeds)
+        self.assertIn('else local', seeds)
+
     def test_tls_forwarder_preserves_bytes_and_closes_owned_connections(self):
         forwarding = load('isolated_manage_tls_proxy')
         class Echo(socketserver.BaseRequestHandler):
