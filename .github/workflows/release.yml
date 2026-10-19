@@ -342,6 +342,8 @@ jobs:
           BUILD_NIXPKGS_REVISION: ${{ steps.workstation-source.outputs.nixpkgs_revision }}
           BUILD_HAS_PREDECESSOR: ${{ steps.published-predecessor.outputs.exists }}
         run: |
+          source tools/ci-host-reservation.sh
+          reserve_ci_host_capacity "Nest build $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" 48 12
           python3 tools/beast-build.py <<'BUILD'
           set -euo pipefail
           version="$BUILD_VERSION"
@@ -730,6 +732,8 @@ jobs:
         timeout-minutes: 240
         run: |
           set -Eeuo pipefail
+          source tools/ci-host-reservation.sh
+          reserve_ci_host_capacity "Nest qualification $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" 32 12
           fixture_directory="$TIARIS_NEST_QUALIFICATION_STATE_ROOT/config-warm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           sudo -n python3 -B nixos-appliance/qualification/prepare-fixture-config.py \
             --template "$TIARIS_NEST_QUALIFICATION_CONFIG" \
@@ -1352,6 +1356,8 @@ jobs:
           TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
         run: |
           set -Eeuo pipefail
+          source tools/ci-host-reservation.sh
+          reserve_ci_host_capacity "Nest cold qualification $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" 32 12
           (cd dist && sha256sum --check --strict SHA256SUMS)
           published="$RUNNER_TEMP/tiaris-nest-published-manifest.json"
           curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
