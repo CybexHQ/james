@@ -37,9 +37,9 @@ class SignedSeedCacheTests(unittest.TestCase):
             installable = f'{fixture}#seed'
             built = json.loads(self.run_command('nix', '--extra-experimental-features',
                 'nix-command flakes', 'build', '--no-link', '--json', installable))[0]
-            seed, derivation = built['outputs']['out'], built['drvPath']
+            seed = built['outputs']['out']
             secret = self.run_command('nix', '--extra-experimental-features', 'nix-command',
-                'key', 'generate-secret', '--key-name', f'seed-test-{nonce}')
+                'key', 'generate-secret', '--key-name', 'tiaris-nest-appliance-1')
             key = root / 'key'
             key.write_text(secret)
             key.chmod(0o600)
@@ -47,24 +47,19 @@ class SignedSeedCacheTests(unittest.TestCase):
                 'key', 'convert-secret-to-public'], input=secret, text=True,
                 capture_output=True, check=True, timeout=30).stdout.strip()
 
-            def dry_run(name):
-                command = ['nix', '--extra-experimental-features', 'nix-command flakes',
-                    '--store', f'local?root={root / name}',
-                    '--option', 'extra-substituters', 'daemon?trusted=false',
-                    '--option', 'require-sigs', 'true',
-                    '--option', 'extra-trusted-public-keys', public,
-                    '--option', 'always-allow-substitutes', 'true',
-                    '--option', 'allow-import-from-derivation', 'false',
-                    'build', installable, '--dry-run', '--no-write-lock-file']
-                result = subprocess.run(command, check=True, text=True,
-                    capture_output=True, timeout=600)
-                return result.stdout + result.stderr
+            def preflight():
+                return subprocess.run(['cargo', 'test', '--locked',
+                    'source_policy_qualifies_cache_only_installable', '--', '--ignored', '--nocapture'],
+                    env={**os.environ, 'TIARIS_SOURCE_POLICY_INSTALLABLE': installable,
+                         'TIARIS_SOURCE_POLICY_RELEASE_KEY': public.split(':', 1)[1]},
+                    text=True, capture_output=True, timeout=600)
 
             # A daemon build is marked ultimate locally, but that must not
             # grant an unsigned path trust in the isolated verification store.
-            self.assertIn(derivation, dry_run('unsigned'))
+            unsigned = preflight()
+            self.assertNotEqual(unsigned.returncode, 0, unsigned.stdout + unsigned.stderr)
+            self.assertIn(f'source-policy-seed-{nonce}', unsigned.stdout + unsigned.stderr)
             self.run_command('sudo', '-n', 'nix', '--extra-experimental-features',
                 'nix-command', 'store', 'sign', '--key-file', str(key), seed)
-            signed = dry_run('signed')
-            self.assertNotIn(derivation, signed)
-            self.assertIn(seed, signed)
+            signed = preflight()
+            self.assertEqual(signed.returncode, 0, signed.stdout + signed.stderr)
