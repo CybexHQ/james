@@ -2065,6 +2065,12 @@ fn append_source_policy_nix_options(args: &mut Vec<String>, allow_source_builds:
                 "--option",
                 "require-sigs",
                 "true",
+                // The isolated preflight store must also see the appliance's
+                // signed seeds. Treat the daemon as an untrusted substituter:
+                // ordinary locally built outputs cannot satisfy this check.
+                "--option",
+                "extra-substituters",
+                "daemon?trusted=false",
             ]
             .iter()
             .map(|value| value.to_string()),
@@ -6708,7 +6714,11 @@ esac
     }
 
     fn authenticated_substitutes_are_preferred(args: &[String]) -> bool {
-        ["always-allow-substitutes", "require-sigs"]
+        args.windows(3).any(|window| {
+            window[0] == "--option"
+                && window[1] == "extra-substituters"
+                && window[2] == "daemon?trusted=false"
+        }) && ["always-allow-substitutes", "require-sigs"]
             .iter()
             .all(|option| {
                 args.windows(3).any(|window| {
