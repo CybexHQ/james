@@ -30,7 +30,8 @@ class SignedSeedCacheTests(unittest.TestCase):
                 nixpkgs = builtins.fetchTarball %s;
                 pkgs = import nixpkgs { system = "x86_64-linux"; };
               in { packages.x86_64-linux.seed =
-                pkgs.writeText "source-policy-seed-%s" "%s"; };
+                pkgs.runCommand "source-policy-seed-%s" { }
+                  "printf '%%s' '%s' > $out"; };
             }''' % ('{ url = %s; sha256 = %s; }' %
                      (json.dumps(pin['url']), json.dumps(pin['sha256'])), nonce, nonce))
             installable = f'{fixture}#seed'
