@@ -3,6 +3,7 @@ pub mod assets;
 pub mod boot;
 pub(crate) mod bounded_io;
 pub mod build;
+pub(crate) mod build_signed_seeds;
 pub mod cache;
 pub mod cache_egress;
 pub(crate) mod cache_usage;

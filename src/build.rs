@@ -2362,7 +2362,6 @@ async fn preflight_source_build_check_in_store(
     if would_build.is_empty() {
         return Ok(Vec::new());
     }
-    let would_build_set = would_build.iter().cloned().collect::<HashSet<_>>();
     let mut derivations = BTreeMap::<String, Value>::new();
     for chunk in would_build.chunks(PREFLIGHT_DERIVATION_SHOW_CHUNK) {
         let mut derivation_show = crate::nix_command::tokio_command(&command.program);
@@ -2396,6 +2395,58 @@ async fn preflight_source_build_check_in_store(
             }
         }
     }
+
+    // An empty verification store cannot see the appliance's signed cache
+    // seeds. Authenticate their exact output records independently: dry-run
+    // substitution discovery alone does not check signatures.
+    let outputs = derivations
+        .values()
+        .flat_map(|drv| {
+            drv.get("outputs")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flat_map(|outputs| outputs.values())
+                .filter_map(|output| output.get("path").and_then(Value::as_str))
+                .map(|path| {
+                    if path.starts_with("/nix/store/") {
+                        path.to_string()
+                    } else {
+                        format!("/nix/store/{path}")
+                    }
+                })
+        })
+        .collect();
+    let authenticated = crate::build_signed_seeds::authenticated_outputs(
+        &command.program,
+        &outputs,
+        &config.update.trusted_public_key,
+    )
+    .await?;
+    let would_build = would_build
+        .into_iter()
+        .filter(|path| {
+            !derivations.get(path).is_some_and(|drv| {
+                let Some(outputs) = drv.get("outputs").and_then(Value::as_object) else {
+                    return false;
+                };
+                !outputs.is_empty()
+                    && outputs.values().all(|output| {
+                        output
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .is_some_and(|path| {
+                                let path = if path.starts_with("/nix/store/") {
+                                    path.to_string()
+                                } else {
+                                    format!("/nix/store/{path}")
+                                };
+                                authenticated.contains(&path)
+                            })
+                    })
+            })
+        })
+        .collect::<Vec<_>>();
+    let would_build_set = would_build.iter().cloned().collect::<HashSet<_>>();
 
     // A substituted buildEnv helper is not downloaded by --dry-run. Its bytes
     // are still required for the independent pinned-source check below. Fetch
@@ -9100,6 +9151,8 @@ fi
         std::fs::create_dir(&root).unwrap();
         let mut config = AppConfig::default();
         config.build.work_dir = root.clone();
+        config.update.trusted_public_key =
+            std::env::var("TIARIS_SOURCE_POLICY_RELEASE_KEY").unwrap_or_default();
         let command = NixBuildCommand {
             program: "nix".into(),
             args: Vec::new(),

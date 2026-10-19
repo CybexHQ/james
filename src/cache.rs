@@ -12,10 +12,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use ed25519_dalek::{Signature, VerifyingKey};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
@@ -1372,6 +1372,44 @@ fn verify_narinfo_signature(narinfo: &ParsedNarInfo, public_key: &str) -> Result
     Ok(())
 }
 
+/// Authenticate a daemon path-info record with the appliance release key.
+/// `ultimate` and daemon locality never supply signature authority.
+pub(crate) fn verify_signed_store_path_info(
+    store_path: &str,
+    info: &Value,
+    public_key: &str,
+) -> Result<()> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PathInfo {
+        nar_hash: String,
+        nar_size: i64,
+        references: Vec<String>,
+        signatures: Vec<String>,
+    }
+    let mut info: PathInfo = serde_json::from_value(info.clone())?;
+    validate_store_path(store_path)?;
+    for reference in &info.references {
+        validate_store_path(reference)?;
+    }
+    info.references.sort();
+    ensure!(info.nar_size > 0, "invalid signed NAR size");
+    verify_narinfo_signature(
+        &ParsedNarInfo {
+            store_path: store_path.to_string(),
+            url: String::new(),
+            compression: String::new(),
+            file_hash: String::new(),
+            file_size: 0,
+            nar_hash: info.nar_hash,
+            nar_size: info.nar_size,
+            references: info.references,
+            signatures: info.signatures,
+        },
+        public_key,
+    )
+}
+
 pub(crate) fn parse_cache_public_key(public_key: &str) -> Result<(&str, VerifyingKey)> {
     let (key_name, encoded_key) = public_key
         .split_once(':')
@@ -2681,6 +2719,47 @@ fn bounded_command_error(stderr: &[u8], private_key: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_daemon_metadata_requires_exact_release_signature() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let public = format!(
+            "tiaris-nest-appliance-1:{}",
+            BASE64_STANDARD.encode(key.verifying_key().as_bytes())
+        );
+        let path = format!("/nix/store/{}-seed", "a".repeat(32));
+        let hash = encode_nix_base32_sha256(&[9; 32]);
+        let message = format!("1;{path};sha256:{hash};42;");
+        let signature = format!(
+            "tiaris-nest-appliance-1:{}",
+            BASE64_STANDARD.encode(key.sign(message.as_bytes()).to_bytes())
+        );
+        let info = json!({"narHash": format!("sha256-{}", BASE64_STANDARD.encode([9; 32])),
+            "narSize":42,"references":[],"signatures":[signature],"ultimate":true});
+        verify_signed_store_path_info(&path, &info, &public).unwrap();
+        for (field, value) in [
+            ("narSize", json!(43)),
+            ("narHash", json!(format!("sha256:{}", "0".repeat(52)))),
+            ("signatures", json!([])),
+            ("references", json!([path])),
+        ] {
+            let mut changed = info.clone();
+            changed[field] = value;
+            assert!(
+                verify_signed_store_path_info(&path, &changed, &public).is_err(),
+                "accepted changed {field}"
+            );
+        }
+        assert!(
+            verify_signed_store_path_info(&path.replace("seed", "other"), &info, &public).is_err()
+        );
+        let other = format!(
+            "tiaris-nest-appliance-1:{}",
+            BASE64_STANDARD.encode(SigningKey::from_bytes(&[8; 32]).verifying_key().as_bytes())
+        );
+        assert!(verify_signed_store_path_info(&path, &info, &other).is_err());
+    }
 
     fn replica_test_keys() -> (ed25519_dalek::SigningKey, String, String) {
         let signing = ed25519_dalek::SigningKey::from_bytes(&[42_u8; 32]);
