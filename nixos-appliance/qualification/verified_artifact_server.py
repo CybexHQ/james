@@ -10,10 +10,22 @@ Internal _test_* parameters permit anchored temporary files and loopback sockets
 none are exposed by the CLI. This module does not create containers or networking.
 Consumers must still verify signed hashes: a concurrently writing root process
 is not cryptographically excluded from changing an inode during streaming.
+
+A source is hashed in full when the server starts. Afterwards a request rehashes
+it only if it is not sealed: sealed means the root fixture owner set the kernel
+immutable flag before staging recorded its identity, the flag is still set, and
+the pinned descriptor and path still have the exact inode, size, mtime and ctime
+recorded before that full hash. Every full hash first waits until the clock is
+past the file's ctime (see settle_timestamps), so any later data write must give
+the inode a different ctime; restoring mtime cannot hide it. Clearing the flag
+alone writes nothing. Without a sealed source, every request rehashes as before.
 """
 from __future__ import annotations
 
 import argparse
+import array
+import errno
+import fcntl
 import hashlib
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,6 +51,14 @@ CHUNK = 1024 * 1024
 MAX_WORKERS = 8
 SOCKET_TIMEOUT = 10
 REQUEST_TIMEOUT = 600
+# Linux FS_IOC_GETFLAGS/FS_IOC_SETFLAGS and FS_IMMUTABLE_FL (ZFS, ext4, xfs, btrfs).
+FS_IOC_GETFLAGS = 0x80086601
+FS_IOC_SETFLAGS = 0x40086602
+FS_IMMUTABLE_FL = 0x00000010
+# A full hash starts only once the clock is past ctime by more than two coarse
+# timestamp ticks, so a write during or after hashing cannot reuse that ctime.
+TIMESTAMP_MARGIN_NS = 50_000_000
+MAX_TIMESTAMP_SETTLE = 2.0
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,254}\Z')
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 RFC1918 = tuple(ipaddress.ip_network(value) for value in
@@ -52,6 +72,46 @@ def canonical(value):
 def metadata(info):
     return {name: getattr(info, 'st_' + name) for name in
             ('dev', 'ino', 'uid', 'gid', 'mode', 'nlink', 'size', 'mtime_ns', 'ctime_ns')}
+
+
+def settle_timestamps(identity, *, clock=time.time_ns, sleep=time.sleep):
+    """Wait until no later write can share the pinned ctime, before hashing."""
+    target = identity['ctime_ns'] + TIMESTAMP_MARGIN_NS
+    remaining = (target - clock()) / 1e9
+    if remaining > MAX_TIMESTAMP_SETTLE:
+        raise ValueError('artifact source timestamp is in the future')
+    while remaining > 0:
+        sleep(remaining)
+        remaining = (target - clock()) / 1e9
+
+
+def file_flags(fd):
+    flags = array.array('i', [0])
+    fcntl.ioctl(fd, FS_IOC_GETFLAGS, flags, True)
+    return flags[0]
+
+
+def is_immutable(fd):
+    try:
+        return bool(file_flags(fd) & FS_IMMUTABLE_FL)
+    except OSError as error:
+        if error.errno in (errno.ENOTTY, errno.EOPNOTSUPP, errno.EINVAL):
+            return False
+        raise
+
+
+def set_immutable(fd, value):
+    """Set or clear FS_IMMUTABLE_FL; return False where the filesystem or caller cannot."""
+    try:
+        flags = file_flags(fd)
+        wanted = flags | FS_IMMUTABLE_FL if value else flags & ~FS_IMMUTABLE_FL
+        if wanted != flags:
+            fcntl.ioctl(fd, FS_IOC_SETFLAGS, array.array('i', [wanted]))
+        return bool(file_flags(fd) & FS_IMMUTABLE_FL) == bool(value)
+    except OSError as error:
+        if error.errno in (errno.ENOTTY, errno.EOPNOTSUPP, errno.EINVAL, errno.EPERM, errno.EACCES):
+            return False
+        raise
 
 
 def absolute_path(value):
@@ -115,6 +175,29 @@ class PinnedFile:
     def __init__(self, path, uid=0, anchor=Path('/')):
         self.path, self.uid, self.anchor = absolute_path(str(path)), uid, anchor
         self.fd, self.identity, self.ancestors = open_source(self.path, uid, anchor)
+        self.expected_digest = None
+        self.sealed = False
+
+    def immutable(self):
+        return is_immutable(self.fd)
+
+    def seal(self, expected_digest, deadline=None):
+        """Hash in full once; later attestations may skip hashing while sealed."""
+        if self.digest(deadline) != expected_digest:
+            raise ValueError('artifact source digest changed')
+        self.expected_digest = expected_digest
+        self.sealed = self.immutable()
+        self.check()
+
+    def attest(self, deadline=None):
+        """Prove the bytes still match the full hash taken by seal()."""
+        self.check()
+        if self.sealed and self.immutable():
+            # Same inode, size, mtime and ctime as before the settled full hash,
+            # with the immutable flag still set: no write can have occurred.
+            return
+        if self.expected_digest is None or self.digest(deadline) != self.expected_digest:
+            raise ValueError('artifact source digest changed')
 
     def check(self):
         if metadata(os.fstat(self.fd)) != self.identity:
@@ -125,6 +208,7 @@ class PinnedFile:
             raise ValueError('artifact source was replaced')
 
     def digest(self, deadline=None):
+        settle_timestamps(self.identity)
         digest = hashlib.sha256()
         offset = 0
         while offset < self.identity['size']:
@@ -261,9 +345,12 @@ class ArtifactServer(ThreadingHTTPServer):
                     raise ValueError('artifact spec is invalid')
                 source = PinnedFile(spec['path'], uid, anchor)
                 self.sources.append(source)
-                if source.identity['size'] != spec['size_bytes'] or source.digest(verification_deadline) != spec['sha256']:
+                if source.identity['size'] != spec['size_bytes']:
                     raise ValueError('artifact bytes differ from verified spec')
-                source.expected_digest = spec['sha256']
+                try:
+                    source.seal(spec['sha256'], verification_deadline)
+                except ValueError:
+                    raise ValueError('artifact bytes differ from verified spec') from None
                 self.artifacts[spec['filename']] = source
                 evidence.append({**spec, 'metadata': source.identity, 'ancestors': source.ancestors})
             for source in self.sources:
@@ -373,15 +460,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(404, b'')
                 return
             # Metadata alone can miss a same-size write with restored mtime in
-            # one ctime tick. Rehash config plus the requested artifact before
-            # headers; readiness checks the full original artifact set.
+            # one ctime tick. attest() therefore rehashes unless the source is
+            # sealed: immutable since before its settled full hash at startup,
+            # with an unchanged ctime that no later write could have reused.
+            # Readiness attests the full original artifact set; a request
+            # attests the config plus the requested artifact before headers.
             with self.server.sockets_lock:
                 deadline = self.server.sockets[self.connection]
             checked = self.server.sources if challenge else [self.server.config, source]
             for pinned in checked:
-                pinned.check()
-                if pinned.digest(deadline) != pinned.expected_digest:
-                    raise ValueError('artifact source digest changed')
+                pinned.attest(deadline)
             if challenge:
                 if self.headers.get_all('Range'):
                     self.respond(416, b'', content_range=f'bytes */{len(self.server.ready_body)}')

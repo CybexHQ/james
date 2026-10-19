@@ -74,10 +74,16 @@ def execute(args):
             if not 1 <= port <= 65535:
                 raise ValueError('Owned system closure server returned an invalid port')
             transport = f'http://{bind}:{port}/{filename}'
+        before_evidence = None
+        if scope.get('schema') == SCOPE['ISOLATED_SCHEMA']:
+            # Routine fixture requests compare sealed identities; rehash every
+            # staged byte before the upgrade and before acceptance is written.
+            fixture_request(state, 'verify_artifacts')
+            before_evidence = lambda: fixture_request(state, 'verify_artifacts')
         with fixture:
             return transition_lifecycle.run(api, fixture, candidate, candidate_body, previous, previous_body,
                 evidence, hashlib.sha256(evidence_body).hexdigest(), transport, args.output, source, args.rollback,
-                exercise_admission=getattr(args, 'exercise_admission', False))
+                exercise_admission=getattr(args, 'exercise_admission', False), before_evidence=before_evidence)
     finally:
         stop(server)
         port_file.unlink(missing_ok=True)

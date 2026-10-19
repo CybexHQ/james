@@ -23,6 +23,7 @@ import runpy
 import secrets as random
 import shutil
 import stat
+import sys
 import time
 import uuid
 from urllib.parse import urlsplit
@@ -43,6 +44,10 @@ SCHEMA = 'tiaris.nest.isolated-manage.v2'
 GUARD_SCHEMA = 'tiaris.nest.isolated-manage-network.v1'
 ARTIFACT_URL_SCHEMA = 'tiaris.nest.isolated-manage-artifact-urls.v1'
 RELEASES = ('predecessor', 'candidate')
+# Bounded verification timing: every full verification, any routine one slower
+# than this, and a count summary every VERIFY_SUMMARY_EVERY routine calls.
+SLOW_VERIFY_SECONDS = 1.0
+VERIFY_SUMMARY_EVERY = 100
 
 
 class Owner:
@@ -52,6 +57,7 @@ class Owner:
         self.adapter, self.artifact_factory, self.run = adapter, artifact_factory, run
         self.artifacts = None
         self.tls_proxy = None
+        self.verify_stats = {'count': 0, 'seconds': 0.0, 'max': 0.0}
         if adapter is None or any(not callable(getattr(adapter, method, None)) for method in ('prepare', 'attach_dns_route', 'verify', 'cleanup')):
             raise ValueError('a reviewed, verifying default-deny network adapter is required')
 
@@ -171,10 +177,13 @@ class Owner:
                     raise ValueError('artifact coordinator URL is not the exact signed transport')
         return value
 
-    def verify_artifacts(self, receipt):
+    def verify_artifacts(self, receipt, *, full=False):
+        """Verify listeners; full=True rehashes every staged byte (phase boundaries)."""
         if self.artifacts is None:
             raise ValueError('artifact coordinator is not retained by this Owner process')
-        urls = self.artifact_urls(receipt, self.artifacts.verify(receipt['context']))
+        verified = (self.artifacts.verify(receipt['context'], full=True) if full
+                    else self.artifacts.verify(receipt['context']))
+        urls = self.artifact_urls(receipt, verified)
         coordinator_receipt = getattr(self.artifacts, 'receipt', None)
         expected = {role: {key: receipt['releases'][role][key]
                            for key in ('version', 'manifest_sha256', 'compatibility_sha256')}
@@ -442,7 +451,9 @@ class Owner:
 
     def recreate_app(self, receipt):
         """Replace the exact app after its durable image/environment receipt changed."""
-        self.verify_artifacts(receipt)
+        # Release selection and device admission precede installs and upgrades:
+        # rehash every staged byte here rather than on each API request.
+        self.verify_artifacts(receipt, full=True)
         docker = self.docker(receipt)
         app = receipt['containers']['app']
         docker.remove_owned('app', app['id'])
@@ -576,7 +587,29 @@ class Owner:
                 self.save(receipt)
                 raise
 
-    def verify(self):
+    def verify(self, *, full=False):
+        started = time.monotonic()
+        try:
+            return self._verify(full)
+        finally:
+            self._record_verify(full, time.monotonic() - started)
+
+    def _record_verify(self, full, seconds):
+        stats = self.verify_stats
+        if full or seconds >= SLOW_VERIFY_SECONDS:
+            print(f'isolated fixture verification: kind={"full" if full else "routine"} '
+                  f'seconds={seconds:.2f}', file=sys.stderr, flush=True)
+        if full:
+            return
+        stats['count'] += 1
+        stats['seconds'] += seconds
+        stats['max'] = max(stats['max'], seconds)
+        if stats['count'] % VERIFY_SUMMARY_EVERY == 0:
+            print(f'isolated fixture verification: routine_calls={stats["count"]} '
+                  f'mean_seconds={stats["seconds"] / stats["count"]:.3f} max_seconds={stats["max"]:.2f}',
+                  file=sys.stderr, flush=True)
+
+    def _verify(self, full):
         receipt = self.read()
         if receipt['status'] != 'ready':
             raise ValueError('isolated Tiaris fixture has not completed fresh bootstrap')
@@ -585,7 +618,7 @@ class Owner:
                 or receipt.get('containers', {}).get('app', {}).get('image')
                 != receipt.get('images', {}).get('app', {}).get(receipt.get('selected_release'))):
             raise ValueError('isolated Tiaris release selection is not exact and complete')
-        self.verify_artifacts(receipt)
+        self.verify_artifacts(receipt, full=full)
         self.guard(receipt)
         docker = self.docker(receipt)
         docker.verify_network(receipt['context']['network_id'], receipt['context']['backend_subnet'],

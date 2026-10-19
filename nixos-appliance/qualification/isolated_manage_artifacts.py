@@ -5,9 +5,16 @@ This module owns files and direct child processes only. Network admission belong
 to the separately reviewed adapter, and release selection belongs to the fixture
 Owner. Callers must retain this Coordinator instance: receipts and PIDs alone are
 deliberately insufficient to adopt or stop a listener after coordinator restart.
+
+Staged files are made immutable (FS_IMMUTABLE_FL) before their identity is
+recorded, so routine verify() calls compare identities instead of rehashing
+gigabytes; verify(full=True) still rehashes every byte. Purge clears the flag
+before deletion. After an interrupted coordinator, `release-staged` clears it
+so the retained state can be inspected and removed.
 """
 from __future__ import annotations
 
+import argparse
 import ctypes
 import hashlib
 import importlib.util
@@ -204,6 +211,7 @@ class Coordinator:
         self.trusted_public_key = trusted_public_key
         self.children = {}
         self.known_files, self.known_directories = {}, {}
+        self.sealed_files = set()
         self.receipt, self.receipt_identity = None, None
         self._test_loopback = _test_loopback
         self._test_anchor = Path(_test_anchor) if _test_anchor is not None else None
@@ -297,6 +305,8 @@ class Coordinator:
             fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                          | os.O_CLOEXEC, FILE_MODE)
             self.known_files[destination] = object_identity(os.fstat(fd))
+            # The flag must exist before purge can clear it; record intent first.
+            self.sealed_files.add(destination)
             digest, offset = hashlib.sha256(), 0
             try:
                 os.fchmod(fd, FILE_MODE)
@@ -312,6 +322,10 @@ class Coordinator:
                     digest.update(data)
                     offset += len(data)
                 os.fsync(fd)
+                # Seal before the identity below is recorded and fully hashed.
+                # Unsupported filesystems or test UIDs stay unsealed; their
+                # verification keeps rehashing every time.
+                server.set_immutable(fd, True)
                 info = os.fstat(fd)
                 if (not stat.S_ISREG(info.st_mode) or info.st_uid != self.uid or info.st_nlink != 1
                         or stat.S_IMODE(info.st_mode) != FILE_MODE):
@@ -327,6 +341,8 @@ class Coordinator:
                 source.close()
         staged = server.PinnedFile(destination, self.uid, self._server_anchor)
         try:
+            # digest() settles past ctime first: the recorded metadata below
+            # then pins these exact bytes for every later identity comparison.
             if staged.digest() != spec['sha256'] or staged.identity['size'] != spec['size_bytes']:
                 raise ValueError('staged artifact differs from signed identity')
             return {'filename': spec['filename'], 'path': str(destination), 'sha256': spec['sha256'],
@@ -501,7 +517,13 @@ finally: s.server_close()
             }
         return result
 
-    def verify(self, current_scope):
+    def verify(self, current_scope, *, full=False):
+        """Verify listeners and staged files; full=True rehashes every staged byte.
+
+        Routine verification rehashes a staged file only when it is not sealed:
+        the exact recorded inode, size, mtime and ctime (taken before its
+        settled full hash) plus a still-set immutable flag prove no write.
+        """
         self._scope(current_scope)
         if self.receipt is None or set(self.children) != set(LISTENERS):
             raise ValueError('artifact coordinator cannot adopt listener receipts')
@@ -536,8 +558,9 @@ finally: s.server_close()
                 staged = server.PinnedFile(artifact['path'], self.uid, self._server_anchor)
                 try:
                     if (staged.identity != artifact['metadata'] or staged.identity['size'] != artifact['size_bytes']
-                            or staged.ancestors != artifact['ancestors']
-                            or staged.digest() != artifact['sha256']):
+                            or staged.ancestors != artifact['ancestors']):
+                        raise ValueError('staged artifact changed')
+                    if (full or not staged.immutable()) and staged.digest() != artifact['sha256']:
                         raise ValueError('staged artifact changed')
                 finally:
                     staged.close()
@@ -590,6 +613,8 @@ finally: s.server_close()
                     or directory_identity(info) != self.known_directories[path]):
                 raise ValueError('refusing to purge unknown or missing artifact coordinator state')
         for path in sorted(actual_files, key=lambda value: len(value.parts), reverse=True):
+            if path in self.sealed_files:
+                release_immutable(path, self.known_files[path])
             path.unlink()
         for path in sorted(actual_directories, key=lambda value: len(value.parts), reverse=True):
             path.rmdir()
@@ -600,3 +625,58 @@ finally: s.server_close()
         if purge:
             self._purge_known()
         return True
+
+
+def release_immutable(path, identity):
+    """Clear FS_IMMUTABLE_FL on one exact owned regular file so it can be removed."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or object_identity(info) != identity:
+            raise ValueError('refusing to unseal unknown artifact coordinator state')
+        if server.is_immutable(fd) and not server.set_immutable(fd, False):
+            raise ValueError('cannot clear the immutable flag on staged artifact state')
+    finally:
+        os.close(fd)
+
+
+def release_staged(state_dir, uid=0):
+    """Recover after an interrupted coordinator: unseal, but never delete, staged files.
+
+    Only regular 0600 single-link files owned by uid, under the private
+    artifact-transport tree of an exact private state directory, are touched.
+    """
+    state = private_directory(state_dir, uid)
+    directory = state / 'artifact-transport'
+    if not directory.exists() and not directory.is_symlink():
+        return []
+    private_directory(directory, uid)
+    released = []
+    for root, directories, files in os.walk(directory, topdown=True, followlinks=False):
+        root = Path(root)
+        for name in directories:
+            private_directory(root / name, uid)
+        for name in files:
+            path = root / name
+            info = os.lstat(path)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != uid or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != FILE_MODE):
+                raise ValueError('refusing to unseal unexpected artifact coordinator state')
+            release_immutable(path, object_identity(info))
+            released.append(str(path))
+    return released
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument('operation', choices=('release-staged',))
+    parser.add_argument('--state-dir', type=Path, required=True)
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        raise SystemExit('release-staged requires root')
+    released = release_staged(args.state_dir)
+    print(json.dumps({'released': len(released)}))
+
+
+if __name__ == '__main__':
+    main()
