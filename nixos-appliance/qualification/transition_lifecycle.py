@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import tempfile
 import time
 import uuid
@@ -26,6 +27,8 @@ except ModuleNotFoundError as error:
         'transition_schedule_admission', Path(__file__).with_name('schedule_admission.py'))
     schedule_admission = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(schedule_admission)
+
+BLUEPRINT_DELIVERY = runpy.run_path(str(Path(__file__).with_name('blueprint_delivery.py')))
 
 UTC = datetime.timezone.utc
 EXPECTED_FIELDS = ('device_incarnation_id', 'current_release', 'nixpkgs_revision',
@@ -131,6 +134,16 @@ def validate_inputs(candidate, candidate_digest, previous, previous_digest, evid
             or evidence.get('nixpkgs_revision') != descriptor['nixpkgs_revision']
             or evidence.get('manage_source_revision') != descriptor['manage_source_revision']
             or evidence.get('final_state') != 'ready'
+            or evidence.get('qualification_kind') != 'predecessor'
+            or evidence.get('builtin_blueprints_deferred_until_upgrade') is not True
+            or evidence.get('qualified_blueprints') is not None
+            or any(evidence.get(k) is not False for k in
+                   ('builtin_blueprints_source_free', 'builtin_blueprints_deliverable',
+                    'builtin_blueprints_qualified_on_new_nest'))
+            or any(evidence.get(k) is not True for k in
+                   release_acceptance.LIFECYCLE_FLAGS + ('ssh_login_verified', 'ssh_root_rejected',
+                   'ssh_password_rejected', 'workstation_runtime_operational',
+                   'workstation_runtime_converged'))
             or any(evidence.get(k) is not True for k in ('ok', 'identity_rotation', 'appliance_projection_healthy'))
             or not re.fullmatch(r'dev_[0-9a-f]{32}', evidence.get('device_id', ''))):
         raise ValueError('Predecessor fixture evidence or current harness identity differs')
@@ -457,6 +470,9 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
                     gate_stage_seconds=gate_stage_seconds)
             else:
                 result.update(fresh_health_successes=len(fresh_health), authenticated_manage_contact=True)
+                # Only the upgraded appliance owns the candidate's source-paired
+                # runtime/cache. This is mandatory before writing update evidence.
+                result['blueprint_delivery'] = BLUEPRINT_DELIVERY['qualify_current'](api, fixture.device, candidate)
             if admission:
                 result['q07_admission'] = admission_evidence
             release_acceptance.validate_transition(candidate, result['candidate_manifest_sha256'], previous,

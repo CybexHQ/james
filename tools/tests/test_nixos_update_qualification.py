@@ -1,5 +1,6 @@
 """Exercise NixOS transition qualification with deterministic API/QMP boundaries."""
 from copy import deepcopy
+from qualification_fixtures import upgraded_delivery
 from contextlib import redirect_stdout
 import datetime
 import hashlib
@@ -48,6 +49,8 @@ ORIGIN = 'https://dev.example.test'
 
 def manifest(version, letter):
     return {'version': version, 'installer_iso_template_v3': {'manage_origin': ORIGIN},
+        'workstation_netboot': {'sha256': letter * 64, 'runtime_version': '1.0.108',
+                               'manage_source_revision': letter * 40},
         'appliance_release_v1': {'schema': 'tiaris.nest.appliance-release.v3', 'release_id': version,
         'base_os': 'nixos', 'base_os_version': '26.05', 'source_revision': SOURCE,
         'manage_source_revision': letter * 40, 'nixpkgs_revision': 'd' * 40,
@@ -118,7 +121,13 @@ class Run:
             **{k: self.before[k] for k in ('system_toplevel', 'system_generation', 'system_closure_sha256', 'nixpkgs_revision')},
             'manage_source_revision': self.previous['appliance_release_v1']['manage_source_revision'],
             'final_state': 'ready', 'identity_rotation': True, 'appliance_projection_healthy': True, 'device_id': DEVICE,
-            'workstation_runtime_prepublication_deferred': True}
+            'workstation_runtime_prepublication_deferred': False,
+            'qualification_kind': 'predecessor', 'builtin_blueprints_deferred_until_upgrade': True,
+            'qualified_blueprints': None,
+            **{k: False for k in ('builtin_blueprints_source_free', 'builtin_blueprints_deliverable',
+                                 'builtin_blueprints_qualified_on_new_nest')},
+            **{k: True for k in A.LIFECYCLE_FLAGS + ('ssh_login_verified', 'ssh_root_rejected',
+                'ssh_password_rejected', 'workstation_runtime_operational', 'workstation_runtime_converged')}}
 
     def activated_at(self):
         if self.admitted_at is None or self.bootstrap_offset is None:
@@ -181,7 +190,9 @@ class Run:
         return {'node': self.current}
 
     def execute(self, output, timeout=225):
-        with patch.object(T.rollback_transport_gate, 'Gate', return_value=self.gate) as gate_class:
+        with patch.object(T.rollback_transport_gate, 'Gate', return_value=self.gate) as gate_class, \
+                patch.dict(T.BLUEPRINT_DELIVERY, {'qualify_current': Mock(
+                    return_value=upgraded_delivery(self.candidate, DEVICE))}):
             result = T.run(self.api, self.fixture, self.candidate, self.candidate_body, self.previous,
                 self.previous_body, self.evidence, 'a' * 64, 'http://192.0.2.1:12345/closure.tar.zst', output, SOURCE,
                 self.rollback, clock=self.clock, sleep=self.clock.sleep, now=self.clock.now, timeout=timeout)
@@ -191,6 +202,19 @@ class Run:
 
 
 class TransitionTests(unittest.TestCase):
+    def test_post_upgrade_delivery_failure_cannot_write_transition_acceptance(self):
+        run = Run()
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'result.json'
+            with patch.dict(T.BLUEPRINT_DELIVERY, {'qualify_current': Mock(
+                    side_effect=ValueError('candidate source-free delivery failed'))}), \
+                    self.assertRaisesRegex(ValueError, 'source-free'):
+                T.run(run.api, run.fixture, run.candidate, run.candidate_body, run.previous,
+                    run.previous_body, run.evidence, 'a' * 64, 'http://192.0.2.1/closure',
+                    output, SOURCE, clock=run.clock, sleep=run.clock.sleep,
+                    now=run.clock.now, timeout=225)
+            self.assertFalse(output.exists())
+
     def test_rollback_gate_is_validated_and_inert_before_admission(self):
         run = Run(True)
         original = run.api
@@ -567,7 +591,11 @@ class TransitionTests(unittest.TestCase):
         mutations = [lambda: run.candidate.update(version='1.2.3'),
             lambda: run.candidate['installer_iso_template_v3'].update(manage_origin='https://console.example.com'),
             lambda: run.evidence.update(system_generation='0'), lambda: run.evidence.update(secure_boot=True),
-            lambda: run.evidence.update(qualified_manifest_sha256='0' * 64)]
+            lambda: run.evidence.update(qualified_manifest_sha256='0' * 64),
+            lambda: run.evidence.update(builtin_blueprints_deferred_until_upgrade=False),
+            lambda: run.evidence.update(builtin_blueprints_source_free=True),
+            lambda: run.evidence.update(ssh_root_rejected=False),
+            lambda: run.evidence.update(workstation_runtime_operational=False)]
         for mutation in mutations:
             run = Run(); mutation()
             with self.assertRaises(ValueError): validate()

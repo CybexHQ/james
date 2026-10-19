@@ -103,7 +103,8 @@ class AcceptanceTests(unittest.TestCase):
                 self.validate(self.cold | {field: False})
         for field, value in [('harness_revision', 'f' * 40), ('qualified_manifest_sha256', 'f' * 64),
                              ('system_generation', '0'), ('candidate_runtime_required', False),
-                             ('release_version', '0.2.1-dev.29')]:
+                             ('release_version', '0.2.1-dev.29'),
+                             ('builtin_blueprints_deferred_until_upgrade', True)]:
             with self.subTest(field=field), self.assertRaises(ValueError):
                 self.validate(self.cold | {field: value})
 

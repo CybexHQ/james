@@ -1,5 +1,6 @@
 """Fail-closed ancestry, fixture and release acceptance contracts."""
 from copy import deepcopy
+from qualification_fixtures import upgraded_delivery
 import hashlib
 import importlib.util
 import json
@@ -315,7 +316,9 @@ class NixosQualificationTests(unittest.TestCase):
     def transition(self):
         fixture = json.loads((ROOT / 'protocol/fixtures/nest-appliance-v3.json').read_bytes())
         candidate = {'version': '0.2.6', 'appliance_release_v1': deepcopy(fixture['appliance_release']),
-                     'installer_iso_template_v3': {'manage_origin': 'https://dev.example.com'}}
+                     'installer_iso_template_v3': {'manage_origin': 'https://dev.example.com'},
+                     'workstation_netboot': {'runtime_version': '1.0.108', 'sha256': 'd' * 64,
+                                            'manage_source_revision': 'e' * 40}}
         previous = deepcopy(candidate)
         previous['version'] = '0.2.5'
         previous['appliance_release_v1']['system_toplevel'] = '/nix/store/' + '1' * 32 + '-previous'
@@ -335,6 +338,7 @@ class NixosQualificationTests(unittest.TestCase):
             evidence.update({prefix + '_' + name: release[name] for name in
                              ('system_toplevel', 'source_revision', 'manage_source_revision')})
             evidence[prefix + '_system_closure_sha256'] = release['system_closure']['sha256']
+        evidence['blueprint_delivery'] = upgraded_delivery(candidate, evidence['server_device_id'])
         return candidate, previous, evidence, source
 
     def test_update_evidence_binds_generation_closure_source_and_observed_reboot(self):
@@ -343,7 +347,8 @@ class NixosQualificationTests(unittest.TestCase):
             A.validate_transition(candidate, 'a' * 64, previous, 'b' * 64, evidence, source, 'update')
             for key, value in [('candidate_system_closure_sha256', '0' * 64), ('candidate_reboot_observed', False),
                 ('host_reset_used', True), ('resulting_system_generation', '1'), ('fresh_health_successes', 2),
-                ('authenticated_manage_contact', False), ('candidate_source_revision', '0' * 40)]:
+                ('authenticated_manage_contact', False), ('candidate_source_revision', '0' * 40),
+                ('blueprint_delivery', None)]:
                 with self.subTest(key=key), self.assertRaises(ValueError):
                     A.validate_transition(candidate, 'a' * 64, previous, 'b' * 64, {**evidence, key: value}, source, 'update')
 

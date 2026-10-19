@@ -83,7 +83,7 @@ def main():
                     runtime = api(f"/v1/nest/nodes/{device}/workstation-netboot")
                     jobs = api(f"/v1/nest/nodes/{device}/build/jobs?limit=200&offset=0")["jobs"]
                     observation.update(runtime=runtime["state"], jobs=[v["status"] for v in jobs])
-                    if runtime.get("operational") and runtime.get("converged"):
+                    if runtime.get("operational") and runtime.get("converged") and not args.predecessor_identity:
                         for blueprint in catalog["blueprints"]:
                             revision = blueprint["current_revision_id"]
                             if revision in admitted or any(j["build_spec"].get("blueprint_revision_id") == revision and j["status"] in {"queued", "running", "succeeded"} for j in jobs):

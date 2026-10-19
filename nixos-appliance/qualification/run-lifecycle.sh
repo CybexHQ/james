@@ -631,7 +631,15 @@ fi
 
 build_jobs="$work_dir/build-jobs.json"
 builtins_deliverable=false
-if [[ "$runtime_prepublication_deferred" = false ]]; then
+# The authenticated predecessor proves installation and upgrade readiness.
+# Its signed cache predates the current Manage compiler and desktop modules.
+# Current profiles are qualified after the actual candidate upgrade, and on
+# independent fresh/cold candidate disks; never claim them on this old disk.
+builtins_upgrade_deferred=false
+if [[ "$qualification_kind" = predecessor ]]; then
+  builtins_upgrade_deferred=true
+fi
+if [[ "$runtime_prepublication_deferred" = false && "$builtins_upgrade_deferred" = false ]]; then
 for _attempt in $(seq 1 720); do
   api GET "/v1/nest/nodes/$device_id/build/jobs?limit=200&offset=0" > "$build_jobs"
   source_blocked_builtin_job="$(jq -c --slurpfile blueprints "$blueprints" '
@@ -794,10 +802,13 @@ jq -n \
   --argjson workstation_runtime_converged "$runtime_converged" \
   --argjson workstation_runtime_prepublication_deferred "$runtime_prepublication_deferred" \
   --argjson builtins_deliverable "$builtins_deliverable" \
+  --argjson builtins_upgrade_deferred "$builtins_upgrade_deferred" \
   --arg completed_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
   '{schema:$schema,ok:true,release_version:$release_version,
     harness_revision:$harness_revision,qualification_kind:$qualification_kind,
-    qualified_manifest_sha256:$qualified_manifest_sha256,qualified_blueprints:$qualified_blueprints[0],
+    qualified_manifest_sha256:$qualified_manifest_sha256,
+    qualified_blueprints:(if $builtins_upgrade_deferred then null else $qualified_blueprints[0] end),
+    pending_upgrade_blueprints:(if $builtins_upgrade_deferred then $qualified_blueprints[0] else null end),
     base_os:"nixos",system_toplevel:$system_toplevel,nixpkgs_revision:$nixpkgs_revision,
     manage_source_revision:$manage_source_revision,
     system_closure_sha256:$system_closure_sha256,system_generation:$system_generation,
@@ -809,6 +820,7 @@ jq -n \
     workstation_runtime_operational:$workstation_runtime_operational,
     workstation_runtime_converged:$workstation_runtime_converged,
     workstation_runtime_prepublication_deferred:$workstation_runtime_prepublication_deferred,
+    builtin_blueprints_deferred_until_upgrade:$builtins_upgrade_deferred,
     builtin_blueprints_source_free:$builtins_deliverable,
     builtin_blueprints_deliverable:$builtins_deliverable,
     builtin_blueprints_qualified_on_new_nest:$builtins_deliverable,

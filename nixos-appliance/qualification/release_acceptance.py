@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import runpy
 
 LIFECYCLE_FLAGS = (
     'ok', 'no_disk_write_before_approval', 'identity_rotation',
@@ -41,6 +42,7 @@ def validate_lifecycle(manifest, manifest_sha256, evidence, source, phase):
             or any(evidence.get(k) is not True for k in LIFECYCLE_FLAGS)
             or evidence.get('final_state') != 'ready'
             or evidence.get('qualification_kind') != 'candidate'
+            or evidence.get('builtin_blueprints_deferred_until_upgrade', False) is not False
             or evidence.get('qualified_manifest_sha256') != manifest_sha256
             or evidence.get('harness_revision') != source
             or manifest['appliance_release_v1']['source_revision'] != source
@@ -176,6 +178,9 @@ def validate_transition(manifest, digest, previous, previous_digest, evidence, s
     elif (evidence.get('fresh_health_successes', 0) < 3
             or evidence.get('authenticated_manage_contact') is not True):
         raise ValueError('Commit lacks repeated fresh health and permanent-identity contact')
+    if not rollback:
+        delivery = runpy.run_path(str(Path(__file__).with_name('blueprint_delivery.py')))
+        delivery['validate'](manifest, evidence['server_device_id'], evidence.get('blueprint_delivery'))
 
 
 def validate_rollback_gate(evidence):

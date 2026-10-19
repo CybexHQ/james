@@ -124,8 +124,16 @@ operation. The isolated production fixture keeps its separate Owner cleanup;
 this external path never acts on a production identity.
 
 Isolated production qualification stages authenticated workstation runtime bundles privately.
-Warm installation requires the exact selected runtime and all three built-in
-profiles to deliver successfully; it does not claim prepublication runtime absence.
+Warm installation requires the exact selected runtime. The authenticated predecessor
+proves installation, permanent identity, healthy appliance/runtime, network and SSH
+before upgrade. It does not run the current compiler's Blueprint inputs against its
+older signed runtime/cache, or claim current-profile delivery. Its receipt explicitly
+records those profiles as pending upgrade, with delivery flags false. After the real
+upgrade commits, the same appliance must converge on the exact candidate runtime,
+prepare all three current profiles without source builds, and report all required
+cache replicas before update acceptance can be written. Candidate fresh and cold
+installation independently retain the complete current-profile delivery checks.
+Rollback still proves automatic restoration of the exact healthy predecessor.
 Independent cold appliance and workstation qualification remains mandatory after staging.
 
 Upgrade and rollback qualification use the retained verified guest artifact listener
