@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -210,6 +211,82 @@ class ArtifactServerTests(unittest.TestCase):
         self.source.write_bytes(b'x' * len(self.body))
         os.utime(self.source, ns=(info.st_atime_ns, info.st_mtime_ns))
         self.assertEqual(self.request()[0::2], (503, b''))
+
+    def count_artifact_digests(self):
+        counts = {'artifact': 0, 'config': 0}
+        original = V.PinnedFile.digest
+
+        def counting(pinned, deadline=None):
+            counts['config' if pinned.path == self.config else 'artifact'] += 1
+            return original(pinned, deadline)
+        return counts, mock.patch.object(V.PinnedFile, 'digest', counting)
+
+    def test_sealed_sources_are_hashed_at_start_but_not_per_request(self):
+        with mock.patch.object(V, 'is_immutable', return_value=True):
+            self.start()
+            counts, patch = self.count_artifact_digests()
+            with patch:
+                for _ in range(3):
+                    self.assertEqual(self.request()[0::2], (200, self.body))
+                    self.assertEqual(self.request(self.server.challenge_path)[0], 200)
+                V.verify_server(self.server.receipt, _test_loopback=True)
+        self.assertTrue(self.server.artifacts[self.source.name].sealed)
+        self.assertEqual(counts['artifact'], 0)
+        self.assertGreater(counts['config'], 0)
+
+    def test_sealed_same_size_rewrite_with_restored_mtime_is_refused_without_rehash(self):
+        # Models a writer that cleared the flag, rewrote equal-size bytes,
+        # restored mtime and set the flag again: the ctime still moves.
+        with mock.patch.object(V, 'is_immutable', return_value=True):
+            self.start()
+            info = self.source.stat()
+            self.source.write_bytes(b'x' * len(self.body))
+            os.utime(self.source, ns=(info.st_atime_ns, info.st_mtime_ns))
+            self.assertNotEqual(self.source.stat().st_ctime_ns, info.st_ctime_ns)
+            self.assertEqual(self.request()[0::2], (503, b''))
+            self.assertEqual(self.request(self.server.challenge_path)[0], 503)
+
+    def test_cleared_immutable_flag_falls_back_to_full_rehash(self):
+        with mock.patch.object(V, 'is_immutable', return_value=True):
+            self.start()
+        counts, patch = self.count_artifact_digests()
+        with mock.patch.object(V, 'is_immutable', return_value=False), patch:
+            self.assertEqual(self.request()[0::2], (200, self.body))
+        self.assertEqual(counts['artifact'], 1)
+
+    def test_unsealed_sources_keep_rehashing_every_request(self):
+        self.start()
+        self.assertFalse(self.server.artifacts[self.source.name].sealed)
+        counts, patch = self.count_artifact_digests()
+        with patch:
+            self.request()
+            self.request(self.server.challenge_path)
+        self.assertEqual(counts['artifact'], 2)
+
+    def test_full_hash_starts_only_after_ctime_cannot_be_reused(self):
+        now = [1_000_000_000_000]
+        slept = []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            now[0] += int(seconds * 1e9) + 1
+        V.settle_timestamps({'ctime_ns': now[0]}, clock=lambda: now[0], sleep=sleep)
+        self.assertGreaterEqual(now[0], 1_000_000_000_000 + V.TIMESTAMP_MARGIN_NS)
+        self.assertEqual(len(slept), 1)
+        V.settle_timestamps({'ctime_ns': 0}, clock=lambda: now[0], sleep=self.fail)
+        with self.assertRaisesRegex(ValueError, 'future'):
+            V.settle_timestamps({'ctime_ns': now[0] + 10 ** 10}, clock=lambda: now[0], sleep=sleep)
+
+    def test_immutable_helpers_report_unsupported_or_unprivileged_as_unsealed(self):
+        fd = os.open(self.source, os.O_RDONLY)
+        try:
+            if os.geteuid() != 0:
+                self.assertFalse(V.set_immutable(fd, True))
+            self.assertIsInstance(V.is_immutable(fd), bool)
+            V.set_immutable(fd, False)
+            self.assertFalse(V.is_immutable(fd))
+        finally:
+            os.close(fd)
 
     def test_changed_config_cannot_pass_readiness(self):
         self.start()

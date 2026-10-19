@@ -271,7 +271,7 @@ def rollback_failure(output, stage, error, timings, gate, node, candidate_reset,
 def run(api, fixture, candidate, candidate_body, previous, previous_body, evidence,
         evidence_digest, transport_url, output, source, rollback=False, *, clock=time.monotonic,
         sleep=time.sleep, now=lambda: datetime.datetime.now(UTC), timeout=3600,
-        exercise_admission=False):
+        exercise_admission=False, before_evidence=None):
     before = fixture.wait_ready(api)
     if before.get('device_id') != evidence['device_id'] or fixture.device != evidence['device_id']:
         raise ValueError('Running predecessor identity differs from its fixture')
@@ -481,6 +481,8 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
                 admission.mark_terminal()
                 admission.cleanup(True)
                 admission = None
+            if before_evidence is not None:
+                before_evidence()
             write_evidence(output, result)
             return result
         raise ValueError('Appliance transition qualification timed out')

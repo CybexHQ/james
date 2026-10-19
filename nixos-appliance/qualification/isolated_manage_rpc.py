@@ -141,6 +141,10 @@ class Server:
             if digest != hashlib.sha256(body).hexdigest():
                 raise ValueError('personalization response does not bind its envelope digest')
             return {'body': base64.b64encode(body).decode(), 'envelope_sha256': digest}
+        if operation == 'verify_artifacts' and set(value) == {'operation'}:
+            # Explicit phase boundary: rehash every staged byte before evidence.
+            self.owner.verify(full=True)
+            return None
         if operation == 'allow_device' and set(value) == {'operation', 'session_id'}:
             session = self.owner.api('/v1/nest/provisioning-sessions/' + str(__import__('uuid').UUID(value['session_id'])))
             self.owner.allow_device(session['reserved_device_id'])
@@ -161,7 +165,8 @@ class Server:
 def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument('--state-dir', type=Path, required=True)
-    parser.add_argument('operation', choices=('api', 'personalize', 'allow-device', 'installer-transports'))
+    parser.add_argument('operation', choices=('api', 'personalize', 'allow-device', 'installer-transports',
+                                              'verify-artifacts'))
     parser.add_argument('--path')
     parser.add_argument('--body')
     parser.add_argument('--output', type=Path)
@@ -172,6 +177,8 @@ def main():
     if args.operation == 'api':
         print(json.dumps(request(args.state_dir, 'api', path=args.path,
                                  body=json.loads(args.body) if args.body else None)))
+    elif args.operation == 'verify-artifacts':
+        request(args.state_dir, 'verify_artifacts')
     elif args.operation == 'installer-transports':
         print(json.dumps(request(args.state_dir, 'installer_transports', manifest_sha256=args.manifest_sha256)))
     elif args.operation == 'personalize':

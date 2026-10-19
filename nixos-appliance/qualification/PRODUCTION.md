@@ -91,6 +91,17 @@ job name `Verify published NixOS release in an isolated fixture`.
 
 ## Recovery
 
+Staged listener artifacts are sealed with the kernel immutable flag and fully
+hashed once after staging and at listener start. Routine fixture requests,
+readiness challenges and artifact GETs compare the sealed inode, size, mtime and
+ctime instead of rehashing gigabytes; full hashes still run on release selection,
+device admission, before an upgrade and before lifecycle or update evidence is
+written (`isolated_manage_rpc.py verify-artifacts`). Owned purge clears the flag
+before deletion. If a coordinator was killed, its retained
+`<state>/artifact-transport` files stay immutable: run
+`sudo python3 -B nixos-appliance/qualification/isolated_manage_artifacts.py release-staged --state-dir <state>`
+to unseal only exact owned 0600 files (it deletes nothing), then remove the state.
+
 No canceled Ubuntu workflow is resumed. Tiaris keeps new retry journals under
 `components/nixos-v1`; old journals, bundles, tags and published bytes remain
 historical evidence. A failed NixOS run retains its own exact run/attempt and

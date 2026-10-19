@@ -426,6 +426,87 @@ sys.exit(17)
             self.coordinator.prepare(self.scope)
         self.assertTrue(all(child.process.poll() is not None for child in self.coordinator.children.values()))
 
+    def staged_paths(self):
+        return {Path(artifact['path']) for listener in self.coordinator.receipt['listeners'].values()
+                for artifact in listener['artifacts']}
+
+    def test_routine_verify_compares_sealed_identities_and_full_verify_rehashes(self):
+        sealed = {}
+
+        def set_immutable(fd, value):
+            sealed[os.fstat(fd).st_ino] = value
+            return True
+        with mock.patch.object(A.server, 'set_immutable', side_effect=set_immutable), \
+                mock.patch.object(A.server, 'is_immutable',
+                                  side_effect=lambda fd: sealed.get(os.fstat(fd).st_ino, False)):
+            self.coordinator = self.create()
+            urls = self.coordinator.prepare(self.scope)
+            staged = self.staged_paths()
+            self.assertTrue(all(sealed[path.stat().st_ino] for path in staged))
+            hashed = []
+            original = A.server.PinnedFile.digest
+
+            def counting(pinned, deadline=None):
+                hashed.append(pinned.path)
+                return original(pinned, deadline)
+            with mock.patch.object(A.server.PinnedFile, 'digest', counting):
+                self.assertEqual(self.coordinator.verify(self.scope), urls)
+                self.assertFalse(staged & set(hashed))
+                self.assertEqual(self.coordinator.verify(self.scope, full=True), urls)
+                self.assertEqual(staged & set(hashed), staged)
+            target = sorted(staged)[0]
+            info = target.stat()
+            body = target.read_bytes()
+            target.write_bytes(bytes(len(body)))
+            os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
+            with self.assertRaisesRegex(ValueError, 'staged artifact changed'):
+                self.coordinator.verify(self.scope)
+            target.write_bytes(body)
+            os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
+            cleared = []
+            with mock.patch.object(A.server, 'set_immutable',
+                                   side_effect=lambda fd, value: cleared.append((os.fstat(fd).st_ino, value)) or True):
+                self.coordinator.cleanup(self.scope, purge=True)
+            self.assertEqual({ino for ino, value in cleared if value is False},
+                             {ino for ino, value in sealed.items() if value})
+            self.assertFalse(self.coordinator.directory.exists())
+            self.coordinator = None
+
+    def test_unsealed_staging_keeps_rehashing_on_routine_verify(self):
+        self.coordinator = self.create()
+        self.coordinator.prepare(self.scope)
+        staged = self.staged_paths()
+        hashed = []
+        original = A.server.PinnedFile.digest
+
+        def counting(pinned, deadline=None):
+            hashed.append(pinned.path)
+            return original(pinned, deadline)
+        with mock.patch.object(A.server.PinnedFile, 'digest', counting):
+            self.coordinator.verify(self.scope)
+        self.assertEqual(staged & set(hashed), staged)
+
+    def test_release_staged_unseals_only_exact_owned_files_and_deletes_nothing(self):
+        transport = self.state / 'artifact-transport' / 'guest'
+        transport.mkdir(parents=True, mode=0o700)
+        (self.state / 'artifact-transport').chmod(0o700)
+        staged = transport / 'bundle.tar.zst'
+        staged.write_bytes(b'bundle')
+        staged.chmod(0o600)
+        calls = []
+        with mock.patch.object(A.server, 'is_immutable', return_value=True), \
+                mock.patch.object(A.server, 'set_immutable',
+                                  side_effect=lambda fd, value: calls.append(value) or True):
+            self.assertEqual(A.release_staged(self.state, os.geteuid()), [str(staged)])
+            self.assertEqual(calls, [False])
+            self.assertTrue(staged.exists())
+            staged.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, 'unexpected'):
+                A.release_staged(self.state, os.geteuid())
+        empty = self.root / 'empty-state'
+        empty.mkdir(mode=0o700)
+        self.assertEqual(A.release_staged(empty, os.geteuid()), [])
+
     def test_unknown_staged_path_is_never_deleted(self):
         self.coordinator = self.create()
         self.coordinator.prepare(self.scope)

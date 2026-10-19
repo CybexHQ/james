@@ -782,6 +782,12 @@ python3 -B "$repository_root/nixos-appliance/qualification/blueprint-catalog.py"
 
 template_sha="$(jq -er '.template_sha256' "$verification")"
 personalized_sha="$(jq -er '.personalized_sha256' "$verification")"
+if [[ -S "$TIARIS_NEST_QUALIFICATION_STATE/manage.sock" ]]; then
+  # Routine fixture requests compare sealed identities; rehash every staged
+  # artifact byte once before this lifecycle receipt is written.
+  python3 -B "$repository_root/nixos-appliance/qualification/isolated_manage_rpc.py" \
+    --state-dir "$TIARIS_NEST_QUALIFICATION_STATE" verify-artifacts
+fi
 jq -n \
   --slurpfile qualified_blueprints "$blueprints" \
   --arg qualification_kind "$qualification_kind" \
