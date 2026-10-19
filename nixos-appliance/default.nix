@@ -29,6 +29,9 @@ let
     inherit pkgs;
     repoRoot = builtins.toPath manageRepo;
   };
+  workstationCacheSeeds = import ./workstation-cache-seeds.nix {
+    inherit nixpkgs pkgs manageRepo workstationAgent system;
+  };
   # The Canopy tty1 screens: `--nest-setup` on the setup ISO and
   # `--appliance` on the installed Nest. Both read bounded JSON projections
   # written by tiaris-nest-bootstrap and the tiaris-nest daemon.
@@ -37,7 +40,7 @@ let
     repoRoot = builtins.toPath manageRepo;
   };
   common = {
-    inherit package sourceArchive migrations workstationAgent installerKiosk sourceRevision manageSourceRevision manageOrigin sourceDateEpoch releasePublicKey;
+    inherit package sourceArchive migrations workstationAgent workstationCacheSeeds installerKiosk sourceRevision manageSourceRevision manageOrigin sourceDateEpoch releasePublicKey;
     sourceArchiveFile = archiveInput;
     provisioningPublicKeys = publicKeys;
     nixpkgsRevision = pin.revision;
@@ -97,7 +100,8 @@ assert builtins.match "[0-9a-f]{40}" manageSourceRevision != null;
 assert builtins.length publicKeys >= 1 && builtins.length publicKeys <= 8;
 assert publicKeys == lib.sort builtins.lessThan (lib.unique publicKeys);
 {
-  inherit package unsignedCache buildMetadata workstationAgent installerKiosk;
+  inherit package unsignedCache buildMetadata workstationAgent workstationCacheSeeds installerKiosk;
+  workstationCacheSeedPaths = map toString workstationCacheSeeds.packages;
   system = installed.config.system.build.toplevel;
   iso = live.config.system.build.isoImage;
   inherit (installed) config;

@@ -13,6 +13,10 @@ let
     migrations = placeholder;
     grubTheme = placeholder;
     installerKiosk = if installerKiosk == null then placeholder else installerKiosk;
+    workstationCacheSeeds.packages = [
+      (pkgs.writeText "observer-cache-seed-fixture" "observer")
+      (pkgs.writeText "avahi-cache-seed-fixture" "avahi")
+    ];
     releasePublicKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     provisioningPublicKeys = [ "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" ];
     sourceRevision = builtins.concatStringsSep "" (builtins.genList (_: "a") 40);

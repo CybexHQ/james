@@ -122,6 +122,23 @@ class ProductionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'exact workstation agent'):
                 build['require_workstation_agent_cache'](cache, Path(str(agent) + '-other'))
 
+    def test_agent_only_cache_cannot_qualify_current_blueprint_outputs(self):
+        build = runpy.run_path(str(HELPERS.parent / 'build.py'))
+        agent = '/nix/store/' + 'a' * 32 + '-tiaris-agent'
+        outputs = ['/nix/store/' + char * 32 + '-' + name for char, name in
+                   [('b', 'tiaris-gsettings'), ('c', 'tiaris-session-gsettings'), ('d', 'avahi')]]
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary)
+            manifest = cache / 'manifest.json'
+            for paths in [[agent], [agent, *outputs[:-1]]]:
+                manifest.write_text(json.dumps({'store_paths': [{'path': path} for path in paths]}))
+                with self.assertRaisesRegex(ValueError, 'current Blueprint custom outputs'):
+                    build['require_workstation_custom_cache'](cache, outputs)
+            manifest.write_text(json.dumps({'store_paths': [{'path': path} for path in [agent, *outputs]]}))
+            build['require_workstation_custom_cache'](cache, outputs)
+            with self.assertRaisesRegex(ValueError, 'current Blueprint custom outputs'):
+                build['require_workstation_custom_cache'](cache, [])
+
     def test_tls_forwarder_preserves_bytes_and_closes_owned_connections(self):
         forwarding = load('isolated_manage_tls_proxy')
         class Echo(socketserver.BaseRequestHandler):

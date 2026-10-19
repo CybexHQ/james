@@ -5,7 +5,7 @@
   services.tiaris-nest = { enable = true; inherit appliance; };
   # Keep the exact workstation agent as a cache seed without starting its
   # service on Nest. The signed system closure exports only reachable paths.
-  system.extraDependencies = [ appliance.workstationAgent ];
+  system.extraDependencies = [ appliance.workstationAgent ] ++ appliance.workstationCacheSeeds.packages;
   networking.hostName = "tiaris-nest";
   system.stateVersion = "26.05";
   boot.loader.systemd-boot.enable = true;

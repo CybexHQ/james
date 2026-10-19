@@ -136,6 +136,13 @@ installation independently retain the complete current-profile delivery checks.
 Rollback still proves automatic restoration of the exact healthy predecessor.
 Independent cold appliance and workstation qualification remains mandatory after staging.
 
+The signed appliance closure carries the exact workstation agent, both observer
+wrappers for Taskbar, Dock and Tiling (including their schema dependencies), and
+the current Blueprint module's patched Avahi. These custom outputs cannot come
+from the public nixpkgs cache. The producer checks their presence in the exported
+cache before signing; qualification still independently proves source-free
+delivery on the installed appliance.
+
 Upgrade and rollback qualification use the retained verified guest artifact listener
 on port18082, bound to the exact selected candidate manifest. They do not start
 an additional download listener outside the isolated fixture network policy.

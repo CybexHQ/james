@@ -110,7 +110,12 @@ if __name__ == '__main__':
                 'Terminal permanent identity differs',
                 'Appliance report differs from the healthy exact NixOS closure',
                 'Qualification preflight differs from the exact predecessor',
-                'Permanent device incarnation changed during the transition'}
+                'Permanent device incarnation changed during the transition',
+                'Upgraded current Blueprint failed source-free delivery',
+                'Upgraded Blueprint qualification requires the source-disabled policy',
+                'Upgraded source-free Blueprint delivery timed out',
+                'Candidate runtime changed during Blueprint qualification',
+                'Current Blueprint revisions changed during upgrade qualification'}
         detail = ': ' + message if safe else ''
         raise SystemExit('Isolated NixOS transition qualification failed' + detail +
                          '; no acceptance evidence was written') from None

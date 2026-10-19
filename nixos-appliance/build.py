@@ -105,6 +105,13 @@ def require_workstation_agent_cache(cache, agent):
         raise ValueError('signed appliance cache omits the exact workstation agent output')
 
 
+def require_workstation_custom_cache(cache, outputs):
+    manifest = json.loads((cache / 'manifest.json').read_bytes())
+    paths = {row['path'] for row in manifest['store_paths']}
+    if not outputs or any(str(output) not in paths for output in outputs):
+        raise ValueError('signed appliance cache omits current Blueprint custom outputs')
+
+
 def build(args):
     manage = Path(args.manage_source_dir).absolute()
     clean_checkout(REPO, args.source_revision, 'james')
@@ -162,6 +169,9 @@ def build(args):
         else:
             cache, metadata = nix('unsignedCache'), nix('buildMetadata')
             require_workstation_agent_cache(cache, nix('workstationAgent'))
+            custom_outputs = json.loads(run('nix-instantiate', '--eval', '--strict', '--json',
+                                            expression, '-A', 'workstationCacheSeedPaths'))
+            require_workstation_custom_cache(cache, custom_outputs)
             if args.unsigned_output_dir:
                 # Ordinary files survive transfer into an isolated signing job.
                 shutil.copytree(cache, output / 'cache')

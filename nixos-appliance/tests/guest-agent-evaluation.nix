@@ -36,6 +36,9 @@ let
       && builtins.elem "tiaris-nest-appliance-1:${appliance.releasePublicKey}" installed.nix.settings.trusted-public-keys;
     stateVersionPreserved = installed.system.stateVersion == "26.05";
     workstationAgentRemainsCacheSeed = builtins.elem appliance.workstationAgent installed.system.extraDependencies;
+    workstationCustomOutputsRemainCacheSeeds = builtins.all
+      (package: builtins.elem package installed.system.extraDependencies)
+      appliance.workstationCacheSeeds.packages;
   };
 in
 assert installed.services.qemuGuest.enable;
