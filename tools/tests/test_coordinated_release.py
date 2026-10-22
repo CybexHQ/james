@@ -180,6 +180,52 @@ class CoordinatedReleaseTests(unittest.TestCase):
                     module['pin'](root, 'a' * 40, '1.0.89', candidate)
                 self.assertEqual((root / 'Cargo.toml').read_text(), manifest)
 
+    def pinned_root(self, directory, previous):
+        root = Path(directory)
+        (root / 'release').mkdir()
+        (root / 'Cargo.toml').write_text('[package]\nname="tiaris-nest"\nversion = "' + previous + '"\n')
+        (root / 'Cargo.lock').write_text('[[package]]\nname = "tiaris-nest"\nversion = "' + previous + '"\n')
+        return root
+
+    def test_development_candidate_uses_dev_prerelease_with_semver_precedence(self):
+        for previous, candidate in (('0.2.48-dev.tiaris.1', '0.2.58-dev.1'),
+                                    ('0.2.58-dev.1', '0.2.58-dev.2'),
+                                    ('0.2.58-dev.9', '0.2.58-dev.10'),
+                                    ('0.2.57', '0.2.58-dev.1'),
+                                    ('0.2.58-dev.3', '0.2.58')):
+            with self.subTest(previous=previous, candidate=candidate), tempfile.TemporaryDirectory() as directory:
+                root = self.pinned_root(directory, previous)
+                module['pin'](root, 'a' * 40, '1.0.108', candidate)
+                self.assertTrue(module['validate'](root))
+                self.assertIn('version = "' + candidate + '"', (root / 'Cargo.toml').read_text())
+                self.assertIn('version = "' + candidate + '"', (root / 'Cargo.lock').read_text())
+                pin = json.loads((root / 'release/workstation-netboot-source.json').read_text())
+                self.assertEqual(pin, {'repository': 'CybexHQ/development', 'revision': 'a' * 40,
+                                       'runtime_version': '1.0.108'})
+
+    def test_development_candidate_rejects_other_prereleases_and_non_advancing_versions(self):
+        for previous, candidate, runtime in (('0.2.57', '0.2.58-rc.1', '1.0.108'),
+                                             ('0.2.57', '0.2.58-dev', '1.0.108'),
+                                             ('0.2.57', '0.2.58-dev.0', '1.0.108'),
+                                             ('0.2.57', '0.2.58-dev.01', '1.0.108'),
+                                             ('0.2.57', '0.2.58-dev.1+build.1', '1.0.108'),
+                                             ('0.2.57', '0.2.58-dev.1', '1.0.108-dev.1'),
+                                             ('0.2.58-dev.1', '0.2.58-dev.1', '1.0.108'),
+                                             ('0.2.58', '0.2.58-dev.4', '1.0.108'),
+                                             ('0.2.48-dev.tiaris.1', '0.2.48-dev.1', '1.0.108')):
+            with self.subTest(previous=previous, candidate=candidate), tempfile.TemporaryDirectory() as directory:
+                root = self.pinned_root(directory, previous)
+                manifest = (root / 'Cargo.toml').read_text()
+                with self.assertRaises(ValueError):
+                    module['pin'](root, 'a' * 40, runtime, candidate)
+                self.assertEqual((root / 'Cargo.toml').read_text(), manifest)
+                self.assertFalse((root / 'release/coordinated.json').exists())
+
+    def test_workstation_expression_accepts_only_the_development_source(self):
+        expression = (ROOT / 'release/workstation-netboot.nix').read_text()
+        self.assertIn('assert sourcePin.repository == "CybexHQ/development";', expression)
+        self.assertNotIn('CybexHQ/manage', expression)
+
     def test_pins_development_and_requires_explicit_promotion(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
