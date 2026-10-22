@@ -177,7 +177,7 @@ The optional `TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT` authorizes only
 runner-private warm transport storage. It grants no VM, signing, publication or
 promotion authority. Cold verification independently downloads published bytes.
 
-Digital Brain and the coordinated approval workflow select
+The coordinated approval workflow selects
 `nixos-appliance/qualification/promote-production-release.py`. Ubuntu helpers
 have been removed from current source; historical tagged workflows are unchanged.
 Signed appliance and workstation evidence must bind the same isolated fixture,

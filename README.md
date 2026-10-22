@@ -199,23 +199,28 @@ Qualification retries use evidence directories unique to the workflow run and at
 Failed or canceled runs return directory ownership to the runner for cleanup; old
 acceptance evidence is never overwritten or reused by a retry.
 
-Digital Brain may create a candidate tag with `release/coordinated.json` and an immutable workstation
-source pin to `CybexHQ/development`. The normal release workflow still signs, builds once, publishes
-an immutable prerelease and cold-qualifies Nest/workstations. These tags skip automatic stable
-promotion. `approve-coordinated-release.yml` promotes only explicitly approved tag/source/run and
-artifact identities, reusing the canonical predecessor/qualification verifier and publication lock.
-`promote-production-release.py --verify-only` checks the same evidence without changing publication.
+The Tiaris release controller on The Beast (`tiaris-release`, implemented in CybexHQ/development
+`deploy/manage/beast_release_workflow.py`) creates a candidate tag with `release/coordinated.json` and
+an immutable workstation source pin to `CybexHQ/development`. The normal release workflow still signs,
+builds once, publishes an immutable prerelease and cold-qualifies Nest/workstations. These tags skip
+automatic stable promotion. `approve-coordinated-release.yml` promotes only explicitly approved
+tag/source/run and artifact identities, reusing the canonical predecessor/qualification verifier and
+publication lock. `promote-production-release.py --verify-only` checks the same evidence without
+changing publication.
 
-Configure `TIARIS_DEVELOPMENT_SOURCE_SSH_KEY` in the `production-release` environment with a read-only
-key for the private development repository. Never copy development changes into the production Tiaris checkout to build a runtime.
+The authoritative runtime pin of a release is the `release/workstation-netboot-source.json` committed
+at its tag, not the copy on `main`; see [where the runtime pin lives](RELEASES.md#where-the-runtime-pin-lives).
+
+The `production-release` environment holds a read-only key for the private development repository
+in `CYBEX_DEVELOPMENT_SOURCE_SSH_KEY` (a sealed secret keeps its pre-rename storage name). Never copy
+development changes into the production Tiaris checkout to build a runtime.
 The coordinator retains source bundles for recovery; version tags and signed assets must never be
 rewritten. A failed or cancelled coordinated preparation can leave a safe, unpromoted prerelease.
 
-The production-release environment admits version tags, so dispatch approval and
-`check-development-source.yml` using the prepared `v*` tag as the workflow ref. The source-access
-check reads the requested development commit without building or publishing; it is deliberately
-rejected on `main` by the same environment protection. The private deploy key is available only
-inside that protected environment.
+The production-release environment admits version tags only. The former source-access dispatch
+(`check-development-source.yml`) is retired: local preparation checks source availability, and the
+tagged producer checks out the exact development commit with that protected key before any build or
+signing step. The private deploy key is available only inside that protected environment.
 
 ### Managed appliance updates
 

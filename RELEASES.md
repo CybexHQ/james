@@ -75,6 +75,22 @@ requires greater runtime SemVer; advancing a runtime or compatibility epoch
 also requires changed bundle bytes. Successor verification runs before signing
 compatibility and again immediately before immutable publication.
 
+### Where the runtime pin lives
+
+`release/workstation-netboot-source.json` and `release/coordinated.json` on `main`
+are informational: they hold whichever pin was last merged to `main`. They are
+neither the production nor the development pin, and no release builds from them
+on `main`.
+
+- **Production.** The Tiaris release controller clones `main`, runs
+  `tools/coordinated-release.py pin`, commits the result and pushes only the
+  `vX.Y.Z` tag. The pin of a production release is the one committed at its tag
+  (`git show vX.Y.Z:release/workstation-netboot-source.json`); tag commits are not
+  merged back to `main`.
+- **Any release.** The signed manifest carries the same facts as
+  `workstation_netboot.runtime_version` and `workstation_netboot.manage_source_revision`.
+  Use those, or the file at the release's tag or branch, never the copy on `main`.
+
 ## Qualification and publication
 
 Published ancestry and the upgrade fixture are separate identities. Keep
