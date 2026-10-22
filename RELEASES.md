@@ -87,6 +87,13 @@ on `main`.
   `vX.Y.Z` tag. The pin of a production release is the one committed at its tag
   (`git show vX.Y.Z:release/workstation-netboot-source.json`); tag commits are not
   merged back to `main`.
+- **Development.** Development-signed candidates for `https://dev.tiaris.com` use
+  `X.Y.Z-dev.N` versions, so they never collide with a production tag and order
+  below the production `X.Y.Z` they precede. `tools/coordinated-release.py pin`
+  accepts that form; the pin is committed on a `release/dev-nest-X.Y.Z-dev.N`
+  branch (which runs ordinary `fast` CI) and is never tagged or merged. The
+  development repository's `deploy/dev/build-nest-dev-release.sh` builds it; see
+  its development deployment runbook.
 - **Any release.** The signed manifest carries the same facts as
   `workstation_netboot.runtime_version` and `workstation_netboot.manage_source_revision`.
   Use those, or the file at the release's tag or branch, never the copy on `main`.

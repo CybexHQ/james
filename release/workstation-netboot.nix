@@ -14,7 +14,7 @@ let
   sourceRevisionMatches = builtins.match "[0-9a-f]{40}" sourcePin.revision != null;
   nixpkgsRevisionMatches = builtins.match "[0-9a-f]{40}" nixpkgsPin.revision != null;
 in
-assert builtins.elem sourcePin.repository [ "CybexHQ/manage" "CybexHQ/development" ];
+assert sourcePin.repository == "CybexHQ/development";
 assert sourceRevisionMatches;
 assert nixpkgsRevisionMatches;
 assert runtimeVersion == sourcePin.runtime_version;
