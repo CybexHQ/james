@@ -88,7 +88,7 @@ receipt is required alongside appliance and workstation evidence for stable
 promotion. The host runner needs direct public HTTPS; proxy settings do not
 alter the downloader's DNS and redirect policy.
 The same private phase then boots an empty workstation through Nest PXE,
-installs Standard, applies Dock and Tiling, and requires a managed reboot and
+installs Standard, applies Dock and the Dock/Deno fixture, and requires a managed reboot and
 fresh exact compliant evidence for each. It checks the signed runtime descriptor,
 booted Nix generation and preserved workstation identity before canary selection.
 The separate stable-promotion job verifies the cold artifact ZIP digest and

@@ -9,16 +9,21 @@ import urllib.request
 import uuid
 
 BUILTINS = {'standard_workstation': 'taskbar', 'dock_workstation': 'dock'}
+# GNOME Taskbar and Dock are the supported desktops. The separate fixture is a
+# Dock Blueprint that carries the source-free Deno application coverage.
+FIXTURE_SLUG = 'qualification_dock'
+FIXTURE_PROFILE = 'dock'
+PROFILES = ['dock', 'dock', 'taskbar']
 HTTP = runpy.run_path(str(Path(__file__).with_name('qualification_http.py')))
 
 
-def catalog(rows, configs, tiling_slug):
-    expected = {**BUILTINS, tiling_slug: 'tiling'}
-    if tiling_slug in BUILTINS or len(expected) != 3:
-        raise ValueError('Tiling coverage needs a separate qualification Blueprint')
+def catalog(rows, configs, fixture_slug=FIXTURE_SLUG):
+    expected = {**BUILTINS, fixture_slug: FIXTURE_PROFILE}
+    if fixture_slug in BUILTINS or len(expected) != 3:
+        raise ValueError('Application coverage needs a separate qualification Blueprint')
     selected = [row for row in rows if row['slug'] in expected]
     if len(selected) != 3 or {row['slug'] for row in selected} != set(expected):
-        raise ValueError('Required Standard, Dock, and explicit Tiling qualification Blueprints are missing or duplicated')
+        raise ValueError('Required Standard, Dock, and explicit Dock qualification Blueprints are missing or duplicated')
     result = []
     for row in selected:
         slug = row['slug']
@@ -47,7 +52,7 @@ def catalog(rows, configs, tiling_slug):
         if not builtin:
             apps = {app['package_ref'] for app in config['expected_state_json']['applications']}
             if 'deno' not in apps or 'nodejs' in apps:
-                raise ValueError('Tiling qualification must retain Deno/source-free application coverage')
+                raise ValueError('Dock qualification must retain Deno/source-free application coverage')
         result.append({key: row[key] for key in
                        ('id', 'slug', 'current_revision', 'current_revision_id')}
                       | {'desktop_profile': expected[slug], 'config_hash': config['config_hash']})
@@ -64,7 +69,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manage-origin', required=True)
     parser.add_argument('--token-file', type=Path, required=True)
-    parser.add_argument('--tiling-blueprint', default='qualification_tiling')
+    parser.add_argument('--fixture-blueprint', default=FIXTURE_SLUG)
     parser.add_argument('--baseline', type=Path)
     parser.add_argument('--state-dir', type=Path)
     args = parser.parse_args()
@@ -102,8 +107,8 @@ def main():
         if len(rows) >= 10000:
             raise ValueError('Qualification catalog exceeds the supported bound')
     configs = {row['slug']: get('/v1/blueprints/' + str(uuid.UUID(row['id'])) + '/config')
-               for row in rows if row['slug'] in {*BUILTINS, args.tiling_blueprint}}
-    value = catalog(rows, configs, args.tiling_blueprint)
+               for row in rows if row['slug'] in {*BUILTINS, args.fixture_blueprint}}
+    value = catalog(rows, configs, args.fixture_blueprint)
     if args.baseline and value != json.loads(args.baseline.read_text()):
         raise ValueError('Qualification Blueprint revisions or effective configuration changed; restart admission')
     print(json.dumps(value, sort_keys=True))

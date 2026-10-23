@@ -6,7 +6,8 @@
 # when a module adds a derivation these seeds do not cover. Use it whenever the
 # pinned Manage source provides it, and require the same nixpkgs revision so
 # Manage CI checked the closure Nest builds. Older Manage revisions (signed
-# predecessors) keep the selection below.
+# predecessors) keep the selection below, which covers the supported GNOME
+# desktops only.
 { nixpkgs, pkgs, manageRepo, workstationAgent, system ? "x86_64-linux" }:
 let
   lib = pkgs.lib;
@@ -32,7 +33,7 @@ let
       }
     ];
   }).config;
-  profiles = lib.genAttrs [ "taskbar" "dock" "tiling" ] evaluate;
+  profiles = lib.genAttrs [ "taskbar" "dock" ] evaluate;
   observers = config: lib.filter (package:
     builtins.elem (lib.getName package) [ "tiaris-gsettings" "tiaris-session-gsettings" ]
   ) config.environment.systemPackages;
