@@ -13,5 +13,7 @@ def upgraded_delivery(manifest, device):
         'job_ids': [str(uuid.uuid4()) for _ in range(3)],
         'qualified_blueprints': {'schema': 'tiaris.nest.qualification-blueprints.v1', 'blueprints': [
             {'id': str(uuid.uuid4()), 'current_revision_id': str(uuid.uuid4()),
-             'desktop_profile': profile, 'slug': profile, 'current_revision': 1,
-             'config_hash': 'c' * 64} for profile in ('taskbar', 'dock', 'tiling')]}}
+             'desktop_profile': profile, 'slug': slug, 'current_revision': 1,
+             'config_hash': 'c' * 64} for slug, profile in (
+                ('standard_workstation', 'taskbar'), ('dock_workstation', 'dock'),
+                ('qualification_dock', 'dock'))]}}

@@ -231,7 +231,7 @@ check_delivery_policy
 blueprints="$work_dir/blueprints.json"
 python3 -B "$repository_root/nixos-appliance/qualification/blueprint-catalog.py" \
   --manage-origin "$manage_origin" --token-file "$token_file" --state-dir "$TIARIS_NEST_QUALIFICATION_STATE" \
-  --tiling-blueprint "${TIARIS_NEST_QUALIFICATION_TILING_BLUEPRINT:-qualification_tiling}" \
+  --fixture-blueprint "${TIARIS_NEST_QUALIFICATION_FIXTURE_BLUEPRINT:-qualification_dock}" \
   > "$blueprints"
 
 package_delivery="$(jq -er '.installer_iso_template_v3.package_delivery // "embedded"' "$manifest")"
@@ -777,7 +777,7 @@ rm -f -- "$work_dir/operator-key" "$work_dir/operator-key.pub" \
 check_delivery_policy
 python3 -B "$repository_root/nixos-appliance/qualification/blueprint-catalog.py" \
   --manage-origin "$manage_origin" --token-file "$token_file" --state-dir "$TIARIS_NEST_QUALIFICATION_STATE" \
-  --tiling-blueprint "${TIARIS_NEST_QUALIFICATION_TILING_BLUEPRINT:-qualification_tiling}" \
+  --fixture-blueprint "${TIARIS_NEST_QUALIFICATION_FIXTURE_BLUEPRINT:-qualification_dock}" \
   --baseline "$blueprints" >/dev/null
 
 template_sha="$(jq -er '.template_sha256' "$verification")"

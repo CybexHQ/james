@@ -25,8 +25,10 @@ class DeliveryTests(unittest.TestCase):
                                                'manage_source_revision': 'b' * 40}}
         self.catalog = {'schema': 'tiaris.nest.qualification-blueprints.v1', 'blueprints': [
             {'id': str(uuid.uuid4()), 'current_revision_id': str(uuid.uuid4()),
-             'desktop_profile': profile, 'slug': profile, 'current_revision': 1,
-             'config_hash': 'c' * 64} for profile in ('taskbar', 'dock', 'tiling')]}
+             'desktop_profile': profile, 'slug': slug, 'current_revision': 1,
+             'config_hash': 'c' * 64} for slug, profile in (
+                ('standard_workstation', 'taskbar'), ('dock_workstation', 'dock'),
+                ('qualification_dock', 'dock'))]}
 
     def sleep(self, seconds):
         self.t += seconds
@@ -92,6 +94,11 @@ class DeliveryTests(unittest.TestCase):
         wrong['qualified_blueprints']['blueprints'][1] = wrong['qualified_blueprints']['blueprints'][0]
         with self.assertRaises(ValueError):
             delivery.validate(self.manifest, 'dev_' + '1' * 32, wrong)
+        for profile in ('tiling', 'gnome-overview', 'minimal', 'taskbar', None):
+            wrong = copy.deepcopy(result)
+            wrong['qualified_blueprints']['blueprints'][2]['desktop_profile'] = profile
+            with self.subTest(profile=profile), self.assertRaises(ValueError):
+                delivery.validate(self.manifest, 'dev_' + '1' * 32, wrong)
 
 
 if __name__ == '__main__':

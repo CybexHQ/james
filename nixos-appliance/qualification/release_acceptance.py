@@ -70,10 +70,10 @@ def validate_lifecycle(manifest, manifest_sha256, evidence, source, phase):
     blueprints = catalog.get('blueprints', [])
     if (catalog.get('schema') != 'tiaris.nest.qualification-blueprints.v1'
             or len(blueprints) != 3
-            or {b.get('desktop_profile') for b in blueprints} != {'taskbar', 'dock', 'tiling'}
+            or sorted(str(b.get('desktop_profile')) for b in blueprints) != ['dock', 'dock', 'taskbar']
             or len({b.get('id') for b in blueprints}) != 3
             or len({b.get('current_revision_id') for b in blueprints}) != 3):
-        raise ValueError('The three distinct built-in profiles were not qualified')
+        raise ValueError('The Taskbar, Dock and Dock fixture Blueprints were not qualified')
 
 
 def validate_workstation(manifest, cold, evidence):

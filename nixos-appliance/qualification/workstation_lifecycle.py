@@ -275,7 +275,8 @@ def run(api, state, nest, manifest, catalog, output):
 
         installed = converge(first)
         for blueprint in (first, blueprints['dock_workstation'],
-                          next(v for v in catalog['blueprints'] if v['desktop_profile'] == 'tiling')):
+                          next(v for v in catalog['blueprints']
+                               if v['slug'] not in ('standard_workstation', 'dock_workstation'))):
             if blueprint != first:
                 api(prefix + '/operations/apply-blueprint', {'request_id': str(uuid.uuid4()),
                     'blueprint_id': blueprint['id'], 'blueprint_revision_id': blueprint['current_revision_id']})

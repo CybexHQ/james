@@ -172,7 +172,9 @@ jobs:
           nixpkgs_revision="$(sed -n 's/^[[:space:]]*revision = "\([0-9a-f]*\)";.*/\1/p' release/nixpkgs.nix)"
           [[ "$repository" = "CybexHQ/development" ]]
           [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
-          test "$nixpkgs_revision" = 74cc63f702f7d60a557e152a57b40fb1fd0f72ac
+          # release/nixpkgs.nix is the only source of the reviewed revision.
+          [[ "$nixpkgs_revision" =~ ^[0-9a-f]{40}$ ]]
+          grep -Fqx "  url = \"https://github.com/NixOS/nixpkgs/archive/${nixpkgs_revision}.tar.gz\";" release/nixpkgs.nix
           [[ "$runtime_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([-+][0-9A-Za-z.-]+)?$ ]]
           bundle_name="tiaris-workstation-netboot-${runtime_version}-${revision:0:12}-x86_64-linux.tar.zst"
           printf 'repository=%s\nrevision=%s\nruntime_version=%s\nnixpkgs_revision=%s\nbundle_name=%s\n' \

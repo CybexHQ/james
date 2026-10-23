@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 import runpy
 import subprocess
@@ -260,7 +261,12 @@ class CoordinatedReleaseTests(unittest.TestCase):
     def test_workflow_binds_nixos_build_to_the_pinned_sources(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / '.github/workflows/release.yml').read_text()
-        self.assertIn('test "$nixpkgs_revision" = 74cc63f702f7d60a557e152a57b40fb1fd0f72ac', workflow)
+        pin = (root / 'release/nixpkgs.nix').read_text()
+        revision = re.search(r'^  revision = "([0-9a-f]{40})";$', pin, re.M).group(1)
+        self.assertIn("nixpkgs_revision=\"$(sed -n 's/^[[:space:]]*revision = ", workflow)
+        self.assertIn('[[ "$nixpkgs_revision" =~ ^[0-9a-f]{40}$ ]]', workflow)
+        self.assertIn(f'  url = "https://github.com/NixOS/nixpkgs/archive/{revision}.tar.gz";', pin.splitlines())
+        self.assertNotIn(revision, workflow)
         self.assertIn('--source-revision "$(git rev-parse HEAD)"', workflow)
         self.assertIn('--manage-source-revision "$BUILD_MANAGE_REVISION"', workflow)
         self.assertIn('[[ "$repository" = "CybexHQ/development" ]]', workflow)

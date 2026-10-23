@@ -46,18 +46,21 @@ class AcceptanceTests(unittest.TestCase):
             candidate_runtime_required=True, workstation_runtime_prepublication_deferred=False,
             builtin_blueprints_prepublication_deferred=False,
             qualified_blueprints={'schema': 'tiaris.nest.qualification-blueprints.v1', 'blueprints': [
-                {'id': profile, 'current_revision_id': profile + '-revision', 'slug': profile,
-                 'desktop_profile': profile} for profile in ('taskbar', 'dock', 'tiling')]})
+                {'id': slug, 'current_revision_id': slug + '-revision', 'slug': slug,
+                 'desktop_profile': profile} for slug, profile in (
+                    ('standard_workstation', 'taskbar'), ('dock_workstation', 'dock'),
+                    ('qualification_dock', 'dock'))]})
         self.workstation = dict(schema='tiaris.nest.published-workstation-qualification.v1', ok=True,
             pxe_boot_observed=True, fresh_install_completed=True, source_builds_allowed=False,
             release_version='0.2.3', runtime_version='1.0.67', bundle_sha256='d' * 64,
             manage_source_revision='e' * 40,
             descriptor_sha256=workstation_lifecycle.descriptor_digest(self.manifest['workstation_netboot']),
             nest_device_id=self.cold['device_id'], workstation_device_id='dev_' + '2' * 32,
-            blueprints=[{'blueprint_id': profile, 'revision_id': profile + '-revision', 'slug': profile,
+            blueprints=[{'blueprint_id': slug, 'revision_id': slug + '-revision', 'slug': slug,
                 'configuration_status': 'compliant', 'managed_reboot_completed': True,
                 'identity_preserved': True, 'boot_id_before': 'before', 'boot_id_after': 'after',
-                'system': '/nix/store/exact-system'} for profile in ('taskbar', 'dock', 'tiling')])
+                'system': '/nix/store/exact-system'} for slug in
+                ('standard_workstation', 'dock_workstation', 'qualification_dock')])
 
         scope = {'schema': 'tiaris.nest.isolated-qualification.v1',
                  'manage_origin': 'https://manage.cybex.net', 'manage_revision': 'e' * 40,
@@ -107,6 +110,13 @@ class AcceptanceTests(unittest.TestCase):
                              ('builtin_blueprints_deferred_until_upgrade', True)]:
             with self.subTest(field=field), self.assertRaises(ValueError):
                 self.validate(self.cold | {field: value})
+
+    def test_retired_desktop_catalog_cannot_pass_acceptance(self):
+        for profile in ('tiling', 'gnome-overview', 'minimal', 'taskbar'):
+            wrong = copy.deepcopy(self.cold)
+            wrong['qualified_blueprints']['blueprints'][2]['desktop_profile'] = profile
+            with self.subTest(profile=profile), self.assertRaisesRegex(ValueError, 'Taskbar, Dock'):
+                self.validate(wrong)
 
     def test_old_runtime_and_partial_workstation_acceptance_cannot_promote(self):
         acceptance.validate_workstation(self.manifest, self.cold, self.workstation)

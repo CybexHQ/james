@@ -23,10 +23,10 @@ def read_catalog(api):
             break
     else:
         raise ValueError('Qualification catalog exceeds its bound')
-    slugs = {*CATALOG['BUILTINS'], 'qualification_tiling'}
+    slugs = {*CATALOG['BUILTINS'], CATALOG['FIXTURE_SLUG']}
     configs = {row['slug']: api('/v1/blueprints/' + str(uuid.UUID(row['id'])) + '/config')
                for row in rows if row['slug'] in slugs}
-    return CATALOG['catalog'](rows, configs, 'qualification_tiling')
+    return CATALOG['catalog'](rows, configs)
 
 
 def source_free_policy(api):
@@ -61,7 +61,7 @@ def validate(manifest, device, receipt):
     rows = catalog.get('blueprints', [])
     jobs = receipt.get('job_ids', [])
     if (catalog.get('schema') != 'tiaris.nest.qualification-blueprints.v1' or len(rows) != 3
-            or {row.get('desktop_profile') for row in rows} != {'taskbar', 'dock', 'tiling'}
+            or sorted(str(row.get('desktop_profile')) for row in rows) != CATALOG['PROFILES']
             or len({row.get('id') for row in rows}) != 3
             or len({row.get('current_revision_id') for row in rows}) != 3
             or len(jobs) != 3 or len(set(jobs)) != 3

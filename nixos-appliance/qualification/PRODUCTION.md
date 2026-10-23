@@ -70,9 +70,10 @@ revision. The older NixOS appliance is exercised against that current Tiaris
 harness with its separately pinned compatibility projection. Cold qualification
 uses only the independently downloaded candidate, with no warm predecessor cache.
 The fresh fixture completes Default Policy sign-in setup with an ephemeral local
-account and creates a separate Tiling/Deno profile; Standard and Dock retain
-their seeded current revisions. The fixture uses Secure Boot-capable OVMF with
-unenrolled keys, so enforcement is explicitly disabled. SSH selects the observed
+account and creates a separate Dock/Deno Blueprint (`qualification_dock`);
+Standard (Taskbar) and Dock retain their seeded current revisions. GNOME Taskbar
+and Dock are the only qualified desktops. The fixture uses Secure Boot-capable
+OVMF with unenrolled keys, so enforcement is explicitly disabled. SSH selects the observed
 interface by the owned MAC and private subnet; an unset desired service URL is
 not a guest address.
 Fresh isolated guests can lag the issuer clock by a few seconds without public
@@ -148,7 +149,7 @@ Rollback still proves automatic restoration of the exact healthy predecessor.
 Independent cold appliance and workstation qualification remains mandatory after staging.
 
 The signed appliance closure carries the exact workstation agent, both observer
-wrappers for Taskbar, Dock and Tiling (including their schema dependencies), and
+wrappers for Taskbar and Dock (including their schema dependencies), and
 the current Blueprint module's patched Avahi. These custom outputs cannot come
 from the public nixpkgs cache. The producer checks their presence in the exported
 cache before signing; qualification still independently proves source-free
