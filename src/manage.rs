@@ -5192,6 +5192,11 @@ mod tests {
     fn component_manifest_and_runtime_contract_are_compatible() {
         let manifest: serde_json::Value =
             serde_json::from_str(include_str!("../protocol/compatibility.json")).unwrap();
+        // v2 (Manage's evolution) keeps every v1 field; Nest reads only those.
+        assert!(matches!(
+            manifest["schema"].as_str(),
+            Some("tiaris.component-compatibility.v1" | "tiaris.component-compatibility.v2")
+        ));
         assert_eq!(
             manifest["protocol_version"].as_u64(),
             Some(u64::from(TIARIS_COMPONENT_PROTOCOL_VERSION))

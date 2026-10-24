@@ -49,6 +49,17 @@ RELEASE_COMPATIBILITY_SIGNATURE_DOMAIN = (
     "TIARIS-NEST-RELEASE-COMPATIBILITY-V1"
 )
 COMPONENT_COMPATIBILITY_SCHEMA = "tiaris.component-compatibility.v1"
+# Manage evolves the contract first. v2 adds capability floors and the signed
+# artifact inventory; its v1 fields are unchanged, so its projection (and every
+# signed tuple derived from it) is exactly the v1 one.
+COMPONENT_COMPATIBILITY_SCHEMA_V2 = "tiaris.component-compatibility.v2"
+COMPONENT_COMPATIBILITY_V1_FIELDS = frozenset(
+    {"schema", "protocol_version", "manage", "nest", "workstation_runtime"}
+)
+COMPONENT_COMPATIBILITY_V2_FIELDS = COMPONENT_COMPATIBILITY_V1_FIELDS | {
+    "component_floors",
+    "signed_artifacts",
+}
 RELEASE_MANIFEST_FILENAME = "tiaris-nest-release.json"
 RELEASE_COMPATIBILITY_FILENAME = "tiaris-nest-release-compatibility.json"
 INSTALLER_ISO_ARCHITECTURE = "x86_64-linux"
@@ -2143,18 +2154,101 @@ def _validate_compatibility_vocabulary(value: object, label: str) -> list[str]:
     return value
 
 
+def _compatibility_identifier(value: object, label: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", value):
+        _fail(f"{label} must be a bounded lowercase identifier")
+    return value
+
+
+def _compatibility_scalar(value: object, label: str) -> object:
+    if value is None:
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return _require_positive_int(value, label, maximum=2**31 - 1)
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value.encode("utf-8")) > 128
+        or any(
+            character.isspace() or ord(character) < 32 or ord(character) == 127
+            for character in value
+        )
+    ):
+        _fail(f"{label} must be a bounded token, positive integer or null")
+    if "://" in value or re.fullmatch(r"[0-9a-f]{40,}", value):
+        _fail(f"{label} must declare capability, not a URL or digest")
+    return value
+
+
+def _validate_component_floors(value: object) -> None:
+    # Nest does not interpret Manage's floors; it only requires a bounded,
+    # declarative shape so no revision, URL or key material can hide in them.
+    if not isinstance(value, dict) or not value or len(value) > 32:
+        _fail("component compatibility floors must be a non-empty bounded object")
+    for component, floors in value.items():
+        _compatibility_identifier(component, "component compatibility floor component")
+        if not isinstance(floors, dict) or not floors or len(floors) > 32:
+            _fail(f"component compatibility floors for {component} are invalid")
+        for name, floor in floors.items():
+            _compatibility_identifier(name, f"{component} compatibility floor")
+            if isinstance(floor, dict):
+                if not floor or len(floor) > 32:
+                    _fail(f"{component}.{name} compatibility floors are invalid")
+                for key, nested in floor.items():
+                    _compatibility_identifier(key, f"{component}.{name} compatibility floor")
+                    _compatibility_scalar(nested, f"{component}.{name}.{key} floor")
+            else:
+                _compatibility_scalar(floor, f"{component}.{name} floor")
+
+
+def _validate_signed_artifacts(value: object) -> None:
+    if not isinstance(value, list) or not value or len(value) > 32:
+        _fail("component compatibility signed artifacts must be a non-empty bounded list")
+    components = []
+    for entry in value:
+        if not isinstance(entry, dict) or "component" not in entry or len(entry) > 8:
+            _fail("component compatibility signed artifact entries are invalid")
+        for key, field in entry.items():
+            _compatibility_identifier(key, "signed artifact field")
+            _compatibility_scalar(field, f"signed artifact {key}")
+        components.append(
+            _compatibility_identifier(entry["component"], "signed artifact component")
+        )
+    if len(set(components)) != len(components):
+        _fail("component compatibility signed artifacts must be unique per component")
+
+
+def _component_compatibility_v1(contract: dict[str, Any]) -> dict[str, Any]:
+    """The v1 view of a v1 or v2 contract: the projection-equivalent fields."""
+    view = {field: contract[field] for field in COMPONENT_COMPATIBILITY_V1_FIELDS}
+    view["schema"] = COMPONENT_COMPATIBILITY_SCHEMA
+    return view
+
+
 def _validate_compatibility_contract(
     value: object, *, require_current_runtime_contract: bool = True
 ) -> dict[str, Any]:
+    schema = value.get("schema") if isinstance(value, dict) else None
+    if schema == COMPONENT_COMPATIBILITY_SCHEMA_V2:
+        contract = _require_exact_object_keys(
+            value, set(COMPONENT_COMPATIBILITY_V2_FIELDS), "component compatibility contract"
+        )
+        _validate_component_floors(contract["component_floors"])
+        _validate_signed_artifacts(contract["signed_artifacts"])
+        _validate_compatibility_contract(
+            _component_compatibility_v1(contract),
+            require_current_runtime_contract=require_current_runtime_contract,
+        )
+        return contract
     contract = _require_exact_object_keys(
         value,
-        {"schema", "protocol_version", "manage", "nest", "workstation_runtime"},
+        set(COMPONENT_COMPATIBILITY_V1_FIELDS),
         "component compatibility contract",
     )
     if contract["schema"] != COMPONENT_COMPATIBILITY_SCHEMA:
         _fail(
             "component compatibility contract schema must be "
-            f"{COMPONENT_COMPATIBILITY_SCHEMA}"
+            f"{COMPONENT_COMPATIBILITY_SCHEMA} or {COMPONENT_COMPATIBILITY_SCHEMA_V2}"
         )
     _require_positive_int(
         contract["protocol_version"],

@@ -385,6 +385,125 @@ class NestReleaseToolTests(unittest.TestCase):
         self.assertIn("verify-component-compatibility", workflow)
         self.assertNotIn("cmp --silent protocol/compatibility.json", workflow)
 
+    def v2_contract(self) -> dict[str, object]:
+        """The Manage-side v2 shape: v1 fields unchanged plus additive sections."""
+        contract = json.loads(self.compatibility.read_text(encoding="utf-8"))
+        contract["schema"] = "tiaris.component-compatibility.v2"
+        contract["component_floors"] = {
+            "nest": {"appliance_release_schema": "tiaris.nest.appliance-release.v3"},
+            "workstation_runtime": {
+                "installer_target_minimum": "1.0.15",
+                "managed_update_minimum": "1.0.27",
+            },
+            "features": {
+                "classroom-gnome-taskbar-dock": {
+                    "workstation_runtime_minimum": "1.0.98",
+                    "classroom_browser_minimum": "0.2.2",
+                }
+            },
+        }
+        contract["signed_artifacts"] = [
+            {
+                "component": "nest_binary",
+                "carried_by": "tiaris.nest.release.v1",
+                "signature_domain": None,
+            },
+            {
+                "component": "workstation_runtime",
+                "schema": "tiaris.nest.workstation-netboot.v1",
+                "signature_domain": "TIARIS-NEST-WORKSTATION-NETBOOT-V1",
+            },
+        ]
+        return contract
+
+    def test_manage_side_v2_contract_is_accepted_through_its_v1_projection(self) -> None:
+        nest_path = self.directory / "nest-compatibility.json"
+        manage_path = self.directory / "manage-compatibility.json"
+        nest_path.write_bytes(self.compatibility.read_bytes())
+
+        def verify() -> subprocess.CompletedProcess[bytes]:
+            return self.run_tool(
+                "verify-component-compatibility",
+                "--nest-compatibility",
+                str(nest_path),
+                "--manage-compatibility",
+                str(manage_path),
+            )
+
+        manage = self.v2_contract()
+        self.write_canonical_json(manage_path, manage)
+        accepted = verify()
+        self.assertEqual(accepted.returncode, 0, accepted.stderr.decode())
+        self.assertIn(b"nest_protocol=4 manage_protocol=4 runtime_epoch=1", accepted.stdout)
+
+        # The Nest copy may follow to v2 (byte re-sync) while Manage still runs v1.
+        self.write_canonical_json(nest_path, manage)
+        manage_path.write_bytes(self.compatibility.read_bytes())
+        self.assertEqual(verify().returncode, 0)
+        nest_path.write_bytes(self.compatibility.read_bytes())
+
+        rejected = {
+            "unknown section": lambda value: value.update({"nightly_pins": {}}),
+            "missing section": lambda value: value.pop("signed_artifacts"),
+            "v1 schema with v2 sections": lambda value: value.update(
+                {"schema": "tiaris.component-compatibility.v1"}
+            ),
+            "provenance in floors": lambda value: value["component_floors"][
+                "workstation_runtime"
+            ].update({"source": "https://github.com/CybexHQ/development"}),
+            "digest in floors": lambda value: value["component_floors"]["nest"].update(
+                {"revision": "a" * 40}
+            ),
+            "duplicate artifact": lambda value: value["signed_artifacts"].append(
+                {"component": "nest_binary"}
+            ),
+            "inverted v1 range": lambda value: value["manage"].update(
+                {"minimum_nest_protocol": 5}
+            ),
+        }
+        for label, mutate in rejected.items():
+            with self.subTest(label):
+                value = self.v2_contract()
+                mutate(value)
+                self.write_canonical_json(manage_path, value)
+                self.assertEqual(verify().returncode, 2, label)
+
+        changed_tuple = self.v2_contract()
+        changed_tuple["workstation_runtime"]["compatibility_epoch"] += 1
+        self.write_canonical_json(manage_path, changed_tuple)
+        result = verify()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"runtime compatibility tuples do not match", result.stderr)
+
+    def test_release_compatibility_binds_a_v2_contract_by_its_full_digest(self) -> None:
+        manifest_path = self.directory / "release.json"
+        signed = self.run_tool(*self.manifest_arguments(manifest_path))
+        self.assertEqual(signed.returncode, 0, signed.stderr.decode())
+        contract = self.v2_contract()
+        self.write_canonical_json(self.compatibility, contract)
+        output = self.directory / "v2-compatibility.json"
+        generated = self.run_tool(*self.compatibility_arguments(output, manifest_path))
+        self.assertEqual(generated.returncode, 0, generated.stderr.decode())
+        asset = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(asset["compatibility"], contract)
+        self.assertEqual(
+            asset["compatibility_sha256"],
+            hashlib.sha256(
+                (
+                    json.dumps(
+                        contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                    )
+                    + "\n"
+                ).encode()
+            ).hexdigest(),
+        )
+        verified = self.run_tool(
+            *self.compatibility_arguments(
+                output, manifest_path, command="verify-compatibility"
+            )
+        )
+        self.assertEqual(verified.returncode, 0, verified.stderr.decode())
+
     def test_v2_manifest_is_deterministic_and_independently_verifiable(self) -> None:
         first = self.directory / "first.json"
         second = self.directory / "second.json"
