@@ -6,6 +6,7 @@ import runpy
 import subprocess
 import tempfile
 import textwrap
+import tomllib
 import unittest
 
 module = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'coordinated-release.py'))
@@ -221,6 +222,26 @@ class CoordinatedReleaseTests(unittest.TestCase):
                     module['pin'](root, 'a' * 40, runtime, candidate)
                 self.assertEqual((root / 'Cargo.toml').read_text(), manifest)
                 self.assertFalse((root / 'release/coordinated.json').exists())
+
+    def test_main_runtime_pin_is_informational_and_never_builds(self):
+        pin = json.loads((ROOT / 'release/workstation-netboot-source.json').read_text())
+        self.assertIn('informational', pin)
+        self.assertEqual(pin['repository'], 'CybexHQ/development')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'release').mkdir()
+            for name in ('release/workstation-netboot-source.json', 'release/coordinated.json'):
+                (root / name).write_bytes((ROOT / name).read_bytes())
+            with self.assertRaises(ValueError):
+                module['validate'](root)
+            for name in ('Cargo.toml', 'Cargo.lock'):
+                (root / name).write_bytes((ROOT / name).read_bytes())
+            version = tomllib.loads((root / 'Cargo.toml').read_text())['package']['version']
+            major, minor, patch = module['version_core'](version)
+            module['pin'](root, 'a' * 40, '1.0.108', f'{major}.{minor}.{patch + 1}-dev.1')
+            pinned = json.loads((root / 'release/workstation-netboot-source.json').read_text())
+            self.assertNotIn('informational', pinned)
+            self.assertTrue(module['validate'](root))
 
     def test_workstation_expression_accepts_only_the_development_source(self):
         expression = (ROOT / 'release/workstation-netboot.nix').read_text()

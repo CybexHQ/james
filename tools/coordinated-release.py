@@ -42,6 +42,8 @@ def validate(root):
             or value.get('appliance_family') != 'nixos'
             or set(value) != {'schema', 'appliance_family', 'manage_revision'}
             or value.get('manage_revision') != pin['revision']
+            # main's copy carries an `informational` note; only `pin` output builds.
+            or set(pin) != {'repository', 'revision', 'runtime_version'}
             or pin['repository'] != 'CybexHQ/development'
             or not re.fullmatch('[0-9a-f]{40}', pin['revision'])):
         raise ValueError('Invalid coordinated release source; automatic promotion is forbidden')

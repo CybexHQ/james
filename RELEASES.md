@@ -80,7 +80,20 @@ compatibility and again immediately before immutable publication.
 `release/workstation-netboot-source.json` and `release/coordinated.json` on `main`
 are informational: they hold whichever pin was last merged to `main`. They are
 neither the production nor the development pin, and no release builds from them
-on `main`.
+on `main`. The copy on `main` says so in its `informational` field, and
+`tools/coordinated-release.py validate` (the release workflow's first check)
+refuses a pin with any field beyond `repository`, `revision` and
+`runtime_version`, so a tag that skipped `pin` cannot build. `pin` writes exactly
+those three fields.
+
+The file stays on `main` because two readers still use it there:
+
+- builds of `main` itself (`release/workstation-netboot.nix` and the appliance
+  closure), whose workstation cache seeds fall back to the built-in Taskbar/Dock
+  selection when the pinned development revision predates
+  `deploy/nixos/tiaris-workstation-cache-seeds.nix`;
+- the production coordinator, which reads its `runtime_version` as the
+  anti-regression baseline before it re-pins.
 
 - **Production.** The Tiaris release controller clones `main`, runs
   `tools/coordinated-release.py pin`, commits the result and pushes only the
