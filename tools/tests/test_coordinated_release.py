@@ -225,13 +225,17 @@ class CoordinatedReleaseTests(unittest.TestCase):
 
     def test_main_runtime_pin_is_informational_and_never_builds(self):
         pin = json.loads((ROOT / 'release/workstation-netboot-source.json').read_text())
-        self.assertIn('informational', pin)
         self.assertEqual(pin['repository'], 'CybexHQ/development')
+        if 'informational' not in pin:
+            # A vX.Y.Z tag or release/dev-nest-* branch carries `pin` output instead of
+            # main's informational copy; that source must build as checked out.
+            self.assertTrue(module['validate'](ROOT))
+            pin = {**pin, 'informational': 'Last pin merged to main, not a release pin.'}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'release').mkdir()
-            for name in ('release/workstation-netboot-source.json', 'release/coordinated.json'):
-                (root / name).write_bytes((ROOT / name).read_bytes())
+            (root / 'release/workstation-netboot-source.json').write_text(json.dumps(pin, indent=2) + '\n')
+            (root / 'release/coordinated.json').write_bytes((ROOT / 'release/coordinated.json').read_bytes())
             with self.assertRaises(ValueError):
                 module['validate'](root)
             for name in ('Cargo.toml', 'Cargo.lock'):
