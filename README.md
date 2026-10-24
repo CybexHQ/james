@@ -178,6 +178,10 @@ Nest. Protocol 4 and workstation runtime epoch 1 remain unchanged.
 The canonical signed `tiaris-nest-release-compatibility.json` retains its
 historical `appliance_package_snapshot` identity slot for the closure archive.
 Its signature binds every published artifact and the exact main manifest.
+It embeds the component contract and its full digest. Nest accepts both
+`tiaris.component-compatibility.v1` and Manage's additive v2, which keeps every
+v1 field unchanged and adds `component_floors` and `signed_artifacts`; Nest
+checks only the v1 fields (its projection), so v2 changes no signed tuple.
 The closure's embedded Tiaris source archive must match the source hash and
 size in the workstation descriptor. Historical V1/V2 signatures remain
 verifiable; they do not authorize current installations or updates.
