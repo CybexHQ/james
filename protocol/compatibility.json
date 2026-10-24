@@ -1,5 +1,5 @@
 {
-  "schema": "tiaris.component-compatibility.v1",
+  "schema": "tiaris.component-compatibility.v2",
   "protocol_version": 4,
   "manage": {
     "minimum_nest_protocol": 4,
@@ -62,5 +62,51 @@
       "runtime_report_stale",
       "runtime_report_storage_unavailable"
     ]
-  }
+  },
+  "component_floors": {
+    "nest": {
+      "appliance_release_schema": "tiaris.nest.appliance-release.v3"
+    },
+    "workstation_runtime": {
+      "installer_target_minimum": "1.0.15",
+      "managed_update_minimum": "1.0.27"
+    },
+    "features": {
+      "classroom-gnome-taskbar-dock": {
+        "workstation_runtime_minimum": "1.0.98",
+        "classroom_browser_minimum": "0.2.2"
+      }
+    }
+  },
+  "signed_artifacts": [
+    {
+      "component": "nest_binary",
+      "carried_by": "tiaris.nest.release.v1",
+      "signature_domain": null
+    },
+    {
+      "component": "nest_appliance",
+      "schema": "tiaris.nest.appliance-release.v3",
+      "signature_domain": "TIARIS-NEST-APPLIANCE-RELEASE-V3"
+    },
+    {
+      "component": "nest_appliance_iso",
+      "signature_domain": "TIARIS-NEST-INSTALLER-ISO-TEMPLATE-V3"
+    },
+    {
+      "component": "workstation_runtime",
+      "schema": "tiaris.nest.workstation-netboot.v1",
+      "signature_domain": "TIARIS-NEST-WORKSTATION-NETBOOT-V1"
+    },
+    {
+      "component": "release_compatibility",
+      "schema": "tiaris.nest.release-compatibility.v1",
+      "signature_domain": "TIARIS-NEST-RELEASE-COMPATIBILITY-V1"
+    },
+    {
+      "component": "classroom_browser",
+      "kind": "crx3",
+      "authority": "organization"
+    }
+  ]
 }
