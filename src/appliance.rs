@@ -1,5 +1,6 @@
 pub mod closure;
 pub mod nixos;
+pub mod origin_transition;
 pub mod release_v3;
 pub mod schedule;
 // Ubuntu appliance state and health projection.
