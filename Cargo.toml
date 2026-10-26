@@ -43,7 +43,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 urlencoding = "2.1"
 uuid = { version = "1", features = ["v4", "serde"] }
-zstd = "0.13"
+zstd = "0.14.3"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
