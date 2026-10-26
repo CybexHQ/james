@@ -38,6 +38,7 @@ def sibling(name):
 
 inputs = sibling('isolated_manage_config')
 resources = sibling('isolated_manage_resources')
+database = sibling('isolated_manage_database')
 transport = sibling('isolated_manage_transport')
 tls_forwarding = sibling('isolated_manage_tls_proxy')
 SCHEMA = 'tiaris.nest.isolated-manage.v2'
@@ -277,6 +278,8 @@ class Owner:
                     self.save(receipt)
                     self.guard(receipt)
                     docker.call('container', 'start', spec['id'])
+                    if role == 'app':
+                        database.initialize(self, receipt, config, resources)
                     docker.verify_container(role, spec['id'], spec['image'], spec['uid'],
                                             receipt['context']['network_id'], spec['mounts'], dns=receipt['peer_ipv4'], peer=spec['peer'])
                     self.adapter.attach_dns_route(receipt['context'], spec['id'])
@@ -307,7 +310,7 @@ class Owner:
         app_env = resources.environment(config, secret, receipt['releases'][selected],
                                         receipt['artifact_transports']['releases'][selected],
                                         database_password, ssh_ca, receipt['guard']['proxy_url'])
-        values = {'app': (10001, app_env, 'exec /opt/tiaris/bin/tiaris\n'),
+        values = {'app': (10001, app_env, database.APP_START),
                   'db': (999, {'PATH': '/usr/lib/postgresql/17/bin:/usr/local/bin:/usr/bin:/bin',
                                'LANG': 'C.UTF-8', 'POSTGRES_USER': 'fixture',
                                'POSTGRES_PASSWORD': database_password, 'POSTGRES_DB': 'fixture',

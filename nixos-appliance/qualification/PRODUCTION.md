@@ -31,6 +31,13 @@ below map to the existing `CYBEX_JAMES_*` GitHub variables; the runner retains
   production qualification this is a separately built, signed private baseline;
   an Ubuntu release or a development-origin NixOS ISO is not a substitute.
 
+The isolated Manage service first runs its exact image in migration-only mode,
+then provisions the restricted database roles using the SQL from that same
+committed development revision. Only successful provisioning admits a restart;
+the image verifies its installed schema and runtime authority before serving the
+API. Later fixture restarts use operator-managed migrations. Setup failure leaves
+the API stopped and follows the existing exact-owner fixture cleanup path.
+
 The template retains the existing v2 configuration schema. It pins the database
 and TLS image digests, names the canonical development source checkout, supplies
 an unused disjoint private /28 backend subnet, and references a dedicated TLS
