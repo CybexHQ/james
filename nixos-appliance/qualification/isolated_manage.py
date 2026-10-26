@@ -278,6 +278,8 @@ class Owner:
                     self.save(receipt)
                     self.guard(receipt)
                     docker.call('container', 'start', spec['id'])
+                    if role == 'app':
+                        database.initialize(self, receipt, config, resources)
                     docker.verify_container(role, spec['id'], spec['image'], spec['uid'],
                                             receipt['context']['network_id'], spec['mounts'], dns=receipt['peer_ipv4'], peer=spec['peer'])
                     self.adapter.attach_dns_route(receipt['context'], spec['id'])
@@ -285,8 +287,6 @@ class Owner:
                                           self.network_members(receipt))
                     if role == 'db':
                         self.wait_database(docker, spec['id'])
-                    elif role == 'app':
-                        database.initialize(self, receipt, config, resources)
                 self.start_tls_proxy(receipt)
                 self.wait_health(receipt)
                 self.bootstrap(receipt)

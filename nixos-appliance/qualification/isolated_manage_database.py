@@ -20,7 +20,7 @@ def initialize(owner, receipt, config, resources):
         spec = receipt['containers'][role]
         docker.verify_container(role, spec['id'], spec['image'], spec['uid'],
             receipt['context']['network_id'], spec['mounts'],
-            dns=receipt['peer_ipv4'], peer=spec['peer'])
+            dns=receipt['peer_ipv4'], peer=spec['peer'], created=role == 'app')
         return spec['id']
 
     app = verify('app')

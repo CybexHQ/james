@@ -229,6 +229,7 @@ for mode in (0o444, 0o400, 0o600):
                 'newpassword', 'newsshca', 'http://10.99.17.1:3128')
         self.assertNotIn('SMTP_PASSWORD', values)
         self.assertEqual(values['TIARIS_DATABASE_URL'], 'postgres://fixture:newpassword@db:5432/fixture')
+        self.assertEqual(values['TIARIS_DATABASE_MIGRATIONS'], 'operator')
         self.assertEqual(values['TIARIS_NEST_RELEASE_MANIFEST_URL'], 'https://github.com/exact')
         self.assertEqual(values['TIARIS_NEST_APPLIANCE_AUTOMATIC_ROLLOUTS'], 'false')
         self.assertEqual(values['HTTPS_PROXY'], 'http://10.99.17.1:3128')
@@ -763,6 +764,7 @@ class GuardTests(unittest.TestCase):
                 'schema': owner_module.GUARD_SCHEMA, **context, 'guard_id': 'exact-rules', 'proxy_url': None}
             self.adapter.verify.return_value = True
             owner.wait_database = mock.Mock()
+            self.adapter.attach_dns_route.side_effect = lambda _context, identity: events.append('route-' + identity)
             owner.start_tls_proxy = mock.Mock(side_effect=lambda _: events.append('tls-forwarding'))
             owner.wait_health = mock.Mock(side_effect=lambda _: events.append('health'))
             owner.bootstrap = mock.Mock()
@@ -786,6 +788,7 @@ class GuardTests(unittest.TestCase):
             self.assertLess(events.index('guard'), events.index('listeners-prepare'))
             self.assertLess(events.index('listeners-verify'), events.index('create-db'))
             self.assertLess(events.index('create-app'), events.index('database-setup'))
+            self.assertLess(events.index('database-setup'), events.index('route-app-id'))
             self.assertLess(events.index('database-setup'), events.index('create-tls'))
             self.assertLess(events.index('create-tls'), events.index('tls-forwarding'))
             self.assertLess(events.index('tls-forwarding'), events.index('health'))
