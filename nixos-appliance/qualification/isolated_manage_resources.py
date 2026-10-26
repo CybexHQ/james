@@ -35,6 +35,7 @@ def environment(config, secrets, release, transports, db_password, ssh_ca, proxy
     values = {
         'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/var/lib/tiaris',
         'TIARIS_DATABASE_URL': f'postgres://fixture:{db_password}@db:5432/fixture',
+        'TIARIS_DATABASE_MIGRATIONS': 'operator',
         'TIARIS_PORT': '8080', 'TIARIS_STATIC_DIR': '/opt/tiaris/web/dist',
         'TIARIS_NIXPKGS_ICON_CACHE_DIR': '/var/lib/tiaris/app-icons',
         'TIARIS_PUBLIC_API_URL': config['manage_origin'],
@@ -103,7 +104,9 @@ class Docker:
     def __init__(self, run, owner, prefix):
         self.run, self.owner, self.prefix = run, owner, prefix
 
-    def call(self, *args):
+    def call(self, *args, data=None):
+        if data is not None:
+            return self.run(DOCKER + list(args), data=data)
         return self.run(DOCKER + list(args))
 
     def name(self, role):

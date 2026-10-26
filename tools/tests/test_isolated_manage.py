@@ -778,11 +778,15 @@ class GuardTests(unittest.TestCase):
             settings = configuration() | {'manage_origin': scope['manage_origin']}
             secret = {'certificate_sha256': 'a' * 64}
             with mock.patch.object(config, 'load', return_value=(settings, secret)), \
-                    mock.patch.object(config, 'signed_releases', return_value=saved_release['releases']):
+                    mock.patch.object(config, 'signed_releases', return_value=saved_release['releases']), \
+                    mock.patch.object(owner_module.database, 'initialize',
+                                      side_effect=lambda *_: events.append('database-setup')):
                 result = owner.prepare(Path('/config'), Path('/candidate'), Path('/predecessor'))
             self.assertEqual(result['status'], 'ready')
             self.assertLess(events.index('guard'), events.index('listeners-prepare'))
             self.assertLess(events.index('listeners-verify'), events.index('create-db'))
+            self.assertLess(events.index('create-app'), events.index('database-setup'))
+            self.assertLess(events.index('database-setup'), events.index('create-tls'))
             self.assertLess(events.index('create-tls'), events.index('tls-forwarding'))
             self.assertLess(events.index('tls-forwarding'), events.index('health'))
             factory.assert_called_once()
