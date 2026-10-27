@@ -467,6 +467,8 @@ struct NestAgentReportRequest {
     appliance: Option<crate::appliance::ApplianceReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     appliance_report_error: Option<&'static str>,
+    /// Workstation software bases (nixpkgs commits) this Nest can build.
+    workstation_nixpkgs_commits: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1380,6 +1382,7 @@ async fn report_nest_state(
         wake_on_lan,
         appliance,
         appliance_report_error,
+        workstation_nixpkgs_commits: crate::config::workstation_nixpkgs_commits(&state.config),
     };
     let (body, body_bytes) =
         fit_nest_report_body(body, MAX_NEST_REPORT_BODY_BYTES, report_priority)?;
@@ -5716,6 +5719,7 @@ mod tests {
             wake_on_lan: vec![],
             appliance: None,
             appliance_report_error: None,
+            workstation_nixpkgs_commits: vec!["74cc63f702f7d60a557e152a57b40fb1fd0f72ac".into()],
         }
     }
 

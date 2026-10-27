@@ -41,6 +41,14 @@ Secure Boot turned off, four cores, at least 16 GiB RAM and a 160 GiB fixed disk
 If provisioning is unavailable in Tiaris, installation is unavailable. No
 fallback installer is supported.
 
+## Workstation software bases
+
+Each report lists `workstation_nixpkgs_commits`, the workstation nixpkgs
+commits this Nest can build. `tools/software-base.py` drafts, signs and
+publishes the Cybex-signed software bases Tiaris offers as kernel and app
+updates. See [docs/workstation-software-bases.md](docs/workstation-software-bases.md),
+including what supporting a second commit requires.
+
 ## Development
 
 ```sh
