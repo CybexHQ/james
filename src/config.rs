@@ -762,6 +762,23 @@ fn normalize_build_target_config(target: &mut BuildTargetConfig) -> anyhow::Resu
     Ok(())
 }
 
+/// Workstation nixpkgs commits this Nest builds Blueprints on: the reviewed
+/// pins of its Blueprint build targets. Tiaris offers a software base only
+/// when every builder Nest reports its commit.
+pub fn workstation_nixpkgs_commits(config: &AppConfig) -> Vec<String> {
+    let mut commits: Vec<String> = config
+        .build
+        .targets
+        .iter()
+        .filter(|target| matches!(target.target.as_str(), "blueprint" | "desktop_experience"))
+        .filter_map(|target| pinned_nixpkgs_revision(&target.flake).ok())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    commits.sort();
+    commits.dedup();
+    commits
+}
+
 pub fn pinned_nixpkgs_revision(flake: &str) -> anyhow::Result<&str> {
     let revision = flake.strip_prefix("github:NixOS/nixpkgs/").ok_or_else(|| {
         anyhow::anyhow!(
@@ -1119,6 +1136,26 @@ mod tests {
             config.build.manage_source_url_template,
             manage_source::MANAGE_SOURCE_URL_TEMPLATE
         );
+    }
+
+    #[test]
+    fn reports_the_workstation_commits_of_blueprint_targets() {
+        let mut config = AppConfig::default();
+        config.build.targets = vec![
+            governed_blueprint_build_target(),
+            BuildTargetConfig {
+                target: "installer".into(),
+                flake: "github:NixOS/nixpkgs/nixos-26.05".into(),
+                ..governed_blueprint_build_target()
+            },
+            governed_blueprint_build_target(),
+        ];
+        assert_eq!(
+            workstation_nixpkgs_commits(&config),
+            vec![RELEASE_NIXPKGS_REVISION.to_string()]
+        );
+        config.build.targets.clear();
+        assert!(workstation_nixpkgs_commits(&config).is_empty());
     }
 
     #[test]
