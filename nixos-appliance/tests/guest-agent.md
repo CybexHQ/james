@@ -1,4 +1,4 @@
-# Installed QEMU guest agent
+# Installed virtual-machine guest agents
 
 `nixos-appliance/system.nix` enables the standard NixOS
 `services.qemuGuest` module. `default.nix` imports this module for the installed
@@ -12,7 +12,15 @@ The pinned NixOS module supplies `qemu-guest-agent.service` and its packaged
 startup. Runtime state lives in `/run/qemu-ga`. Physical appliances without the
 channel do not start the service. The hypervisor must provide the channel.
 
-The channel is a privileged management interface controlled by the trusted
+The installed system also enables `virtualisation.incus.agent.enable`. Incus
+exec and file transfer use this separate authenticated transport; QEMU GA alone
+does not provide them. The pinned NixOS module installs Incus's packaged loader,
+udev rules and boot service. The loader obtains the agent from the hypervisor's
+9p configuration share or `incus-agent` drive into `/run/incus_agent`. An Incus
+host daemon is not enabled inside the appliance. The service preserves a running
+`incus exec` across a NixOS generation switch.
+
+Each channel is a privileged management interface controlled by the trusted
 hypervisor. Release-signature checks protect system-generation updates; they do
 not constrain QGA RPC commands or replace hypervisor access controls. Keep guest
 execution/file-transfer authority private and limited to the approved VM scope.
@@ -31,7 +39,8 @@ The test evaluates the real installed `system.nix` with the repository's pinned
 nixpkgs and the existing console evaluation seam's explicitly test-only package
 and public-key placeholders. It does not compile those placeholders, build a
 release, sign anything, or supply production identity. Checks cover the guest
-agent's package command, channel-specific activation, ephemeral runtime state,
+agents' package wiring, QGA channel-specific activation, Incus loader/udev and
+boot activation, Incus generation-switch continuity, ephemeral QGA runtime state,
 STATE/control/status mounts, EFI boot selection, release-signature policy,
 state version, and the workstation agent's existing cache seed.
 

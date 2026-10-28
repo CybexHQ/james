@@ -1,4 +1,4 @@
-"""Real pinned NixOS evaluation of durable installed QGA; no builds or signing."""
+"""Real pinned NixOS evaluation of installed guest agents; no builds or signing."""
 import json
 from pathlib import Path
 import shutil
@@ -20,6 +20,9 @@ class InstalledGuestAgent(unittest.TestCase):
         checks = json.loads(result.stdout)
         self.assertTrue(checks["installedGuestAgentEnabled"])
         self.assertTrue(checks["guestAgentActivatedOnlyByVirtioChannel"])
+        self.assertTrue(checks["installedIncusAgentEnabled"])
+        self.assertTrue(checks["incusUsesPackagedLoaderAndUdev"])
+        self.assertTrue(checks["incusExecSurvivesGenerationSwitch"])
         self.assertTrue(all(checks.values()), checks)
 
 
