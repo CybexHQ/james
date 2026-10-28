@@ -25,6 +25,8 @@ let
     incusUsesPackagedLoaderAndUdev = builtins.elem incusLoader installed.systemd.packages
       && builtins.elem incusLoader installed.services.udev.packages;
     incusAgentStartsAtBoot = builtins.elem "multi-user.target" incus.wantedBy;
+    incusAgentRequiresItsHypervisorChannel = incus.unitConfig.ConditionPathExists
+      == "/dev/virtio-ports/org.linuxcontainers.incus";
     incusExecFindsSystemBinaries = builtins.elem "/run/current-system/sw" incus.path;
     incusExecSurvivesGenerationSwitch = !incus.restartIfChanged && !incus.stopIfChanged;
     incusHostDaemonRemainsDisabled = !installed.virtualisation.incus.enable;

@@ -18,7 +18,9 @@ does not provide them. The pinned NixOS module installs Incus's packaged loader,
 udev rules and boot service. The loader obtains the agent from the hypervisor's
 9p configuration share or `incus-agent` drive into `/run/incus_agent`. An Incus
 host daemon is not enabled inside the appliance. The service preserves a running
-`incus exec` across a NixOS generation switch.
+`incus exec` across a NixOS generation switch. A systemd condition requires
+`/dev/virtio-ports/org.linuxcontainers.incus`, the channel named by the packaged
+udev rule, so physical machines and other hypervisors skip the service.
 
 Each channel is a privileged management interface controlled by the trusted
 hypervisor. Release-signature checks protect system-generation updates; they do
