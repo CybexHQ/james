@@ -10,6 +10,8 @@ let
     modules = [ ../system.nix ];
   }).config;
   agent = installed.systemd.services.qemu-guest-agent;
+  incus = installed.systemd.services.incus-agent;
+  incusLoader = installed.virtualisation.incus.package.agent_loader;
   checks = {
     installedGuestAgentEnabled = installed.services.qemuGuest.enable;
     guestAgentRunsPackagedBinary = agent.serviceConfig.ExecStart
@@ -19,6 +21,13 @@ let
         ''SUBSYSTEM=="virtio-ports", ATTR{name}=="org.qemu.guest_agent.0", TAG+="systemd", ENV{SYSTEMD_WANTS}="qemu-guest-agent.service"''
         installed.services.udev.extraRules;
     guestAgentStateIsEphemeral = agent.serviceConfig.RuntimeDirectory == "qemu-ga";
+    installedIncusAgentEnabled = installed.virtualisation.incus.agent.enable && incus.enable;
+    incusUsesPackagedLoaderAndUdev = builtins.elem incusLoader installed.systemd.packages
+      && builtins.elem incusLoader installed.services.udev.packages;
+    incusAgentStartsAtBoot = builtins.elem "multi-user.target" incus.wantedBy;
+    incusExecFindsSystemBinaries = builtins.elem "/run/current-system/sw" incus.path;
+    incusExecSurvivesGenerationSwitch = !incus.restartIfChanged && !incus.stopIfChanged;
+    incusHostDaemonRemainsDisabled = !installed.virtualisation.incus.enable;
     statePartitionPreserved = installed.fileSystems."/var/lib/tiaris-nest/state".device == "/dev/disk/by-label/TIARIS_STATE"
       && installed.fileSystems."/var/lib/tiaris-nest/state".fsType == "ext4"
       && installed.fileSystems."/var/lib/tiaris-nest/state".neededForBoot
