@@ -3,6 +3,7 @@
   imports = [ ./module.nix ];
   services.qemuGuest.enable = true;
   virtualisation.incus.agent.enable = true;
+  systemd.services.incus-agent.unitConfig.ConditionPathExists = "/dev/virtio-ports/org.linuxcontainers.incus";
   services.tiaris-nest = { enable = true; inherit appliance; };
   # Keep the exact workstation agent as a cache seed without starting its
   # service on Nest. The signed system closure exports only reachable paths.
