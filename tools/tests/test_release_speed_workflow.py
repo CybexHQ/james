@@ -178,14 +178,28 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
         self.assertIn('--public-closure "$RUNNER_TEMP/tiaris-nest-cold-evidence-', self.cold)
         self.assertNotIn('release_speed.py cache', self.cold)
         self.assertNotIn('PREDECESSOR_CACHE_ROOT', self.cold)
+        acceptance = self.cold.split('      - name: Retain published cold-install qualification evidence\n', 1)[1].split('      - name:', 1)[0]
         cold_names = re.findall(
             r'\$\{\{ runner\.temp \}\}/tiaris-nest-cold-evidence-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/(tiaris-nest-[a-z0-9-]+\.json)',
-            self.cold)
+            acceptance)
         self.assertEqual(set(cold_names), {
             'tiaris-nest-published-cold-qualification.json',
             'tiaris-nest-published-workstation-qualification.json',
             'tiaris-nest-public-closure-qualification.json',
         })
+
+    def test_phase_timings_are_bounded_and_separate_from_acceptance(self):
+        for phase, body, acceptance_name in (
+                ('warm', self.warm, 'Upload bounded qualification evidence'),
+                ('cold', self.cold, 'Retain published cold-install qualification evidence')):
+            timing = body.split('      - name: Retain bounded ' + phase + ' qualification timings\n', 1)[1].split('      - name:', 1)[0]
+            self.assertIn('if: always()', timing)
+            self.assertIn('tiaris-nest-' + phase + '-phase-timing-${{ github.run_id }}-${{ github.run_attempt }}', timing)
+            self.assertEqual(timing.count('tiaris-nest-qualification-timing.json'), 1)
+            self.assertNotIn('*', timing)
+            self.assertNotIn('.log', timing)
+            acceptance = body.split('      - name: ' + acceptance_name + '\n', 1)[1].split('      - name:', 1)[0]
+            self.assertNotIn('timing', acceptance)
 
     def test_protected_chain_and_cold_name_remain_fail_closed(self):
         self.assertIn('needs: [release_build, release_qualify]', job(self.body, 'release_publish', 'release_cold_qualify'))

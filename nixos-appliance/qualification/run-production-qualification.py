@@ -23,6 +23,7 @@ import sys
 
 import release_predecessor as predecessor
 from isolated_fixture import API, SCOPE
+from phase_timing import Timing
 from owned_manage_cleanup import (retry_retire_owned, save_cleanup_receipt,
                                   session_receipt, write_teardown_receipt)
 
@@ -173,13 +174,21 @@ def main():
 
 
 def qualify(args):
-    manifest = verify_candidate(args.candidate_dir, args.trusted_public_key, args.manage_origin)
-    candidate_manifest = args.candidate_dir / predecessor.MANIFEST
+    timings = Timing(args.evidence_dir, args.run, args.published_cold)
+    with timings.measure('run', 'total'):
+        qualify_run(args, timings)
+
+
+def qualify_run(args, timings):
+    with timings.measure('inputs', 'verify-candidate'):
+        manifest = verify_candidate(args.candidate_dir, args.trusted_public_key, args.manage_origin)
+    previous = None
     if not args.published_cold:
         if args.predecessor_dir is None:
             raise ValueError('Every NixOS release needs a separate authenticated NixOS update predecessor')
         args.predecessor_dir = args.predecessor_dir.resolve(strict=True)
-        previous = predecessor.qualify(args.predecessor_dir, manifest['version'], args.trusted_public_key)
+        with timings.measure('inputs', 'verify-predecessor'):
+            previous = predecessor.qualify(args.predecessor_dir, manifest['version'], args.trusted_public_key)
         previous_manifest = predecessor.checked_json(args.predecessor_dir / predecessor.MANIFEST)[0]
         if previous_manifest['installer_iso_template_v3']['manage_origin'] != args.manage_origin:
             raise ValueError('Predecessor origin must equal the development candidate origin')
@@ -189,80 +198,107 @@ def qualify(args):
         phases = ['update', 'rollback', 'fresh']
     else:
         phases = ['cold']
-    for phase in phases:
-        state = args.state_root / (args.run + '-' + phase)
-        scope_args = argparse.Namespace(run=state.name, state_dir=state, subnet=args.subnet, manage_origin=args.manage_origin,
-                                        isolated_manage=bool(args.isolated_manage_config))
-        SCOPE['prepare'](scope_args)
-        scope = SCOPE['read_scope'](state)
-        successful = False
-        resources = contextlib.ExitStack()
-        owner = None
-        try:
-            if args.isolated_manage_config:
-                from production_fixture import fixture, stage_artifacts
-                staged = Path(resources.enter_context(tempfile.TemporaryDirectory(prefix='jnq-inputs-', dir=args.state_root)))
+    # One verified private input snapshot supplies bytes to independent fresh
+    # fixtures. No listener, database, machine, session or success is shared.
+    # Keep it alive until every phase and its cleanup has settled.
+    with contextlib.ExitStack() as inputs:
+        candidate_dir, predecessor_dir = args.candidate_dir, args.predecessor_dir
+        if args.isolated_manage_config:
+            from production_fixture import stage_artifacts
+            with timings.measure('inputs', 'stage-inputs'):
+                staged = Path(inputs.enter_context(tempfile.TemporaryDirectory(
+                    prefix='jnq-inputs-', dir=args.state_root)))
                 candidate_dir = stage_artifacts(args.candidate_dir, staged / 'candidate')
-                predecessor_dir = stage_artifacts(args.predecessor_dir, staged / 'predecessor') if not args.published_cold else candidate_dir
+                predecessor_dir = (stage_artifacts(args.predecessor_dir, staged / 'predecessor')
+                                   if not args.published_cold else candidate_dir)
+        for phase in phases:
+            with timings.measure(phase, 'total'):
+                qualify_phase(args, phase, manifest, previous, candidate_dir, predecessor_dir, timings)
+    # Only bounded acceptance documents are made readable to the artifact runner.
+    for path in args.evidence_dir.glob('tiaris-nest-*.json'):
+        path.chmod(0o644)
+    print('Requested NixOS qualification phases passed; owned VM disks and networks cleaned')
+
+
+def qualify_phase(args, phase, manifest, previous, candidate_dir, predecessor_dir, timings):
+    state = args.state_root / (args.run + '-' + phase)
+    candidate_manifest = candidate_dir / predecessor.MANIFEST
+    scope_args = argparse.Namespace(run=state.name, state_dir=state, subnet=args.subnet, manage_origin=args.manage_origin,
+                                    isolated_manage=bool(args.isolated_manage_config))
+    with timings.measure(phase, 'scope'):
+        SCOPE['prepare'](scope_args)
+    scope = SCOPE['read_scope'](state)
+    successful = False
+    resources = contextlib.ExitStack()
+    owner = None
+    try:
+        if args.isolated_manage_config:
+            from production_fixture import fixture
+            with timings.measure(phase, 'fixture'):
                 owner = resources.enter_context(fixture(state, args.isolated_manage_config, candidate_dir,
                     predecessor_dir, phase, evidence_dir=args.evidence_dir))
-            else:
-                copy_private(args.token_file, state / 'session')
-            environment = dict(os.environ)
-            if args.allow_device_helper:
-                helper_info = args.allow_device_helper.lstat()
-                if (not stat.S_ISREG(helper_info.st_mode) or helper_info.st_uid != 0
-                        or helper_info.st_mode & 0o022 or not helper_info.st_mode & 0o100):
-                    raise ValueError('Device-admission helper must be an ordinary root-owned protected executable')
-                environment['TIARIS_NEST_QUALIFICATION_ALLOW_DEVICE_HELPER'] = str(args.allow_device_helper)
-            selected = args.predecessor_dir / predecessor.MANIFEST if phase in {'update', 'rollback'} else candidate_manifest
-            if args.allow_device_helper:
-                write_release_inputs(state, selected, args.manage_checkout, args.manage_origin)
-            fresh = args.evidence_dir / (f'predecessor-{phase}.json' if phase in {'update', 'rollback'} else
-                'tiaris-nest-nixos-qualification.json' if phase == 'fresh' else 'tiaris-nest-published-cold-qualification.json')
-            command = [sys.executable, '-B', HELPERS / 'run-isolated-lifecycle.py', '--state-dir', state,
-                       '--manifest', selected, '--output', fresh]
-            if phase in {'update', 'rollback', 'cold'}:
-                command += ['--retain-fixture', state / 'fixture']
-            if phase in {'update', 'rollback'}:
-                (state / 'predecessor-identity.json').write_bytes(predecessor.canonical(previous))
-                command += ['--predecessor-identity', state / 'predecessor-identity.json']
-            # Isolated fixtures stage authenticated runtime bundles before public
-            # publication, so require real delivery against the selected manifest.
-            if args.isolated_manage_config or phase == 'cold':
-                command += ['--require-candidate-runtime']
-            else:
-                command += ['--prepublication-candidate']
+        else:
+            copy_private(args.token_file, state / 'session')
+        environment = dict(os.environ)
+        if args.allow_device_helper:
+            helper_info = args.allow_device_helper.lstat()
+            if (not stat.S_ISREG(helper_info.st_mode) or helper_info.st_uid != 0
+                    or helper_info.st_mode & 0o022 or not helper_info.st_mode & 0o100):
+                raise ValueError('Device-admission helper must be an ordinary root-owned protected executable')
+            environment['TIARIS_NEST_QUALIFICATION_ALLOW_DEVICE_HELPER'] = str(args.allow_device_helper)
+        selected = predecessor_dir / predecessor.MANIFEST if phase in {'update', 'rollback'} else candidate_manifest
+        if args.allow_device_helper:
+            write_release_inputs(state, selected, args.manage_checkout, args.manage_origin)
+        fresh = args.evidence_dir / (f'predecessor-{phase}.json' if phase in {'update', 'rollback'} else
+            'tiaris-nest-nixos-qualification.json' if phase == 'fresh' else 'tiaris-nest-published-cold-qualification.json')
+        command = [sys.executable, '-B', HELPERS / 'run-isolated-lifecycle.py', '--state-dir', state,
+                   '--manifest', selected, '--output', fresh]
+        if phase in {'update', 'rollback', 'cold'}:
+            command += ['--retain-fixture', state / 'fixture']
+        if phase in {'update', 'rollback'}:
+            (state / 'predecessor-identity.json').write_bytes(predecessor.canonical(previous))
+            command += ['--predecessor-identity', state / 'predecessor-identity.json']
+        # Isolated fixtures stage authenticated runtime bundles before public
+        # publication, so require real delivery against the selected manifest.
+        if args.isolated_manage_config or phase == 'cold':
+            command += ['--require-candidate-runtime']
+        else:
+            command += ['--prepublication-candidate']
+        with timings.measure(phase, 'lifecycle'):
             execute(*command, env=environment)
-            if phase in {'update', 'rollback'}:
-                if owner:
-                    owner.select_release('candidate')
-                command = [sys.executable, '-B', HELPERS / 'run-isolated-update.py', '--state-dir', state,
-                    '--fixture', state / 'fixture', '--predecessor-evidence', fresh,
-                    '--predecessor-manifest', selected, '--candidate-manifest', candidate_manifest,
-                    '--output', args.evidence_dir / f'tiaris-nest-nixos-{phase}-qualification.json']
-                if phase == 'rollback':
-                    command += ['--rollback']
+        if phase in {'update', 'rollback'}:
+            if owner:
+                owner.select_release('candidate')
+            command = [sys.executable, '-B', HELPERS / 'run-isolated-update.py', '--state-dir', state,
+                '--fixture', state / 'fixture', '--predecessor-evidence', fresh,
+                '--predecessor-manifest', selected, '--candidate-manifest', candidate_manifest,
+                '--output', args.evidence_dir / f'tiaris-nest-nixos-{phase}-qualification.json']
+            if phase == 'rollback':
+                command += ['--rollback']
+            with timings.measure(phase, 'transition'):
                 execute(*command, env=environment)
-            elif phase == 'cold':
+        elif phase == 'cold':
+            with timings.measure(phase, 'workstation'):
                 execute(sys.executable, '-B', HELPERS / 'run-isolated-workstation.py', '--state-dir', state,
                     '--fixture', state / 'fixture', '--nest-evidence', fresh, '--manifest', candidate_manifest,
                     '--output', args.evidence_dir / 'tiaris-nest-published-workstation-qualification.json', env=environment)
-            if owner:
+        if owner:
+            with timings.measure(phase, 'verify-owner'):
                 receipt = owner.verify()
-                scope_proof = {'schema': 'tiaris.nest.isolated-qualification.v1',
-                               'manage_origin': receipt['manage_origin'],
-                               'manage_revision': receipt['source_revision'],
-                               'owner': receipt['owner'], 'live_production_access': False}
-                evidence_paths = [fresh]
-                if phase == 'cold':
-                    evidence_paths.append(args.evidence_dir / 'tiaris-nest-published-workstation-qualification.json')
-                for evidence_path in evidence_paths:
-                    document = predecessor.checked_json(evidence_path)[0]
-                    document['qualification_scope'] = scope_proof
-                    evidence_path.write_bytes(predecessor.canonical(document))
-            successful = True
-        finally:
+            scope_proof = {'schema': 'tiaris.nest.isolated-qualification.v1',
+                           'manage_origin': receipt['manage_origin'],
+                           'manage_revision': receipt['source_revision'],
+                           'owner': receipt['owner'], 'live_production_access': False}
+            evidence_paths = [fresh]
+            if phase == 'cold':
+                evidence_paths.append(args.evidence_dir / 'tiaris-nest-published-workstation-qualification.json')
+            for evidence_path in evidence_paths:
+                document = predecessor.checked_json(evidence_path)[0]
+                document['qualification_scope'] = scope_proof
+                evidence_path.write_bytes(predecessor.canonical(document))
+        successful = True
+    finally:
+        with timings.measure(phase, 'cleanup'):
             if args.isolated_manage_config:
                 release_phase(resources, state, args.manage_origin, scope['bridge'])
             else:
@@ -275,10 +311,6 @@ def qualify(args):
                 for fixture in (state / 'fixture', state / 'workstation'):
                     if fixture.exists() and not fixture.is_symlink():
                         shutil.rmtree(fixture)
-    # Only bounded acceptance documents are made readable to the artifact runner.
-    for path in args.evidence_dir.glob('tiaris-nest-*.json'):
-        path.chmod(0o644)
-    print('Requested NixOS qualification phases passed; owned VM disks and networks cleaned')
 
 
 def release_phase(resources, state, origin, bridge):

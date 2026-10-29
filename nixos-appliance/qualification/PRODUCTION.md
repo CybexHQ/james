@@ -51,6 +51,36 @@ Template image/source fields are replaced with the exact verified candidate
 revision and image IDs by `prepare-fixture-config.py` before fixture startup.
 No signing key enters a Nix derivation, image build argument, or public receipt.
 
+The runner snapshots the authenticated candidate and predecessor inputs once
+into one run-private directory before starting warm scenarios. Every fixture
+revalidates the signed inputs and stages its own sealed listener artifacts from
+that snapshot. Only input bytes are reused: update, rollback and fresh installation
+still create and destroy separate management services, databases, sessions,
+networks and machines. The snapshot is removed after all owned fixture cleanup,
+including failed and interrupted attempts. Published cold runs build a separate
+snapshot using only that job's independent published download.
+
+`tiaris-nest-qualification-timing.json` records each scenario and its scope setup,
+fixture startup, appliance lifecycle, update/rollback or workstation transition,
+owner verification and cleanup duration. Input verification and snapshot creation
+are timed separately. Each stage is atomically persisted as running and then
+passed, failed or interrupted; a crash can leave running observations and does
+not prove process liveness. Scenario totals include their cleanup, and nested
+stage durations overlap those totals. Timings carry only the bounded run identity,
+fixed stage labels, clocks and status. Separate warm/cold run-and-attempt artifacts
+retain them even on failure; they are never accepted as qualification receipts.
+An unavailable timing disk emits a fixed diagnostic and never skips owned cleanup;
+a later successful write records the count of persistence failures.
+
+Scenario execution remains serial. The protected runner currently admits one
+qualification resource profile, one guest /24 and one backend /28. Multi-scenario
+VM concurrency requires independently admitted resource reservations, disjoint
+network configuration and verified ownership/teardown across those scopes.
+Changing only a worker count cannot provide that isolation. The new timings
+make the independent scenario costs measurable before that infrastructure change.
+The cold workstation's install and successive Blueprint transitions remain one
+real-machine sequence.
+
 Each phase owns fresh Docker containers and state, a fresh organization/session,
 an Incus bridge, and disposable QEMU machines. The retained `isolated_manage.Owner`
 verifies its container and network identities on every operation. Host callers use

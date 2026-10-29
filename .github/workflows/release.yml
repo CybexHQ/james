@@ -773,6 +773,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+      - name: Retain bounded warm qualification timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tiaris-nest-warm-phase-timing-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-qualification-timing.json
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Upload bounded qualification evidence
         id: upload-qualification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -1419,6 +1428,15 @@ jobs:
         with:
           name: tiaris-nest-cold-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/tiaris-nest-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/published-${{ github.run_id }}-${{ github.run_attempt }}-*/tiaris-nest-*-diagnostics.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Retain bounded cold qualification timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tiaris-nest-cold-phase-timing-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tiaris-nest-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-qualification-timing.json
           if-no-files-found: ignore
           retention-days: 30
 

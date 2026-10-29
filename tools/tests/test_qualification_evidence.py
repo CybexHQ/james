@@ -25,7 +25,8 @@ class QualificationEvidenceTests(unittest.TestCase):
         args = SimpleNamespace(run='release-42-2', manage_origin='https://dev.example.com',
             token_file=Path('/unused-session'), subnet='10.249.217.1/24', state_root=state_root,
             isolated_manage_config=None, allow_device_helper=None, manage_checkout=None,
-            candidate_dir=candidate, evidence_dir=evidence, trusted_public_key='test-key')
+            candidate_dir=candidate, evidence_dir=evidence, trusted_public_key='test-key',
+            published_cold=False)
         with patch.object(runner.argparse.ArgumentParser, 'parse_args', return_value=args), \
                 patch.object(runner.os, 'geteuid', return_value=0), \
                 patch.object(runner.os, 'umask'), patch.object(runner.signal, 'signal'), \
