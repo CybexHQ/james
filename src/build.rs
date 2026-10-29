@@ -3830,6 +3830,14 @@ const PINNED_DESKTOP_NIXOS_GENERATOR_FINGERPRINTS: &[(&str, &str)] = &[
         "3d6c68e6782766416053d20ab874c5fd675c7c83889fa89740d8320b0820c58e",
         "f919faf2b3d6b69d49680c2c84e257c1216c48e3572f02e761ec2bb1877df06a",
     ),
+    // Generic Tiaris desktop prebuild at development 36437452: the reviewed
+    // Dock /etc recipe above without the workstation-only wallpaper autostart
+    // link. No executable provider or other recipe line changed; the derivation
+    // and dependent activation/system recipes are retained in the fixture.
+    (
+        "88d5a9f22b7d13f683d2f5db87a75c933fe639c518a0eb69c5748cd022dc6e16",
+        "234f84b30c84077c13c9040245f338e203fbf18566d1b6328bba5ffbd48eabbb",
+    ),
     (
         "46327174d6ce17eaf284c28e93c3f35450ecde8ae2eca403ba859085dfff7f1e",
         "f6d452fd71336b6d465d5ff310c699fa7e1fb66e506563b9e036232cb3b887eb",
@@ -7854,6 +7862,169 @@ sleep 5
                 ));
             }
         }
+    }
+
+    fn generic_desktop_prebuild_derivations() -> BTreeMap<String, Value> {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/source-policy/generic-desktop-prebuild-generators.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["version"], 4);
+        let derivations = fixture["derivations"].as_object().unwrap();
+        assert_eq!(derivations.len(), 3);
+        derivations
+            .iter()
+            .map(|(path, drv)| (normalize_derivation_store_path(path).unwrap(), drv.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn source_policy_pins_generic_desktop_prebuild_recipe_and_executable_pair() {
+        let derivations = generic_desktop_prebuild_derivations();
+        let (path, drv) = derivations
+            .iter()
+            .find(|(_, drv)| drv["name"] == "etc")
+            .unwrap();
+        let recipe = drv["env"]["buildCommand"].as_str().unwrap();
+        let normalized = normalized_script_sha256(recipe);
+        let executable = executable_pinned_script_sha256(recipe);
+        assert_eq!(
+            normalized,
+            "88d5a9f22b7d13f683d2f5db87a75c933fe639c518a0eb69c5748cd022dc6e16"
+        );
+        assert_eq!(
+            executable,
+            "234f84b30c84077c13c9040245f338e203fbf18566d1b6328bba5ffbd48eabbb"
+        );
+        assert!(derivation_is_exempt_from_source_policy_with_verifier(
+            path,
+            Some(drv),
+            &synthetic_pinned_source,
+        ));
+        // The old and new /etc recipes must not share interchangeable halves.
+        assert!(!reviewed_generator_fingerprints_match(
+            &normalized,
+            "f919faf2b3d6b69d49680c2c84e257c1216c48e3572f02e761ec2bb1877df06a",
+        ));
+        assert!(!reviewed_generator_fingerprints_match(
+            "3d6c68e6782766416053d20ab874c5fd675c7c83889fa89740d8320b0820c58e",
+            &executable,
+        ));
+    }
+
+    #[test]
+    fn source_policy_generic_desktop_prebuild_graph_preserves_dependency_guards() {
+        let derivations = generic_desktop_prebuild_derivations();
+        let find_path = |name| {
+            derivations
+                .iter()
+                .find(|(_, drv)| drv["name"] == name)
+                .unwrap()
+                .0
+                .clone()
+        };
+        let etc_path = find_path("etc");
+        let activate_path = find_path("activate");
+        let system_path = find_path("nixos-system-tiaris-nest-build-26.05pre-git");
+        for (parent, dependency) in [
+            (&activate_path, &etc_path),
+            (&system_path, &etc_path),
+            (&system_path, &activate_path),
+        ] {
+            assert!(
+                derivation_input_drvs(&derivations[parent])
+                    .unwrap()
+                    .iter()
+                    .any(|(path, _)| path == dependency)
+            );
+        }
+        // Deliberately visit parents first: the real chain needs repeated passes.
+        let would_build = vec![system_path, activate_path, etc_path.clone()];
+        let would_build_set = would_build.iter().cloned().collect::<HashSet<_>>();
+        for parent in &would_build[..2] {
+            assert!(
+                !derivation_is_exempt_from_source_policy_with_verifier_and_would_build(
+                    parent,
+                    derivations.get(parent),
+                    &synthetic_pinned_source,
+                    &would_build_set,
+                )
+            );
+        }
+        assert_eq!(
+            classify_trusted_local_derivations(
+                &would_build,
+                &derivations,
+                &synthetic_pinned_source,
+                &would_build_set,
+            ),
+            would_build_set,
+        );
+
+        let etc = &derivations[&etc_path];
+        let recipe = etc["env"]["buildCommand"].as_str().unwrap();
+        let altered_provider = recipe.replace(
+            "wy0mh9ah0alglg3ab5djg3jv6f0garyc-nixos-init",
+            "ffffffffffffffffffffffffffffffff-nixos-init",
+        );
+        assert_ne!(altered_provider, recipe);
+        // Provider hashes are normalized by the first digest, so the paired
+        // executable digest must still reject the changed env-generator.
+        assert_eq!(
+            normalized_script_sha256(&altered_provider),
+            normalized_script_sha256(recipe),
+        );
+        assert!(!reviewed_generator_fingerprints_match(
+            &normalized_script_sha256(&altered_provider),
+            &executable_pinned_script_sha256(&altered_provider),
+        ));
+        for (attribute, value) in [
+            (
+                "buildCommand",
+                format!("{recipe}\ngcc source.c -o $out/payload\n"),
+            ),
+            ("preBuild", "gcc source.c -o $out/payload".to_string()),
+            ("buildCommand", altered_provider),
+        ] {
+            let mut tainted = derivations.clone();
+            tainted.get_mut(&etc_path).unwrap()["env"][attribute] = json!(value);
+            assert!(
+                classify_trusted_local_derivations(
+                    &would_build,
+                    &tainted,
+                    &synthetic_pinned_source,
+                    &would_build_set,
+                )
+                .is_empty(),
+                "a modified /etc recipe must reject activation and system dependents: {attribute}"
+            );
+        }
+
+        // An otherwise unchanged recipe cannot trust an input that now requires
+        // unreviewed local work instead of coming from the cache.
+        let dependency = derivation_input_drvs(etc)
+            .unwrap()
+            .into_iter()
+            .find(|(path, _)| path.ends_with("-etc-profile.drv"))
+            .unwrap()
+            .0;
+        let mut tainted = derivations;
+        tainted.insert(
+            dependency.clone(),
+            synthetic_materializer(json!({"buildCommand": "gcc source.c -o $out"}), vec![]),
+        );
+        let mut would_build = would_build;
+        would_build.push(dependency);
+        let would_build_set = would_build.iter().cloned().collect::<HashSet<_>>();
+        assert!(
+            classify_trusted_local_derivations(
+                &would_build,
+                &tainted,
+                &synthetic_pinned_source,
+                &would_build_set,
+            )
+            .is_empty()
+        );
     }
 
     #[test]
