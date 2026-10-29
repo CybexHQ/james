@@ -99,6 +99,16 @@ job name `Verify published NixOS release in an isolated fixture`.
 
 ## Recovery
 
+Publication retries preserve an already immutable prerelease only when its exact
+source, workflow owner, candidate artifact, metadata and complete asset digests
+match the locally verified candidate. That path skips attestation and all release
+mutations, rechecks the current signed predecessor, and still requires independent
+published cold qualification. Partial owned drafts keep their guarded recreation
+path. After publishing, verification waits up to five minutes only for GitHub's exact
+missing-attestation response; invalid attestations and other failures stop at once.
+A failed workflow at an older immutable tag still runs its original code: do not
+retag it or assume a repair on main changes its recovery behavior.
+
 Staged listener artifacts are sealed with the kernel immutable flag and fully
 hashed once after staging and at listener start. Routine fixture requests,
 readiness challenges and artifact GETs compare the sealed inode, size, mtime and
