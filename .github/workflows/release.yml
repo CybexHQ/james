@@ -1304,6 +1304,9 @@ jobs:
       artifact_id: ${{ steps.cold-evidence.outputs.artifact-id }}
       artifact_digest: ${{ steps.cold-evidence.outputs.artifact-digest }}
     env:
+      # Reuse compiler outputs only. Every attempt still downloads public payloads,
+      # executes the exact-source qualifier and writes new private acceptance proof.
+      CARGO_TARGET_DIR: /home/john/.local/state/tiaris-nest-ci-target/public-closure
       TIARIS_NEST_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
       TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN }}
       TIARIS_NEST_QUALIFICATION_SUBNET: ${{ vars.CYBEX_JAMES_QUALIFICATION_SUBNET }}
@@ -1365,7 +1368,7 @@ jobs:
           trap 'rm -f -- "$public_closure_key"' EXIT
           printf '%s\n' "$TRUSTED_KEY" > "$public_closure_key"
           chmod 0600 "$public_closure_key"
-          CARGO_TARGET_DIR="$public_dir/target" cargo run --release --locked --bin tiaris-nest-qualify-public-closure -- \
+          cargo run --release --locked --bin tiaris-nest-qualify-public-closure -- \
             --manifest dist/tiaris-nest-release.json \
             --trusted-public-key "$public_closure_key" \
             --source "$GITHUB_SHA" --tag "$GITHUB_REF_NAME" \

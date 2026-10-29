@@ -29,6 +29,7 @@ import socket
 import stat
 import struct
 import subprocess
+import sys
 from urllib.parse import quote, urlsplit
 
 _spec = importlib.util.spec_from_file_location('isolated_manage_network_rules', Path(__file__).with_name('isolated_manage_network_rules.py'))
@@ -209,8 +210,8 @@ class IncusAPI:
         if not stat.S_ISSOCK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o002:
             raise ValueError('Incus control socket is not root-owned and private')
         connection = _UnixHTTPConnection(self.path)
-        connection.connect()
         try:
+            connection.connect()
             peer_pid, peer_uid, _ = struct.unpack('3i', connection.sock.getsockopt(
                 socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i')))
             # Socket activation retains systemd's PID 1 peer credentials even
@@ -237,7 +238,18 @@ class IncusAPI:
             connection.close()
 
     def get(self, name):
-        metadata, etag = self._request('GET', '/1.0/networks/' + quote(name, safe='') + '?project=default')
+        # A daemon read can stall independently of the appliance under test.
+        # Retry once with a new socket/root-peer check; no partially read value
+        # escapes, and the caller still verifies all live confinement state.
+        # Mutating compare-and-swap requests must never enter this retry path.
+        for attempt in range(2):
+            try:
+                metadata, etag = self._request('GET', '/1.0/networks/' + quote(name, safe='') + '?project=default')
+                break
+            except TimeoutError:
+                if attempt:
+                    raise
+                print('Incus control read timed out; retrying once with fresh ownership verification.', file=sys.stderr)
         if not isinstance(metadata, dict) or not etag:
             raise ValueError('Incus network response lacks an exact revision')
         return metadata, etag

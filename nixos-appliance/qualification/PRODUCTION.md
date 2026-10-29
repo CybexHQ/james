@@ -109,6 +109,21 @@ missing-attestation response; invalid attestations and other failures stop at on
 A failed workflow at an older immutable tag still runs its original code: do not
 retag it or assume a repair on main changes its recovery behavior.
 
+An authenticated Incus network GET that times out gets one fresh read attempt.
+Each attempt rechecks the root-owned socket and daemon peer; the resulting metadata
+must still pass all live network, firewall and DNS confinement checks. Invalid
+responses and mutating compare-and-swap PUTs never retry. A second timeout fails
+qualification. This bounds a host-control stall without treating it as appliance
+acceptance or claiming its underlying cause was repaired.
+
+The protected cold job retains compiler output at
+`~/.local/state/tiaris-nest-ci-target/public-closure`, owned by the release runner.
+This is one reusable Cargo target, not qualification evidence. Each attempt still
+downloads published payloads independently, executes the exact-source public-closure
+qualifier, and writes fresh private proof. Keys and proof stay in the per-attempt
+directory and are cleaned normally. The compiler cache can be removed when its
+qualification job is inactive; never delete acceptance receipts as cache cleanup.
+
 Staged listener artifacts are sealed with the kernel immutable flag and fully
 hashed once after staging and at listener start. Routine fixture requests,
 readiness challenges and artifact GETs compare the sealed inode, size, mtime and
