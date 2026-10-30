@@ -21,6 +21,12 @@ and links their desktop files with the exact pinned `lndir` executable. It
 contains no compiler, source fetch, or package build.
 
 Keep executable-provider fingerprints paired with the normalized recipes.
-The regression covers the exact UTC recipes and explicit Amsterdam variants,
-and rejects appended compilation, injected phase hooks and altered executable
-providers. Existing independent input/dependency checks remain mandatory.
+The regression covers the exact UTC recipes and explicit Amsterdam and New
+York variants, and rejects appended compilation, injected phase hooks and
+altered executable providers. Existing independent input/dependency checks
+remain mandatory.
+
+The three `/etc` recipes are pinned by zone-independent pairs: the zone of the
+single `/etc/localtime` entry is replaced by a placeholder before both
+fingerprints are computed (see `regional-workstation-generators.md`). Their
+former UTC and Amsterdam raw pairs are no longer pinned.
