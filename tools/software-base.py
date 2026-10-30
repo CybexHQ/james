@@ -61,6 +61,14 @@ COMPONENTS = {
     "curl": "curl",
     "libxml2": "libxml2",
     "sudo": "sudo",
+    "gnome-shell": "GNOME Shell",
+    "nautilus": "Files",
+    "plasma-workspace": "KDE Plasma",
+    "hyprland": "Hyprland",
+    "networkmanager": "NetworkManager",
+    "pipewire": "PipeWire",
+    "cups": "Printing (CUPS)",
+    "polkit": "polkit",
 }
 
 

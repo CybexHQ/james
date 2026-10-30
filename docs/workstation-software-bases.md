@@ -45,6 +45,33 @@ every six hours, and platform administrators can import a feed or document
 directly (`POST /v1/software-bases/import`). The feed is cumulative: list every
 base the release can build, not only the newest.
 
+## Tracking the channel
+
+The `Software base tracker` workflow runs daily (and on demand) and calls
+`tools/software-base-tracker.py check`. When `nixos-26.05` names a commit that
+no published base carries, it:
+
+- evaluates a reference set of workstation packages (kernel, desktops, common
+  apps, system services) at the newest published base and at the channel
+  commit, and reads their runtime closures from cache.nixos.org narinfo
+  metadata without downloading anything;
+- scans both closures with vulnix in the same run and keeps only findings whose
+  outputs are in the runtime closure, so build-only tools are not counted;
+- writes an unsigned draft whose advisories are the vulnerabilities the new
+  commit no longer has, with `kind` and `severity` set from them;
+- opens one review issue per commit, titled with its severity, for example
+  `[critical] Security software base candidate: nixos-26.05 6f06d204d8f2 (422 fixes)`.
+  The draft is the run's `software-base-draft` artifact.
+
+vulnix matches advisories by package name and version, so review them before
+approving. The tracker never signs: reviewing the commit (below), setting
+`approved_at` and signing the draft remain the Cybex approval.
+
+```sh
+python3 tools/software-base-tracker.py check --output-dir out \
+  [--feed tiaris-software-bases.json] [--vulnix PATH]
+```
+
 ## Building a second commit
 
 A base is useful only once Nest can build it, and Nest builds without compiling
