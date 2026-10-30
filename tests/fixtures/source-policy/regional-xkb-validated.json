@@ -1,0 +1,170 @@
+{
+  "/nix/store/14kjnpgkcikvd3bz82jl8sg9c2kk701s-xkb-validated.drv": {
+    "args": [
+      "-e",
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh"
+    ],
+    "builder": "/nix/store/zh1ijdhb6gng1509b1zrilb6xlzx60j6-bash-5.3p9/bin/bash",
+    "env": {
+      "__structuredAttrs": "",
+      "buildCommand": "\nXKB_CONFIG_ROOT=\"$dir\" xkbvalidate \"$model\" \"$layout\" \"$variant\" \"$options\"\ntouch \"$out\"\n",
+      "buildInputs": "",
+      "builder": "/nix/store/zh1ijdhb6gng1509b1zrilb6xlzx60j6-bash-5.3p9/bin/bash",
+      "cmakeFlags": "",
+      "configureFlags": "",
+      "depsBuildBuild": "",
+      "depsBuildBuildPropagated": "",
+      "depsBuildTarget": "",
+      "depsBuildTargetPropagated": "",
+      "depsHostHost": "",
+      "depsHostHostPropagated": "",
+      "depsTargetTarget": "",
+      "depsTargetTargetPropagated": "",
+      "dir": "/nix/store/czwchfqv2v6v2gm545mhdj03smk50rw0-xkeyboard-config-2.47/etc/X11/xkb",
+      "doCheck": "",
+      "doInstallCheck": "",
+      "enableParallelBuilding": "1",
+      "enableParallelChecking": "1",
+      "enableParallelInstalling": "1",
+      "layout": "us",
+      "mesonFlags": "",
+      "model": "pc104",
+      "name": "xkb-validated",
+      "nativeBuildInputs": "/nix/store/na9axm2h37fxjzadvvq547p4b4q7d6r0-xkbvalidate",
+      "options": "terminate:ctrl_alt_bksp",
+      "out": "/nix/store/c1mj9zxlq30vqmh4f74irflxs346pb7m-xkb-validated",
+      "outputs": "out",
+      "passAsFile": "buildCommand",
+      "patches": "",
+      "preferLocalBuild": "1",
+      "propagatedBuildInputs": "",
+      "propagatedNativeBuildInputs": "",
+      "stdenv": "/nix/store/pr27j8nm0xl52pq4ylncj9kwjw3b84mk-stdenv-linux",
+      "strictDeps": "",
+      "system": "x86_64-linux",
+      "variant": "intl"
+    },
+    "inputDrvs": {
+      "/nix/store/bxlz3hzl8k02rnxpgml6krqkrnpird91-stdenv-linux.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/g7p7rs03xah2w00a142hzas9h4fkwpck-bash-5.3p9.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/mz9jidx0yqq1zd5ywb2fd1fn6nmsffix-xkbvalidate.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/pql9n68whrzg5i1p31wasrbgddgsjg4g-xkeyboard-config-2.47.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      }
+    },
+    "inputSrcs": [
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh"
+    ],
+    "name": "xkb-validated",
+    "outputs": {
+      "out": {
+        "path": "/nix/store/c1mj9zxlq30vqmh4f74irflxs346pb7m-xkb-validated"
+      }
+    },
+    "system": "x86_64-linux"
+  },
+  "/nix/store/5hfkza0yk7p768g3fcnch60x6ab41k98-xkb-validated.drv": {
+    "args": [
+      "-e",
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh"
+    ],
+    "builder": "/nix/store/zh1ijdhb6gng1509b1zrilb6xlzx60j6-bash-5.3p9/bin/bash",
+    "env": {
+      "__structuredAttrs": "",
+      "buildCommand": "\nXKB_CONFIG_ROOT=\"$dir\" xkbvalidate \"$model\" \"$layout\" \"$variant\" \"$options\"\ntouch \"$out\"\n",
+      "buildInputs": "",
+      "builder": "/nix/store/zh1ijdhb6gng1509b1zrilb6xlzx60j6-bash-5.3p9/bin/bash",
+      "cmakeFlags": "",
+      "configureFlags": "",
+      "depsBuildBuild": "",
+      "depsBuildBuildPropagated": "",
+      "depsBuildTarget": "",
+      "depsBuildTargetPropagated": "",
+      "depsHostHost": "",
+      "depsHostHostPropagated": "",
+      "depsTargetTarget": "",
+      "depsTargetTargetPropagated": "",
+      "dir": "/nix/store/czwchfqv2v6v2gm545mhdj03smk50rw0-xkeyboard-config-2.47/etc/X11/xkb",
+      "doCheck": "",
+      "doInstallCheck": "",
+      "enableParallelBuilding": "1",
+      "enableParallelChecking": "1",
+      "enableParallelInstalling": "1",
+      "layout": "de",
+      "mesonFlags": "",
+      "model": "pc104",
+      "name": "xkb-validated",
+      "nativeBuildInputs": "/nix/store/na9axm2h37fxjzadvvq547p4b4q7d6r0-xkbvalidate",
+      "options": "terminate:ctrl_alt_bksp",
+      "out": "/nix/store/x1l9js793kk28ypyy4cckq7j3zilrxfi-xkb-validated",
+      "outputs": "out",
+      "passAsFile": "buildCommand",
+      "patches": "",
+      "preferLocalBuild": "1",
+      "propagatedBuildInputs": "",
+      "propagatedNativeBuildInputs": "",
+      "stdenv": "/nix/store/pr27j8nm0xl52pq4ylncj9kwjw3b84mk-stdenv-linux",
+      "strictDeps": "",
+      "system": "x86_64-linux",
+      "variant": ""
+    },
+    "inputDrvs": {
+      "/nix/store/bxlz3hzl8k02rnxpgml6krqkrnpird91-stdenv-linux.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/g7p7rs03xah2w00a142hzas9h4fkwpck-bash-5.3p9.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/mz9jidx0yqq1zd5ywb2fd1fn6nmsffix-xkbvalidate.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      },
+      "/nix/store/pql9n68whrzg5i1p31wasrbgddgsjg4g-xkeyboard-config-2.47.drv": {
+        "dynamicOutputs": {},
+        "outputs": [
+          "out"
+        ]
+      }
+    },
+    "inputSrcs": [
+      "/nix/store/l622p70vy8k5sh7y5wizi5f2mic6ynpg-source-stdenv.sh",
+      "/nix/store/shkw4qm9qcw5sc5n1k5jznc83ny02r39-default-builder.sh"
+    ],
+    "name": "xkb-validated",
+    "outputs": {
+      "out": {
+        "path": "/nix/store/x1l9js793kk28ypyy4cckq7j3zilrxfi-xkb-validated"
+      }
+    },
+    "system": "x86_64-linux"
+  }
+}

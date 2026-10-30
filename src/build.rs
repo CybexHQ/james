@@ -2704,6 +2704,12 @@ where
                     verify_source,
                     would_build,
                     trusted_local,
+                ) || derivation_is_reviewed_xkb_validation(
+                    drv,
+                    &attrs,
+                    verify_source,
+                    would_build,
+                    trusted_local,
                 )))
                 || derivation_is_nixos_security_wrapper(
                     drv_path,
@@ -2856,11 +2862,12 @@ fn derivation_attributes(drv: &Value) -> serde_json::Map<String, Value> {
                     .as_str()
                     .and_then(|encoded| serde_json::from_str::<Value>(encoded).ok())
                 {
-                    Some(Value::Object(structured)) => {
-                        for (key, value) in structured {
-                            merge_derivation_attribute(&mut merged, &mut conflict, key, value);
-                        }
-                    }
+                    Some(Value::Object(structured)) => merge_structured_attributes(
+                        &mut merged,
+                        &mut conflict,
+                        &mut invalid,
+                        &structured,
+                    ),
                     _ => invalid = true,
                 }
             }
@@ -2873,9 +2880,7 @@ fn derivation_attributes(drv: &Value) -> serde_json::Map<String, Value> {
     }
     if let Some(structured_value) = drv.get("structuredAttrs") {
         if let Some(structured) = structured_value.as_object() {
-            for (key, value) in structured {
-                merge_derivation_attribute(&mut merged, &mut conflict, key.clone(), value.clone());
-            }
+            merge_structured_attributes(&mut merged, &mut conflict, &mut invalid, structured);
         } else {
             invalid = true;
         }
@@ -2893,6 +2898,47 @@ fn derivation_attributes(drv: &Value) -> serde_json::Map<String, Value> {
         );
     }
     merged
+}
+
+/// With structured attributes, nixpkgs' setup.sh (74cc63f, "Initialisation")
+/// exports every `env.<name>` with `declare -x`, overriding the shell variable
+/// of the same name. Treat those exports as ordinary attributes so every
+/// injection, phase-hook and per-shape check sees them, and so an export that
+/// differs from the attribute it overrides is a conflict.
+fn merge_structured_attributes(
+    merged: &mut serde_json::Map<String, Value>,
+    conflict: &mut bool,
+    invalid: &mut bool,
+    structured: &serde_json::Map<String, Value>,
+) {
+    for (key, value) in structured {
+        merge_derivation_attribute(merged, conflict, key.clone(), value.clone());
+    }
+    match structured.get("env") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(exports)) => {
+            for (key, value) in exports {
+                merge_derivation_attribute(merged, conflict, key.clone(), value.clone());
+            }
+        }
+        Some(_) => *invalid = true,
+    }
+}
+
+/// Nix decides structured mode by `__json`/`structuredAttrs`, not by the
+/// `__structuredAttrs` string; reject any of them for shapes whose reviewed
+/// derivations are plain environment derivations.
+fn derivation_uses_structured_attributes(
+    drv: &Value,
+    attrs: &serde_json::Map<String, Value>,
+) -> bool {
+    drv.get("structuredAttrs")
+        .is_some_and(|value| !value.is_null())
+        || drv
+            .get("env")
+            .and_then(Value::as_object)
+            .is_some_and(|env| env.contains_key("__json"))
+        || !derivation_attr_is_empty(attrs, "__structuredAttrs")
 }
 
 fn merge_derivation_attribute(
@@ -2979,6 +3025,7 @@ fn derivation_has_shell_environment_injection_except(
         "NIX_ATTRS_SH_FILE",
         "NIX_CFLAGS_COMPILE",
         "NIX_CFLAGS_LINK",
+        "NIX_DEBUG",
         "NIX_LDFLAGS",
         "NIX_LD",
         "NIX_LD_LIBRARY_PATH",
@@ -3003,15 +3050,26 @@ fn derivation_has_shell_environment_injection_except(
         "STRIP",
         "NODE_OPTIONS",
     ];
-    attrs.iter().any(|(key, value)| {
-        !allowed.contains(&key.as_str())
-            && (UNSAFE.contains(&key.as_str())
-                || key.starts_with("BASH_FUNC_")
-                || key.starts_with("CCACHE")
-                || key.starts_with("SCCACHE"))
-            && !matches!(value, Value::Null)
-            && !value.as_str().is_some_and(str::is_empty)
-    })
+    let unsafe_name = |key: &str| {
+        UNSAFE.contains(&key)
+            || key.starts_with("BASH_FUNC_")
+            || key.starts_with("CCACHE")
+            || key.starts_with("SCCACHE")
+    };
+    // Nix and setup.sh also export one variable per output name.
+    let output_names = match attrs.get("outputs") {
+        Some(Value::String(outputs)) => outputs.split_ascii_whitespace().collect(),
+        Some(Value::Array(outputs)) => outputs.iter().filter_map(Value::as_str).collect(),
+        Some(Value::Object(outputs)) => outputs.keys().map(String::as_str).collect(),
+        _ => Vec::new(),
+    };
+    output_names.into_iter().any(unsafe_name)
+        || attrs.iter().any(|(key, value)| {
+            !allowed.contains(&key.as_str())
+                && unsafe_name(key)
+                && !matches!(value, Value::Null)
+                && !value.as_str().is_some_and(str::is_empty)
+        })
 }
 
 fn only_reviewed_phase_hooks(attrs: &serde_json::Map<String, Value>, allowed: &[&str]) -> bool {
@@ -3797,50 +3855,18 @@ const PINNED_HYPRLAND_ETC_EXECUTABLE_FINGERPRINT: &str =
 // the second one preserves executable store paths, so changing a tool provider
 // cannot ride on the store-normalized hash.
 const PINNED_DESKTOP_NIXOS_GENERATOR_FINGERPRINTS: &[(&str, &str)] = &[
-    // Real Tiaris Standard, Dock and Tiling recipes at 74cc63f. The rebrand
-    // changes the sorted position of service links and /etc entries; textual
-    // fixture renaming does not reproduce that order. These exact scripts only
-    // assemble reviewed inputs (UTC/Amsterdam) or link desktop session files.
+    // Real Tiaris Standard, Dock and Tiling system-unit recipes and the
+    // Tiling desktop-session link farm at 74cc63f. The rebrand changes the
+    // sorted position of service links; textual fixture renaming does not
+    // reproduce that order. Their /etc recipes are zone-independent pins.
     // Preserve exact executable providers and all independent input checks.
-    (
-        "dade0e42ad5b06ecb9e0a45cfc9cecf177647fc51e0bb70579eb471d2fffb032",
-        "4038a53f37a4db2f2cb3573adb501a9c9ba819a3c6fb65fff0a9e194fb04ec3a",
-    ),
-    (
-        "bf8c7bd1f98327584a2f9f96e305219218920dbd36c750bb15f6b69fce73376c",
-        "c1770e1cd07663e37cba6a1dc1c6c3773ec8513c8a66e326539dce3be57cb178",
-    ),
     (
         "4afc0bcc0c244405ce7cc54dfe42894247429a84e5ece23d36ce45fcb870b279",
         "f05a7ab53a3a8ef14a5a84d2cdf4bc4612ec83eef3fa1f0ede4c16a73a1281ef",
     ),
     (
-        "057aed11fdbbdc9dabd69f7472616a91c7c559ea41df2c0ec1d7764cd255a01a",
-        "71259096ad195cafe80a5febefc3d006fa042c43cedafe73b72fc95c8432e301",
-    ),
-    (
-        "5187f475e821bba3d963de73ac255e8675e33db2dd093e6bd185ba62ed7ca093",
-        "57b3fb3d047ad5bb4e8ea8455e0332090379d5882eae1e17f7ee71cb8abb289b",
-    ),
-    (
         "a3013a25e906ecbb0bf80cc9c47cce5770f93d101cf8792326a463cd3a8d6f5a",
         "a0da3cc1743d83583e08d8d1fad8d6697dcf08db36d84469c51aa684652c58b3",
-    ),
-    (
-        "3d6c68e6782766416053d20ab874c5fd675c7c83889fa89740d8320b0820c58e",
-        "f919faf2b3d6b69d49680c2c84e257c1216c48e3572f02e761ec2bb1877df06a",
-    ),
-    // Generic Tiaris desktop prebuild at development 36437452: the reviewed
-    // Dock /etc recipe above without the workstation-only wallpaper autostart
-    // link. No executable provider or other recipe line changed; the derivation
-    // and dependent activation/system recipes are retained in the fixture.
-    (
-        "88d5a9f22b7d13f683d2f5db87a75c933fe639c518a0eb69c5748cd022dc6e16",
-        "234f84b30c84077c13c9040245f338e203fbf18566d1b6328bba5ffbd48eabbb",
-    ),
-    (
-        "46327174d6ce17eaf284c28e93c3f35450ecde8ae2eca403ba859085dfff7f1e",
-        "f6d452fd71336b6d465d5ff310c699fa7e1fb66e506563b9e036232cb3b887eb",
     ),
     (
         "ade50ddb2d4aa7e589ae05551bdc4b0dd0cc3b787459048e0aaca5e420b58039",
@@ -3850,28 +3876,12 @@ const PINNED_DESKTOP_NIXOS_GENERATOR_FINGERPRINTS: &[(&str, &str)] = &[
         "1887811654c77bb12eda84231deb305a53abaab0ff5de22167145112de4208ab",
         "05020cc94499606e3a2f15713d82c964de3ebadc0e8727b51c8296e99611c6d7",
     ),
-    // Fresh Standard and Dock profiles use UTC. These reviewed 74cc63f /etc
-    // assembly recipes use Tiaris paths and change only the localtime symlink
-    // from /etc/zoneinfo/Europe/Amsterdam to /etc/zoneinfo/UTC. The paired
-    // executable fingerprints still bind the exact tool providers.
-    (
-        "f012efae535cabdee41c3233d9e69d1ee33a7ebf372c76f3617db938b8612e4f",
-        "bdea6dc6265641bdeae5ec41673ebb144fcf057dedaa91a43c8a4e0b8e8c78a1",
-    ),
-    (
-        "2c98a683cf0dee258aa599fb8095dacce19f1d3e89984313e8c8003fb49b1439",
-        "a3701651e790dd3b0ae3b625a73019d9a5fbdb2fc818e32cd0619811030af2e6",
-    ),
-    // Current production Standard service links and regional /etc assembly.
+    // Current production Standard service links.
     (
         "3b67dbfcb231874c224bf7322c305ef8db88d0a72f58c60b9e42c54617134a69",
         "dafa647087ab2a40654d467623121147109d68c9c5ffc4eb70a7d3264a082fc7",
     ),
-    (
-        "106a0873ec9f081be574d1f2a2fd42f49d9280744ecdc3cc7a9fd1344fce7314",
-        "bfad7295bf9ffbe83904436e95844cab30e522179876ad195770b5edb284a458",
-    ),
-    // Current production Dock service-link and /etc assembly at 74cc63f.
+    // Current production Dock service-link assembly at 74cc63f.
     // Reviewed GNOME unit/package lists preserve executable provider hashes.
     (
         "98af94de7900a2a292ada2e04cd591bbc97ec623ae760b16c8175dfc7f24277d",
@@ -3880,10 +3890,6 @@ const PINNED_DESKTOP_NIXOS_GENERATOR_FINGERPRINTS: &[(&str, &str)] = &[
     (
         "adef8f2b7298836253217ece1d46fbcf8142430184a9367b4d8d5dc834381e91",
         "bea1c4825160d666fd144084eb9d93ab68155c1bf7b867cf251a2ab277fadb28",
-    ),
-    (
-        "f4a6d27acb7b47c935995e402d9e8ddd0c221214b04959119112b34fc35ff34c",
-        "121c4dc026aac18d7b2888859bb26a558fa803c3654542edcf7b2d2e37dd0103",
     ),
     // Production tiling composition at the retained 74cc63f source pin.
     // These exact recipes only assemble service links and /etc entries;
@@ -3896,10 +3902,6 @@ const PINNED_DESKTOP_NIXOS_GENERATOR_FINGERPRINTS: &[(&str, &str)] = &[
     (
         "47430a9f2980f5c9026395123fcacd1ca34faa34c8624424d85a5f900c631d03",
         "273456c6d5885ccfd9d57f4dfd465a5678d7dbfbaf6ad5cfd9e9e68c5e039db6",
-    ),
-    (
-        "69c929df70bea710ce223b072474de18367925ea50b70d9b4bbbe3d11446f822",
-        "15662cf2502944c83d0834160204cc7e1122becfa86db7470eab7879acd953b5",
     ),
     (
         "2b2fc4793476549635b1bc215ceb531bd6136a9e73532a3aeea9804374731d9f",
@@ -4188,6 +4190,151 @@ fn reviewed_generator_fingerprints_match(normalized: &str, executable_pinned: &s
             "b4419743eaa9ea0099e298a7ade945231d3da4735efface29cc80c71c6bd35ed"
         )
     ) || PINNED_DESKTOP_NIXOS_GENERATOR_FINGERPRINTS.contains(&(normalized, executable_pinned))
+}
+
+// Zone-independent 74cc63f `/etc` assembly recipes. NixOS writes
+// `time.timeZone` into exactly one `makeEtcEntry /etc/zoneinfo/<Zone>
+// localtime direct-symlink +0 +0` line; every other byte of the recipe is the
+// same for every zone. These pairs are computed after replacing only that
+// zone with `ETC_LOCALTIME_ZONE_PLACEHOLDER`. They are compared only with
+// zone-normalized fingerprints, and the raw pins above only with raw ones.
+// The executable-pinned half still binds every tool provider.
+const PINNED_ZONE_INDEPENDENT_ETC_FINGERPRINTS: &[(&str, &str)] = &[
+    // Tiaris KDE Standard (formerly UTC dade0e42/4038a53f and Amsterdam
+    // bf8c7bd1/c1770e1c), tiaris-production-generators.json.
+    (
+        "35c5462ff0ef70bb211eb54a46ca747ad9f6c3b2134441e050ea2f9760ae3974",
+        "c6e80ffdd11a0cc20ce2debd21f8056dfef6ef8acfb1b17033b5e0f2b61d60df",
+    ),
+    // Tiaris Tiling (formerly UTC 057aed11/71259096 and Amsterdam
+    // 5187f475/57b3fb3d), tiaris-production-generators.json.
+    (
+        "2ecadba7ed6f87694e47c01d8e102e9ffdee215e200f3435726590f397bafa59",
+        "df7f490eed86759e74a461c356c6947af05f673544c7d20d80eaf73e3ec3c2e7",
+    ),
+    // Tiaris GNOME Taskbar/Dock (formerly UTC 3d6c68e6/f919faf2 and Amsterdam
+    // 46327174/f6d452fd), tiaris-production-generators.json. The real
+    // America/New_York recipe in regional-taskbar-new-york-de-generators.json
+    // has the same pair.
+    (
+        "f494402d7245d07ef464c8e16d97a8573f746be8ccd7bafd8183f549a5525efb",
+        "6fd3a636583672a1f4cbdcc6f0d1b1b5543963baefa10fb8c303751f05fbb356",
+    ),
+    // Generic Tiaris desktop prebuild at development 36437452: the GNOME Dock
+    // recipe without the workstation-only wallpaper autostart link (formerly
+    // UTC 88d5a9f2/234f84b3), generic-desktop-prebuild-generators.json.
+    (
+        "9cdb204a2eae6ce407308df14327fad4eefa0e17fe953983fe58296df530c8ad",
+        "5830004382ba9f7078c561efd881680f671d750960dc03289487d1971eeada42",
+    ),
+    // Retained production Standard (formerly UTC f012efae/bdea6dc6 and
+    // Amsterdam 106a0873/bfad7295), production-standard-generators.json.
+    (
+        "286b618558d341e6dd7d1d4f745404477ccaa73089c5a5108e78e811a20a1d37",
+        "fef3125d300fc6a4ea5b9c42c9e975060d0a598435036c2c8d769f716f16a39c",
+    ),
+    // Retained production Dock (formerly UTC 2c98a683/a3701651 and Amsterdam
+    // f4a6d27a/121c4dc0), production-dock-generators.json.
+    (
+        "de63a599a3a7f2ec9648e8728e28ff1d886c17fcd6260606ce4597d221da07b4",
+        "358a08a108d9ff42f99b68f681ce4ed84d5ad280ee8eb7de82ced1e8b83643a5",
+    ),
+    // Retained production Tiling (formerly UTC 69c929df/15662cf2),
+    // production-tiling-generators.json.
+    (
+        "daa8056034713d9fc262e4729a21c1d32c6a17880a4d9a4d5d1d48c35931a5af",
+        "a55233b316022f5c9009e827519e62ac1fe750e93a6b1c2ff84ffeba64e8fbe8",
+    ),
+];
+
+const ETC_LOCALTIME_ENTRY_PREFIX: &str = "makeEtcEntry /etc/zoneinfo/";
+const ETC_LOCALTIME_ZONE_PLACEHOLDER: &str = "<time-zone>";
+const MAX_ETC_TIME_ZONE_BYTES: usize = 64;
+
+fn reviewed_zone_independent_etc_fingerprints_match(
+    normalized: &str,
+    executable_pinned: &str,
+) -> bool {
+    PINNED_ZONE_INDEPENDENT_ETC_FINGERPRINTS.contains(&(normalized, executable_pinned))
+}
+
+/// IANA-style zone names only: one to three `/`-separated components, each
+/// starting with an ASCII letter and otherwise limited to `[A-Za-z0-9_+-]`.
+/// No component can be empty, `.` or `..`, and no shell metacharacter or
+/// whitespace can occur, so the value is a literal path below /etc/zoneinfo.
+fn safe_etc_time_zone(zone: &str) -> bool {
+    let components = zone.split('/').collect::<Vec<_>>();
+    zone.len() <= MAX_ETC_TIME_ZONE_BYTES
+        && (1..=3).contains(&components.len())
+        && components.iter().all(|component| {
+            component
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic)
+                && component
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'+' | b'-'))
+        })
+}
+
+/// Replace only the zone of the single NixOS `/etc/localtime` entry with a
+/// fixed placeholder. Any second localtime-like line, an unexpected entry
+/// shape or an unsafe zone fails closed (`None`): the raw script must then
+/// match a raw pin. The user/group fields and all other bytes stay bound by
+/// the fingerprint.
+fn etc_script_with_time_zone_placeholder(script: &str) -> Option<String> {
+    let mut lines = script.split('\n').collect::<Vec<_>>();
+    let mut localtime = None;
+    for (index, line) in lines.iter().enumerate() {
+        let words = line.split(' ').collect::<Vec<_>>();
+        let names_localtime = line.starts_with(ETC_LOCALTIME_ENTRY_PREFIX)
+            || (words.first() == Some(&"makeEtcEntry") && words.get(2) == Some(&"localtime"));
+        if names_localtime && localtime.replace(index).is_some() {
+            return None;
+        }
+    }
+    let index = localtime?;
+    let (zone, entry) = lines[index]
+        .strip_prefix(ETC_LOCALTIME_ENTRY_PREFIX)?
+        .split_once(' ')?;
+    let fields = entry.split(' ').collect::<Vec<_>>();
+    if fields.len() != 4
+        || fields[0] != "localtime"
+        || fields[1] != "direct-symlink"
+        || !safe_etc_time_zone(zone)
+    {
+        return None;
+    }
+    let normalized =
+        format!("{ETC_LOCALTIME_ENTRY_PREFIX}{ETC_LOCALTIME_ZONE_PLACEHOLDER} {entry}");
+    lines[index] = &normalized;
+    Some(lines.join("\n"))
+}
+
+fn derivation_name<'a>(
+    drv: &'a Value,
+    attrs: &'a serde_json::Map<String, Value>,
+) -> Option<&'a str> {
+    let name = attrs.get("name").and_then(Value::as_str)?;
+    match drv.get("name") {
+        None => Some(name),
+        Some(outer) => (outer.as_str() == Some(name)).then_some(name),
+    }
+}
+
+fn reviewed_zone_independent_etc_recipe(
+    drv: &Value,
+    attrs: &serde_json::Map<String, Value>,
+    build_command: &str,
+) -> bool {
+    derivation_name(drv, attrs) == Some("etc")
+        && !derivation_uses_structured_attributes(drv, attrs)
+        && etc_script_with_time_zone_placeholder(build_command).is_some_and(|script| {
+            reviewed_zone_independent_etc_fingerprints_match(
+                &normalized_script_sha256(&script),
+                &executable_pinned_script_sha256(&script),
+            )
+        })
 }
 
 fn derivation_is_plain_fixed_output_fetch(
@@ -4747,10 +4894,132 @@ where
             && script_store_item_paths_are_trusted(drv, build_command, would_build, trusted_local)
     } else {
         reviewed_generator_fingerprints_match(&fingerprint, &executable_fingerprint)
+            || reviewed_zone_independent_etc_recipe(drv, attrs, build_command)
     };
     reviewed_fingerprint
         && reviewed_script_inputs
         && reviewed_tool_inputs_match(drv, attrs, expected_tools, would_build, trusted_local)
+}
+
+// NixOS' X11 module validates the configured keyboard with
+// `pkgs.runCommand "xkb-validated"`. The 74cc63f command passes the settings
+// as quoted attributes and only writes an empty marker, so its bytes do not
+// depend on the layout. The default `us` output is cached; another layout is
+// local work over the cache-backed xkbvalidate and xkeyboard-config outputs.
+const PINNED_XKB_VALIDATION_FINGERPRINT: &str =
+    "cd2952b1dd7e7671a65d7fbcc4b1852c22b845652bed7f6c26932bc4b6b0417e";
+const PINNED_XKB_VALIDATION_EXECUTABLE_FINGERPRINT: &str =
+    "cd2952b1dd7e7671a65d7fbcc4b1852c22b845652bed7f6c26932bc4b6b0417e";
+const XKB_VALIDATION_TOOL_INPUTS: &[ReviewedToolInput] = &[ReviewedToolInput {
+    attribute: "nativeBuildInputs",
+    path: "/nix/store/na9axm2h37fxjzadvvq547p4b4q7d6r0-xkbvalidate",
+    drv_path: "/nix/store/mz9jidx0yqq1zd5ywb2fd1fn6nmsffix-xkbvalidate.drv",
+    output: "out",
+}];
+const XKB_VALIDATION_CONFIG_DIR: ReviewedStoreOutput = ReviewedStoreOutput {
+    path: "/nix/store/czwchfqv2v6v2gm545mhdj03smk50rw0-xkeyboard-config-2.47/etc/X11/xkb",
+    drv_path: "/nix/store/pql9n68whrzg5i1p31wasrbgddgsjg4g-xkeyboard-config-2.47.drv",
+    output: "out",
+};
+const MAX_XKB_VALIDATION_ATTRIBUTE_BYTES: usize = 256;
+
+/// XKB model, layout, variant and option lists: letters, digits and
+/// `_ - , : + ( )` only, bounded. Model and layout are required; variant and
+/// options may be empty (the NixOS default variant is empty).
+fn xkb_validation_attribute_is_safe(
+    attrs: &serde_json::Map<String, Value>,
+    key: &str,
+    allow_empty: bool,
+) -> bool {
+    attrs.get(key).and_then(Value::as_str).is_some_and(|value| {
+        (allow_empty || !value.is_empty())
+            && value.len() <= MAX_XKB_VALIDATION_ATTRIBUTE_BYTES
+            && value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(byte, b'_' | b'-' | b',' | b':' | b'+' | b'(' | b')')
+            })
+    })
+}
+
+/// Accept only the stock NixOS keyboard validation check: exact name and
+/// command, pinned stdenv materializer, exactly the reviewed xkbvalidate
+/// tool, the reviewed cache-backed xkeyboard-config directory, safe layout
+/// attributes, and no extra phase, environment hook or input.
+fn derivation_is_reviewed_xkb_validation<F>(
+    drv: &Value,
+    attrs: &serde_json::Map<String, Value>,
+    verify_source: &F,
+    would_build: &HashSet<String>,
+    trusted_local: &HashSet<String>,
+) -> bool
+where
+    F: Fn(&str, &str) -> bool,
+{
+    let build_command = derivation_attr_text(attrs, "buildCommand");
+    let reviewed_input_drvs = [
+        TRUSTED_STDENV_BASH_DRV,
+        TRUSTED_STDENV_NO_CC_DRV,
+        XKB_VALIDATION_TOOL_INPUTS[0].drv_path,
+        XKB_VALIDATION_CONFIG_DIR.drv_path,
+    ];
+    derivation_name(drv, attrs) == Some("xkb-validated")
+        && !derivation_uses_structured_attributes(drv, attrs)
+        && normalized_script_sha256(build_command) == PINNED_XKB_VALIDATION_FINGERPRINT
+        && executable_pinned_script_sha256(build_command)
+            == PINNED_XKB_VALIDATION_EXECUTABLE_FINGERPRINT
+        && derivation_attr_truthy(attrs, "preferLocalBuild")
+        && has_pinned_stdenv_materializer(
+            drv,
+            attrs,
+            verify_source,
+            TRUSTED_STDENV_NO_CC_OUTPUT,
+            would_build,
+            trusted_local,
+        )
+        && !derivation_has_shell_environment_injection(attrs)
+        && !attrs.keys().any(|key| key.starts_with("XKB_"))
+        && only_reviewed_phase_hooks(attrs, &[])
+        && [
+            "src",
+            "source",
+            "cargoDeps",
+            "cargoVendorDir",
+            "goModules",
+            "configurePhase",
+            "buildPhase",
+            "installPhase",
+        ]
+        .iter()
+        .all(|key| derivation_attr_is_empty(attrs, key))
+        && reviewed_tool_inputs_match(
+            drv,
+            attrs,
+            XKB_VALIDATION_TOOL_INPUTS,
+            would_build,
+            trusted_local,
+        )
+        && attrs.get("dir").and_then(Value::as_str).is_some_and(|dir| {
+            reviewed_store_output_is_trusted(
+                drv,
+                dir,
+                XKB_VALIDATION_CONFIG_DIR,
+                would_build,
+                trusted_local,
+            )
+        })
+        && xkb_validation_attribute_is_safe(attrs, "model", false)
+        && xkb_validation_attribute_is_safe(attrs, "layout", false)
+        && xkb_validation_attribute_is_safe(attrs, "variant", true)
+        && xkb_validation_attribute_is_safe(attrs, "options", true)
+        && derivation_input_drvs(drv).is_some_and(|inputs| {
+            inputs.len() == reviewed_input_drvs.len()
+                && inputs.iter().all(|(path, outputs)| {
+                    reviewed_input_drvs.contains(&path.as_str())
+                        && outputs.len() == 1
+                        && outputs[0] == "out"
+                })
+        })
+        && derivation_input_sources(drv).is_some_and(|sources| sources.len() == 2)
 }
 
 /// `substituteAll` has a lower-level fast path for a single file. It runs a
@@ -7812,10 +8081,12 @@ sleep 5
             let mut recipes = vec![original.to_owned()];
             if drv["env"]["name"] == "etc" {
                 assert!(original.contains("/etc/zoneinfo/UTC localtime direct-symlink"));
-                recipes.push(original.replace(
-                    "/etc/zoneinfo/UTC localtime direct-symlink",
-                    "/etc/zoneinfo/Europe/Amsterdam localtime direct-symlink",
-                ));
+                for zone in ["Europe/Amsterdam", "America/New_York"] {
+                    recipes.push(original.replace(
+                        "/etc/zoneinfo/UTC localtime direct-symlink",
+                        &format!("/etc/zoneinfo/{zone} localtime direct-symlink"),
+                    ));
+                }
             }
             for recipe in recipes {
                 let mut valid = drv.clone();
@@ -7886,28 +8157,44 @@ sleep 5
             .find(|(_, drv)| drv["name"] == "etc")
             .unwrap();
         let recipe = drv["env"]["buildCommand"].as_str().unwrap();
-        let normalized = normalized_script_sha256(recipe);
-        let executable = executable_pinned_script_sha256(recipe);
+        // The retained raw UTC pair is no longer a pin of its own: the recipe
+        // is admitted only through its zone-independent pair.
         assert_eq!(
-            normalized,
+            normalized_script_sha256(recipe),
             "88d5a9f22b7d13f683d2f5db87a75c933fe639c518a0eb69c5748cd022dc6e16"
         );
         assert_eq!(
-            executable,
+            executable_pinned_script_sha256(recipe),
             "234f84b30c84077c13c9040245f338e203fbf18566d1b6328bba5ffbd48eabbb"
+        );
+        assert!(!reviewed_generator_fingerprints_match(
+            &normalized_script_sha256(recipe),
+            &executable_pinned_script_sha256(recipe),
+        ));
+        let zone_independent = etc_script_with_time_zone_placeholder(recipe).unwrap();
+        let normalized = normalized_script_sha256(&zone_independent);
+        let executable = executable_pinned_script_sha256(&zone_independent);
+        assert_eq!(
+            normalized,
+            "9cdb204a2eae6ce407308df14327fad4eefa0e17fe953983fe58296df530c8ad"
+        );
+        assert_eq!(
+            executable,
+            "5830004382ba9f7078c561efd881680f671d750960dc03289487d1971eeada42"
         );
         assert!(derivation_is_exempt_from_source_policy_with_verifier(
             path,
             Some(drv),
             &synthetic_pinned_source,
         ));
-        // The old and new /etc recipes must not share interchangeable halves.
-        assert!(!reviewed_generator_fingerprints_match(
+        // The GNOME workstation and generic /etc recipes must not share
+        // interchangeable halves.
+        assert!(!reviewed_zone_independent_etc_fingerprints_match(
             &normalized,
-            "f919faf2b3d6b69d49680c2c84e257c1216c48e3572f02e761ec2bb1877df06a",
+            "6fd3a636583672a1f4cbdcc6f0d1b1b5543963baefa10fb8c303751f05fbb356",
         ));
-        assert!(!reviewed_generator_fingerprints_match(
-            "3d6c68e6782766416053d20ab874c5fd675c7c83889fa89740d8320b0820c58e",
+        assert!(!reviewed_zone_independent_etc_fingerprints_match(
+            "f494402d7245d07ef464c8e16d97a8573f746be8ccd7bafd8183f549a5525efb",
             &executable,
         ));
     }
@@ -8085,6 +8372,796 @@ sleep 5
                     Some(&drv),
                     &synthetic_pinned_source
                 ));
+            }
+        }
+    }
+
+    const UNSAFE_TIME_ZONES: &[&str] = &[
+        "",
+        "/UTC",
+        "UTC/",
+        "Europe//Amsterdam",
+        ".",
+        "..",
+        "../x",
+        "Europe/../../etc",
+        "Europe/./Amsterdam",
+        "America/New York",
+        "UTC\t",
+        "$(gcc source.c)",
+        "`gcc`",
+        "UTC;gcc",
+        "UTC&&gcc",
+        "UTC|gcc",
+        "UTC>x",
+        "'UTC'",
+        "\"UTC\"",
+        "UTC\\",
+        "A/B/C/D",
+        "_UTC",
+        "-UTC",
+        "9UTC",
+        "Europe/Amst\u{e9}rdam",
+        "<time-zone>",
+    ];
+
+    fn real_etc_recipes() -> Vec<(String, Value)> {
+        let mut recipes = Vec::new();
+        for fixture in [
+            include_str!("../tests/fixtures/source-policy/tiaris-production-generators.json"),
+            include_str!("../tests/fixtures/source-policy/production-standard-generators.json"),
+            include_str!("../tests/fixtures/source-policy/production-dock-generators.json"),
+            include_str!("../tests/fixtures/source-policy/production-tiling-generators.json"),
+            include_str!(
+                "../tests/fixtures/source-policy/regional-taskbar-new-york-de-generators.json"
+            ),
+        ] {
+            let derivations: BTreeMap<String, Value> = serde_json::from_str(fixture).unwrap();
+            recipes.extend(
+                derivations
+                    .into_iter()
+                    .filter(|(_, drv)| drv["env"]["name"] == "etc"),
+            );
+        }
+        recipes.extend(
+            generic_desktop_prebuild_derivations()
+                .into_iter()
+                .filter(|(_, drv)| drv["name"] == "etc"),
+        );
+        assert_eq!(recipes.len(), 8);
+        recipes
+    }
+
+    fn with_time_zone_entry(recipe: &str, entry: &str) -> String {
+        let lines = recipe
+            .split('\n')
+            .map(|line| {
+                if line.starts_with("makeEtcEntry /etc/zoneinfo/") {
+                    entry
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            recipe
+                .split('\n')
+                .filter(|line| line.starts_with("makeEtcEntry /etc/zoneinfo/"))
+                .count(),
+            1
+        );
+        lines.join("\n")
+    }
+
+    fn localtime_entry(zone: &str) -> String {
+        format!("makeEtcEntry /etc/zoneinfo/{zone} localtime direct-symlink +0 +0")
+    }
+
+    #[test]
+    fn source_policy_normalizes_only_one_safe_localtime_zone() {
+        for zone in [
+            "UTC",
+            "Europe/Amsterdam",
+            "America/New_York",
+            "America/Argentina/Buenos_Aires",
+            "America/Port-au-Prince",
+            "Etc/GMT+5",
+            "Etc/GMT-14",
+        ] {
+            assert!(safe_etc_time_zone(zone), "{zone}");
+        }
+        let too_long = "A".repeat(MAX_ETC_TIME_ZONE_BYTES + 1);
+        for zone in UNSAFE_TIME_ZONES.iter().copied().chain([too_long.as_str()]) {
+            assert!(!safe_etc_time_zone(zone), "{zone:?}");
+        }
+
+        let (_, drv) = real_etc_recipes()
+            .into_iter()
+            .find(|(_, drv)| {
+                drv["env"]["buildCommand"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&localtime_entry("America/New_York"))
+            })
+            .unwrap();
+        let new_york = drv["env"]["buildCommand"].as_str().unwrap();
+        let normalized = etc_script_with_time_zone_placeholder(new_york).unwrap();
+        // Exactly the zone is replaced; every other byte is retained.
+        assert_eq!(
+            normalized.replace(ETC_LOCALTIME_ZONE_PLACEHOLDER, "America/New_York"),
+            new_york
+        );
+        assert_eq!(
+            normalized.matches(ETC_LOCALTIME_ZONE_PLACEHOLDER).count(),
+            1
+        );
+        for zone in ["UTC", "Europe/Amsterdam", "Asia/Tokyo"] {
+            let other = with_time_zone_entry(new_york, &localtime_entry(zone));
+            assert_eq!(
+                etc_script_with_time_zone_placeholder(&other).as_deref(),
+                Some(normalized.as_str())
+            );
+        }
+
+        let entry = localtime_entry("America/New_York");
+        let mut fail_closed = UNSAFE_TIME_ZONES
+            .iter()
+            .map(|zone| with_time_zone_entry(new_york, &localtime_entry(zone)))
+            .collect::<Vec<_>>();
+        fail_closed.extend([
+            // A second zone entry, before or after the first.
+            new_york.replace(&entry, &format!("{entry}\n{}", localtime_entry("UTC"))),
+            new_york.replace(&entry, &format!("{}\n{entry}", localtime_entry("UTC"))),
+            // A second entry for the same target from another source.
+            new_york.replace(
+                &entry,
+                &format!(
+                    "{entry}\nmakeEtcEntry /nix/store/ffffffffffffffffffffffffffffffff-zone localtime symlink +0 +0"
+                ),
+            ),
+            // Unexpected entry shapes.
+            with_time_zone_entry(
+                new_york,
+                "makeEtcEntry /etc/zoneinfo/America/New_York localtime symlink +0 +0",
+            ),
+            with_time_zone_entry(
+                new_york,
+                "makeEtcEntry /etc/zoneinfo/America/New_York localtime direct-symlink +0",
+            ),
+            with_time_zone_entry(
+                new_york,
+                "makeEtcEntry /etc/zoneinfo/America/New_York localtime direct-symlink +0 +0 $(gcc)",
+            ),
+            with_time_zone_entry(
+                new_york,
+                "makeEtcEntry /etc/zoneinfo/America/New_York  localtime direct-symlink +0 +0",
+            ),
+            with_time_zone_entry(
+                new_york,
+                "makeEtcEntry /etc/zoneinfo/America/New_York zoneinfo direct-symlink +0 +0",
+            ),
+            // No zone entry at all.
+            new_york.replace(&format!("{entry}\n"), ""),
+            // An indented entry is not the generated NixOS line.
+            new_york.replace(&entry, &format!(" {entry}")),
+        ]);
+        for script in fail_closed {
+            assert_ne!(script, new_york);
+            assert_eq!(etc_script_with_time_zone_placeholder(&script), None);
+        }
+    }
+
+    #[test]
+    fn source_policy_admits_any_safe_zone_only_for_reviewed_etc_recipes() {
+        for &(normalized, executable) in PINNED_ZONE_INDEPENDENT_ETC_FINGERPRINTS {
+            assert!(reviewed_zone_independent_etc_fingerprints_match(
+                normalized, executable
+            ));
+            // Zone-normalized pins are never raw pins, and vice versa.
+            assert!(!reviewed_generator_fingerprints_match(
+                normalized, executable
+            ));
+        }
+        for &(normalized, executable) in PINNED_DESKTOP_NIXOS_GENERATOR_FINGERPRINTS {
+            assert!(!reviewed_zone_independent_etc_fingerprints_match(
+                normalized, executable
+            ));
+        }
+        let pins = PINNED_ZONE_INDEPENDENT_ETC_FINGERPRINTS;
+        for (index, &(normalized, executable)) in pins.iter().enumerate() {
+            let next = pins[(index + 1) % pins.len()];
+            assert!(!reviewed_zone_independent_etc_fingerprints_match(
+                normalized, next.1
+            ));
+            assert!(!reviewed_zone_independent_etc_fingerprints_match(
+                next.0, executable
+            ));
+        }
+
+        let mut shapes = BTreeMap::new();
+        for (path, drv) in real_etc_recipes() {
+            let recipe = drv["env"]["buildCommand"].as_str().unwrap().to_owned();
+            let normalized = etc_script_with_time_zone_placeholder(&recipe).unwrap();
+            let pair = (
+                normalized_script_sha256(&normalized),
+                executable_pinned_script_sha256(&normalized),
+            );
+            assert!(
+                reviewed_zone_independent_etc_fingerprints_match(&pair.0, &pair.1),
+                "real /etc recipe has no zone-independent pin: {path}"
+            );
+            shapes.insert(pair, path.clone());
+            let accepted = |script: &str, drv: &Value| {
+                let mut candidate = drv.clone();
+                candidate["env"]["buildCommand"] = json!(script);
+                derivation_is_exempt_from_source_policy_with_verifier(
+                    &path,
+                    Some(&candidate),
+                    &synthetic_pinned_source,
+                )
+            };
+            for zone in [
+                "UTC",
+                "Europe/Amsterdam",
+                "America/New_York",
+                "Asia/Tokyo",
+                "Etc/GMT+5",
+            ] {
+                let zoned = with_time_zone_entry(&recipe, &localtime_entry(zone));
+                assert!(accepted(&zoned, &drv), "{zone} rejected: {path}");
+                // The raw recipe is not itself pinned; only its zone is free.
+                assert!(!reviewed_generator_fingerprints_match(
+                    &normalized_script_sha256(&zoned),
+                    &executable_pinned_script_sha256(&zoned),
+                ));
+                for invalid in [
+                    format!("{zoned}\ngcc source.c -o $out/payload\n"),
+                    zoned.replace(
+                        "wy0mh9ah0alglg3ab5djg3jv6f0garyc-nixos-init",
+                        "ffffffffffffffffffffffffffffffff-nixos-init",
+                    ),
+                    zoned.replace(
+                        &localtime_entry(zone),
+                        &format!("{}\n{}", localtime_entry(zone), localtime_entry("UTC")),
+                    ),
+                    zoned.replace(
+                        &localtime_entry(zone),
+                        &format!(
+                            "makeEtcEntry /etc/zoneinfo/{zone} localtime direct-symlink +1 +0"
+                        ),
+                    ),
+                ] {
+                    assert_ne!(invalid, zoned);
+                    assert!(!accepted(&invalid, &drv), "accepted altered recipe: {path}");
+                }
+                let mut hooked = drv.clone();
+                hooked["env"]["buildCommand"] = json!(zoned);
+                hooked["env"]["preBuild"] = json!("gcc source.c -o $out/payload");
+                assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                    &path,
+                    Some(&hooked),
+                    &synthetic_pinned_source,
+                ));
+                // Normalization is reserved for the NixOS `/etc` derivation.
+                let mut renamed = drv.clone();
+                renamed["env"]["buildCommand"] = json!(zoned);
+                renamed["env"]["name"] = json!("etc-copy");
+                assert!(!derivation_is_exempt_from_source_policy_with_verifier(
+                    &path,
+                    Some(&renamed),
+                    &synthetic_pinned_source,
+                ));
+            }
+            for zone in UNSAFE_TIME_ZONES {
+                let zoned = with_time_zone_entry(&recipe, &localtime_entry(zone));
+                assert!(
+                    !accepted(&zoned, &drv),
+                    "unsafe zone {zone:?} accepted: {path}"
+                );
+            }
+        }
+        // The real GNOME New York recipe shares the reviewed GNOME pair.
+        assert_eq!(shapes.len(), 7);
+    }
+
+    fn regional_gnome_derivations() -> BTreeMap<String, Value> {
+        let derivations: BTreeMap<String, Value> = serde_json::from_str(include_str!(
+            "../tests/fixtures/source-policy/regional-taskbar-new-york-de-generators.json"
+        ))
+        .unwrap();
+        assert_eq!(derivations.len(), 10);
+        derivations
+    }
+
+    fn derivation_path_named(derivations: &BTreeMap<String, Value>, name: &str) -> String {
+        let matches = derivations
+            .iter()
+            .filter(|(_, drv)| drv["name"] == name)
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1, "{name}");
+        matches[0].clone()
+    }
+
+    #[test]
+    fn source_policy_accepts_real_regional_workstation_graph_to_a_fixed_point() {
+        let derivations = regional_gnome_derivations();
+        let etc = derivation_path_named(&derivations, "etc");
+        let activate = derivation_path_named(&derivations, "activate");
+        let xkb = derivation_path_named(&derivations, "xkb-validated");
+        let policy = derivation_path_named(&derivations, "etc-tiaris-policy.json");
+        let system =
+            derivation_path_named(&derivations, "nixos-system-tiaris-nest-build-26.05pre-git");
+        for (parent, dependency) in [
+            (&etc, &policy),
+            (&activate, &etc),
+            (&system, &etc),
+            (&system, &activate),
+            (&system, &xkb),
+        ] {
+            assert!(
+                derivation_input_drvs(&derivations[parent])
+                    .unwrap()
+                    .iter()
+                    .any(|(path, _)| path == dependency)
+            );
+        }
+        let recipe = derivations[&etc]["env"]["buildCommand"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(recipe.contains(&localtime_entry("America/New_York")));
+        assert_eq!(derivations[&xkb]["env"]["layout"], "de");
+
+        // Parents first: the real chain needs repeated fixed-point passes.
+        let mut would_build = derivations.keys().cloned().collect::<Vec<_>>();
+        would_build.reverse();
+        let would_build_set = would_build.iter().cloned().collect::<HashSet<_>>();
+        let classify = |derivations: &BTreeMap<String, Value>| {
+            classify_trusted_local_derivations(
+                &would_build,
+                derivations,
+                &synthetic_pinned_source,
+                &would_build_set,
+            )
+        };
+        assert_eq!(classify(&derivations), would_build_set);
+
+        let entry = localtime_entry("America/New_York");
+        let mut etc_taints = vec![
+            (
+                "buildCommand",
+                format!("{recipe}\ngcc source.c -o $out/payload\n"),
+            ),
+            ("preBuild", "gcc source.c -o $out/payload".to_string()),
+            (
+                "buildCommand",
+                recipe.replace(
+                    "wy0mh9ah0alglg3ab5djg3jv6f0garyc-nixos-init",
+                    "ffffffffffffffffffffffffffffffff-nixos-init",
+                ),
+            ),
+            (
+                "buildCommand",
+                recipe.replace(&entry, &format!("{entry}\n{}", localtime_entry("UTC"))),
+            ),
+        ];
+        for zone in [
+            "../x",
+            "Europe/../../etc",
+            "America/New York",
+            "$(gcc source.c)",
+        ] {
+            etc_taints.push((
+                "buildCommand",
+                recipe.replace(&entry, &localtime_entry(zone)),
+            ));
+        }
+        for (attribute, value) in etc_taints {
+            let mut tainted = derivations.clone();
+            tainted.get_mut(&etc).unwrap()["env"][attribute] = json!(value);
+            let trusted = classify(&tainted);
+            for rejected in [&etc, &activate, &system] {
+                assert!(
+                    !trusted.contains(rejected),
+                    "a modified /etc recipe must reject itself and its dependents: {rejected}"
+                );
+            }
+            assert!(trusted.contains(&xkb) && trusted.contains(&policy));
+        }
+
+        let mut tainted = derivations.clone();
+        tainted.get_mut(&xkb).unwrap()["env"]["layout"] = json!("de;gcc source.c");
+        let trusted = classify(&tainted);
+        assert!(!trusted.contains(&xkb) && !trusted.contains(&system));
+        assert!(trusted.contains(&etc) && trusted.contains(&activate));
+
+        // An unchanged /etc recipe cannot trust an input that now needs
+        // unreviewed local work.
+        let mut tainted = derivations;
+        tainted.insert(
+            policy,
+            synthetic_materializer(json!({"buildCommand": "gcc source.c -o $out"}), vec![]),
+        );
+        let trusted = classify(&tainted);
+        for rejected in [&etc, &activate, &system] {
+            assert!(!trusted.contains(rejected));
+        }
+        assert!(trusted.contains(&xkb));
+    }
+
+    /// Re-encode a Nix 2.26 environment derivation the way Nix serializes
+    /// `__structuredAttrs = true`: attributes move into `env.__json`.
+    fn structured_attrs_variant(drv: &Value, extra: Value) -> Value {
+        let mut drv = drv.clone();
+        let env = drv["env"].as_object().unwrap().clone();
+        let outputs = drv["outputs"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut structured = env
+            .iter()
+            .filter(|(key, _)| key.as_str() != "__structuredAttrs" && !outputs.contains(key))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        structured.insert("outputs".to_string(), json!(outputs));
+        structured.extend(extra.as_object().unwrap().clone());
+        let mut encoded = serde_json::Map::new();
+        encoded.insert(
+            "__json".to_string(),
+            json!(serde_json::to_string(&structured).unwrap()),
+        );
+        for output in outputs {
+            encoded.insert(output.clone(), env[&output].clone());
+        }
+        drv["env"] = Value::Object(encoded);
+        drv
+    }
+
+    fn with_structured_extra(drv: &Value, extra: &Value) -> Value {
+        let mut drv = drv.clone();
+        let mut structured: serde_json::Map<String, Value> =
+            serde_json::from_str(drv["env"]["__json"].as_str().unwrap()).unwrap();
+        for (key, value) in extra.as_object().unwrap() {
+            match (structured.get_mut(key), value) {
+                (Some(Value::Object(existing)), Value::Object(added)) => {
+                    existing.extend(added.clone());
+                }
+                _ => {
+                    structured.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        drv["env"]["__json"] = json!(serde_json::to_string(&structured).unwrap());
+        drv
+    }
+
+    const STRUCTURED_EXPORT_INJECTIONS: &[&str] = &[
+        r#"{"NIX_DEBUG": 6, "env": {"PS4": "$(gcc source.c -o $out/payload)"}}"#,
+        r#"{"NIX_DEBUG": "6"}"#,
+        r#"{"env": {"PS4": "$(gcc source.c -o $out/payload)"}}"#,
+        r#"{"env": {"BASH_ENV": "/tmp/payload"}}"#,
+        r#"{"env": {"LD_PRELOAD": "/tmp/payload.so"}}"#,
+        r#"{"env": {"preBuild": "gcc source.c -o $out/payload"}}"#,
+        r#"{"env": {"postHook": "gcc source.c -o $out/payload"}}"#,
+        r#"{"env": {"buildCommand": "gcc source.c -o $out/payload"}}"#,
+        r#"{"env": "PS4=$(gcc source.c -o $out/payload)"}"#,
+        r#"{"outputs": ["out", "BASH_ENV"]}"#,
+    ];
+
+    #[test]
+    fn source_policy_inspects_structured_attribute_exports() {
+        // Both serializations expose nested `env` exports as attributes.
+        for drv in [
+            json!({"env": {"__json": r#"{"env": {"PS4": "x", "preBuild": "y"}}"#}}),
+            json!({"structuredAttrs": {"env": {"PS4": "x", "preBuild": "y"}}}),
+        ] {
+            let attrs = derivation_attributes(&drv);
+            assert_eq!(attrs["PS4"], "x");
+            assert!(derivation_has_shell_environment_injection(&attrs));
+            assert!(!only_reviewed_phase_hooks(&attrs, &[]));
+        }
+        let attrs = derivation_attributes(&json!({
+            "structuredAttrs": {"env": {"XKB_CONFIG_EXTRA_PATH": "/tmp/xkb"}}
+        }));
+        assert_eq!(attrs["XKB_CONFIG_EXTRA_PATH"], "/tmp/xkb");
+        let attrs = derivation_attributes(&json!({
+            "env": {"__json": r#"{"buildCommand": "a", "env": {"buildCommand": "b"}}"#}
+        }));
+        assert_eq!(
+            attrs["__tiaris_conflicting_derivation_attributes"],
+            Value::Bool(true)
+        );
+        for outputs in [
+            json!("out BASH_ENV"),
+            json!(["out", "PS4"]),
+            json!({"PS4": {}}),
+        ] {
+            let mut attrs = serde_json::Map::new();
+            attrs.insert("outputs".to_string(), outputs);
+            assert!(derivation_has_shell_environment_injection(&attrs));
+        }
+        let mut attrs = serde_json::Map::new();
+        attrs.insert("outputs".to_string(), json!("out dev bin"));
+        assert!(!derivation_has_shell_environment_injection(&attrs));
+
+        // Plain-environment shapes reject structured mode outright.
+        let xkb = regional_xkb_validations();
+        let regional = regional_gnome_derivations();
+        let etc = derivation_path_named(&regional, "etc");
+        let mut plain = xkb
+            .iter()
+            .map(|(path, drv)| (path.clone(), drv.clone()))
+            .collect::<Vec<_>>();
+        plain.push((etc.clone(), regional[&etc].clone()));
+        for (path, drv) in &plain {
+            let accepted = |candidate: &Value| {
+                derivation_is_exempt_from_source_policy_with_verifier(
+                    path,
+                    Some(candidate),
+                    &synthetic_pinned_source,
+                )
+            };
+            assert!(accepted(drv));
+            assert!(!accepted(&structured_attrs_variant(drv, json!({}))));
+            assert!(!accepted(&structured_attrs_variant(
+                drv,
+                json!({"env": {}})
+            )));
+            for extra in STRUCTURED_EXPORT_INJECTIONS
+                .iter()
+                .chain(&[r#"{"env": {"XKB_CONFIG_EXTRA_PATH": "/tmp/xkb"}}"#])
+            {
+                let extra = serde_json::from_str::<Value>(extra).unwrap();
+                assert!(
+                    !accepted(&structured_attrs_variant(drv, extra.clone())),
+                    "{path}: {extra}"
+                );
+            }
+        }
+
+        // The reviewed NixOS toplevel generator is natively structured. Its
+        // nested exports are inspected; the real derivation stays trusted.
+        let system =
+            derivation_path_named(&regional, "nixos-system-tiaris-nest-build-26.05pre-git");
+        let would_build = regional.keys().cloned().collect::<Vec<_>>();
+        let would_build_set = would_build.iter().cloned().collect::<HashSet<_>>();
+        let classify = |derivations: &BTreeMap<String, Value>| {
+            classify_trusted_local_derivations(
+                &would_build,
+                derivations,
+                &synthetic_pinned_source,
+                &would_build_set,
+            )
+        };
+        assert_eq!(classify(&regional), would_build_set);
+        for extra in STRUCTURED_EXPORT_INJECTIONS {
+            let extra = serde_json::from_str::<Value>(extra).unwrap();
+            let mut tainted = regional.clone();
+            tainted.insert(
+                system.clone(),
+                with_structured_extra(&regional[&system], &extra),
+            );
+            let trusted = classify(&tainted);
+            assert!(!trusted.contains(&system), "accepted structured {extra}");
+            assert_eq!(trusted.len(), would_build_set.len() - 1);
+        }
+    }
+
+    fn regional_xkb_validations() -> BTreeMap<String, Value> {
+        let derivations: BTreeMap<String, Value> = serde_json::from_str(include_str!(
+            "../tests/fixtures/source-policy/regional-xkb-validated.json"
+        ))
+        .unwrap();
+        assert_eq!(derivations.len(), 2);
+        derivations
+    }
+
+    #[test]
+    fn source_policy_accepts_only_the_reviewed_xkb_validation_shape() {
+        let derivations = regional_xkb_validations();
+        let layouts = derivations
+            .values()
+            .map(|drv| {
+                (
+                    drv["env"]["layout"].as_str().unwrap(),
+                    drv["env"]["variant"].as_str().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(layouts.contains(&("us", "intl")) && layouts.contains(&("de", "")));
+        assert!(!reviewed_generator_fingerprints_match(
+            PINNED_XKB_VALIDATION_FINGERPRINT,
+            PINNED_XKB_VALIDATION_EXECUTABLE_FINGERPRINT,
+        ));
+        let tool = XKB_VALIDATION_TOOL_INPUTS[0];
+        let forged_tool_drv = "/nix/store/ffffffffffffffffffffffffffffffff-xkbvalidate.drv";
+        let forged_dir_drv =
+            "/nix/store/ffffffffffffffffffffffffffffffff-xkeyboard-config-2.47.drv";
+
+        for (path, drv) in &derivations {
+            let command = drv["env"]["buildCommand"].as_str().unwrap();
+            assert_eq!(
+                normalized_script_sha256(command),
+                PINNED_XKB_VALIDATION_FINGERPRINT
+            );
+            let accepted = |candidate: &Value| {
+                derivation_is_exempt_from_source_policy_with_verifier(
+                    path,
+                    Some(candidate),
+                    &synthetic_pinned_source,
+                )
+            };
+            assert!(accepted(drv), "real keyboard validation rejected: {path}");
+            for (key, value) in [
+                ("layout", "us,de"),
+                ("layout", "gb"),
+                ("layout", "us(intl)"),
+                ("variant", "intl,"),
+                ("variant", "colemak"),
+                ("variant", ""),
+                ("model", "pc105"),
+                ("options", ""),
+                (
+                    "options",
+                    "grp:alt_shift_toggle,lv3:ralt_switch,terminate:ctrl_alt_bksp",
+                ),
+            ] {
+                let mut candidate = drv.clone();
+                candidate["env"][key] = json!(value);
+                assert!(accepted(&candidate), "{key}={value:?} rejected");
+            }
+
+            let mut rejected = Vec::<(String, Value)>::new();
+            let mut mutate = |label: &str, change: &dyn Fn(&mut Value)| {
+                let mut candidate = drv.clone();
+                change(&mut candidate);
+                rejected.push((label.to_string(), candidate));
+            };
+            mutate("appended command", &|drv| {
+                drv["env"]["buildCommand"] =
+                    json!(format!("{command}gcc source.c -o $out/payload\n"));
+            });
+            mutate("injected preBuild", &|drv| {
+                drv["env"]["preBuild"] = json!("gcc source.c -o $out/payload");
+            });
+            mutate("injected postHook", &|drv| {
+                drv["env"]["postHook"] = json!("gcc source.c -o $out/payload");
+            });
+            mutate("explicit executable provider", &|drv| {
+                drv["env"]["buildCommand"] = json!(command.replace(
+                    "xkbvalidate \"$model\"",
+                    "/nix/store/ffffffffffffffffffffffffffffffff-xkbvalidate/bin/xkbvalidate \"$model\"",
+                ));
+            });
+            mutate("changed executable provider", &|drv| {
+                let inputs = drv["inputDrvs"].as_object_mut().unwrap();
+                let metadata = inputs.remove(tool.drv_path).unwrap();
+                inputs.insert(forged_tool_drv.to_string(), metadata);
+                drv["env"]["nativeBuildInputs"] =
+                    json!("/nix/store/ffffffffffffffffffffffffffffffff-xkbvalidate");
+            });
+            mutate("additional tool input", &|drv| {
+                drv["env"]["buildInputs"] = json!(
+                    XKB_VALIDATION_CONFIG_DIR
+                        .path
+                        .split("/etc/")
+                        .next()
+                        .unwrap()
+                );
+            });
+            mutate("untrusted xkeyboard-config", &|drv| {
+                let inputs = drv["inputDrvs"].as_object_mut().unwrap();
+                let metadata = inputs.remove(XKB_VALIDATION_CONFIG_DIR.drv_path).unwrap();
+                inputs.insert(forged_dir_drv.to_string(), metadata);
+                drv["env"]["dir"] = json!(
+                    "/nix/store/ffffffffffffffffffffffffffffffff-xkeyboard-config-2.47/etc/X11/xkb"
+                );
+            });
+            mutate("host directory", &|drv| {
+                drv["env"]["dir"] = json!("/etc/X11/xkb")
+            });
+            mutate("other subpath", &|drv| {
+                drv["env"]["dir"] = json!(
+                    XKB_VALIDATION_CONFIG_DIR
+                        .path
+                        .replace("/etc/X11/xkb", "/share/X11/xkb")
+                );
+            });
+            mutate("missing directory", &|drv| {
+                drv["env"].as_object_mut().unwrap().remove("dir");
+            });
+            mutate("extra input source", &|drv| {
+                drv["inputSrcs"].as_array_mut().unwrap().push(json!(
+                    "/nix/store/ffffffffffffffffffffffffffffffff-extra.sh"
+                ));
+            });
+            mutate("extra tool output", &|drv| {
+                drv["inputDrvs"][tool.drv_path]["outputs"] = json!(["out", "dev"]);
+            });
+            mutate("plain structured attributes", &|drv| {
+                drv["env"]["__structuredAttrs"] = json!("1");
+            });
+            mutate("top-level shell tracing", &|drv| {
+                drv["env"]["NIX_DEBUG"] = json!("6");
+            });
+            mutate("extra input derivation", &|drv| {
+                drv["inputDrvs"]["/nix/store/ffffffffffffffffffffffffffffffff-extra.drv"] =
+                    json!({"dynamicOutputs": {}, "outputs": ["out"]});
+            });
+            mutate("full stdenv", &|drv| {
+                drv["env"]["stdenv"] = json!(TRUSTED_STDENV_FULL);
+            });
+            mutate("renamed", &|drv| {
+                drv["env"]["name"] = json!("xkb-validated-extra");
+                drv["name"] = json!("xkb-validated-extra");
+            });
+            mutate("inconsistent name", &|drv| drv["name"] = json!("etc"));
+            mutate("remote build", &|drv| {
+                drv["env"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("preferLocalBuild");
+            });
+            mutate("extra xkb data path", &|drv| {
+                drv["env"]["XKB_CONFIG_EXTRA_PATH"] = json!("/tmp/xkb");
+            });
+            mutate("loader injection", &|drv| {
+                drv["env"]["LD_PRELOAD"] = json!("/tmp/payload.so");
+            });
+            for (key, value) in [
+                ("layout", json!("de;gcc source.c")),
+                ("layout", json!("de$(gcc source.c)")),
+                ("layout", json!("de gcc")),
+                ("layout", json!("`gcc`")),
+                ("layout", json!("de\ngcc")),
+                ("layout", json!("de|gcc")),
+                ("layout", json!("../de")),
+                ("layout", json!("")),
+                ("layout", json!(["de"])),
+                (
+                    "layout",
+                    json!("a".repeat(MAX_XKB_VALIDATION_ATTRIBUTE_BYTES + 1)),
+                ),
+                ("variant", json!("intl&gcc")),
+                ("variant", json!("intl'")),
+                ("model", json!("")),
+                ("model", json!("pc104>$out")),
+                ("options", json!("terminate:ctrl_alt_bksp\"")),
+                ("options", json!("compose:ralt;gcc")),
+            ] {
+                mutate(&format!("{key}={value}"), &|drv| {
+                    drv["env"][key] = value.clone()
+                });
+            }
+            for (label, candidate) in rejected {
+                assert!(!accepted(&candidate), "accepted {label}: {path}");
+            }
+
+            // The tool and xkeyboard-config outputs must come from the cache or
+            // from independently trusted local work.
+            for dependency in [tool.drv_path, XKB_VALIDATION_CONFIG_DIR.drv_path] {
+                let would_build = HashSet::from([path.clone(), dependency.to_string()]);
+                assert!(
+                    !derivation_is_exempt_from_source_policy_with_verifier_and_would_build_and_trusted(
+                        path,
+                        Some(drv),
+                        &synthetic_pinned_source,
+                        &would_build,
+                        &HashSet::new(),
+                    )
+                );
+                assert!(
+                    derivation_is_exempt_from_source_policy_with_verifier_and_would_build_and_trusted(
+                        path,
+                        Some(drv),
+                        &synthetic_pinned_source,
+                        &would_build,
+                        &HashSet::from([dependency.to_string()]),
+                    )
+                );
             }
         }
     }

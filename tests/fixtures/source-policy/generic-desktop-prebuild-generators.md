@@ -29,6 +29,13 @@ are unchanged; no build command was added. The exact new fingerprint pair is:
 - Store-normalized: `88d5a9f22b7d13f683d2f5db87a75c933fe639c518a0eb69c5748cd022dc6e16`.
 - Executable-pinned: `234f84b30c84077c13c9040245f338e203fbf18566d1b6328bba5ffbd48eabbb`.
 
+That raw UTC pair is no longer pinned. Nest now pins this recipe with its
+localtime zone replaced by a placeholder (see
+`regional-workstation-generators.md`):
+
+- Store-normalized: `9cdb204a2eae6ce407308df14327fad4eefa0e17fe953983fe58296df530c8ad`.
+- Executable-pinned: `5830004382ba9f7078c561efd881680f671d750960dc03289487d1971eeada42`.
+
 The retained `activate` derivation depends on `/etc`; the final NixOS system
 depends on both. Their assembly recipes were already reviewed. The unit
 regression uses this actual three-node graph in reverse dependency order and
