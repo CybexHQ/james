@@ -1,0 +1,83 @@
+name: Software base tracker
+
+# Daily check of the NixOS channel Tiaris workstations follow. A new channel
+# commit becomes an unsigned software base draft and a review issue whose
+# title carries its severity. Signing and publishing stay manual; see
+# docs/workstation-software-bases.md.
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: software-base-tracker
+  cancel-in-progress: false
+
+jobs:
+  track:
+    name: Check nixos-26.05 for a new software base
+    runs-on: [self-hosted, linux, x64, cybex-james-lab]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download the published software base feed
+        run: |
+          echo "OUTPUT=$RUNNER_TEMP/software-base" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/feed"
+          assets="$(gh release view --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          if grep -qx tiaris-software-bases.json <<<"$assets"; then
+            gh release download --repo "$GITHUB_REPOSITORY" --pattern tiaris-software-bases.json --dir "$RUNNER_TEMP/feed"
+            echo "FEED_ARGS=--feed $RUNNER_TEMP/feed/tiaris-software-bases.json" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build vulnix at the reviewed nixpkgs pin
+        run: |
+          vulnix="$(nix-build --no-out-link -E 'let pin = import ./release/nixpkgs.nix; in (import (builtins.fetchTarball { inherit (pin) url sha256; }) { }).vulnix')/bin/vulnix"
+          echo "VULNIX=$vulnix" >> "$GITHUB_ENV"
+
+      - name: Check the channel
+        run: |
+          # shellcheck disable=SC2086
+          python3 -B tools/software-base-tracker.py check --vulnix "$VULNIX" $FEED_ARGS --output-dir "$OUTPUT"
+          echo "STATE=$(jq -r .state "$OUTPUT/status.json")" >> "$GITHUB_ENV"
+
+      - name: Keep the draft
+        if: env.STATE == 'new'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: software-base-draft
+          path: |
+            ${{ env.OUTPUT }}/draft.json
+            ${{ env.OUTPUT }}/summary.md
+            ${{ env.OUTPUT }}/status.json
+          retention-days: 90
+
+      - name: Open a review issue
+        if: env.STATE == 'new'
+        run: |
+          commit="$(jq -r .nixpkgs_commit "$OUTPUT/status.json")"
+          short="${commit:0:12}"
+          # One issue per channel commit, open or closed.
+          if [ "$(gh issue list --repo "$GITHUB_REPOSITORY" --state all --search "$short in:title" --json number --jq length)" != 0 ]; then
+            echo "A review issue for $short already exists."
+            exit 0
+          fi
+          title="$(jq -r 'if .kind == "security"
+            then "[\(.severity)] Security software base candidate: \(.channel) \(.nixpkgs_commit[0:12]) (\(.fixed_advisories) fixes)"
+            else "Software base candidate: \(.channel) \(.nixpkgs_commit[0:12])" end' "$OUTPUT/status.json")"
+          {
+            cat "$OUTPUT/summary.md"
+            echo
+            echo "Draft: \`software-base-draft\` artifact of $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
+          } > "$RUNNER_TEMP/issue.md"
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/issue.md"
