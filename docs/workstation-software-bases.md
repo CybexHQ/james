@@ -166,6 +166,75 @@ pairs for changed `etc`, `system-units`, `user-units`, `udev-rules`,
 `fc-cache`, Firefox and the system closure), a Tiaris package closure of 35
 derivations, and every derivation the pin admits in each reference admitted.
 
+## Scanning update candidates
+
+Once a detected commit is ready, Manage prepares an update-only candidate of
+each released Blueprint (the same release on the new commit) and Nest builds
+it like any Blueprint job. When the candidate's closure is built, Nest scans
+it (`src/software_updates/findings.rs`, Manage design section 4):
+
+- **Release.** The closure of the release the candidate was prepared from,
+  named by the job's `software_update.release_blueprint_revision_id` (a
+  field of the build job, next to `build_spec`). A candidate without it is
+  `skipped` (`missing_release_hint`) and scanned once Manage names the
+  release; Nest never guesses a baseline. Installer-target jobs are neither
+  candidates nor releases.
+- **Scan.** `vulnix --json --closure` of the release and of the candidate:
+  their runtime closures, matched by package name and version. vulnix runs at
+  nice 19 and idle I/O priority with 8 GiB of address space and 40 minutes per
+  run; its NVD database is cached in `<data_dir>/vulnix`
+  (`/var/lib/tiaris-nest/state/agent/vulnix`, about 400 MB; the first download
+  took 50 seconds and 2.5 GiB resident on The Beast). vulnix silently skips
+  closure paths whose derivation is not in the store, so a closure in which
+  fewer than 90% of paths have one (recorded deriver or a valid derivation
+  declaring the path, as vulnix looks them up) fails instead of reporting
+  too few fixes. Both closures must be judged by the same NVD data: vulnix
+  refreshes its database (at most every two hours) before it scans, so when
+  the candidate's run changed it, the release is scanned again, and a
+  database that changes again fails the scan. `nix path-info`, `nix-store`,
+  `nix derivation show` and `nix eval` run at the same priority and memory
+  limit. Scans wait while a build runs; a build that starts before a vulnix
+  run defers the scan without recording it.
+- **Findings.** The release's advisories the candidate no longer has, most
+  severe first, at most 500, with `severity` from the CVSS v3 base score
+  (critical ≥ 9.0, important ≥ 7.0, moderate ≥ 4.0, otherwise low; an
+  unscored advisory is moderate, as in `tools/software-base.py`). `summary`
+  is the start of the NVD description.
+- **Package status.** For each App List package ref of the job
+  (`software_package_refs`) Nest evaluates `(package.out or package).outPath`
+  at the narHash-pinned commit, as Manage's cache catalog does (all refs at
+  once, or one by one when that fails), and asks cache.nixos.org, then the Tiaris software cache with the
+  token Manage sent: `public_cache`, `software_cache`, or
+  `preparation_required` (also when this Nest has no software-cache access).
+  A ref that does not evaluate, or whose cache gives another answer than
+  found or absent, is left out, so Manage keeps its compiled catalog for it.
+  A lookup that decides none of the refs is a failed scan
+  (`package_status_unavailable`) and is retried.
+  Manage replaces a Nest's status list for a commit with each finding it
+  stores, so every finding of a commit carries the status of all scanned refs
+  at that commit (at most 128).
+- **Once per candidate.** One scan per commit and Blueprint revision. A
+  failure (`release_closure_unavailable`, `closure_unavailable`,
+  `derivations_unavailable`, `scan_failed`, `package_status_unavailable`) is
+  logged and kept with its detail
+  in `software_update_scans`; it produces no finding and never blocks a
+  build. It is retried at most daily, three attempts in all.
+
+To a protocol-5 Tiaris each report carries the successful scans of
+candidates Nest still holds at commits it reports ready, newest first (at most
+256 and 4 MiB together); they are the first lane dropped when a report would
+exceed its size limit. Manage stores them idempotently:
+
+```json
+{"software_update_findings": [
+   {"commit": "6f06d204…", "blueprint_revision_id": "<candidate revision>",
+    "scanned_at": "2026-10-31T05:10:00Z",
+    "advisories": [{"id": "CVE-2026-5450", "package": "glibc", "severity": "critical",
+                    "score": 9.8, "summary": "…", "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-5450"}],
+    "package_delivery": [{"ref": "firefox", "status": "public_cache"},
+                         {"ref": "google-chrome", "status": "software_cache"}]}]}
+```
+
 ## Publishing a base
 
 `tools/software-base.py` drafts, signs and publishes the signed

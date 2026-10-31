@@ -993,6 +993,7 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                 )),
             )
             .await?;
+            crate::software_updates::findings::candidate_built();
         }
         ProcessOutcome::Failed(exit_code) => {
             let oom_killed = oom_kills_after > oom_kills_before;

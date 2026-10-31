@@ -60,6 +60,25 @@ pub fn apply(data_dir: &Path, access: Option<&ManagedSoftwareCacheAccess>) -> Re
     fs::rename(&temporary, &path).with_context(|| format!("replace {}", path.display()))
 }
 
+/// The origin and token of the netrc entry `apply` wrote, for Nest's own
+/// lookups in the software cache. `None` without access.
+pub(crate) fn current_access(data_dir: &Path) -> Option<(String, String)> {
+    let body = fs::read_to_string(netrc_path(data_dir)).ok()?;
+    let line = body.lines().next()?;
+    let ["machine", host, "login", "nest", "password", token] =
+        line.split(' ').collect::<Vec<_>>()[..]
+    else {
+        return None;
+    };
+    let access = ManagedSoftwareCacheAccess {
+        url: format!("https://{host}/"),
+        token: token.to_string(),
+        expires_at: Utc::now(),
+    };
+    netrc_entry(&access).ok()?;
+    Some((format!("https://{host}"), token.to_string()))
+}
+
 /// One netrc line. Host and token are validated strictly: a space or newline
 /// in either would let Manage's value add entries for other machines.
 fn netrc_entry(access: &ManagedSoftwareCacheAccess) -> Result<String> {
@@ -120,6 +139,13 @@ mod tests {
         );
         let second = access("https://cache.tiaris.com", "tsc1.dev.2.nest.BBB");
         apply(&directory, Some(&second)).unwrap();
+        assert_eq!(
+            current_access(&directory),
+            Some((
+                "https://cache.tiaris.com".to_string(),
+                "tsc1.dev.2.nest.BBB".to_string()
+            ))
+        );
         assert!(
             fs::read_to_string(&path)
                 .unwrap()
@@ -127,6 +153,7 @@ mod tests {
         );
         apply(&directory, None).unwrap();
         assert!(!path.exists());
+        assert_eq!(current_access(&directory), None);
         apply(&directory, None).unwrap();
         fs::remove_dir(&directory).unwrap();
     }

@@ -54,6 +54,8 @@ use crate::{
     subprocess::run_bounded_command,
 };
 
+pub(crate) mod findings;
+
 pub const DEFAULT_CHANNEL: &str = "nixos-26.05";
 /// Report limit (Manage design §5).
 pub(crate) const MAX_REPORTED_DETECTED_COMMITS: i64 = 32;
@@ -305,6 +307,14 @@ pub(crate) struct ReadyCommit {
     pub(crate) profile: WorkstationBuildProfile,
 }
 
+/// The recorded `narHash` of a commit that is ready for this Nest build.
+async fn current_ready_nar_hash(db: &SqlitePool, commit: &str) -> Result<Option<String>> {
+    Ok(detected_row(db, commit)
+        .await?
+        .filter(DetectedRow::is_current_ready)
+        .map(|row| row.nar_hash))
+}
+
 pub(crate) async fn ready_commit(db: &SqlitePool, commit: &str) -> Result<Option<ReadyCommit>> {
     let Some(row) = detected_row(db, commit).await? else {
         return Ok(None);
@@ -456,6 +466,7 @@ pub fn spawn(state: AppState) {
     {
         return;
     }
+    findings::spawn(state.clone());
     tokio::spawn(run(state));
 }
 
