@@ -96,7 +96,8 @@ const SCAN_SCHEMA: &str = "tiaris.nest.software-update-scan.v1";
 /// One scan: at most `MAX_ADVISORIES` advisories and `MAX_PACKAGE_REFS`
 /// package statuses.
 const MAX_SCAN_BYTES: u64 = 4 * 1024 * 1024;
-/// Scans kept besides those of jobs Nest still holds.
+/// Scans kept at most, the newest, after those of jobs Nest no longer holds
+/// are gone.
 const MAX_SCAN_RECORDS: usize = 1024;
 
 fn scans_dir(data_dir: &Path) -> PathBuf {
@@ -660,6 +661,16 @@ async fn next_candidate(
             continue;
         };
         if release_pins.contains(&job.commit) {
+            continue;
+        }
+        // A scan of these could never be stored; skip it instead of scanning
+        // it again on every pass ahead of every later candidate.
+        if !valid_id(&job.blueprint_revision_id)
+            || job
+                .managed_job_id
+                .as_deref()
+                .is_some_and(|id| !valid_id(id))
+        {
             continue;
         }
         let done = scan_of(data_dir, &job.commit, &job.blueprint_revision_id).is_some_and(|scan| {

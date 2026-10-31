@@ -23,6 +23,7 @@ use std::{
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -225,6 +226,9 @@ pub(crate) fn remove(dir: &Path, name: &str) -> Result<()> {
     }
 }
 
+/// A temporary file this old belongs to an interrupted write, not a live one.
+const STALE_TEMPORARY_AGE: Duration = Duration::from_secs(10 * 60);
+
 /// Record names in `dir` ending in `suffix`, sorted, at most `limit`; leftover
 /// temporary files of interrupted writes are removed. A missing directory has
 /// none.
@@ -244,7 +248,17 @@ pub(crate) fn list(dir: &Path, suffix: &str, limit: usize) -> Vec<String> {
             continue;
         };
         if name.starts_with('.') && name.contains(".tmp-") {
-            let _ = fs::remove_file(entry.path());
+            // Another task may be between creating and renaming this file;
+            // only an interrupted write is old.
+            let stale = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|age| age >= STALE_TEMPORARY_AGE);
+            if stale {
+                let _ = fs::remove_file(entry.path());
+            }
             continue;
         }
         if valid_name(&name) && name.ends_with(suffix) {
@@ -346,10 +360,19 @@ mod tests {
         write(&dir, "b.json", "test.v1", 1024, &1).unwrap();
         write(&dir, "a.json", "test.v1", 1024, &1).unwrap();
         fs::write(dir.join(".a.json.tmp-0011"), b"partial").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(dir.join(".a.json.tmp-0011"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))
+            .unwrap();
+        fs::write(dir.join(".b.json.tmp-0022"), b"in flight").unwrap();
         fs::write(dir.join("other.txt"), b"x").unwrap();
         assert_eq!(list(&dir, ".json", 10), ["a.json", "b.json"]);
         assert_eq!(list(&dir, ".json", 1), ["a.json"]);
         assert!(!dir.join(".a.json.tmp-0011").exists());
+        // A write still in progress keeps its temporary file.
+        assert!(dir.join(".b.json.tmp-0022").exists());
         assert!(list(&dir.join("missing"), ".json", 10).is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
