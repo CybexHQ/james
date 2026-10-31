@@ -28,7 +28,7 @@
 //! expires. The write token is kept in a 0600 file and never logged. Each
 //! report carries the state of every grant (`software_cache_uploads`).
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fmt, fs,
     future::Future,
     io::{self, Read, Write},
@@ -40,6 +40,7 @@ use std::{
     time::Duration,
 };
 
+use crate::state_files;
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -47,7 +48,6 @@ use reqwest::{StatusCode, header};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::{FromRow, SqlitePool};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, ReadBuf},
     sync::Notify,
@@ -404,14 +404,205 @@ fn now_text() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
+/// Directory of the grants this Nest holds (`<data_dir>/software-cache-uploads`):
+/// per grant the document exactly as Manage sent it (`<id>.grant`, written
+/// once) and its upload state (`<id>.state.json`).
+fn uploads_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("software-cache-uploads")
+}
+
+const STATE_SCHEMA: &str = "tiaris.nest.software-cache-upload.v1";
+const MAX_STATE_BYTES: u64 = 1024 * 1024;
+const GRANT_STATES: [&str; 5] = ["pending", "uploading", "uploaded", "failed", "expired"];
+
+fn grant_file(id: &str) -> String {
+    format!("{id}.grant")
+}
+
+fn state_file(id: &str) -> String {
+    format!("{id}.state.json")
+}
+
+fn valid_grant_id(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Upload state of one grant. Items are the grant's paths, then its files,
+/// named by their index in the grant, so the state can never name anything
+/// the grant does not.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct GrantState {
+    /// `<issuer>/<scope>` of the organization tree the grant is for.
+    tree: String,
+    manifest_id: Option<String>,
+    expires_at: i64,
+    state: String,
+    registered: bool,
+    error: String,
+    attempts: i64,
+    next_attempt_at: i64,
+    bytes_uploaded: i64,
+    received_at: String,
+    updated_at: String,
+    uploaded: BTreeSet<u32>,
+    failed: BTreeMap<u32, String>,
+}
+
+impl GrantState {
+    fn is_valid(&self, items: usize) -> bool {
+        GRANT_STATES.contains(&self.state.as_str())
+            && Destination::from_tree(&self.tree).is_some()
+            && (0..=64).contains(&self.attempts)
+            && self.bytes_uploaded >= 0
+            && self
+                .uploaded
+                .iter()
+                .chain(self.failed.keys())
+                .all(|index| (*index as usize) < items)
+            && self
+                .uploaded
+                .iter()
+                .all(|index| !self.failed.contains_key(index))
+            && self.failed.values().all(|reason| valid_reason(reason))
+            && valid_reason(&self.error)
+    }
+}
+
+/// Reasons are this module's own codes.
+fn valid_reason(reason: &str) -> bool {
+    reason.len() <= 64
+        && reason
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+/// A grant this Nest holds: its decoded document (`None` when the stored
+/// document no longer decodes) and its state.
+struct HeldGrant {
+    id: String,
+    text: Option<String>,
+    grant: Option<GrantPayload>,
+    state: GrantState,
+}
+
+fn read_grant_text(dir: &Path, id: &str) -> Option<String> {
+    match state_files::read_bytes(dir, &grant_file(id), MAX_GRANT_BYTES as u64) {
+        Ok(Some(bytes)) => String::from_utf8(bytes).ok(),
+        Ok(None) => None,
+        Err(error) => {
+            warn!(grant_id = id, error = %format!("{error:#}"), "ignoring an unreadable upload grant");
+            None
+        }
+    }
+}
+
+/// The grant `id` as stored. A grant whose document does not decode (for its
+/// tree, to its id) is held without it and fails; a missing or invalid state
+/// starts again from `pending`, which can only re-send what the grant names.
+fn held_grant(dir: &Path, id: &str) -> Option<HeldGrant> {
+    if !valid_grant_id(id) {
+        return None;
+    }
+    let state =
+        state_files::read::<GrantState>(dir, &state_file(id), STATE_SCHEMA, MAX_STATE_BYTES);
+    let text = read_grant_text(dir, id);
+    let tree = state
+        .as_ref()
+        .and_then(|state| Destination::from_tree(&state.tree));
+    let decoded = match (&text, &tree) {
+        (Some(text), Some(tree)) => decode_grant(text, tree)
+            .ok()
+            .filter(|(decoded, _)| decoded == id)
+            .map(|(_, grant)| grant),
+        _ => None,
+    };
+    let items = decoded
+        .as_ref()
+        .map_or(0, |grant| grant.paths.len() + grant.files.len());
+    let state = match state {
+        Some(state) if state.is_valid(items) => state,
+        Some(state) if decoded.is_some() => {
+            warn!(
+                grant_id = id,
+                "upload state breaks its rules; starting the grant again"
+            );
+            GrantState {
+                state: "pending".into(),
+                registered: false,
+                error: String::new(),
+                attempts: 0,
+                next_attempt_at: 0,
+                bytes_uploaded: 0,
+                uploaded: BTreeSet::new(),
+                failed: BTreeMap::new(),
+                ..state
+            }
+        }
+        // Without a usable state the grant's tree is unknown: it is not
+        // uploaded, and Manage's next configuration records it again.
+        _ => return None,
+    };
+    Some(HeldGrant {
+        id: id.to_string(),
+        text,
+        grant: decoded,
+        state,
+    })
+}
+
+fn held_grants(dir: &Path) -> Vec<HeldGrant> {
+    let mut grants = state_files::list(dir, ".state.json", 4 * MAX_GRANTS)
+        .into_iter()
+        .filter_map(|name| held_grant(dir, name.trim_end_matches(".state.json")))
+        .collect::<Vec<_>>();
+    grants.sort_by(|left, right| {
+        left.state
+            .received_at
+            .cmp(&right.state.received_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    grants
+}
+
+fn remove_grant(dir: &Path, id: &str) -> Result<()> {
+    state_files::remove(dir, &state_file(id))?;
+    state_files::remove(dir, &grant_file(id))
+}
+
+/// Changes the state of a grant still held; a withdrawn grant stays gone.
+async fn update_state(
+    data_dir: &Path,
+    id: &str,
+    change: impl FnOnce(&mut GrantState),
+) -> Result<bool> {
+    let dir = uploads_dir(data_dir);
+    let _guard = state_files::lock(&dir).await;
+    let Some(mut held) = held_grant(&dir, id) else {
+        return Ok(false);
+    };
+    change(&mut held.state);
+    held.state.updated_at = now_text();
+    state_files::write(
+        &dir,
+        &state_file(id),
+        STATE_SCHEMA,
+        MAX_STATE_BYTES,
+        &held.state,
+    )?;
+    Ok(true)
+}
+
 /// Applies `software_cache.upload` of the Nest configuration: keeps the write
 /// token, records new grants and forgets the grants Manage no longer sends.
 pub async fn apply(state: &AppState, upload: Option<&Value>) -> Result<()> {
-    apply_with(&state.db, &state.config.paths.data_dir, upload, false).await
+    apply_with(&state.config.paths.data_dir, upload, false).await
 }
 
 async fn apply_with(
-    db: &SqlitePool,
     data_dir: &Path,
     upload: Option<&Value>,
     allow_loopback_http: bool,
@@ -423,11 +614,13 @@ async fn apply_with(
                 .map_err(|_| anyhow!("software_cache.upload is not {{url, token, expires_at}}"))?,
         ),
     };
+    let dir = uploads_dir(data_dir);
     let Some(upload) = upload else {
         write_credentials(data_dir, None)?;
-        sqlx::query("DELETE FROM software_cache_upload_grants")
-            .execute(db)
-            .await?;
+        let _guard = state_files::lock(&dir).await;
+        for held in held_grants(&dir) {
+            remove_grant(&dir, &held.id)?;
+        }
         return Ok(());
     };
     let destination = destination(&upload.url, allow_loopback_http)?;
@@ -442,6 +635,7 @@ async fn apply_with(
             expires_at: upload.expires_at,
         }),
     )?;
+    let _guard = state_files::lock(&dir).await;
     let mut kept = BTreeSet::new();
     for managed in upload.grants.iter().take(MAX_GRANTS) {
         let (id, grant) = match decode_grant(&managed.grant, &destination) {
@@ -455,33 +649,43 @@ async fn apply_with(
             warn!(grant_id = %id, "ignoring an upload grant whose id does not match it");
             continue;
         }
-        let now = now_text();
-        sqlx::query(
-            "INSERT INTO software_cache_upload_grants
-                 (grant_id, grant_text, manifest_id, tree, expires_at, state, received_at,
-                  updated_at)
-             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
-             ON CONFLICT(grant_id) DO NOTHING",
-        )
-        .bind(&id)
-        .bind(managed.grant.trim())
-        .bind(grant.manifest_id.as_deref())
-        .bind(destination.tree())
-        .bind(grant.expires)
-        .bind(&now)
-        .bind(&now)
-        .execute(db)
-        .await?;
+        if held_grant(&dir, &id).is_none() {
+            let now = now_text();
+            state_files::write_bytes(
+                &dir,
+                &grant_file(&id),
+                managed.grant.trim().as_bytes(),
+                MAX_GRANT_BYTES as u64,
+            )?;
+            let state = GrantState {
+                tree: destination.tree(),
+                manifest_id: grant.manifest_id.clone(),
+                expires_at: grant.expires,
+                state: "pending".into(),
+                received_at: now.clone(),
+                updated_at: now,
+                ..GrantState::default()
+            };
+            state_files::write(
+                &dir,
+                &state_file(&id),
+                STATE_SCHEMA,
+                MAX_STATE_BYTES,
+                &state,
+            )?;
+        }
         kept.insert(id);
     }
-    let held = sqlx::query_scalar::<_, String>("SELECT grant_id FROM software_cache_upload_grants")
-        .fetch_all(db)
-        .await?;
-    for id in held.into_iter().filter(|id| !kept.contains(id)) {
-        sqlx::query("DELETE FROM software_cache_upload_grants WHERE grant_id = ?")
-            .bind(id)
-            .execute(db)
-            .await?;
+    for held in held_grants(&dir) {
+        if !kept.contains(&held.id) {
+            remove_grant(&dir, &held.id)?;
+        }
+    }
+    // Grant documents without a state (an interrupted first write).
+    for name in state_files::list(&dir, ".grant", 4 * MAX_GRANTS) {
+        if !kept.contains(name.trim_end_matches(".grant")) {
+            state_files::remove(&dir, &name)?;
+        }
     }
     grants_changed().notify_one();
     Ok(())
@@ -492,13 +696,8 @@ pub fn spawn(state: AppState) {
     tokio::spawn(async move {
         let uploader = Uploader::from_config(&state.config);
         loop {
-            if let Err(error) = upload_pass(
-                &state.db,
-                &state.config.paths.data_dir,
-                &uploader,
-                Utc::now(),
-            )
-            .await
+            if let Err(error) =
+                upload_pass(&state.config.paths.data_dir, &uploader, Utc::now()).await
             {
                 warn!(error = %error, "software cache upload pass failed");
             }
@@ -530,43 +729,29 @@ impl Uploader {
     }
 }
 
-#[derive(Clone, Debug, FromRow)]
-struct GrantRow {
-    grant_id: String,
-    grant_text: String,
-    registered: bool,
-    attempts: i64,
-}
-
 /// One pass over the grants that are due, oldest first.
-async fn upload_pass(
-    db: &SqlitePool,
-    data_dir: &Path,
-    uploader: &Uploader,
-    now: DateTime<Utc>,
-) -> Result<()> {
-    sqlx::query(
-        "UPDATE software_cache_upload_grants SET state = 'expired', updated_at = ?
-         WHERE expires_at <= ? AND state IN ('pending', 'uploading')",
-    )
-    .bind(now_text())
-    .bind(now.timestamp())
-    .execute(db)
-    .await?;
+async fn upload_pass(data_dir: &Path, uploader: &Uploader, now: DateTime<Utc>) -> Result<()> {
+    let dir = uploads_dir(data_dir);
+    for held in held_grants(&dir) {
+        if held.state.expires_at <= now.timestamp()
+            && matches!(held.state.state.as_str(), "pending" | "uploading")
+        {
+            update_state(data_dir, &held.id, |state| state.state = "expired".into()).await?;
+        }
+    }
     // Without a current write token nothing is sent; Manage rotates it.
     let Some(credentials) = read_credentials(data_dir).filter(|item| item.expires_at > now) else {
         return Ok(());
     };
     let destination = destination(&credentials.url, uploader.allow_loopback_http)?;
-    let due = sqlx::query_as::<_, GrantRow>(
-        "SELECT grant_id, grant_text, registered, attempts FROM software_cache_upload_grants
-         WHERE state IN ('pending', 'uploading') AND next_attempt_at <= ? AND tree = ?
-         ORDER BY received_at, grant_id",
-    )
-    .bind(now.timestamp())
-    .bind(destination.tree())
-    .fetch_all(db)
-    .await?;
+    let due = held_grants(&dir)
+        .into_iter()
+        .filter(|held| {
+            matches!(held.state.state.as_str(), "pending" | "uploading")
+                && held.state.next_attempt_at <= now.timestamp()
+                && held.state.tree == destination.tree()
+        })
+        .collect::<Vec<_>>();
     if due.is_empty() {
         return Ok(());
     }
@@ -577,16 +762,16 @@ async fn upload_pass(
         .build()
         .context("create the software cache upload client")?;
     let session = Session {
-        db,
+        data_dir,
         client: &client,
         credentials: &credentials,
         destination: &destination,
         uploader,
     };
-    for row in due {
-        let outcome = session.upload_grant(&row).await?;
+    for held in due {
+        let outcome = session.upload_grant(&held).await?;
         let retry = matches!(outcome, GrantOutcome::Retry(_));
-        session.finish_grant(&row, outcome, now).await?;
+        session.finish_grant(&held, outcome, now).await?;
         if retry {
             // The service or the network is unavailable: try every grant
             // again on the next pass rather than failing each in turn.
@@ -616,7 +801,7 @@ enum ItemOutcome {
 }
 
 struct Session<'a> {
-    db: &'a SqlitePool,
+    data_dir: &'a Path,
     client: &'a reqwest::Client,
     credentials: &'a Credentials,
     destination: &'a Destination,
@@ -645,31 +830,27 @@ fn classify(status: StatusCode, uploaded: u64) -> ItemOutcome {
 }
 
 impl Session<'_> {
-    async fn upload_grant(&self, row: &GrantRow) -> Result<GrantOutcome> {
+    async fn upload_grant(&self, held: &HeldGrant) -> Result<GrantOutcome> {
         // A stored grant that no longer decodes fails on its own; the other
         // grants still upload.
-        let Ok((id, grant)) = decode_grant(&row.grant_text, self.destination) else {
+        let (Some(grant), Some(text)) = (&held.grant, &held.text) else {
             return Ok(GrantOutcome::Failed("grant_invalid".to_string()));
         };
-        if id != row.grant_id {
-            return Ok(GrantOutcome::Failed("grant_mismatch".to_string()));
+        let id = held.id.as_str();
+        if !self
+            .update(id, |state| state.state = "uploading".into())
+            .await?
+        {
+            return Ok(GrantOutcome::Gone);
         }
-        sqlx::query(
-            "UPDATE software_cache_upload_grants SET state = 'uploading', updated_at = ?
-             WHERE grant_id = ?",
-        )
-        .bind(now_text())
-        .bind(&id)
-        .execute(self.db)
-        .await?;
-        if !row.registered {
+        if !held.state.registered {
             let response = self
                 .client
                 .post(format!("{}/upload-grants", self.destination.base))
                 .basic_auth("nest", Some(&self.credentials.token))
                 .header(header::CONTENT_TYPE, "text/plain")
                 .timeout(REQUEST_SLACK)
-                .body(row.grant_text.clone())
+                .body(text.clone())
                 .send()
                 .await;
             let status = match response {
@@ -678,13 +859,9 @@ impl Session<'_> {
             };
             match classify(status, 0) {
                 ItemOutcome::Uploaded(_) => {
-                    sqlx::query(
-                        "UPDATE software_cache_upload_grants SET registered = 1
-                         WHERE grant_id = ?",
-                    )
-                    .bind(&id)
-                    .execute(self.db)
-                    .await?;
+                    if !self.update(id, |state| state.registered = true).await? {
+                        return Ok(GrantOutcome::Gone);
+                    }
                 }
                 ItemOutcome::Refused(reason) => {
                     return Ok(GrantOutcome::Failed(format!("grant_{reason}")));
@@ -693,109 +870,59 @@ impl Session<'_> {
                 ItemOutcome::Retry(reason) => return Ok(GrantOutcome::Retry(reason)),
             }
         }
-        let done = sqlx::query_scalar::<_, String>(
-            "SELECT item FROM software_cache_upload_items WHERE grant_id = ?",
-        )
-        .bind(&id)
-        .fetch_all(self.db)
-        .await?
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-        let items = grant
-            .paths
-            .iter()
-            .map(|path| {
-                (
-                    format!("{}.narinfo", store_hash(&path.store_path).unwrap_or("")),
-                    Some(path),
-                    None,
-                )
-            })
-            .chain(
-                grant
-                    .files
-                    .iter()
-                    .map(|file| (file.path.clone(), None, Some(file))),
-            );
-        for (item, path, file) in items {
-            if done.contains(&item) {
+        let paths = grant.paths.iter().map(|path| (Some(path), None));
+        let files = grant.files.iter().map(|file| (None, Some(file)));
+        for (index, (path, file)) in paths.chain(files).enumerate() {
+            let index = u32::try_from(index)?;
+            if held.state.uploaded.contains(&index) || held.state.failed.contains_key(&index) {
                 continue;
             }
-            if !self.still_granted(&id, grant.expires).await? {
+            if !self.still_granted(id, grant.expires) {
                 return Ok(GrantOutcome::Gone);
             }
             let outcome = match (path, file) {
-                (Some(path), _) => self.upload_path(&id, path).await,
-                (_, Some(file)) => self.upload_file(&id, file).await,
+                (Some(path), _) => self.upload_path(id, path).await,
+                (_, Some(file)) => self.upload_file(id, file).await,
                 _ => unreachable!("every item is a path or a file"),
             };
-            match outcome {
+            let recorded = match outcome {
                 ItemOutcome::Uploaded(bytes) => {
-                    self.record_item(&id, &item, "uploaded", "", bytes).await?;
+                    self.update(id, |state| {
+                        state.uploaded.insert(index);
+                        state.bytes_uploaded = state
+                            .bytes_uploaded
+                            .saturating_add(i64::try_from(bytes).unwrap_or(i64::MAX));
+                    })
+                    .await?
                 }
                 ItemOutcome::Refused(reason) => {
-                    warn!(grant_id = %id, %item, %reason, "software cache upload refused");
-                    self.record_item(&id, &item, "failed", &reason, 0).await?;
+                    warn!(grant_id = %id, item = index, %reason, "software cache upload refused");
+                    self.update(id, |state| {
+                        state.failed.insert(index, reason);
+                    })
+                    .await?
                 }
                 ItemOutcome::Quota => return Ok(GrantOutcome::Failed("quota_exceeded".into())),
                 ItemOutcome::Retry(reason) => return Ok(GrantOutcome::Retry(reason)),
+            };
+            if !recorded {
+                return Ok(GrantOutcome::Gone);
             }
         }
-        let failure = sqlx::query_scalar::<_, String>(
-            "SELECT error FROM software_cache_upload_items
-             WHERE grant_id = ? AND state = 'failed' ORDER BY item LIMIT 1",
-        )
-        .bind(&id)
-        .fetch_optional(self.db)
-        .await?;
+        let failure = held_grant(&uploads_dir(self.data_dir), id)
+            .and_then(|held| held.state.failed.values().next().cloned());
         Ok(match failure {
             Some(reason) => GrantOutcome::Failed(reason),
             None => GrantOutcome::Uploaded,
         })
     }
 
-    async fn still_granted(&self, id: &str, expires: i64) -> Result<bool> {
-        if expires <= Utc::now().timestamp() {
-            return Ok(false);
-        }
-        Ok(sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM software_cache_upload_grants WHERE grant_id = ?)",
-        )
-        .bind(id)
-        .fetch_one(self.db)
-        .await?)
+    async fn update(&self, id: &str, change: impl FnOnce(&mut GrantState)) -> Result<bool> {
+        update_state(self.data_dir, id, change).await
     }
 
-    async fn record_item(
-        &self,
-        id: &str,
-        item: &str,
-        state: &str,
-        error: &str,
-        bytes: u64,
-    ) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO software_cache_upload_items (grant_id, item, state, error)
-             VALUES (?, ?, ?, ?)
-             ON CONFLICT(grant_id, item) DO UPDATE SET state = excluded.state,
-                 error = excluded.error",
-        )
-        .bind(id)
-        .bind(item)
-        .bind(state)
-        .bind(error)
-        .execute(self.db)
-        .await?;
-        sqlx::query(
-            "UPDATE software_cache_upload_grants
-             SET bytes_uploaded = bytes_uploaded + ?, updated_at = ? WHERE grant_id = ?",
-        )
-        .bind(i64::try_from(bytes).unwrap_or(i64::MAX))
-        .bind(now_text())
-        .bind(id)
-        .execute(self.db)
-        .await?;
-        Ok(())
+    fn still_granted(&self, id: &str, expires: i64) -> bool {
+        expires > Utc::now().timestamp() && held_grant(&uploads_dir(self.data_dir), id).is_some()
     }
 
     /// Records a grant's outcome. A retry waits from the moment it failed,
@@ -803,41 +930,36 @@ impl Session<'_> {
     /// repeated on the next pass; success resets the backoff.
     async fn finish_grant(
         &self,
-        row: &GrantRow,
+        held: &HeldGrant,
         outcome: GrantOutcome,
         pass_started: DateTime<Utc>,
     ) -> Result<()> {
         let failed_at = Utc::now().max(pass_started).timestamp();
+        let attempts = held.state.attempts;
         let (state, error, next, attempts) = match &outcome {
             GrantOutcome::Uploaded => ("uploaded", String::new(), 0, 0),
-            GrantOutcome::Failed(reason) => ("failed", reason.clone(), 0, row.attempts),
+            GrantOutcome::Failed(reason) => ("failed", reason.clone(), 0, attempts),
             GrantOutcome::Retry(reason) => (
                 "uploading",
                 reason.clone(),
-                failed_at + backoff_seconds(row.attempts),
-                row.attempts + 1,
+                failed_at + backoff_seconds(attempts),
+                (attempts + 1).min(64),
             ),
             GrantOutcome::Gone => return Ok(()),
         };
         match &outcome {
             GrantOutcome::Uploaded => {
-                info!(grant_id = %row.grant_id, "uploaded a software cache grant");
+                info!(grant_id = %held.id, "uploaded a software cache grant");
             }
-            _ => warn!(grant_id = %row.grant_id, state, reason = %error,
+            _ => warn!(grant_id = %held.id, state, reason = %error,
                 "software cache upload did not complete"),
         }
-        sqlx::query(
-            "UPDATE software_cache_upload_grants
-             SET state = ?, error = ?, next_attempt_at = ?, attempts = ?, updated_at = ?
-             WHERE grant_id = ?",
-        )
-        .bind(state)
-        .bind(error)
-        .bind(next)
-        .bind(attempts)
-        .bind(now_text())
-        .bind(&row.grant_id)
-        .execute(self.db)
+        self.update(&held.id, |grant| {
+            grant.state = state.into();
+            grant.error = error;
+            grant.next_attempt_at = next;
+            grant.attempts = attempts;
+        })
         .await?;
         Ok(())
     }
@@ -1083,61 +1205,38 @@ pub(crate) struct UploadReport {
     pub(crate) updated_at: String,
 }
 
-#[derive(Debug, FromRow)]
-struct ReportRow {
-    grant_id: String,
-    grant_text: String,
-    manifest_id: Option<String>,
-    tree: String,
-    state: String,
-    error: String,
-    bytes_uploaded: i64,
-    updated_at: String,
-}
-
-/// The state of every grant this Nest holds (`software_cache_uploads`).
-pub(crate) async fn report(db: &SqlitePool) -> Result<Vec<UploadReport>> {
-    let rows = sqlx::query_as::<_, ReportRow>(
-        "SELECT grant_id, grant_text, manifest_id, tree, state, error, bytes_uploaded,
-                updated_at
-         FROM software_cache_upload_grants ORDER BY received_at, grant_id",
-    )
-    .fetch_all(db)
-    .await?;
-    let mut reports = Vec::with_capacity(rows.len());
-    for row in rows {
-        // A grant that no longer decodes is still reported (failed, with no
-        // totals), so Manage sees it.
-        let (paths_total, files_total) = Destination::from_tree(&row.tree)
-            .and_then(|tree| decode_grant(&row.grant_text, &tree).ok())
-            .map_or((0, 0), |(_, grant)| (grant.paths.len(), grant.files.len()));
-        let items = sqlx::query_as::<_, (String, String)>(
-            "SELECT item, state FROM software_cache_upload_items WHERE grant_id = ?",
-        )
-        .bind(&row.grant_id)
-        .fetch_all(db)
-        .await?;
-        let uploaded = |paths: bool| {
-            items
+/// The state of every grant this Nest holds (`software_cache_uploads`). A
+/// grant whose document no longer decodes is reported failed with no totals,
+/// so Manage sees it.
+pub(crate) fn report(data_dir: &Path) -> Result<Vec<UploadReport>> {
+    Ok(held_grants(&uploads_dir(data_dir))
+        .into_iter()
+        .map(|held| {
+            let (paths_total, files_total) = held
+                .grant
+                .as_ref()
+                .map_or((0, 0), |grant| (grant.paths.len(), grant.files.len()));
+            let state = held.state;
+            let paths_uploaded = state
+                .uploaded
                 .iter()
-                .filter(|(item, state)| state == "uploaded" && item.ends_with(".narinfo") == paths)
-                .count()
-        };
-        reports.push(UploadReport {
-            grant_id: row.grant_id,
-            manifest_id: row.manifest_id,
-            state: row.state,
-            paths_total,
-            paths_uploaded: uploaded(true),
-            files_total,
-            files_uploaded: uploaded(false),
-            items_failed: items.iter().filter(|(_, state)| state == "failed").count(),
-            bytes_uploaded: row.bytes_uploaded,
-            error: row.error,
-            updated_at: row.updated_at,
-        });
-    }
-    Ok(reports)
+                .filter(|index| (**index as usize) < paths_total)
+                .count();
+            UploadReport {
+                grant_id: held.id,
+                manifest_id: state.manifest_id,
+                state: state.state,
+                paths_total,
+                paths_uploaded,
+                files_total,
+                files_uploaded: state.uploaded.len() - paths_uploaded,
+                items_failed: state.failed.len(),
+                bytes_uploaded: state.bytes_uploaded,
+                error: state.error,
+                updated_at: state.updated_at,
+            }
+        })
+        .collect())
 }
 
 #[cfg(test)]

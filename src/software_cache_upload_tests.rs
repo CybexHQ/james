@@ -19,12 +19,10 @@ const TOKEN: &str = "tsc2.dev.4102444800.o-0123456789abcdef0123456789abcdef.w.ne
 const REVISION: &str = "4826a578aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const KEY: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
 
-async fn pool() -> SqlitePool {
-    let pool = crate::db::connect_with_url("sqlite::memory:")
-        .await
-        .unwrap();
-    crate::db::migrate(&pool).await.unwrap();
-    pool
+/// Forgets every grant and the token, as a Nest without upload state.
+fn reset(fixture: &Fixture) {
+    let _ = fs::remove_dir_all(uploads_dir(&fixture.data_dir));
+    let _ = fs::remove_file(credentials_path(&fixture.data_dir));
 }
 
 fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
@@ -282,16 +280,20 @@ async fn serve(state: Arc<Mutex<Server>>) -> String {
     format!("http://{address}/o/dev/{SCOPE}")
 }
 
-async fn grant_state(db: &SqlitePool) -> (String, String, i64) {
-    sqlx::query_as("SELECT state, error, next_attempt_at FROM software_cache_upload_grants")
-        .fetch_one(db)
-        .await
-        .unwrap()
+/// The one grant held: its state record.
+fn held_state(fixture: &Fixture) -> GrantState {
+    let mut held = held_grants(&uploads_dir(&fixture.data_dir));
+    assert_eq!(held.len(), 1);
+    held.remove(0).state
+}
+
+async fn grant_state(fixture: &Fixture) -> (String, String, i64) {
+    let state = held_state(fixture);
+    (state.state, state.error, state.next_attempt_at)
 }
 
 #[tokio::test]
 async fn apply_keeps_the_token_private_and_records_grants() {
-    let db = pool().await;
     let fixture = fixture("apply");
     let url = format!("https://cache.tiaris.com/o/dev/{SCOPE}");
     let good = grant(&fixture, SCOPE, 4_102_444_800, json!([]));
@@ -303,7 +305,7 @@ async fn apply_keeps_the_token_private_and_records_grants() {
     );
     let wrong_id = (good.0.clone(), "0".repeat(32));
     let config = upload_config(&url, TOKEN, &[good.clone(), other_tree, wrong_id]);
-    apply_with(&db, &fixture.data_dir, Some(&config), false)
+    apply_with(&fixture.data_dir, Some(&config), false)
         .await
         .unwrap();
 
@@ -321,11 +323,10 @@ async fn apply_keeps_the_token_private_and_records_grants() {
     let managed: ManagedUpload = serde_json::from_value(config.clone()).unwrap();
     assert!(!format!("{managed:?}").contains(TOKEN));
 
-    let rows: Vec<(String, Option<String>, String)> =
-        sqlx::query_as("SELECT grant_id, manifest_id, state FROM software_cache_upload_grants")
-            .fetch_all(&db)
-            .await
-            .unwrap();
+    let rows = held_grants(&uploads_dir(&fixture.data_dir))
+        .into_iter()
+        .map(|held| (held.id, held.state.manifest_id, held.state.state))
+        .collect::<Vec<_>>();
     assert_eq!(
         rows,
         [(
@@ -337,22 +338,19 @@ async fn apply_keeps_the_token_private_and_records_grants() {
 
     // A grant Manage stops sending is forgotten; no upload access forgets all.
     apply_with(
-        &db,
         &fixture.data_dir,
         Some(&upload_config(&url, TOKEN, &[])),
         false,
     )
     .await
     .unwrap();
-    assert!(report(&db).await.unwrap().is_empty());
-    apply_with(&db, &fixture.data_dir, Some(&config), false)
+    assert!(report(&fixture.data_dir).unwrap().is_empty());
+    apply_with(&fixture.data_dir, Some(&config), false)
         .await
         .unwrap();
-    apply_with(&db, &fixture.data_dir, None, false)
-        .await
-        .unwrap();
+    apply_with(&fixture.data_dir, None, false).await.unwrap();
     assert!(!path.exists());
-    assert!(report(&db).await.unwrap().is_empty());
+    assert!(report(&fixture.data_dir).unwrap().is_empty());
 
     for (url, token) in [
         (format!("http://cache.tiaris.com/o/dev/{SCOPE}"), TOKEN),
@@ -373,7 +371,7 @@ async fn apply_keeps_the_token_private_and_records_grants() {
     ] {
         let config = upload_config(&url, token, &[]);
         assert!(
-            apply_with(&db, &fixture.data_dir, Some(&config), false)
+            apply_with(&fixture.data_dir, Some(&config), false)
                 .await
                 .is_err(),
             "{url} {token:?}"
@@ -384,20 +382,18 @@ async fn apply_keeps_the_token_private_and_records_grants() {
 
 #[tokio::test]
 async fn uploads_granted_paths_nar_before_narinfo_and_files() {
-    let db = pool().await;
     let fixture = fixture("upload");
     let server = Arc::new(Mutex::new(Server::default()));
     let url = serve(server.clone()).await;
     let granted = grant(&fixture, SCOPE, 4_102_444_800, source_file(&fixture));
     apply_with(
-        &db,
         &fixture.data_dir,
         Some(&upload_config(&url, TOKEN, &[granted.clone()])),
         true,
     )
     .await
     .unwrap();
-    upload_pass(&db, &fixture.data_dir, &fixture.uploader, Utc::now())
+    upload_pass(&fixture.data_dir, &fixture.uploader, Utc::now())
         .await
         .unwrap();
 
@@ -430,7 +426,7 @@ async fn uploads_granted_paths_nar_before_narinfo_and_files() {
         );
         assert!(!server.stored.keys().any(|key| key.contains("ccccc")));
     }
-    let report = report(&db).await.unwrap();
+    let report = report(&fixture.data_dir).unwrap();
     assert_eq!(report.len(), 1);
     let entry = &report[0];
     assert_eq!(entry.grant_id, granted.1);
@@ -454,7 +450,6 @@ async fn uploads_granted_paths_nar_before_narinfo_and_files() {
     // Done: a later pass sends nothing.
     server.lock().unwrap().requests.clear();
     upload_pass(
-        &db,
         &fixture.data_dir,
         &fixture.uploader,
         Utc::now() + chrono::Duration::hours(1),
@@ -466,13 +461,11 @@ async fn uploads_granted_paths_nar_before_narinfo_and_files() {
 
 #[tokio::test]
 async fn transient_failures_back_off_and_resume_where_they_stopped() {
-    let db = pool().await;
     let fixture = fixture("retry");
     let server = Arc::new(Mutex::new(Server::default()));
     let url = serve(server.clone()).await;
     let granted = grant(&fixture, SCOPE, 4_102_444_800, json!([]));
     apply_with(
-        &db,
         &fixture.data_dir,
         Some(&upload_config(&url, TOKEN, &[granted])),
         true,
@@ -482,17 +475,16 @@ async fn transient_failures_back_off_and_resume_where_they_stopped() {
     // The first path goes through, then the service is unavailable.
     server.lock().unwrap().fail_puts = vec![201, 201, 503];
     let start = Utc::now();
-    upload_pass(&db, &fixture.data_dir, &fixture.uploader, start)
+    upload_pass(&fixture.data_dir, &fixture.uploader, start)
         .await
         .unwrap();
-    let (state, error, next) = grant_state(&db).await;
+    let (state, error, next) = grant_state(&fixture).await;
     assert_eq!((state.as_str(), error.as_str()), ("uploading", "http_503"));
     let window = start.timestamp()..=Utc::now().timestamp();
     assert!(window.contains(&(next - BACKOFF_BASE_SECONDS)), "{next}");
 
     server.lock().unwrap().requests.clear();
     upload_pass(
-        &db,
         &fixture.data_dir,
         &fixture.uploader,
         start + chrono::Duration::seconds(30),
@@ -502,7 +494,6 @@ async fn transient_failures_back_off_and_resume_where_they_stopped() {
     assert!(server.lock().unwrap().requests.is_empty());
 
     upload_pass(
-        &db,
         &fixture.data_dir,
         &fixture.uploader,
         start + chrono::Duration::seconds(61),
@@ -521,23 +512,18 @@ async fn transient_failures_back_off_and_resume_where_they_stopped() {
             .iter()
             .any(|request| request.contains(&fixture.paths[0].nar_url))
     );
-    assert_eq!(grant_state(&db).await.0, "uploaded");
-    let attempts: i64 = sqlx::query_scalar("SELECT attempts FROM software_cache_upload_grants")
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    assert_eq!(grant_state(&fixture).await.0, "uploaded");
+    let attempts = held_state(&fixture).attempts;
     assert_eq!(attempts, 0, "success resets the backoff");
 }
 
 #[tokio::test]
 async fn backoff_counts_from_the_failure_not_from_the_start_of_the_pass() {
-    let db = pool().await;
     let fixture = fixture("backoff");
     let server = Arc::new(Mutex::new(Server::default()));
     let url = serve(server.clone()).await;
     let granted = grant(&fixture, SCOPE, 4_102_444_800, json!([]));
     apply_with(
-        &db,
         &fixture.data_dir,
         Some(&upload_config(&url, TOKEN, &[granted])),
         true,
@@ -547,29 +533,28 @@ async fn backoff_counts_from_the_failure_not_from_the_start_of_the_pass() {
     // A pass that started ten minutes ago (a long upload) and then failed.
     server.lock().unwrap().fail_puts = vec![503, 503];
     let long_ago = Utc::now() - chrono::Duration::minutes(10);
-    upload_pass(&db, &fixture.data_dir, &fixture.uploader, long_ago)
+    upload_pass(&fixture.data_dir, &fixture.uploader, long_ago)
         .await
         .unwrap();
-    let (_, _, next) = grant_state(&db).await;
+    let (_, _, next) = grant_state(&fixture).await;
     assert!(
         next >= Utc::now().timestamp() + BACKOFF_BASE_SECONDS - 1,
         "{next}"
     );
     server.lock().unwrap().requests.clear();
-    upload_pass(&db, &fixture.data_dir, &fixture.uploader, Utc::now())
+    upload_pass(&fixture.data_dir, &fixture.uploader, Utc::now())
         .await
         .unwrap();
     assert!(server.lock().unwrap().requests.is_empty());
     // The next failure waits twice as long.
     upload_pass(
-        &db,
         &fixture.data_dir,
         &fixture.uploader,
         Utc::now() + chrono::Duration::seconds(61),
     )
     .await
     .unwrap();
-    let (_, _, later) = grant_state(&db).await;
+    let (_, _, later) = grant_state(&fixture).await;
     assert!(
         later >= Utc::now().timestamp() + 2 * BACKOFF_BASE_SECONDS - 1,
         "{later}"
@@ -578,7 +563,6 @@ async fn backoff_counts_from_the_failure_not_from_the_start_of_the_pass() {
 
 #[tokio::test]
 async fn a_corrupted_nar_is_never_sent_and_a_broken_grant_fails_alone() {
-    let db = pool().await;
     let fixture = fixture("corrupt");
     let server = Arc::new(Mutex::new(Server::default()));
     let url = serve(server.clone()).await;
@@ -590,18 +574,15 @@ async fn a_corrupted_nar_is_never_sent_and_a_broken_grant_fails_alone() {
     let broken = grant(&fixture, SCOPE, 4_102_444_800, json!([]));
     let good = grant(&fixture, SCOPE, 4_102_444_801, source_file(&fixture));
     let config = upload_config(&url, TOKEN, &[broken.clone(), good.clone()]);
-    apply_with(&db, &fixture.data_dir, Some(&config), true)
+    apply_with(&fixture.data_dir, Some(&config), true)
         .await
         .unwrap();
-    sqlx::query(
-        "UPDATE software_cache_upload_grants SET grant_text = 'tug1.bm90IGpzb24.mac'
-         WHERE grant_id = ?",
+    fs::write(
+        uploads_dir(&fixture.data_dir).join(grant_file(&broken.1)),
+        "tug1.bm90IGpzb24.mac",
     )
-    .bind(&broken.1)
-    .execute(&db)
-    .await
     .unwrap();
-    upload_pass(&db, &fixture.data_dir, &fixture.uploader, Utc::now())
+    upload_pass(&fixture.data_dir, &fixture.uploader, Utc::now())
         .await
         .unwrap();
     let requests = server.lock().unwrap().requests.clone();
@@ -620,7 +601,7 @@ async fn a_corrupted_nar_is_never_sent_and_a_broken_grant_fails_alone() {
             .iter()
             .any(|request| request.contains("manage-source"))
     );
-    let reports = report(&db).await.unwrap();
+    let reports = report(&fixture.data_dir).unwrap();
     let entry = |id: &str| reports.iter().find(|entry| entry.grant_id == id).unwrap();
     let broken = entry(&broken.1);
     assert_eq!(
@@ -644,7 +625,6 @@ async fn a_corrupted_nar_is_never_sent_and_a_broken_grant_fails_alone() {
 
 #[tokio::test]
 async fn items_that_do_not_match_their_grant_are_never_sent() {
-    let db = pool().await;
     let fixture = fixture("mismatch");
     let server = Arc::new(Mutex::new(Server::default()));
     let url = serve(server.clone()).await;
@@ -658,14 +638,13 @@ async fn items_that_do_not_match_their_grant_are_never_sent() {
                    "sha256": "f".repeat(64), "size": fixture.source.1}],
     }));
     apply_with(
-        &db,
         &fixture.data_dir,
         Some(&upload_config(&url, TOKEN, &[granted])),
         true,
     )
     .await
     .unwrap();
-    upload_pass(&db, &fixture.data_dir, &fixture.uploader, Utc::now())
+    upload_pass(&fixture.data_dir, &fixture.uploader, Utc::now())
         .await
         .unwrap();
     let requests = server.lock().unwrap().requests.clone();
@@ -684,9 +663,9 @@ async fn items_that_do_not_match_their_grant_are_never_sent() {
             .iter()
             .any(|request| request.contains(&fixture.paths[1].nar_url))
     );
-    let (state, error, _) = grant_state(&db).await;
+    let (state, error, _) = grant_state(&fixture).await;
     assert_eq!(state, "failed");
-    let entry = report(&db).await.unwrap().remove(0);
+    let entry = report(&fixture.data_dir).unwrap().remove(0);
     assert_eq!((entry.paths_uploaded, entry.items_failed), (1, 2));
     assert!(
         ["file_mismatch", "narinfo_mismatch"].contains(&error.as_str()),
@@ -696,13 +675,11 @@ async fn items_that_do_not_match_their_grant_are_never_sent() {
 
 #[tokio::test]
 async fn quota_expiry_and_missing_tokens_stop_uploads() {
-    let db = pool().await;
     let fixture = fixture("stop");
     let server = Arc::new(Mutex::new(Server::default()));
     let url = serve(server.clone()).await;
     let granted = grant(&fixture, SCOPE, 4_102_444_800, json!([]));
     apply_with(
-        &db,
         &fixture.data_dir,
         Some(&upload_config(&url, TOKEN, &[granted])),
         true,
@@ -710,18 +687,17 @@ async fn quota_expiry_and_missing_tokens_stop_uploads() {
     .await
     .unwrap();
     server.lock().unwrap().fail_puts = vec![507];
-    upload_pass(&db, &fixture.data_dir, &fixture.uploader, Utc::now())
+    upload_pass(&fixture.data_dir, &fixture.uploader, Utc::now())
         .await
         .unwrap();
-    assert_eq!(grant_state(&db).await.0, "failed");
-    assert_eq!(grant_state(&db).await.1, "quota_exceeded");
+    assert_eq!(grant_state(&fixture).await.0, "failed");
+    assert_eq!(grant_state(&fixture).await.1, "quota_exceeded");
 
     // An expired grant is never uploaded.
-    let db = pool().await;
+    reset(&fixture);
     let soon = Utc::now().timestamp() + 60;
     let expiring = grant(&fixture, SCOPE, soon, json!([]));
     apply_with(
-        &db,
         &fixture.data_dir,
         Some(&upload_config(&url, TOKEN, &[expiring])),
         true,
@@ -730,29 +706,28 @@ async fn quota_expiry_and_missing_tokens_stop_uploads() {
     .unwrap();
     server.lock().unwrap().requests.clear();
     upload_pass(
-        &db,
         &fixture.data_dir,
         &fixture.uploader,
         Utc::now() + chrono::Duration::minutes(5),
     )
     .await
     .unwrap();
-    assert_eq!(grant_state(&db).await.0, "expired");
+    assert_eq!(grant_state(&fixture).await.0, "expired");
     assert!(server.lock().unwrap().requests.is_empty());
 
     // Without a current write token nothing is sent.
-    let db = pool().await;
+    reset(&fixture);
     let granted = grant(&fixture, SCOPE, 4_102_444_800, json!([]));
     let mut config = upload_config(&url, TOKEN, &[granted]);
     config["expires_at"] = json!((Utc::now() - chrono::Duration::minutes(1)).to_rfc3339());
-    apply_with(&db, &fixture.data_dir, Some(&config), true)
+    apply_with(&fixture.data_dir, Some(&config), true)
         .await
         .unwrap();
-    upload_pass(&db, &fixture.data_dir, &fixture.uploader, Utc::now())
+    upload_pass(&fixture.data_dir, &fixture.uploader, Utc::now())
         .await
         .unwrap();
     assert!(server.lock().unwrap().requests.is_empty());
-    assert_eq!(grant_state(&db).await.0, "pending");
+    assert_eq!(grant_state(&fixture).await.0, "pending");
 }
 
 #[tokio::test]
@@ -821,20 +796,18 @@ async fn real_upload_service_accepts_nest_uploads() {
         URL_SAFE_NO_PAD.encode(hmac_sha256(KEY, claims.as_bytes()))
     );
     let granted = grant(&fixture, SCOPE, expires, source_file(&fixture));
-    let db = pool().await;
     let url = format!("http://127.0.0.1:{port}/o/dev/{SCOPE}");
     apply_with(
-        &db,
         &fixture.data_dir,
         Some(&upload_config(&url, &token, &[granted])),
         true,
     )
     .await
     .unwrap();
-    upload_pass(&db, &fixture.data_dir, &fixture.uploader, Utc::now())
+    upload_pass(&fixture.data_dir, &fixture.uploader, Utc::now())
         .await
         .unwrap();
-    let entry = report(&db).await.unwrap().remove(0);
+    let entry = report(&fixture.data_dir).unwrap().remove(0);
     assert_eq!(entry.state, "uploaded", "{entry:?}");
     let tree = server_root.join("orgs").join("dev").join(SCOPE);
     for path in &fixture.paths[..2] {
@@ -847,4 +820,94 @@ async fn real_upload_service_accepts_nest_uploads() {
     assert!(tree.join(format!("manage-source/{REVISION}.tar")).is_file());
     assert!(!tree.join(&fixture.paths[2].nar_url).exists());
     child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn corrupt_upload_state_never_sends_beyond_the_grant() {
+    let fixture = fixture("corrupt-state");
+    let server = Arc::new(Mutex::new(Server::default()));
+    let url = serve(server.clone()).await;
+    let granted = grant(&fixture, SCOPE, 4_102_444_800, json!([]));
+    apply_with(
+        &fixture.data_dir,
+        Some(&upload_config(&url, TOKEN, &[granted.clone()])),
+        true,
+    )
+    .await
+    .unwrap();
+    let dir = uploads_dir(&fixture.data_dir);
+    let name = state_file(&granted.1);
+    // A state naming an item the grant does not have (index 2 of 2 paths)
+    // is not trusted: the grant starts again with exactly its own items.
+    let mut state: Value = state_files::read(&dir, &name, STATE_SCHEMA, MAX_STATE_BYTES).unwrap();
+    state["uploaded"] = json!([0, 2]);
+    state["state"] = json!("uploading");
+    state_files::write(&dir, &name, STATE_SCHEMA, MAX_STATE_BYTES, &state).unwrap();
+    let held = held_state(&fixture);
+    assert_eq!((held.state.as_str(), held.uploaded.len()), ("pending", 0));
+    upload_pass(&fixture.data_dir, &fixture.uploader, Utc::now())
+        .await
+        .unwrap();
+    let requests = server.lock().unwrap().requests.clone();
+    let puts = requests
+        .iter()
+        .filter(|request| request.starts_with("PUT"))
+        .count();
+    assert_eq!(
+        puts, 4,
+        "two NARs and two narinfos, nothing else: {requests:?}"
+    );
+    assert_eq!(held_state(&fixture).state, "uploaded");
+
+    // Garbage state: the grant is not uploaded until Manage records it again.
+    fs::write(dir.join(&name), b"\x00\x01garbage").unwrap();
+    assert!(held_grants(&dir).is_empty());
+    assert!(report(&fixture.data_dir).unwrap().is_empty());
+    apply_with(
+        &fixture.data_dir,
+        Some(&upload_config(&url, TOKEN, &[granted.clone()])),
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(held_state(&fixture).state, "pending");
+
+    // A missing grant document fails that grant alone.
+    fs::remove_file(dir.join(grant_file(&granted.1))).unwrap();
+    server.lock().unwrap().requests.clear();
+    upload_pass(&fixture.data_dir, &fixture.uploader, Utc::now())
+        .await
+        .unwrap();
+    assert!(server.lock().unwrap().requests.is_empty());
+    let entry = report(&fixture.data_dir).unwrap().remove(0);
+    assert_eq!(
+        (entry.state.as_str(), entry.error.as_str()),
+        ("failed", "grant_invalid")
+    );
+    // Manage's next configuration forgets what it no longer grants.
+    apply_with(
+        &fixture.data_dir,
+        Some(&upload_config(&url, TOKEN, &[])),
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(state_files::list(&dir, "", 100).is_empty());
+}
+
+#[tokio::test]
+async fn at_most_the_grant_limit_is_held() {
+    let fixture = fixture("grant-limit");
+    let url = format!("https://cache.tiaris.com/o/dev/{SCOPE}");
+    let grants = (0..MAX_GRANTS as i64 + 4)
+        .map(|index| grant(&fixture, SCOPE, 4_102_444_800 + index, json!([])))
+        .collect::<Vec<_>>();
+    apply_with(
+        &fixture.data_dir,
+        Some(&upload_config(&url, TOKEN, &grants)),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report(&fixture.data_dir).unwrap().len(), MAX_GRANTS);
 }

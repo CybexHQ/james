@@ -1067,6 +1067,33 @@ def _appliance_release_inputs(
     ]
 
 
+SQLITE_MIGRATIONS_PIN = Path(__file__).resolve().parent.parent / "release" / "sqlite-migrations.sha256"
+
+
+def _pinned_sqlite_migrations_sha256(path: Path = SQLITE_MIGRATIONS_PIN) -> str:
+    """The inventory digest of the releases appliances update from."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        _fail(f"cannot read the pinned SQLite migration inventory {path}")
+    values = [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")]
+    if len(values) != 1 or not re.fullmatch(r"[0-9a-f]{64}", values[0]):
+        _fail(f"{path} must hold exactly one lowercase SHA-256")
+    return values[0]
+
+
+def _require_update_compatible_migrations(candidate: object, predecessor: str, label: str) -> None:
+    """The NixOS appliance updater refuses a release whose SQLite migration
+    inventory differs from the installed one; never sign or ship one."""
+    if candidate != predecessor:
+        _fail(
+            f"rollback_database_incompatible: the candidate's SQLite migration inventory "
+            f"{candidate} differs from {label} {predecessor}. NixOS appliances refuse this "
+            "update at verification (src/appliance/nixos.rs validate_migrations). A schema "
+            "change needs a separate update-contract design; see release/sqlite-migrations.sha256."
+        )
+
+
 def _nixos_appliance_release_inputs(arguments, version, notes_url):
     bundle = Path(arguments.appliance_package_snapshot)
     metadata_path = Path(arguments.appliance_package_snapshot_metadata)
@@ -1080,6 +1107,11 @@ def _nixos_appliance_release_inputs(arguments, version, notes_url):
     _require_exact_object_keys(metadata, metadata_fields, "NixOS closure build metadata")
     if metadata["schema"] != "tiaris.nest.appliance-closure-build.v1":
         _fail("NixOS closure build metadata schema is incompatible")
+    _require_update_compatible_migrations(
+        metadata["sqlite_migrations_sha256"],
+        _pinned_sqlite_migrations_sha256(),
+        "the pinned inventory in release/sqlite-migrations.sha256",
+    )
     if metadata["manage_origin"] != _validate_manage_origin(arguments.expected_manage_origin):
         _fail("NixOS closure metadata differs from the explicit Management origin")
     name = appliance_v3.archive_name(version)
@@ -3302,10 +3334,44 @@ def _verify_release_successor_command(arguments: argparse.Namespace) -> None:
     )
     _enforce_appliance_state_schema_transition(previous_payload, current_payload)
     _enforce_installer_manage_origin_transition(previous_payload, current_payload)
+    previous_release = getattr(arguments, "previous_release", None)
+    current_release = getattr(arguments, "current_release", None)
+    if (previous_release is None) != (current_release is None):
+        _fail("use --previous-release and --current-release together")
+    if previous_release is not None:
+        previous_inventory = _release_sqlite_migrations(
+            Path(previous_release), previous_asset, "previous release manifest")
+        current_inventory = _release_sqlite_migrations(
+            Path(current_release), current_asset, "current release manifest")
+        if previous_inventory is not None:
+            _require_update_compatible_migrations(
+                current_inventory, previous_inventory, f"the predecessor {previous_version}'s")
     print(
         "verified Nest release successor: "
         f"previous={previous_version} current={current_version}"
     )
+
+
+def _release_sqlite_migrations(path: Path, asset: dict, label: str) -> str | None:
+    """The SQLite migration inventory of a signed release manifest, which must
+    be the exact manifest its verified compatibility asset names. `None` for an
+    Ubuntu release, which has none."""
+    try:
+        body = path.read_bytes()
+    except OSError:
+        _fail(f"cannot read the {label}")
+    if len(body) > 4 * 1024 * 1024:
+        _fail(f"the {label} is too large")
+    if hashlib.sha256(body).hexdigest() != asset["release_manifest"]["sha256"]:
+        _fail(f"the {label} is not the manifest its compatibility asset names")
+    try:
+        manifest = json.loads(body)
+    except ValueError:
+        _fail(f"the {label} is not JSON")
+    appliance = manifest.get("appliance_release_v1") if isinstance(manifest, dict) else None
+    if not isinstance(appliance, dict) or "sqlite_migrations_sha256" not in appliance:
+        return None
+    return _require_sha256(appliance["sqlite_migrations_sha256"], f"{label} sqlite_migrations_sha256")
 
 
 def _verify_nixos_source_identity(closure, workstation):
@@ -3969,6 +4035,15 @@ def _parser() -> argparse.ArgumentParser:
         "--trusted-public-key",
         required=True,
         help="canonical standard-Base64 raw Ed25519 public key",
+    )
+    verify_successor.add_argument(
+        "--previous-release",
+        help="the predecessor's tiaris-nest-release.json, named by its compatibility asset",
+    )
+    verify_successor.add_argument(
+        "--current-release",
+        help="the candidate's tiaris-nest-release.json; its SQLite migration inventory "
+        "must equal the predecessor's",
     )
     verify_successor.set_defaults(handler=_verify_release_successor_command)
 

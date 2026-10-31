@@ -25,6 +25,47 @@ async fn pool() -> SqlitePool {
     pool
 }
 
+/// The job database and a private Nest state directory, removed on drop.
+struct Stores {
+    pool: SqlitePool,
+    data: PathBuf,
+}
+
+impl Drop for Stores {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.data);
+    }
+}
+
+async fn stores(name: &str) -> Stores {
+    let data = std::env::temp_dir().join(format!(
+        "tiaris-nest-software-update-state-{name}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&data);
+    Stores {
+        pool: pool().await,
+        data,
+    }
+}
+
+/// The stored record of `commit`, changed by `change`, written back.
+fn tamper(data: &Path, commit: &str, change: impl FnOnce(&mut Value)) {
+    let dir = detected_dir(data);
+    let name = format!("{commit}.json");
+    let mut record: Value =
+        crate::state_files::read(&dir, &name, DETECTED_SCHEMA, MAX_DETECTED_RECORD_BYTES).unwrap();
+    change(&mut record);
+    crate::state_files::write(
+        &dir,
+        &name,
+        DETECTED_SCHEMA,
+        MAX_DETECTED_RECORD_BYTES,
+        &record,
+    )
+    .unwrap();
+}
+
 /// Identities of a commit at which every reviewed provider has a new hash.
 fn shifted_identities() -> BTreeMap<String, DerivedIdentity> {
     const NIX_BASE32: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
@@ -233,6 +274,7 @@ esac
     let mut config = AppConfig::default();
     config.build.nix_binary = program.display().to_string();
     config.build.work_dir = root.join("work");
+    config.paths.data_dir = root.join("data");
     FakeNix { root, config }
 }
 
@@ -516,14 +558,15 @@ fn the_daily_check_runs_between_one_and_five_in_the_schedule_time_zone() {
 
 #[tokio::test]
 async fn manage_names_the_channel_and_requests_checks_without_crossing_releases() {
-    let pool = pool().await;
-    apply_managed(&pool, None, None).await.unwrap();
-    assert_eq!(check_state(&pool).await.unwrap().channel, None);
-    apply_managed(&pool, Some(&json!("nixos-26.05")), None)
+    let stores = stores("check-state").await;
+    let data = stores.data.as_path();
+    apply_managed(data, None, None).await.unwrap();
+    assert_eq!(check_state(data).await.unwrap().channel, None);
+    apply_managed(data, Some(&json!("nixos-26.05")), None)
         .await
         .unwrap();
     assert_eq!(
-        check_state(&pool).await.unwrap().channel.as_deref(),
+        check_state(data).await.unwrap().channel.as_deref(),
         Some("nixos-26.05")
     );
     for channel in [
@@ -532,47 +575,47 @@ async fn manage_names_the_channel_and_requests_checks_without_crossing_releases(
         json!("nixos-26.05-small"),
         json!(5),
     ] {
-        assert!(apply_managed(&pool, Some(&channel), None).await.is_err());
+        assert!(apply_managed(data, Some(&channel), None).await.is_err());
     }
     assert!(
-        apply_managed(&pool, None, Some(&json!("yesterday")))
+        apply_managed(data, None, Some(&json!("yesterday")))
             .await
             .is_err()
     );
 
     let first = json!("2026-10-31T03:00:00Z");
-    apply_managed(&pool, None, Some(&first)).await.unwrap();
-    let state = check_state(&pool).await.unwrap();
+    apply_managed(data, None, Some(&first)).await.unwrap();
+    let state = check_state(data).await.unwrap();
     assert!(pending_request(&state).is_some());
     // An older request never replaces a newer one.
-    apply_managed(&pool, None, Some(&json!("2026-10-30T03:00:00Z")))
+    apply_managed(data, None, Some(&json!("2026-10-30T03:00:00Z")))
         .await
         .unwrap();
-    let state = check_state(&pool).await.unwrap();
+    let state = check_state(data).await.unwrap();
     assert_eq!(
         parse_timestamp(state.check_requested_at.as_deref()),
         parse_timestamp(first.as_str())
     );
-    assert_eq!(checked_at(&pool).await.unwrap(), None);
+    assert_eq!(checked_at(data).await.unwrap(), None);
     // A failed check handles the request but is not a completed check.
     mark_checked(
-        &pool,
+        data,
         state.check_requested_at.as_deref(),
         Some(Err("network".to_string())),
     )
     .await
     .unwrap();
-    assert_eq!(checked_at(&pool).await.unwrap(), None);
-    mark_checked(&pool, None, Some(Ok(()))).await.unwrap();
-    let completed = checked_at(&pool).await.unwrap().unwrap();
+    assert_eq!(checked_at(data).await.unwrap(), None);
+    mark_checked(data, None, Some(Ok(()))).await.unwrap();
+    let completed = checked_at(data).await.unwrap().unwrap();
     assert!(parse_timestamp(Some(&completed)).is_some() && completed.ends_with('Z'));
     // A deduplicated wake-up records nothing about the last check.
-    mark_checked(&pool, None, None).await.unwrap();
-    assert_eq!(checked_at(&pool).await.unwrap(), Some(completed));
-    assert!(pending_request(&check_state(&pool).await.unwrap()).is_none());
+    mark_checked(data, None, None).await.unwrap();
+    assert_eq!(checked_at(data).await.unwrap(), Some(completed));
+    assert!(pending_request(&check_state(data).await.unwrap()).is_none());
     // A later sync that omits the request keeps it handled.
-    apply_managed(&pool, None, None).await.unwrap();
-    assert!(pending_request(&check_state(&pool).await.unwrap()).is_none());
+    apply_managed(data, None, None).await.unwrap();
+    assert!(pending_request(&check_state(data).await.unwrap()).is_none());
 }
 
 fn metadata(last_modified: i64) -> FlakeMetadata {
@@ -595,11 +638,13 @@ fn ready_outcome() -> DetectedOutcome {
 
 #[tokio::test]
 async fn ready_commits_are_admitted_reported_and_kept_while_used() {
-    let pool = pool().await;
+    let stores = stores("ready").await;
+    let (pool, data) = (&stores.pool, stores.data.as_path());
     let blocked = "1111111111111111111111111111111111111111";
     let older_ready = "2222222222222222222222222222222222222222";
     store_detected(
-        &pool,
+        pool,
+        data,
         older_ready,
         DEFAULT_CHANNEL,
         &metadata(1_792_000_000),
@@ -608,7 +653,8 @@ async fn ready_commits_are_admitted_reported_and_kept_while_used() {
     .await
     .unwrap();
     store_detected(
-        &pool,
+        pool,
+        data,
         COMMIT,
         DEFAULT_CHANNEL,
         &metadata(1_793_294_725),
@@ -617,7 +663,8 @@ async fn ready_commits_are_admitted_reported_and_kept_while_used() {
     .await
     .unwrap();
     store_detected(
-        &pool,
+        pool,
+        data,
         blocked,
         DEFAULT_CHANNEL,
         &metadata(1_793_400_000),
@@ -630,19 +677,14 @@ async fn ready_commits_are_admitted_reported_and_kept_while_used() {
     .await
     .unwrap();
 
-    let ready = ready_commit(&pool, COMMIT).await.unwrap().unwrap();
+    let ready = ready_commit(data, COMMIT).await.unwrap().unwrap();
     assert_eq!(ready.nar_hash, NAR_HASH);
     assert_eq!(ready.profile.nixpkgs_commit(), COMMIT);
     assert!(ready.profile.admits_tiaris_package(AGENT_DRV));
-    assert!(ready_commit(&pool, blocked).await.unwrap().is_none());
-    assert!(
-        ready_commit(&pool, &"3".repeat(40))
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(ready_commit(data, blocked).await.unwrap().is_none());
+    assert!(ready_commit(data, &"3".repeat(40)).await.unwrap().is_none());
 
-    let reported = report(&pool).await.unwrap();
+    let reported = report(pool, data).await.unwrap();
     assert_eq!(
         reported
             .iter()
@@ -675,6 +717,7 @@ async fn ready_commits_are_admitted_reported_and_kept_while_used() {
         flake: format!("github:NixOS/nixpkgs/{}", build::BUILTIN_NIXPKGS_COMMIT),
         attr: "packages.x86_64-linux.desktop-experience".to_string(),
     }];
+    config.paths.data_dir = data.to_path_buf();
     let state = AppState::new(config, pool.clone());
     assert_eq!(
         workstation_nixpkgs_commits(&state).await,
@@ -686,7 +729,7 @@ async fn ready_commits_are_admitted_reported_and_kept_while_used() {
          VALUES ('nixos_closure', ?, 'succeeded', '2026-10-31T00:00:00Z', '2026-10-31T00:00:00Z')",
     )
     .bind(json!({"nixpkgs_commit": older_ready}).to_string())
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
     assert_eq!(
@@ -695,7 +738,7 @@ async fn ready_commits_are_admitted_reported_and_kept_while_used() {
     );
     // The full list goes first with the ready commits still in use.
     assert_eq!(
-        report(&pool)
+        report(pool, data)
             .await
             .unwrap()
             .iter()
@@ -705,38 +748,135 @@ async fn ready_commits_are_admitted_reported_and_kept_while_used() {
     );
 
     // A tampered profile fails closed.
-    sqlx::query("UPDATE detected_nixpkgs_commits SET profile = '{}' WHERE commit_rev = ?")
-        .bind(COMMIT)
-        .execute(&pool)
-        .await
-        .unwrap();
-    assert!(ready_commit(&pool, COMMIT).await.is_err());
+    tamper(data, COMMIT, |record| record["profile"] = json!("{}"));
+    assert!(ready_commit(data, COMMIT).await.is_err());
 }
 
 #[tokio::test]
-async fn the_database_rejects_inconsistent_detected_commits() {
-    let pool = pool().await;
+async fn inconsistent_or_corrupt_detected_records_are_not_used() {
+    let stores = stores("inconsistent").await;
+    let (pool, data) = (&stores.pool, stores.data.as_path());
+    store_detected(
+        pool,
+        data,
+        COMMIT,
+        DEFAULT_CHANNEL,
+        &metadata(1_793_294_725),
+        &ready_outcome(),
+    )
+    .await
+    .unwrap();
+    let good: Value = crate::state_files::read(
+        &detected_dir(data),
+        &format!("{COMMIT}.json"),
+        DETECTED_SCHEMA,
+        MAX_DETECTED_RECORD_BYTES,
+    )
+    .unwrap();
+    // The rules the database used to enforce.
     for (state, reason, profile) in [
-        ("ready", Some("evaluation_failed"), Some("{}")),
-        ("blocked", None, None),
-        ("ready", None, None),
-        ("blocked", Some("other"), None),
-        ("pending", None, Some("{}")),
+        ("ready", json!("evaluation_failed"), json!("{}")),
+        ("blocked", Value::Null, Value::Null),
+        ("ready", Value::Null, Value::Null),
+        ("blocked", json!("other"), Value::Null),
+        ("pending", Value::Null, json!("{}")),
     ] {
-        let result = sqlx::query(
-            "INSERT INTO detected_nixpkgs_commits
-             (commit_rev, channel, last_modified, nar_hash, state, reason, profile, detected_at)
-             VALUES (?, 'nixos-26.05', '2026-10-29T18:45:25Z', ?, ?, ?, ?, '2026-10-31T00:00:00Z')",
-        )
-        .bind(COMMIT)
-        .bind(NAR_HASH)
-        .bind(state)
-        .bind(reason)
-        .bind(profile)
-        .execute(&pool)
-        .await;
-        assert!(result.is_err(), "{state} {reason:?}");
+        tamper(data, COMMIT, |record| {
+            *record = good.clone();
+            record["state"] = json!(state);
+            record["reason"] = reason.clone();
+            record["profile"] = profile.clone();
+        });
+        assert!(
+            detected_row(data, COMMIT).await.unwrap().is_none(),
+            "{state} {reason}"
+        );
+        assert!(ready_commit(data, COMMIT).await.unwrap().is_none());
+        assert!(report(pool, data).await.unwrap().is_empty());
     }
+    // A record filed under another commit, an unknown field, or garbage.
+    tamper(data, COMMIT, |record| {
+        *record = good.clone();
+        record["commit_rev"] = json!("1".repeat(40));
+    });
+    assert!(detected_row(data, COMMIT).await.unwrap().is_none());
+    tamper(data, COMMIT, |record| {
+        *record = good.clone();
+        record["admit_everything"] = json!(true);
+    });
+    assert!(detected_row(data, COMMIT).await.unwrap().is_none());
+    std::fs::write(
+        detected_dir(data).join(format!("{COMMIT}.json")),
+        b"{\"schema\":",
+    )
+    .unwrap();
+    assert!(detected_row(data, COMMIT).await.unwrap().is_none());
+    assert!(report(pool, data).await.unwrap().is_empty());
+    // Recording the commit again replaces the corrupt record.
+    store_detected(
+        pool,
+        data,
+        COMMIT,
+        DEFAULT_CHANNEL,
+        &metadata(1_793_294_725),
+        &ready_outcome(),
+    )
+    .await
+    .unwrap();
+    assert!(ready_commit(data, COMMIT).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn detected_records_are_bounded_keeping_ready_commits_in_use() {
+    let stores = stores("bounded").await;
+    let (pool, data) = (&stores.pool, stores.data.as_path());
+    let commit = |index: usize| format!("{index:040x}");
+    // The oldest commit is ready and a Blueprint job uses it.
+    sqlx::query(
+        "INSERT INTO nest_build_jobs (requested_artifact_type, build_spec, status, created_at, updated_at)
+         VALUES ('nixos_closure', ?, 'succeeded', '2026-10-31T00:00:00Z', '2026-10-31T00:00:00Z')",
+    )
+    .bind(json!({"nixpkgs_commit": commit(1)}).to_string())
+    .execute(pool)
+    .await
+    .unwrap();
+    store_detected(
+        pool,
+        data,
+        &commit(1),
+        DEFAULT_CHANNEL,
+        &metadata(1_792_000_000),
+        &ready_outcome(),
+    )
+    .await
+    .unwrap();
+    for index in 2..=MAX_DETECTED_RECORDS + 5 {
+        store_detected(
+            pool,
+            data,
+            &commit(index),
+            DEFAULT_CHANNEL,
+            &metadata(1_792_000_000 + index as i64),
+            &DetectedOutcome::blocked(String::new(), REASON_EVALUATION_FAILED, Vec::new()),
+        )
+        .await
+        .unwrap();
+    }
+    let rows = detected_rows(data).await.unwrap();
+    assert_eq!(rows.len(), MAX_DETECTED_RECORDS);
+    assert!(rows.iter().any(|row| row.commit_rev == commit(1)));
+    assert!(ready_commit(data, &commit(1)).await.unwrap().is_some());
+    // The oldest blocked commits went first.
+    assert!(detected_row(data, &commit(2)).await.unwrap().is_none());
+    assert!(
+        detected_row(data, &commit(MAX_DETECTED_RECORDS + 5))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let reported = report(pool, data).await.unwrap();
+    assert_eq!(reported.len(), MAX_REPORTED_DETECTED_COMMITS as usize);
+    assert_eq!(reported[0].commit, commit(1));
 }
 
 #[test]
@@ -941,6 +1081,7 @@ fn failed_commits_are_evaluated_again_at_most_daily_and_after_an_update() {
         kernel_version: String::new(),
         state: if reason.is_some() { "blocked" } else { "ready" }.to_string(),
         reason: reason.map(str::to_string),
+        reason_details: "[]".to_string(),
         profile: None,
         tiaris_derivations: "[]".to_string(),
         detected_at: (now - chrono::Duration::hours(hours_ago)).to_rfc3339(),
@@ -1000,9 +1141,11 @@ fn failed_commits_are_evaluated_again_at_most_daily_and_after_an_update() {
 
 #[tokio::test]
 async fn a_profile_from_another_nest_build_is_derived_again() {
-    let pool = pool().await;
+    let stores = stores("rederive").await;
+    let (pool, data) = (&stores.pool, stores.data.as_path());
     store_detected(
-        &pool,
+        pool,
+        data,
         COMMIT,
         DEFAULT_CHANNEL,
         &metadata(1_793_294_725),
@@ -1010,58 +1153,49 @@ async fn a_profile_from_another_nest_build_is_derived_again() {
     )
     .await
     .unwrap();
-    assert!(ready_commit(&pool, COMMIT).await.unwrap().is_some());
-    assert!(stale_ready_rows(&pool).await.unwrap().is_empty());
-    assert_eq!(report(&pool).await.unwrap()[0].state, "ready");
-    assert_eq!(ready_commits_in_use(&pool).await.unwrap(), [COMMIT]);
+    assert!(ready_commit(data, COMMIT).await.unwrap().is_some());
+    assert!(stale_ready_rows(data).await.unwrap().is_empty());
+    assert_eq!(report(pool, data).await.unwrap()[0].state, "ready");
+    assert_eq!(ready_commits_in_use(pool, data).await.unwrap(), [COMMIT]);
     for (field, value) in [
         ("schema", json!(PROFILE_SCHEMA - 1)),
         ("nest_build", json!("0.2.47 release=other")),
     ] {
         let mut stored: Value = serde_json::from_str(
-            &sqlx::query_scalar::<_, String>(
-                "SELECT profile FROM detected_nixpkgs_commits WHERE commit_rev = ?",
-            )
-            .bind(COMMIT)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
+            &detected_row(data, COMMIT)
+                .await
+                .unwrap()
+                .unwrap()
+                .profile
+                .unwrap(),
         )
         .unwrap();
         let current = stored[field].clone();
         stored[field] = value;
-        sqlx::query("UPDATE detected_nixpkgs_commits SET profile = ? WHERE commit_rev = ?")
-            .bind(stored.to_string())
-            .bind(COMMIT)
-            .execute(&pool)
-            .await
-            .unwrap();
+        tamper(data, COMMIT, |record| {
+            record["profile"] = json!(stored.to_string())
+        });
         // Never re-mapped: the commit admits nothing, is not reported or
         // kept as ready, until derived again.
-        assert!(ready_commit(&pool, COMMIT).await.is_err());
-        assert_eq!(stale_ready_rows(&pool).await.unwrap().len(), 1);
-        let reported = report(&pool).await.unwrap();
+        assert!(ready_commit(data, COMMIT).await.is_err());
+        assert_eq!(stale_ready_rows(data).await.unwrap().len(), 1);
+        let reported = report(pool, data).await.unwrap();
         assert_eq!(reported[0].state, "blocked");
         assert_eq!(
             reported[0].reason.as_deref(),
             Some(REASON_REDERIVATION_PENDING)
         );
-        assert!(ready_commits_in_use(&pool).await.unwrap().is_empty());
+        assert!(ready_commits_in_use(pool, data).await.unwrap().is_empty());
         stored[field] = current;
-        sqlx::query("UPDATE detected_nixpkgs_commits SET profile = ? WHERE commit_rev = ?")
-            .bind(stored.to_string())
-            .bind(COMMIT)
-            .execute(&pool)
-            .await
-            .unwrap();
+        tamper(data, COMMIT, |record| {
+            record["profile"] = json!(stored.to_string())
+        });
     }
     // A profile in the format before this schema is stale too.
-    sqlx::query("UPDATE detected_nixpkgs_commits SET profile = '{\"identities\":{},\"reviewed\":{}}' WHERE commit_rev = ?")
-        .bind(COMMIT)
-        .execute(&pool)
-        .await
-        .unwrap();
-    assert_eq!(stale_ready_rows(&pool).await.unwrap().len(), 1);
+    tamper(data, COMMIT, |record| {
+        record["profile"] = json!(r#"{"identities":{},"reviewed":{}}"#)
+    });
+    assert_eq!(stale_ready_rows(data).await.unwrap().len(), 1);
 }
 
 /// Provenance of a real commit through the GitHub API. Not part of CI.
@@ -1150,9 +1284,11 @@ async fn startup_removes_interrupted_checks_only() {
 
 #[tokio::test]
 async fn a_check_short_of_disk_space_records_insufficient_disk() {
-    let pool = pool().await;
+    let stores = stores("disk").await;
+    let (pool, data) = (&stores.pool, stores.data.as_path());
     store_detected(
-        &pool,
+        pool,
+        data,
         COMMIT,
         DEFAULT_CHANNEL,
         &metadata(1_793_294_725),
@@ -1164,7 +1300,7 @@ async fn a_check_short_of_disk_space_records_insufficient_disk() {
     )
     .await
     .unwrap();
-    let reported = report(&pool).await.unwrap();
+    let reported = report(pool, data).await.unwrap();
     assert_eq!(
         reported[0].reason.as_deref(),
         Some(REASON_INSUFFICIENT_DISK)

@@ -1,0 +1,16 @@
+# SHA-256 of the SQLite migration inventory (`nixos-appliance/metadata.py
+# migrations migrations/`, installed as /usr/share/tiaris-nest/sqlite-migrations.json)
+# of the published Nest releases a NixOS appliance updates from: v0.2.70 and
+# 0.2.58-dev.9 carry exactly this value.
+#
+# The appliance updater refuses any update whose inventory differs from the
+# installed release's (src/appliance/nixos.rs `validate_migrations`:
+# `rollback_database_incompatible`), because the predecessor must still open
+# the database after a rollback. So migrations/ must not change: `cargo test`
+# and tools/tests compare it with this value, and `tools/nest-release.py
+# manifest` refuses to sign a release built from another inventory.
+#
+# A schema change needs its own update-contract design first (how the updater
+# admits it and how a rollback keeps the predecessor working). Until then keep
+# new state in files under the Nest state directory (src/state_files.rs).
+0ccbb89564904ffbec89c0bad7f33460ee2c64e1d73d418a60b6ef5f73a3dc37

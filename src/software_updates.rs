@@ -38,7 +38,7 @@ use chrono::{DateTime, Days, NaiveTime, TimeZone, Utc};
 use rand::{Rng, RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{FromRow, SqlitePool};
+use sqlx::SqlitePool;
 use tokio::{sync::Notify, time::sleep};
 use tracing::{info, warn};
 
@@ -107,6 +107,34 @@ pub(crate) const REASON_INSUFFICIENT_DISK: &str = "insufficient_disk";
 /// content from.
 pub(crate) const REASON_REFERENCE_BLUEPRINTS_MISSING: &str = "reference_blueprints_missing";
 
+/// Directory of the software-update records under the Nest state directory
+/// (`<data_dir>/software-updates`); see `state_files`.
+pub(crate) fn state_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("software-updates")
+}
+
+fn detected_dir(data_dir: &Path) -> PathBuf {
+    state_dir(data_dir).join("detected")
+}
+
+const CHECK_STATE_FILE: &str = "check-state.json";
+const CHECK_STATE_SCHEMA: &str = "tiaris.nest.software-update-check.v1";
+const DETECTED_SCHEMA: &str = "tiaris.nest.detected-commit.v1";
+/// A record with its derived profile (identities and counterpart content).
+const MAX_DETECTED_RECORD_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_CHECK_STATE_BYTES: u64 = 64 * 1024;
+/// Detected commits kept: every ready one a Blueprint job uses, then the
+/// newest. The report sends at most `MAX_REPORTED_DETECTED_COMMITS`.
+const MAX_DETECTED_RECORDS: usize = 64;
+const DETECTED_REASONS: [&str; 6] = [
+    REASON_BUILD_SCRIPT_CHANGED,
+    REASON_SOURCE_BUILD_REQUIRED,
+    REASON_EVALUATION_FAILED,
+    REASON_PROVENANCE_UNVERIFIED,
+    REASON_INSUFFICIENT_DISK,
+    REASON_REFERENCE_BLUEPRINTS_MISSING,
+];
+
 fn check_now() -> &'static Notify {
     static CHECK_NOW: OnceLock<Notify> = OnceLock::new();
     CHECK_NOW.get_or_init(Notify::new)
@@ -125,22 +153,57 @@ fn valid_commit(value: &str) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-#[derive(Clone, Debug, Default, FromRow)]
+/// The channel and on-demand check request Manage last sent, the outcome of
+/// the last check, and when a check last completed
+/// (`software_update_checked_at`).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct CheckState {
     channel: Option<String>,
     check_requested_at: Option<String>,
     check_handled_at: Option<String>,
     last_checked_at: Option<String>,
+    last_completed_at: Option<String>,
+    #[serde(default)]
+    last_error: String,
 }
 
-async fn check_state(db: &SqlitePool) -> Result<CheckState> {
-    Ok(sqlx::query_as::<_, CheckState>(
-        "SELECT channel, check_requested_at, check_handled_at, last_checked_at
-         FROM software_update_check_state WHERE id = 1",
+/// An absent or corrupt record is the default state: the default channel and
+/// no pending request.
+async fn check_state(data_dir: &Path) -> Result<CheckState> {
+    Ok(crate::state_files::read::<CheckState>(
+        &state_dir(data_dir),
+        CHECK_STATE_FILE,
+        CHECK_STATE_SCHEMA,
+        MAX_CHECK_STATE_BYTES,
     )
-    .fetch_optional(db)
-    .await?
+    .filter(|state| {
+        state.channel.as_deref().is_none_or(supported_channel)
+            && [
+                &state.check_requested_at,
+                &state.check_handled_at,
+                &state.last_checked_at,
+                &state.last_completed_at,
+            ]
+            .iter()
+            .all(|value| value.is_none() || parse_timestamp(value.as_deref()).is_some())
+    })
     .unwrap_or_default())
+}
+
+async fn update_check_state(data_dir: &Path, change: impl FnOnce(&mut CheckState)) -> Result<()> {
+    let dir = state_dir(data_dir);
+    let _guard = crate::state_files::lock(&dir).await;
+    let mut state = check_state(data_dir).await?;
+    change(&mut state);
+    state.last_error = state.last_error.chars().take(500).collect();
+    crate::state_files::write(
+        &dir,
+        CHECK_STATE_FILE,
+        CHECK_STATE_SCHEMA,
+        MAX_CHECK_STATE_BYTES,
+        &state,
+    )
 }
 
 fn parse_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
@@ -153,7 +216,7 @@ fn parse_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
 /// fields are optional; an older Manage sends neither and Nest follows the
 /// default channel on its daily schedule.
 pub(crate) async fn apply_managed(
-    db: &SqlitePool,
+    data_dir: &Path,
     channel: Option<&Value>,
     check_requested_at: Option<&Value>,
 ) -> Result<()> {
@@ -172,21 +235,17 @@ pub(crate) async fn apply_managed(
         ),
         Some(_) => bail!("software_update_check_requested_at must be a timestamp"),
     };
-    let current = check_state(db).await?;
+    let current = check_state(data_dir).await?;
     let newer_request = requested.filter(|requested| {
         parse_timestamp(current.check_requested_at.as_deref())
             .is_none_or(|previous| *requested > previous)
     });
-    sqlx::query(
-        "INSERT INTO software_update_check_state (id, channel, check_requested_at)
-         VALUES (1, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-             channel = excluded.channel,
-             check_requested_at = COALESCE(excluded.check_requested_at, check_requested_at)",
-    )
-    .bind(&channel)
-    .bind(newer_request.map(|value| value.to_rfc3339()))
-    .execute(db)
+    update_check_state(data_dir, |state| {
+        state.channel = channel;
+        if let Some(requested) = newer_request {
+            state.check_requested_at = Some(requested.to_rfc3339());
+        }
+    })
     .await?;
     if newer_request.is_some() {
         check_now().notify_one();
@@ -194,7 +253,12 @@ pub(crate) async fn apply_managed(
     Ok(())
 }
 
-#[derive(Clone, Debug, FromRow)]
+/// One detected commit, one record each (`detected/<commit>.json`).
+/// `profile` and `tiaris_derivations` are set only for ready commits; they
+/// are the derived build profile the preflight selects by
+/// `spec.nixpkgs_commit`, and are validated again whenever they are used.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct DetectedRow {
     commit_rev: String,
     channel: String,
@@ -203,6 +267,8 @@ struct DetectedRow {
     kernel_version: String,
     state: String,
     reason: Option<String>,
+    /// JSON list of the names behind `reason`.
+    reason_details: String,
     profile: Option<String>,
     tiaris_derivations: String,
     detected_at: String,
@@ -211,6 +277,23 @@ struct DetectedRow {
 }
 
 impl DetectedRow {
+    /// The record's own rules: a record that breaks one is not used.
+    fn is_valid(&self, commit: &str) -> bool {
+        let ready = self.state == "ready";
+        self.commit_rev == commit
+            && valid_commit(&self.commit_rev)
+            && (ready || self.state == "blocked")
+            && ready == self.reason.is_none()
+            && self
+                .reason
+                .as_deref()
+                .is_none_or(|reason| DETECTED_REASONS.contains(&reason))
+            && (!ready || self.profile.is_some())
+            && parse_timestamp(Some(&self.last_modified)).is_some()
+            && parse_timestamp(Some(&self.detected_at)).is_some()
+            && serde_json::from_str::<Vec<String>>(&self.reason_details).is_ok()
+    }
+
     /// A ready commit whose profile this schema and Nest build derived.
     fn is_current_ready(&self) -> bool {
         self.state == "ready"
@@ -264,39 +347,72 @@ impl From<DetectedRow> for DetectedCommitReport {
     }
 }
 
-const DETECTED_COLUMNS: &str = "commit_rev, channel, last_modified, nar_hash, kernel_version, \
-     state, reason, profile, tiaris_derivations, detected_at, derived_by";
+/// The record of `commit`; a missing, corrupt or invalid record is absent.
+async fn detected_row(data_dir: &Path, commit: &str) -> Result<Option<DetectedRow>> {
+    if !valid_commit(commit) {
+        return Ok(None);
+    }
+    Ok(crate::state_files::read::<DetectedRow>(
+        &detected_dir(data_dir),
+        &format!("{commit}.json"),
+        DETECTED_SCHEMA,
+        MAX_DETECTED_RECORD_BYTES,
+    )
+    .filter(|row| {
+        let valid = row.is_valid(commit);
+        if !valid {
+            warn!(%commit, "ignoring a detected commit record that breaks its rules");
+        }
+        valid
+    }))
+}
 
-async fn detected_row(db: &SqlitePool, commit: &str) -> Result<Option<DetectedRow>> {
-    Ok(sqlx::query_as::<_, DetectedRow>(&format!(
-        "SELECT {DETECTED_COLUMNS} FROM detected_nixpkgs_commits WHERE commit_rev = ?"
-    ))
-    .bind(commit)
-    .fetch_optional(db)
-    .await?)
+/// Every usable record, newest `last_modified` first.
+async fn detected_rows(data_dir: &Path) -> Result<Vec<DetectedRow>> {
+    let mut rows = Vec::new();
+    for name in crate::state_files::list(&detected_dir(data_dir), ".json", 4 * MAX_DETECTED_RECORDS)
+    {
+        let commit = name.trim_end_matches(".json");
+        if let Some(row) = detected_row(data_dir, commit).await? {
+            rows.push(row);
+        }
+    }
+    rows.sort_by(|left, right| {
+        right
+            .last_modified
+            .cmp(&left.last_modified)
+            .then_with(|| left.commit_rev.cmp(&right.commit_rev))
+    });
+    Ok(rows)
+}
+
+/// Commits the Blueprint jobs this Nest holds build at.
+async fn commits_in_use(db: &SqlitePool) -> Result<BTreeSet<String>> {
+    Ok(sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT json_extract(build_spec, '$.nixpkgs_commit') FROM nest_build_jobs
+         WHERE json_valid(build_spec)
+           AND json_type(build_spec, '$.nixpkgs_commit') = 'text'",
+    )
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .collect())
 }
 
 /// The Nest's full current list for the report; each report replaces the
 /// previous one in Manage. Ready commits a Blueprint job still uses come
 /// first, so the 32-entry limit never drops a commit this Nest builds; then
 /// the newest.
-pub(crate) async fn report(db: &SqlitePool) -> Result<Vec<DetectedCommitReport>> {
-    Ok(sqlx::query_as::<_, DetectedRow>(&format!(
-        "SELECT {DETECTED_COLUMNS} FROM detected_nixpkgs_commits AS detected
-         ORDER BY (detected.state = 'ready' AND EXISTS (
-                 SELECT 1 FROM nest_build_jobs AS jobs
-                 WHERE json_valid(jobs.build_spec)
-                   AND json_extract(jobs.build_spec, '$.nixpkgs_commit') = detected.commit_rev
-             )) DESC,
-             last_modified DESC, commit_rev
-         LIMIT ?"
-    ))
-    .bind(MAX_REPORTED_DETECTED_COMMITS)
-    .fetch_all(db)
-    .await?
-    .into_iter()
-    .map(DetectedCommitReport::from)
-    .collect())
+pub(crate) async fn report(db: &SqlitePool, data_dir: &Path) -> Result<Vec<DetectedCommitReport>> {
+    let in_use = commits_in_use(db).await?;
+    let mut rows = detected_rows(data_dir).await?;
+    // Stable: within each group the newest stay first.
+    rows.sort_by_key(|row| !(row.state == "ready" && in_use.contains(&row.commit_rev)));
+    Ok(rows
+        .into_iter()
+        .take(MAX_REPORTED_DETECTED_COMMITS as usize)
+        .map(DetectedCommitReport::from)
+        .collect())
 }
 
 /// A ready detected commit: the jobs it admits build with its derived
@@ -308,15 +424,15 @@ pub(crate) struct ReadyCommit {
 }
 
 /// The recorded `narHash` of a commit that is ready for this Nest build.
-async fn current_ready_nar_hash(db: &SqlitePool, commit: &str) -> Result<Option<String>> {
-    Ok(detected_row(db, commit)
+async fn current_ready_nar_hash(data_dir: &Path, commit: &str) -> Result<Option<String>> {
+    Ok(detected_row(data_dir, commit)
         .await?
         .filter(DetectedRow::is_current_ready)
         .map(|row| row.nar_hash))
 }
 
-pub(crate) async fn ready_commit(db: &SqlitePool, commit: &str) -> Result<Option<ReadyCommit>> {
-    let Some(row) = detected_row(db, commit).await? else {
+pub(crate) async fn ready_commit(data_dir: &Path, commit: &str) -> Result<Option<ReadyCommit>> {
+    let Some(row) = detected_row(data_dir, commit).await? else {
         return Ok(None);
     };
     if row.state != "ready" {
@@ -411,7 +527,7 @@ pub(crate) async fn workstation_nixpkgs_commits(state: &AppState) -> Vec<String>
     if commits.is_empty() {
         return commits;
     }
-    match ready_commits_in_use(&state.db).await {
+    match ready_commits_in_use(&state.db, &state.config.paths.data_dir).await {
         Ok(ready) => commits.extend(ready),
         Err(error) => warn!(error = %error, "could not read ready detected nixpkgs commits"),
     }
@@ -420,37 +536,19 @@ pub(crate) async fn workstation_nixpkgs_commits(state: &AppState) -> Vec<String>
     commits
 }
 
-async fn ready_commits_in_use(db: &SqlitePool) -> Result<Vec<String>> {
+async fn ready_commits_in_use(db: &SqlitePool, data_dir: &Path) -> Result<Vec<String>> {
     // Only ready commits this Nest build derived: the newest one, and every
     // one a Blueprint job this Nest holds uses.
-    let ready = sqlx::query_as::<_, DetectedRow>(&format!(
-        "SELECT {DETECTED_COLUMNS} FROM detected_nixpkgs_commits AS detected
-         WHERE state = 'ready'
-         ORDER BY EXISTS (
-                 SELECT 1 FROM nest_build_jobs AS jobs
-                 WHERE json_valid(jobs.build_spec)
-                   AND json_extract(jobs.build_spec, '$.nixpkgs_commit') = detected.commit_rev
-             ) DESC,
-             last_modified DESC, commit_rev"
-    ))
-    .fetch_all(db)
-    .await?
-    .into_iter()
-    .filter(DetectedRow::is_current_ready)
-    .collect::<Vec<_>>();
+    let ready = detected_rows(data_dir)
+        .await?
+        .into_iter()
+        .filter(DetectedRow::is_current_ready)
+        .collect::<Vec<_>>();
     let newest = ready
         .iter()
         .max_by(|left, right| left.last_modified.cmp(&right.last_modified))
         .map(|row| row.commit_rev.clone());
-    let in_use = sqlx::query_scalar::<_, String>(
-        "SELECT DISTINCT json_extract(build_spec, '$.nixpkgs_commit') FROM nest_build_jobs
-         WHERE json_valid(build_spec)
-           AND json_type(build_spec, '$.nixpkgs_commit') = 'text'",
-    )
-    .fetch_all(db)
-    .await?
-    .into_iter()
-    .collect::<BTreeSet<_>>();
+    let in_use = commits_in_use(db).await?;
     Ok(ready
         .into_iter()
         .map(|row| row.commit_rev)
@@ -473,14 +571,14 @@ pub fn spawn(state: AppState) {
 async fn run(state: AppState) {
     remove_interrupted_checks(&state.config).await;
     let offset = rand::thread_rng().gen_range(0..DAILY_WINDOW_MINUTES);
-    match check_state(&state.db).await {
+    match check_state(&state.config.paths.data_dir).await {
         Ok(current) if pending_request(&current).is_some() => check_now().notify_one(),
         Ok(_) => {}
         Err(error) => warn!(error = %error, "could not read software update check state"),
     }
     // After an update of this Nest, ready commits are derived again soon
     // rather than waiting for the daily check; until then they admit nothing.
-    if stale_ready_rows(&state.db)
+    if stale_ready_rows(&state.config.paths.data_dir)
         .await
         .is_ok_and(|rows| !rows.is_empty())
     {
@@ -501,7 +599,9 @@ async fn run(state: AppState) {
             _ = sleep(wait) => false,
             _ = check_now().notified() => true,
         };
-        let current = check_state(&state.db).await.unwrap_or_default();
+        let current = check_state(&state.config.paths.data_dir)
+            .await
+            .unwrap_or_default();
         let request = pending_request(&current);
         if on_demand
             && (request.is_none()
@@ -511,7 +611,7 @@ async fn run(state: AppState) {
             // Duplicate wake-ups and requests within minutes of a check are
             // answered by the check that just ran.
             if let Some(request) = request {
-                let _ = mark_checked(&state.db, Some(&request), None).await;
+                let _ = mark_checked(&state.config.paths.data_dir, Some(&request), None).await;
             }
             continue;
         }
@@ -522,7 +622,13 @@ async fn run(state: AppState) {
                 Err(format!("{error:#}").chars().take(500).collect::<String>())
             }
         };
-        if let Err(error) = mark_checked(&state.db, request.as_deref(), Some(outcome)).await {
+        if let Err(error) = mark_checked(
+            &state.config.paths.data_dir,
+            request.as_deref(),
+            Some(outcome),
+        )
+        .await
+        {
             warn!(error = %error, "could not record software update check");
         }
     }
@@ -539,7 +645,7 @@ fn pending_request(state: &CheckState) -> Option<String> {
 /// Record a handled request and, when a check ran (`outcome`), its result.
 /// Only a check that completed moves `last_completed_at`.
 async fn mark_checked(
-    db: &SqlitePool,
+    data_dir: &Path,
     handled_request: Option<&str>,
     outcome: Option<std::result::Result<(), String>>,
 ) -> Result<()> {
@@ -550,35 +656,26 @@ async fn mark_checked(
         Some(Err(error)) => error,
         _ => String::new(),
     };
-    sqlx::query(
-        "INSERT INTO software_update_check_state
-             (id, check_handled_at, last_checked_at, last_completed_at, last_error)
-         VALUES (1, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-             check_handled_at = COALESCE(excluded.check_handled_at, check_handled_at),
-             last_checked_at = COALESCE(excluded.last_checked_at, last_checked_at),
-             last_completed_at = COALESCE(excluded.last_completed_at, last_completed_at),
-             last_error = CASE WHEN excluded.last_checked_at IS NULL
-                 THEN last_error ELSE excluded.last_error END",
-    )
-    .bind(handled_request)
-    .bind(ran.then_some(&now))
-    .bind(completed.then_some(&now))
-    .bind(error)
-    .execute(db)
-    .await?;
-    Ok(())
+    update_check_state(data_dir, |state| {
+        if let Some(handled) = handled_request {
+            state.check_handled_at = Some(handled.to_string());
+        }
+        if ran {
+            state.last_checked_at = Some(now.clone());
+            state.last_error = error;
+        }
+        if completed {
+            state.last_completed_at = Some(now);
+        }
+    })
+    .await
 }
 
 /// When a channel check last completed, whether or not it found a new
 /// commit (`software_update_checked_at`).
-pub(crate) async fn checked_at(db: &SqlitePool) -> Result<Option<String>> {
-    let value: Option<Option<String>> = sqlx::query_scalar(
-        "SELECT last_completed_at FROM software_update_check_state WHERE id = 1",
-    )
-    .fetch_optional(db)
-    .await?;
-    Ok(parse_timestamp(value.flatten().as_deref())
+pub(crate) async fn checked_at(data_dir: &Path) -> Result<Option<String>> {
+    let value = check_state(data_dir).await?.last_completed_at;
+    Ok(parse_timestamp(value.as_deref())
         .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)))
 }
 
@@ -617,7 +714,8 @@ fn next_daily_check<Tz: TimeZone>(
 /// at least a day ago; a request from Manage repeats only the channel lookup.
 /// Network failures before evaluation record nothing.
 async fn check(state: &AppState) -> Result<()> {
-    let channel = check_state(&state.db)
+    let data_dir = &state.config.paths.data_dir;
+    let channel = check_state(data_dir)
         .await?
         .channel
         .unwrap_or_else(|| DEFAULT_CHANNEL.to_string());
@@ -626,12 +724,12 @@ async fn check(state: &AppState) -> Result<()> {
     }
     let commit = channel_revision(&channel).await?;
     if !crate::config::workstation_nixpkgs_commits(&state.config).contains(&commit) {
-        let existing = detected_row(&state.db, &commit).await?;
+        let existing = detected_row(data_dir, &commit).await?;
         if needs_evaluation(existing.as_ref(), Utc::now()) {
             evaluate_and_record(state, &channel, &commit, existing.as_ref(), true).await?;
         }
     }
-    for row in stale_ready_rows(&state.db)
+    for row in stale_ready_rows(data_dir)
         .await?
         .into_iter()
         .take(MAX_REDERIVED_PER_CHECK)
@@ -674,21 +772,18 @@ fn needs_evaluation_by(existing: Option<&DetectedRow>, now: DateTime<Utc>, build
 }
 
 /// Ready commits whose stored profile is from another schema or Nest build.
-async fn stale_ready_rows(db: &SqlitePool) -> Result<Vec<DetectedRow>> {
-    Ok(sqlx::query_as::<_, DetectedRow>(&format!(
-        "SELECT {DETECTED_COLUMNS} FROM detected_nixpkgs_commits WHERE state = 'ready'
-         ORDER BY last_modified DESC, commit_rev"
-    ))
-    .fetch_all(db)
-    .await?
-    .into_iter()
-    .filter(|row| {
-        !row.profile
-            .as_deref()
-            .and_then(|profile| serde_json::from_str::<StoredProfile>(profile).ok())
-            .is_some_and(|stored| stored.is_current())
-    })
-    .collect())
+async fn stale_ready_rows(data_dir: &Path) -> Result<Vec<DetectedRow>> {
+    Ok(detected_rows(data_dir)
+        .await?
+        .into_iter()
+        .filter(|row| row.state == "ready")
+        .filter(|row| {
+            !row.profile
+                .as_deref()
+                .and_then(|profile| serde_json::from_str::<StoredProfile>(profile).ok())
+                .is_some_and(|stored| stored.is_current())
+        })
+        .collect())
 }
 
 async fn evaluate_and_record(
@@ -708,13 +803,13 @@ async fn evaluate_and_record(
         bail!("channel commit {commit} is not newer than the release pin");
     }
     if channel_head {
-        let newest: Option<i64> = sqlx::query_scalar(
-            "SELECT CAST(strftime('%s', MAX(last_modified)) AS INTEGER) FROM detected_nixpkgs_commits
-             WHERE commit_rev != ?",
-        )
-        .bind(commit)
-        .fetch_one(&state.db)
-        .await?;
+        let newest = detected_rows(&state.config.paths.data_dir)
+            .await?
+            .iter()
+            .filter(|row| row.commit_rev != commit)
+            .filter_map(|row| parse_timestamp(Some(&row.last_modified)))
+            .map(|value| value.timestamp())
+            .max();
         if newest.is_some_and(|newest| metadata.last_modified < newest) {
             bail!("channel commit {commit} is older than a commit this Nest already detected");
         }
@@ -758,7 +853,15 @@ async fn evaluate_and_record(
             }
         }
     };
-    store_detected(&state.db, commit, channel, &metadata, &outcome).await?;
+    store_detected(
+        &state.db,
+        &state.config.paths.data_dir,
+        commit,
+        channel,
+        &metadata,
+        &outcome,
+    )
+    .await?;
     info!(%commit, state = outcome.state(), reason = outcome.reason, "recorded detected nixpkgs commit");
     Ok(())
 }
@@ -942,6 +1045,7 @@ impl DetectedOutcome {
 
 async fn store_detected(
     db: &SqlitePool,
+    data_dir: &Path,
     commit: &str,
     channel: &str,
     metadata: &FlakeMetadata,
@@ -963,35 +1067,47 @@ async fn store_detected(
             })
         })
         .transpose()?;
-    sqlx::query(
-        "INSERT INTO detected_nixpkgs_commits (
-             commit_rev, channel, last_modified, nar_hash, kernel_version, state, reason,
-             reason_details, profile, tiaris_derivations, detected_at, derived_by
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(commit_rev) DO UPDATE SET
-             kernel_version = excluded.kernel_version,
-             state = excluded.state,
-             reason = excluded.reason,
-             reason_details = excluded.reason_details,
-             profile = excluded.profile,
-             tiaris_derivations = excluded.tiaris_derivations,
-             detected_at = excluded.detected_at,
-             derived_by = excluded.derived_by",
-    )
-    .bind(commit)
-    .bind(channel)
-    .bind(last_modified)
-    .bind(&metadata.nar_hash)
-    .bind(&outcome.kernel_version)
-    .bind(outcome.state())
-    .bind(outcome.reason)
-    .bind(serde_json::to_string(&outcome.details)?)
-    .bind(profile)
-    .bind(serde_json::to_string(&outcome.tiaris_derivations)?)
-    .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-    .bind(nest_build_identity())
-    .execute(db)
-    .await?;
+    let dir = detected_dir(data_dir);
+    let _guard = crate::state_files::lock(&dir).await;
+    // A commit keeps the channel and lastModified it was first recorded with.
+    let existing = detected_row(data_dir, commit).await?;
+    let row = DetectedRow {
+        commit_rev: commit.to_string(),
+        channel: existing
+            .as_ref()
+            .map_or_else(|| channel.to_string(), |row| row.channel.clone()),
+        last_modified: existing
+            .as_ref()
+            .map_or(last_modified, |row| row.last_modified.clone()),
+        nar_hash: existing
+            .as_ref()
+            .map_or_else(|| metadata.nar_hash.clone(), |row| row.nar_hash.clone()),
+        kernel_version: outcome.kernel_version.clone(),
+        state: outcome.state().to_string(),
+        reason: outcome.reason.map(str::to_string),
+        reason_details: serde_json::to_string(&outcome.details)?,
+        profile,
+        tiaris_derivations: serde_json::to_string(&outcome.tiaris_derivations)?,
+        detected_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        derived_by: nest_build_identity(),
+    };
+    if !row.is_valid(commit) {
+        bail!("detected commit {commit} would break its record's rules");
+    }
+    crate::state_files::write(
+        &dir,
+        &format!("{commit}.json"),
+        DETECTED_SCHEMA,
+        MAX_DETECTED_RECORD_BYTES,
+        &row,
+    )?;
+    // Keep every ready commit a Blueprint job uses, then the newest.
+    let in_use = commits_in_use(db).await?;
+    let mut rows = detected_rows(data_dir).await?;
+    rows.sort_by_key(|row| !(row.state == "ready" && in_use.contains(&row.commit_rev)));
+    for stale in rows.iter().skip(MAX_DETECTED_RECORDS) {
+        crate::state_files::remove(&dir, &format!("{}.json", stale.commit_rev))?;
+    }
     Ok(())
 }
 

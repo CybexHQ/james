@@ -138,12 +138,26 @@ the `.19` development appliances. Later builds must preserve that migration
 and its checksum even when the multicast capability is unavailable, so those
 appliances can restart or upgrade without discarding their state.
 
+The SQLite schema itself is frozen at the inventory of the published releases
+(`release/sqlite-migrations.sha256`, v0.2.70 and 0.2.58-dev.9): the NixOS
+updater refuses an update whose migration inventory differs from the installed
+release's (`rollback_database_incompatible`), so `cargo test`, the tool tests
+and the `manifest` signing step reject any change to `migrations/`, and
+`verify-successor --previous-release … --current-release …` compares the two
+signed releases. A schema change needs its own update-contract design first.
+New state lives in files under the Nest state directory (`src/state_files.rs`):
+detected commits, scans and upload grants.
+
 ## Off-site software uploads
 
 A computer away from school cannot reach its Nest. For updates it may
 download off-site (Manage `docs/software-cache.md`, design section 7), Nest
 uploads what it built itself to its organization's tree of the Tiaris
-software cache (`src/software_cache_upload.rs`).
+software cache (`src/software_cache_upload.rs`). Grants and their progress are
+files under `<data_dir>/software-cache-uploads/`: the grant document as Manage
+sent it (`<id>.grant`) and its state (`<id>.state.json`), whose progress names
+items only by their index in the grant. A corrupt state restarts the grant with
+exactly its own items; a missing or altered document fails that grant.
 
 - **Capability.** Nest advertises `software_cache_upload_v1` only when
   Manage's configuration says it accepts it

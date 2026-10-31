@@ -26,15 +26,88 @@ const VSCODE_OUT: &str = "/nix/store/2222222222222222222222222222222c-vscode-1.1
 const BROKEN_OUT: &str = "/nix/store/2222222222222222222222222222222d-flaky-1.0";
 const TOKEN: &str = "tsc1.dev.1.nest.AAA";
 
-async fn pool() -> SqlitePool {
+/// The job database and a private Nest state directory, removed on drop.
+struct TestDb {
+    pool: SqlitePool,
+    data: PathBuf,
+}
+
+impl Drop for TestDb {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.data);
+    }
+}
+
+async fn pool() -> TestDb {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let pool = crate::db::connect_with_url("sqlite::memory:")
         .await
         .unwrap();
     crate::db::migrate(&pool).await.unwrap();
-    pool
+    let data = std::env::temp_dir().join(format!(
+        "tiaris-nest-findings-state-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&data);
+    TestDb { pool, data }
 }
 
-async fn insert_detected(db: &SqlitePool, commit: &str, ready: bool) {
+/// Changes the stored record of a detected commit.
+fn tamper_detected(db: &TestDb, commit: &str, change: impl FnOnce(&mut Value)) {
+    let dir = super::super::detected_dir(&db.data);
+    let name = format!("{commit}.json");
+    let mut record: Value = state_files::read(
+        &dir,
+        &name,
+        super::super::DETECTED_SCHEMA,
+        super::super::MAX_DETECTED_RECORD_BYTES,
+    )
+    .unwrap();
+    change(&mut record);
+    state_files::write(
+        &dir,
+        &name,
+        super::super::DETECTED_SCHEMA,
+        super::super::MAX_DETECTED_RECORD_BYTES,
+        &record,
+    )
+    .unwrap();
+}
+
+/// A scan record written directly, as an earlier scan would have.
+fn insert_scan(
+    db: &TestDb,
+    commit: &str,
+    revision: &str,
+    job: i64,
+    delivery: Value,
+    scanned_at: &str,
+) {
+    let record = ScanFile {
+        commit_rev: commit.into(),
+        blueprint_revision_id: revision.into(),
+        candidate_job_id: job,
+        release_job_id: None,
+        state: "succeeded".into(),
+        reason: None,
+        detail: String::new(),
+        attempts: 0,
+        advisories: Vec::new(),
+        package_delivery: serde_json::from_value(delivery).unwrap(),
+        scanned_at: scanned_at.into(),
+    };
+    state_files::write(
+        &scans_dir(&db.data),
+        &ScanFile::name(commit, revision),
+        SCAN_SCHEMA,
+        MAX_SCAN_BYTES,
+        &record,
+    )
+    .unwrap();
+}
+
+async fn insert_detected(db: &TestDb, commit: &str, ready: bool) {
     let profile = serde_json::to_string(&super::super::StoredProfile {
         schema: super::super::PROFILE_SCHEMA,
         nest_build: super::super::nest_build_identity(),
@@ -42,18 +115,27 @@ async fn insert_detected(db: &SqlitePool, commit: &str, ready: bool) {
         reviewed: ReviewedContent::default(),
     })
     .unwrap();
-    sqlx::query(
-        "INSERT INTO detected_nixpkgs_commits
-             (commit_rev, channel, last_modified, nar_hash, state, reason, profile, detected_at)
-         VALUES (?, 'nixos-26.05', '2026-10-29T17:25:25Z', ?, ?, ?, ?, '2026-10-31T03:12:00Z')",
+    let record = super::super::DetectedRow {
+        commit_rev: commit.into(),
+        channel: "nixos-26.05".into(),
+        last_modified: "2026-10-29T17:25:25Z".into(),
+        nar_hash: NAR_HASH.into(),
+        kernel_version: String::new(),
+        state: if ready { "ready" } else { "blocked" }.into(),
+        reason: (!ready).then(|| "source_build_required".into()),
+        reason_details: "[]".into(),
+        profile: ready.then_some(profile),
+        tiaris_derivations: "[]".into(),
+        detected_at: "2026-10-31T03:12:00Z".into(),
+        derived_by: String::new(),
+    };
+    state_files::write(
+        &super::super::detected_dir(&db.data),
+        &format!("{commit}.json"),
+        super::super::DETECTED_SCHEMA,
+        super::super::MAX_DETECTED_RECORD_BYTES,
+        &record,
     )
-    .bind(commit)
-    .bind(NAR_HASH)
-    .bind(if ready { "ready" } else { "blocked" })
-    .bind((!ready).then_some("source_build_required"))
-    .bind(ready.then_some(profile))
-    .execute(db)
-    .await
     .unwrap();
 }
 
@@ -70,13 +152,7 @@ fn spec(revision_id: &str, revision: i64, commit: &str, refs: &[&str]) -> Value 
     })
 }
 
-async fn insert_job(
-    db: &SqlitePool,
-    managed: &str,
-    spec: Value,
-    output: &str,
-    completed: &str,
-) -> i64 {
+async fn insert_job(db: &TestDb, managed: &str, spec: Value, output: &str, completed: &str) -> i64 {
     sqlx::query_scalar(
         "INSERT INTO nest_build_jobs
              (managed_job_id, requested_artifact_type, build_spec, target, system, status,
@@ -90,14 +166,14 @@ async fn insert_job(
     .bind(completed)
     .bind(completed)
     .bind(completed)
-    .fetch_one(db)
+    .fetch_one(&db.pool)
     .await
     .unwrap()
 }
 
-async fn name_release(db: &SqlitePool, managed: &str, release: &str) {
+async fn name_release(db: &TestDb, managed: &str, release: &str) {
     record_hint(
-        db,
+        &db.data,
         managed,
         Some(&json!({"release_blueprint_revision_id": release})),
     )
@@ -107,7 +183,7 @@ async fn name_release(db: &SqlitePool, managed: &str, release: &str) {
 
 /// The release at the pin and its candidate at the detected commit, which
 /// names the release.
-async fn release_and_candidate(db: &SqlitePool) -> (i64, i64) {
+async fn release_and_candidate(db: &TestDb) -> (i64, i64) {
     insert_detected(db, COMMIT, true).await;
     let release = insert_job(
         db,
@@ -357,10 +433,13 @@ async fn serve_cache(token: Option<&'static str>) -> String {
     format!("http://{address}")
 }
 
-async fn scan_once(db: &SqlitePool, fake: &Fake, now: chrono::DateTime<Utc>) -> bool {
-    match next_candidate(db, &[PIN.to_string()], now).await.unwrap() {
+async fn scan_once(db: &TestDb, fake: &Fake, now: chrono::DateTime<Utc>) -> bool {
+    match next_candidate(&db.pool, &db.data, &[PIN.to_string()], now)
+        .await
+        .unwrap()
+    {
         Some(candidate) => {
-            scan_and_record(db, &fake.scanner, &candidate)
+            scan_and_record(&db.pool, &db.data, &fake.scanner, &candidate)
                 .await
                 .unwrap();
             true
@@ -369,33 +448,18 @@ async fn scan_once(db: &SqlitePool, fake: &Fake, now: chrono::DateTime<Utc>) -> 
     }
 }
 
-#[derive(Debug, FromRow)]
-struct StoredScan {
-    state: String,
-    reason: Option<String>,
-    detail: String,
-    attempts: i64,
-    release_job_id: Option<i64>,
+async fn stored_scan_of(db: &TestDb, revision: &str) -> ScanFile {
+    all_scans(&db.data)
+        .into_iter()
+        .map(|(_, scan)| scan)
+        .find(|scan| scan.blueprint_revision_id == revision)
+        .unwrap()
 }
 
-async fn stored_scan_of(db: &SqlitePool, revision: &str) -> StoredScan {
-    sqlx::query_as(
-        "SELECT state, reason, detail, attempts, release_job_id FROM software_update_scans
-         WHERE blueprint_revision_id = ?",
-    )
-    .bind(revision)
-    .fetch_one(db)
-    .await
-    .unwrap()
-}
-
-async fn stored_scan(db: &SqlitePool) -> StoredScan {
-    sqlx::query_as(
-        "SELECT state, reason, detail, attempts, release_job_id FROM software_update_scans",
-    )
-    .fetch_one(db)
-    .await
-    .unwrap()
+async fn stored_scan(db: &TestDb) -> ScanFile {
+    let mut scans = all_scans(&db.data);
+    assert_eq!(scans.len(), 1);
+    scans.remove(0).1
 }
 
 #[test]
@@ -488,7 +552,7 @@ async fn scans_a_built_candidate_once_and_reports_what_it_fixes() {
     assert!(eval.contains(&format!("github:NixOS/nixpkgs/{COMMIT}?narHash=")));
     assert!(!eval.contains("bad\"ref"));
 
-    let findings = report(&db).await.unwrap();
+    let findings = report(&db.pool, &db.data).await.unwrap();
     assert_eq!(findings.len(), 1);
     let finding = &findings[0];
     assert_eq!(finding.commit, COMMIT);
@@ -527,7 +591,7 @@ async fn without_software_cache_access_uncached_packages_need_preparation() {
     fake.scanner.software_cache = None;
     release_and_candidate(&db).await;
     assert!(scan_once(&db, &fake, Utc::now()).await);
-    let finding = report(&db).await.unwrap().remove(0);
+    let finding = report(&db.pool, &db.data).await.unwrap().remove(0);
     assert_eq!(
         finding
             .package_delivery
@@ -560,7 +624,7 @@ async fn a_failed_scan_reports_nothing_and_is_retried_daily_three_times() {
         "{}",
         stored.detail
     );
-    assert!(report(&db).await.unwrap().is_empty());
+    assert!(report(&db.pool, &db.data).await.unwrap().is_empty());
 
     assert!(!scan_once(&db, &fake, start + chrono::Duration::hours(12)).await);
     assert!(scan_once(&db, &fake, start + chrono::Duration::hours(25)).await);
@@ -613,7 +677,7 @@ async fn missing_release_closures_and_derivations_fail_soft() {
         Some(REASON_CLOSURE_UNAVAILABLE)
     );
     assert!(!fake.root.join("vulnix-calls").exists());
-    assert!(report(&db).await.unwrap().is_empty());
+    assert!(report(&db.pool, &db.data).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -622,7 +686,7 @@ async fn a_candidate_without_its_release_is_skipped_until_manage_names_it() {
     let fake = fake("hint").await;
     insert_detected(&db, OLDER_COMMIT, true).await;
     let (release, _) = release_and_candidate(&db).await;
-    record_hint(&db, "candidate-job", None).await.unwrap();
+    record_hint(&db.data, "candidate-job", None).await.unwrap();
     // An earlier candidate that was never installed: never the baseline.
     let earlier = insert_job(
         &db,
@@ -632,9 +696,14 @@ async fn a_candidate_without_its_release_is_skipped_until_manage_names_it() {
         "2026-10-25T05:00:00Z",
     )
     .await;
-    sqlx::query("INSERT INTO software_update_scans (commit_rev, blueprint_revision_id, candidate_job_id, state, scanned_at) VALUES (?, ?, ?, 'succeeded', '2026-10-25T06:00:00Z')")
-        .bind(OLDER_COMMIT).bind(EARLIER_CANDIDATE).bind(earlier)
-        .execute(&db).await.unwrap();
+    insert_scan(
+        &db,
+        OLDER_COMMIT,
+        EARLIER_CANDIDATE,
+        earlier,
+        json!([]),
+        "2026-10-25T06:00:00Z",
+    );
 
     assert!(scan_once(&db, &fake, Utc::now()).await);
     let stored = stored_scan_of(&db, CANDIDATE_REVISION).await;
@@ -648,7 +717,7 @@ async fn a_candidate_without_its_release_is_skipped_until_manage_names_it() {
     );
     assert!(!fake.root.join("vulnix-calls").exists());
     assert!(
-        report(&db)
+        report(&db.pool, &db.data)
             .await
             .unwrap()
             .iter()
@@ -669,11 +738,11 @@ async fn a_candidate_without_its_release_is_skipped_until_manage_names_it() {
 
     // A named release this Nest has not built is a retried failure.
     name_release(&db, "earlier-job", "aaaaaaaa-bbbb-4ccc-8ddd-000000000009").await;
-    sqlx::query("DELETE FROM software_update_scans WHERE blueprint_revision_id = ?")
-        .bind(EARLIER_CANDIDATE)
-        .execute(&db)
-        .await
-        .unwrap();
+    state_files::remove(
+        &scans_dir(&db.data),
+        &ScanFile::name(OLDER_COMMIT, EARLIER_CANDIDATE),
+    )
+    .unwrap();
     assert!(scan_once(&db, &fake, Utc::now()).await);
     let stored = stored_scan_of(&db, EARLIER_CANDIDATE).await;
     assert_eq!(
@@ -704,7 +773,12 @@ async fn both_closures_are_judged_by_the_same_nvd_database() {
         })
         .collect::<Vec<_>>();
     assert_eq!(scanned, ["release", "candidate", "release"]);
-    assert_eq!(report(&db).await.unwrap()[0].advisories.len(), 5);
+    assert_eq!(
+        report(&db.pool, &db.data).await.unwrap()[0]
+            .advisories
+            .len(),
+        5
+    );
 
     // A database that keeps changing gives no finding.
     let db = pool().await;
@@ -725,23 +799,19 @@ async fn a_build_that_starts_defers_the_scan_without_recording_it() {
     let db = pool().await;
     let fake = fake("deferred").await;
     release_and_candidate(&db).await;
-    let candidate = next_candidate(&db, &[PIN.to_string()], Utc::now())
+    let candidate = next_candidate(&db.pool, &db.data, &[PIN.to_string()], Utc::now())
         .await
         .unwrap()
         .unwrap();
     sqlx::query("INSERT INTO nest_build_jobs (requested_artifact_type, status, created_at, updated_at) VALUES ('nixos_closure', 'running', '2026-10-31T06:00:00Z', '2026-10-31T06:00:00Z')")
-        .execute(&db).await.unwrap();
+        .execute(&db.pool).await.unwrap();
     assert!(
-        !scan_and_record(&db, &fake.scanner, &candidate)
+        !scan_and_record(&db.pool, &db.data, &fake.scanner, &candidate)
             .await
             .unwrap()
     );
     assert!(!fake.root.join("vulnix-calls").exists());
-    let scans: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM software_update_scans")
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    assert_eq!(scans, 0);
+    assert!(all_scans(&db.data).is_empty());
 }
 
 #[tokio::test]
@@ -753,7 +823,7 @@ async fn package_lookups_survive_one_bad_ref_and_retry_when_nothing_is_decided()
     // the bad one is left out.
     std::fs::write(fake.root.join("fail-batch"), "").unwrap();
     assert!(scan_once(&db, &fake, Utc::now()).await);
-    let finding = report(&db).await.unwrap().remove(0);
+    let finding = report(&db.pool, &db.data).await.unwrap().remove(0);
     assert_eq!(
         finding
             .package_delivery
@@ -775,7 +845,7 @@ async fn package_lookups_survive_one_bad_ref_and_retry_when_nothing_is_decided()
         (stored.state.as_str(), stored.reason.as_deref()),
         ("failed", Some(REASON_PACKAGE_STATUS_UNAVAILABLE))
     );
-    assert!(report(&db).await.unwrap().is_empty());
+    assert!(report(&db.pool, &db.data).await.unwrap().is_empty());
     assert!(scan_once(&db, &fake, start + chrono::Duration::hours(25)).await);
 }
 
@@ -812,16 +882,20 @@ async fn only_blueprint_jobs_at_ready_detected_commits_are_candidates() {
     )
     .await;
     assert!(
-        next_candidate(&db, &[PIN.to_string()], Utc::now())
+        next_candidate(&db.pool, &db.data, &[PIN.to_string()], Utc::now())
             .await
             .unwrap()
             .is_none()
     );
     // A ready commit whose profile another Nest build derived admits nothing.
-    sqlx::query("UPDATE detected_nixpkgs_commits SET state = 'ready', reason = NULL, profile = '{\"schema\":0,\"nest_build\":\"old\",\"identities\":{},\"reviewed\":{}}' WHERE commit_rev = ?")
-        .bind(COMMIT).execute(&db).await.unwrap();
+    tamper_detected(&db, COMMIT, |record| {
+        record["state"] = json!("ready");
+        record["reason"] = Value::Null;
+        record["profile"] =
+            json!(r#"{"schema":0,"nest_build":"old","identities":{},"reviewed":{}}"#);
+    });
     assert!(
-        next_candidate(&db, &[PIN.to_string()], Utc::now())
+        next_candidate(&db.pool, &db.data, &[PIN.to_string()], Utc::now())
             .await
             .unwrap()
             .is_none()
@@ -843,11 +917,16 @@ async fn the_report_shares_package_status_per_commit_and_drops_stale_scans() {
         "2026-10-31T06:00:00Z",
     )
     .await;
-    sqlx::query("INSERT INTO software_update_scans (commit_rev, blueprint_revision_id, candidate_job_id, state, package_delivery, scanned_at) VALUES (?, ?, ?, 'succeeded', ?, '2999-01-01T00:00:00Z')")
-        .bind(COMMIT).bind(EARLIER_CANDIDATE).bind(other)
-        .bind(json!([{"ref": "libreoffice", "status": "public_cache"}, {"ref": "vscode", "status": "software_cache"}]).to_string())
-        .execute(&db).await.unwrap();
-    let findings = report(&db).await.unwrap();
+    insert_scan(
+        &db,
+        COMMIT,
+        EARLIER_CANDIDATE,
+        other,
+        json!([{"ref": "libreoffice", "status": "public_cache"},
+               {"ref": "vscode", "status": "software_cache"}]),
+        "2999-01-01T00:00:00Z",
+    );
+    let findings = report(&db.pool, &db.data).await.unwrap();
     assert_eq!(findings.len(), 2);
     assert_eq!(findings[0].blueprint_revision_id, EARLIER_CANDIDATE);
     for finding in &findings {
@@ -870,18 +949,16 @@ async fn the_report_shares_package_status_per_commit_and_drops_stale_scans() {
     // takes its scan with it.
     sqlx::query("DELETE FROM nest_build_jobs WHERE id = ?")
         .bind(candidate)
-        .execute(&db)
+        .execute(&db.pool)
         .await
         .unwrap();
-    prune(&db).await.unwrap();
-    assert_eq!(report(&db).await.unwrap().len(), 1);
-    sqlx::query(
-        "UPDATE detected_nixpkgs_commits SET state = 'blocked', reason = 'evaluation_failed'",
-    )
-    .execute(&db)
-    .await
-    .unwrap();
-    assert!(report(&db).await.unwrap().is_empty());
+    prune(&db.pool, &db.data).await.unwrap();
+    assert_eq!(report(&db.pool, &db.data).await.unwrap().len(), 1);
+    tamper_detected(&db, COMMIT, |record| {
+        record["state"] = json!("blocked");
+        record["reason"] = json!("evaluation_failed");
+    });
+    assert!(report(&db.pool, &db.data).await.unwrap().is_empty());
 }
 
 #[test]
@@ -953,4 +1030,92 @@ async fn real_vulnix_scans_a_store_closure() {
             .all(|advisory| valid_advisory_id(&advisory.id))
     );
     eprintln!("{} advisories", advisories.len());
+}
+
+#[tokio::test]
+async fn corrupt_scan_and_hint_records_are_ignored_and_rewritten() {
+    let db = pool().await;
+    let fake = fake("corrupt-records").await;
+    release_and_candidate(&db).await;
+    assert!(scan_once(&db, &fake, Utc::now()).await);
+    let name = ScanFile::name(COMMIT, CANDIDATE_REVISION);
+    let path = scans_dir(&db.data).join(&name);
+    // A torn or garbage scan is no scan: the candidate is scanned again.
+    std::fs::write(
+        &path,
+        b"{\"schema\":\"tiaris.nest.software-update-scan.v1\",",
+    )
+    .unwrap();
+    assert!(report(&db.pool, &db.data).await.unwrap().is_empty());
+    assert!(scan_once(&db, &fake, Utc::now()).await);
+    assert_eq!(report(&db.pool, &db.data).await.unwrap().len(), 1);
+    // A scan that breaks its rules is ignored as well.
+    let mut record: Value =
+        state_files::read(&scans_dir(&db.data), &name, SCAN_SCHEMA, MAX_SCAN_BYTES).unwrap();
+    record["state"] = json!("succeeded");
+    record["reason"] = json!("scan_failed");
+    state_files::write(
+        &scans_dir(&db.data),
+        &name,
+        SCAN_SCHEMA,
+        MAX_SCAN_BYTES,
+        &record,
+    )
+    .unwrap();
+    assert!(report(&db.pool, &db.data).await.unwrap().is_empty());
+    // Corrupt hints name no release: the candidate is skipped, not compared
+    // against a guess.
+    std::fs::write(
+        super::super::state_dir(&db.data).join(HINTS_FILE),
+        b"not json",
+    )
+    .unwrap();
+    assert!(read_hints(&db.data).is_empty());
+    assert!(scan_once(&db, &fake, Utc::now()).await);
+    assert_eq!(
+        stored_scan(&db).await.reason.as_deref(),
+        Some(REASON_MISSING_RELEASE_HINT)
+    );
+}
+
+#[tokio::test]
+async fn scan_records_are_bounded_and_hints_follow_their_jobs() {
+    let db = pool().await;
+    let job = insert_job(
+        &db,
+        "kept-job",
+        spec(CANDIDATE_REVISION, 4, COMMIT, &[]),
+        CANDIDATE_OUT,
+        "2026-10-31T05:00:00Z",
+    )
+    .await;
+    for index in 0..MAX_SCAN_RECORDS + 3 {
+        insert_scan(
+            &db,
+            COMMIT,
+            &format!("aaaaaaaa-bbbb-4ccc-8ddd-{index:012}"),
+            job,
+            json!([]),
+            &format!("2026-10-31T{:02}:{:02}:00Z", index / 60 % 24, index % 60),
+        );
+    }
+    // Scans of a job Nest no longer holds go at once.
+    insert_scan(
+        &db,
+        COMMIT,
+        CANDIDATE_REVISION,
+        job + 100,
+        json!([]),
+        "2026-10-31T23:59:00Z",
+    );
+    name_release(&db, "kept-job", RELEASE_REVISION).await;
+    name_release(&db, "gone-job", RELEASE_REVISION).await;
+    prune(&db.pool, &db.data).await.unwrap();
+    let scans = all_scans(&db.data);
+    assert_eq!(scans.len(), MAX_SCAN_RECORDS);
+    assert!(scans.iter().all(|(_, scan)| scan.candidate_job_id == job));
+    assert_eq!(
+        read_hints(&db.data).keys().collect::<Vec<_>>(),
+        ["kept-job"]
+    );
 }
