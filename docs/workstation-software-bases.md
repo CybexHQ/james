@@ -100,10 +100,15 @@ commit, anchored on what the Nest already admitted at its release pin.
   replaces that.
 - **Tiaris packages.** Manage's `tiaris-workstation-cache-seeds.nix` (agent,
   gsettings helpers, patched Avahi), evaluated with the commit's nixpkgs and
-  the Tiaris source shipped with this Nest (`system-identity.json`). Only
-  these top-level derivations may compile at the commit. Every other input
-  of theirs (vendored crates, patches, generated schemas) must be cached or
-  admitted by the ordinary rules.
+  the Tiaris source shipped with this Nest (`system-identity.json`), never
+  from Blueprint input, is dry-run in an isolated store. Its local build
+  closure may compile at the commit: the top-level packages and every local
+  derivation they reach (vendored crates, per-crate builds, patches,
+  generated schemas). At most 256 derivations
+  (`MAX_TIARIS_PACKAGE_DERIVATIONS`); a larger closure blocks the commit with
+  `source_build_required`. Fixed-output derivations are not admitted by
+  membership: they must pass the ordinary fetch rule. Local work the
+  closure does not reach is not admitted.
 - **Readiness.** Every reference job is dry-run again at the commit with the
   full profile:
   - `blocked`, `build_script_changed`: a local script with no pin
@@ -128,12 +133,12 @@ commit, anchored on what the Nest already admitted at its release pin.
   use the pin's providers in place of the commit's.
 
 The first real channel commit, 6f06d204 (2026-10-29), evaluated with the
-pin's Nix 2.34.7 and the Taskbar compiler export as the reference job:
-107 counterparts, among them changed `etc`, `system-units`, `user-units`,
-`udev-rules`, `fc-cache`, Firefox and the system closure (package version
-bumps and a new `gnome-session-monitor` user unit). It is blocked only by
-`tiaris-observer-shell-schemas`, the gsettings helper's schema input: it
-compiles at the commit, and it is not a top-level Tiaris package.
+pin's Nix 2.34.7 and the Taskbar compiler export as the reference job, is
+`ready`: 107 counterparts, among them changed `etc`, `system-units`,
+`user-units`, `udev-rules`, `fc-cache`, Firefox and the system closure
+(package version bumps and a new `gnome-session-monitor` user unit), and a
+Tiaris package closure of 35 derivations (its 6 crate tarballs pass the
+fetch rule).
 
 ## Publishing a base
 

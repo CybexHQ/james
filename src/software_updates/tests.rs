@@ -14,6 +14,8 @@ const WRAPPER_DRV: &str = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-tiaris-pa
 const FIREFOX_DRV: &str = "/nix/store/cccccccccccccccccccccccccccccccc-firefox-unwrapped-145.0.drv";
 const UNITS_DRV: &str = "/nix/store/dddddddddddddddddddddddddddddddd-system-units.drv";
 const VENDOR_DRV: &str = "/nix/store/ffffffffffffffffffffffffffffffff-cargo-vendor-dir.drv";
+const STAGING_DRV: &str =
+    "/nix/store/gggggggggggggggggggggggggggggggg-tiaris-agent-vendor-staging.drv";
 
 async fn pool() -> SqlitePool {
     let pool = crate::db::connect_with_url("sqlite::memory:")
@@ -116,6 +118,24 @@ fn fake_nix_with(
     tiaris_listing: &[&str],
     agent_inputs: &[&str],
 ) -> FakeNix {
+    fake_nix_full(
+        name,
+        identities,
+        blueprint_listing,
+        tiaris_listing,
+        agent_inputs,
+        json!({}),
+    )
+}
+
+fn fake_nix_full(
+    name: &str,
+    identities: Option<Value>,
+    blueprint_listing: &[&str],
+    tiaris_listing: &[&str],
+    agent_inputs: &[&str],
+    extra_derivations: Value,
+) -> FakeNix {
     let root = std::env::temp_dir().join(format!(
         "tiaris-nest-software-updates-{name}-{}",
         std::process::id()
@@ -150,13 +170,21 @@ fn fake_nix_with(
         .into();
     let mut list = compile(WRAPPER_DRV);
     list["inputDrvs"] = json!({ AGENT_DRV: ["out"] });
-    let derivations = json!({
+    // A fixed-output fetch whose builder is not `builtin:fetchurl`.
+    let mut staging = compile(STAGING_DRV);
+    staging["outputs"] = json!({"out": {"path": "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-staging",
+        "method": "nar", "hashAlgo": "sha256", "hash": "0".repeat(64)}});
+    let mut derivations = json!({
         AGENT_DRV: agent,
         WRAPPER_DRV: list,
+        STAGING_DRV: staging,
         VENDOR_DRV: compile(VENDOR_DRV),
         FIREFOX_DRV: compile(FIREFOX_DRV),
         UNITS_DRV: changed_script(),
     });
+    for (path, drv) in extra_derivations.as_object().unwrap() {
+        derivations[path] = drv.clone();
+    }
     std::fs::write(root.join("derivations.json"), derivations.to_string()).unwrap();
     let script = format!(
         r#"#!/bin/sh
@@ -301,20 +329,85 @@ async fn a_changed_builder_file_no_admitted_derivation_uses_does_not_block() {
 }
 
 #[tokio::test]
-async fn only_the_top_level_tiaris_packages_compile() {
-    // The agent's vendored crates are local work too. They are not a Tiaris
-    // package: they must be cached or admitted by the ordinary rules.
+async fn the_tiaris_packages_build_closure_compiles() {
+    // The agent's vendored crates are local work of the Tiaris packages'
+    // closure, from the shipped Tiaris source and the commit's nixpkgs.
     let fake = fake_nix_with(
-        "tiaris-inputs",
+        "tiaris-closure",
         Some(evaluated_identities("26.05", &[])),
         &[AGENT_DRV, VENDOR_DRV],
         &[AGENT_DRV, VENDOR_DRV, WRAPPER_DRV],
         &[VENDOR_DRV],
     );
     let outcome = evaluate(&fake).await.unwrap();
+    assert_eq!(outcome.state(), "ready");
+    assert_eq!(outcome.tiaris_closure_size, 2);
+    assert_eq!(
+        outcome.tiaris_derivations,
+        BTreeSet::from([AGENT_DRV.to_string(), VENDOR_DRV.to_string()])
+    );
+}
+
+#[tokio::test]
+async fn fixed_output_derivations_of_the_closure_need_the_fetch_rules() {
+    let fake = fake_nix_with(
+        "tiaris-fixed-output",
+        Some(evaluated_identities("26.05", &[])),
+        &[AGENT_DRV, STAGING_DRV],
+        &[AGENT_DRV, STAGING_DRV, WRAPPER_DRV],
+        &[STAGING_DRV],
+    );
+    let outcome = evaluate(&fake).await.unwrap();
     assert_eq!(outcome.reason, Some(REASON_SOURCE_BUILD_REQUIRED));
-    assert_eq!(outcome.details, vec!["cargo-vendor-dir"]);
-    assert_eq!(outcome.tiaris_dependencies, vec!["cargo-vendor-dir"]);
+    assert_eq!(outcome.details, vec!["tiaris-agent-vendor-staging"]);
+}
+
+#[tokio::test]
+async fn local_work_outside_the_tiaris_closure_stays_blocked() {
+    // The seeds' dry run also lists a compile no Tiaris package reaches.
+    let fake = fake_nix_with(
+        "tiaris-outside",
+        Some(evaluated_identities("26.05", &[])),
+        &[AGENT_DRV, FIREFOX_DRV],
+        &[AGENT_DRV, FIREFOX_DRV, WRAPPER_DRV],
+        &[],
+    );
+    let outcome = evaluate(&fake).await.unwrap();
+    assert_eq!(outcome.reason, Some(REASON_SOURCE_BUILD_REQUIRED));
+    assert_eq!(outcome.details, vec!["firefox-unwrapped-145.0"]);
+}
+
+#[tokio::test]
+async fn a_tiaris_closure_over_the_bound_blocks_the_commit() {
+    let crates = (0..build::MAX_TIARIS_PACKAGE_DERIVATIONS)
+        .map(|index| {
+            format!(
+                "/nix/store/{}-crate-{index}.drv",
+                format!("{index:0>32}").replace('e', "f")
+            )
+        })
+        .collect::<Vec<_>>();
+    let extra = crates
+        .iter()
+        .map(|path| (path.clone(), compile(path)))
+        .collect::<serde_json::Map<_, _>>();
+    let mut listing = vec![AGENT_DRV, WRAPPER_DRV];
+    listing.extend(crates.iter().map(String::as_str));
+    let fake = fake_nix_full(
+        "tiaris-bound",
+        Some(evaluated_identities("26.05", &[])),
+        &[AGENT_DRV],
+        &listing,
+        &crates.iter().map(String::as_str).collect::<Vec<_>>(),
+        Value::Object(extra),
+    );
+    let outcome = evaluate(&fake).await.unwrap();
+    assert_eq!(outcome.reason, Some(REASON_SOURCE_BUILD_REQUIRED));
+    assert_eq!(
+        outcome.tiaris_closure_size,
+        build::MAX_TIARIS_PACKAGE_DERIVATIONS + 1
+    );
+    assert_eq!(outcome.details.len(), 50);
 }
 
 #[tokio::test]
@@ -730,13 +823,13 @@ async fn real_channel_commit_evaluation() {
         .unwrap();
     let _ = std::fs::remove_dir_all(&config.build.work_dir);
     eprintln!(
-        "state={} reason={:?} kernel={} tiaris_derivations={:#?}\ndetails={:#?}\ntiaris_dependencies={:#?}\ncounterparts={:#?}\nreviewed fingerprints={} stock commands={} builder files={:?}",
+        "state={} reason={:?} kernel={} tiaris_closure={} tiaris_derivations={:#?}\ndetails={:#?}\ncounterparts={:#?}\nreviewed fingerprints={} stock commands={} builder files={:?}",
         outcome.state(),
         outcome.reason,
         outcome.kernel_version,
+        outcome.tiaris_closure_size,
         outcome.tiaris_derivations,
         outcome.details,
-        outcome.tiaris_dependencies,
         outcome.counterparts,
         outcome.reviewed.fingerprints.len(),
         outcome.reviewed.stock_commands.len(),

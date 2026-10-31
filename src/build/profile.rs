@@ -57,8 +57,9 @@ pub(crate) fn nixos_version_label(last_modified: i64, commit: &str) -> Option<St
     ))
 }
 
-/// Upper bound on the Tiaris package derivations one detected commit admits.
-pub(crate) const MAX_TIARIS_PACKAGE_DERIVATIONS: usize = 512;
+/// Upper bound on the local derivations of the Tiaris packages' build
+/// closure one detected commit admits; a larger closure blocks the commit.
+pub(crate) const MAX_TIARIS_PACKAGE_DERIVATIONS: usize = 256;
 
 /// `nixos-init`'s executables appear in reviewed `/etc` and service-link
 /// scripts; no check names the path itself, so it is a fingerprint-only

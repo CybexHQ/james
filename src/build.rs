@@ -2822,6 +2822,22 @@ pub(crate) fn store_path_item(path: &str) -> Option<&str> {
         .flatten()
 }
 
+/// A fixed-output derivation: an output with a declared content hash.
+pub(crate) fn derivation_is_fixed_output(drv: &Value) -> bool {
+    drv.get("outputs")
+        .and_then(Value::as_object)
+        .is_some_and(|outputs| {
+            outputs.values().any(|output| {
+                ["hash", "hashAlgo", "method"].iter().any(|key| {
+                    output
+                        .get(*key)
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.is_empty())
+                })
+            })
+        })
+}
+
 /// A local materializer run by the profile's stdenv shell (NixOS generator
 /// scripts, link farms, substitutions). When the profile does not admit one,
 /// its reviewed script or builder content changed: it is not a compile.

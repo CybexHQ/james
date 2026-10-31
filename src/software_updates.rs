@@ -621,8 +621,8 @@ struct DetectedOutcome {
     /// Content derived from counterparts; stored only for ready commits.
     reviewed: ReviewedContent,
     counterparts: Option<build::Counterparts>,
-    /// Local work of the Tiaris packages besides their own derivations.
-    tiaris_dependencies: Vec<String>,
+    /// Local derivations of the Tiaris packages' build closure.
+    tiaris_closure_size: usize,
 }
 
 impl DetectedOutcome {
@@ -645,7 +645,7 @@ impl DetectedOutcome {
             tiaris_derivations: BTreeSet::new(),
             reviewed: ReviewedContent::default(),
             counterparts: None,
-            tiaris_dependencies: Vec::new(),
+            tiaris_closure_size: 0,
         }
     }
 }
@@ -821,7 +821,8 @@ async fn evaluate_commit_in(
         )
     };
 
-    // Tiaris packages: only the top-level derivations themselves may compile.
+    // Tiaris packages: the local build closure of the top-level packages,
+    // from the shipped Tiaris source and this commit's nixpkgs only.
     let tiaris = match build::unadmitted_local_derivations(
         config,
         &installable(&commit_flake, "tiaris-packages"),
@@ -839,25 +840,28 @@ async fn evaluate_commit_in(
             ));
         }
     };
-    let (tiaris_derivations, tiaris_dependencies) =
-        top_level_tiaris_packages(&tiaris, &evaluated.identities);
-    if !tiaris_dependencies.is_empty() {
-        info!(
-            %commit,
-            dependencies = ?tiaris_dependencies,
-            "Tiaris package inputs that are neither cached nor top-level must be admitted by the ordinary rules"
-        );
-    }
-    if tiaris_derivations.len() > MAX_TIARIS_PACKAGE_DERIVATIONS {
-        return Ok(DetectedOutcome::blocked(
+    let closure = tiaris_package_closure(&tiaris, &evaluated.identities);
+    info!(
+        %commit,
+        admitted = closure.admitted.len(),
+        fixed_output = ?closure.fixed_output,
+        "evaluated the Tiaris packages' local build closure"
+    );
+    if closure.admitted.len() > MAX_TIARIS_PACKAGE_DERIVATIONS {
+        let mut outcome = DetectedOutcome::blocked(
             kernel,
             REASON_SOURCE_BUILD_REQUIRED,
-            tiaris_derivations
+            closure
+                .admitted
                 .iter()
                 .map(|path| derivation_display_name(path))
                 .collect(),
-        ));
+        );
+        outcome.tiaris_closure_size = closure.admitted.len();
+        return Ok(outcome);
     }
+    let tiaris_derivations = closure.admitted;
+    let tiaris_closure_size = tiaris_derivations.len();
     let base = WorkstationBuildProfile::derived(
         commit,
         metadata.last_modified,
@@ -983,42 +987,68 @@ async fn evaluate_commit_in(
         outcome.reviewed = content;
     }
     outcome.counterparts = Some(counterparts);
-    outcome.tiaris_dependencies = tiaris_dependencies;
+    outcome.tiaris_closure_size = tiaris_closure_size;
     Ok(outcome)
 }
 
-/// The Tiaris packages' own derivations (the inputs of the `tiaris-packages`
-/// list that are not commit identities) among the local work, and the names
-/// of the other local work their dry run lists: inputs that must be cached
-/// or admitted by the ordinary rules.
-fn top_level_tiaris_packages(
+/// The Tiaris packages' local build closure in the dry run of the
+/// `tiaris-packages` list.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct TiarisClosure {
+    /// The top-level packages (the list's inputs that are not commit
+    /// identities) and every local, non-fixed-output derivation they reach.
+    admitted: BTreeSet<String>,
+    /// Fixed-output derivations of the closure: left to the fetch rules.
+    fixed_output: Vec<String>,
+}
+
+fn tiaris_package_closure(
     dry_run: &build::UnadmittedDerivations,
     identities: &BTreeMap<String, DerivedIdentity>,
-) -> (BTreeSet<String>, Vec<String>) {
+) -> TiarisClosure {
     let identity_drvs = identities
         .values()
         .filter_map(|identity| identity.drv.as_deref())
         .collect::<BTreeSet<_>>();
     let local = dry_run.would_build.iter().collect::<BTreeSet<_>>();
-    let list = dry_run
+    let inputs = |path: &str| {
+        dry_run
+            .derivations
+            .get(path)
+            .and_then(build::derivation_input_drvs)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(input, _)| input)
+            .filter(|input| local.contains(input) && !identity_drvs.contains(input.as_str()))
+            .collect::<Vec<_>>()
+    };
+    let Some(list) = dry_run
         .would_build
         .iter()
-        .find(|path| path.ends_with("-tiaris-packages.drv"));
-    let top_level = list
-        .and_then(|path| dry_run.derivations.get(path))
-        .and_then(build::derivation_input_drvs)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(path, _)| path)
-        .filter(|path| local.contains(path) && !identity_drvs.contains(path.as_str()))
-        .collect::<BTreeSet<_>>();
-    let dependencies = dry_run
-        .would_build
-        .iter()
-        .filter(|path| Some(*path) != list && !top_level.contains(*path))
-        .map(|path| derivation_display_name(path))
-        .collect();
-    (top_level, dependencies)
+        .find(|path| path.ends_with("-tiaris-packages.drv"))
+    else {
+        return TiarisClosure::default();
+    };
+    let mut closure = TiarisClosure::default();
+    let mut seen = BTreeSet::new();
+    let mut pending = inputs(list);
+    while let Some(path) = pending.pop() {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        if dry_run
+            .derivations
+            .get(&path)
+            .is_some_and(build::derivation_is_fixed_output)
+        {
+            closure.fixed_output.push(derivation_display_name(&path));
+            continue;
+        }
+        pending.extend(inputs(&path));
+        closure.admitted.insert(path);
+    }
+    closure.fixed_output.sort();
+    closure
 }
 
 fn decide(
@@ -1046,7 +1076,7 @@ fn decide(
         tiaris_derivations,
         reviewed: ReviewedContent::default(),
         counterparts: None,
-        tiaris_dependencies: Vec::new(),
+        tiaris_closure_size: 0,
     }
 }
 
