@@ -85,13 +85,17 @@ not the configured target's (`target_not_allowed`).
 
 Supporting more than one commit therefore needs, in this order:
 
-1. **Per-commit build profiles.** Move the 88 commit-specific constants
-   (`TRUSTED_*`, `PINNED_*`, the reviewed tool-input lists and
-   `PINNED_DESKTOP_NIXOS_GENERATOR_FINGERPRINTS`) into a
-   `ReviewedWorkstationPin` value per commit, select it from
-   `spec.nixpkgs_commit`, and pass it to the about twenty preflight functions
-   that use them. The existing values become the `74cc63f` profile unchanged,
-   so current builds keep exactly today's checks.
+1. **Per-commit build profiles.** Done: the preflight asks a
+   `WorkstationBuildProfile` (`src/build/profile.rs`), selected from
+   `spec.nixpkgs_commit`, for every commit identity: the stdenv variants and
+   bash, the link-farm and substitution builders, the reviewed tool inputs and
+   the security-wrapper include path (`COMMIT_IDENTITIES`). Checks name each
+   identity by its `74cc63f` path; the built-in profile returns those bytes
+   unchanged, and a path outside the table never matches. Reviewed content
+   stays commit-independent: store-normalized fingerprints, stock commands
+   and the builder file hashes. A profile fingerprints a script as the
+   reviewed script it renders, so its executable-pinned half admits exactly
+   that commit's tool providers.
 2. **Admission per profile.** Write one governed Blueprint target per reviewed
    profile (`governed_blueprint_build_target`, `storage::nest_config` and the
    appliance update path that preserves `config.toml`), so
