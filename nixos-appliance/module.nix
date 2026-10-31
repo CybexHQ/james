@@ -50,11 +50,17 @@ in {
       # Blueprint builds need upstream binary dependencies. Appliance imports
       # separately verify every NAR against the release key and disable remote
       # substitution explicitly; recovery media retains release-only trust.
-      substituters = lib.mkForce [ "https://cache.nixos.org" ];
+      # The Tiaris software cache serves what cache.nixos.org does not build
+      # (unfree apps, NVIDIA, directory sign-in); Manage supplies its access
+      # token, which src/software_cache.rs writes to the netrc file. Without it
+      # the cache answers 401, which Nix treats as "not here".
+      substituters = lib.mkForce [ "https://cache.nixos.org" "https://cache.tiaris.com" ];
       trusted-public-keys = lib.mkForce [
         "tiaris-nest-appliance-1:${a.releasePublicKey}"
         "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+        "cache.tiaris.com-1:xIrpkpeFBAzhhUQojSWqkpAWTwGoW4HtUEtHAcd4taY="
       ];
+      netrc-file = "/var/lib/tiaris-nest/state/agent/software-cache.netrc";
       require-sigs = true;
       experimental-features = [ "nix-command" "flakes" ]; # existing Blueprint jobs use governed flakes
       auto-optimise-store = false; # source exposure explicitly preserves nlink=1
