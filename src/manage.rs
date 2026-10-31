@@ -1036,7 +1036,7 @@ async fn apply_nest_desired(
     }
     // Its own lane: an unusable channel or request only stops update checks.
     if let Err(error) = crate::software_updates::apply_managed(
-        &state.db,
+        &state.config.paths.data_dir,
         desired.software_update_channel.as_ref(),
         desired.software_update_check_requested_at.as_ref(),
     )
@@ -1139,7 +1139,7 @@ async fn apply_nest_desired(
             match sync {
                 Ok(_) => {
                     if let Err(error) = crate::software_updates::findings::record_hint(
-                        &state.db,
+                        &state.config.paths.data_dir,
                         &job.id,
                         job.software_update.as_ref(),
                     )
@@ -1449,8 +1449,7 @@ async fn report_nest_state(
     .take(MAX_REPORT_CACHE_ARTIFACTS)
     .collect();
     let software_cache_uploads = if peer_accepts_uploads {
-        crate::software_cache_upload::report(&state.db)
-            .await
+        crate::software_cache_upload::report(&state.config.paths.data_dir)
             .inspect_err(|error| {
                 warn!(error = %error, "could not read software cache uploads");
             })
@@ -1467,23 +1466,24 @@ async fn report_nest_state(
         software_update_checked_at,
         software_update_findings,
     ) = if report_protocol >= TIARIS_DETECTED_COMMITS_PROTOCOL_VERSION {
-        let detected = crate::software_updates::report(&state.db)
+        let detected = crate::software_updates::report(&state.db, &state.config.paths.data_dir)
             .await
             .inspect_err(|error| {
                 warn!(error = %error, "could not read detected nixpkgs commits");
             })
             .ok();
-        let checked_at = crate::software_updates::checked_at(&state.db)
+        let checked_at = crate::software_updates::checked_at(&state.config.paths.data_dir)
             .await
             .ok()
             .flatten();
-        let findings = crate::software_updates::findings::report(&state.db)
-            .await
-            .inspect_err(|error| {
-                warn!(error = %error, "could not read software update findings");
-            })
-            .ok()
-            .filter(|findings| !findings.is_empty());
+        let findings =
+            crate::software_updates::findings::report(&state.db, &state.config.paths.data_dir)
+                .await
+                .inspect_err(|error| {
+                    warn!(error = %error, "could not read software update findings");
+                })
+                .ok()
+                .filter(|findings| !findings.is_empty());
         (
             crate::software_updates::workstation_nixpkgs_commits(state).await,
             detected,

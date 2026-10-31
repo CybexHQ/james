@@ -143,6 +143,19 @@ admits.
   reported `blocked`, `rederivation_pending`, and left out of
   `workstation_nixpkgs_commits`, until Nest derives it again (at startup
   after an update, then at most two per check).
+- **Where it is kept.** Not in SQLite: NixOS appliances refuse an update
+  whose migration inventory differs from the installed release's, so the
+  schema stays that of the published releases (`release/sqlite-migrations.sha256`).
+  Each commit is one record `software-updates/detected/<commit>.json` and the
+  check state `software-updates/check-state.json` under the Nest state
+  directory (`/var/lib/tiaris-nest/state/agent`), written atomically (0600,
+  never through a link, size-bounded, `{schema, version, data}`;
+  `src/state_files.rs`). A record that is missing, corrupt, or breaks a rule
+  the old table enforced (state, reason, profile present when ready, its own
+  commit) is treated as absent: the commit is evaluated again and admits
+  nothing meanwhile. A stored profile is validated as strictly as before when
+  it is used. At most 64 records are kept: every ready commit a Blueprint job
+  uses, then the newest.
 - **Admission.** A Blueprint job is admitted at the release pin or at a ready
   detected commit (`target_not_allowed` otherwise). A job without a
   Blueprint is admitted at its target flake's nixpkgs pin, and a
@@ -216,9 +229,13 @@ it (`src/software_updates/findings.rs`, Manage design section 4):
 - **Once per candidate.** One scan per commit and Blueprint revision. A
   failure (`release_closure_unavailable`, `closure_unavailable`,
   `derivations_unavailable`, `scan_failed`, `package_status_unavailable`) is
-  logged and kept with its detail
-  in `software_update_scans`; it produces no finding and never blocks a
-  build. It is retried at most daily, three attempts in all.
+  logged and kept with its detail in its scan record
+  (`software-updates/scans/<commit>.<revision>.json`, next to
+  `software-updates/candidate-hints.json` with the releases Manage named);
+  it produces no finding and never blocks a build. It is retried at most
+  daily, three attempts in all. A corrupt scan record is no scan: the
+  candidate is scanned again. Scans of jobs Nest no longer holds are removed,
+  and at most 1024 are kept.
 
 To a protocol-5 Tiaris each report carries the successful scans of
 candidates Nest still holds at commits it reports ready, newest first (at most

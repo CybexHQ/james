@@ -537,14 +537,17 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
     .await?;
     // A Blueprint at a ready detected commit builds with that commit's
     // derived profile and narHash-pinned nixpkgs. Storage errors fail closed:
-    // without the record only the release pin is admitted.
+    // without a valid record only the release pin is admitted.
     let detected = match (spec.build_input.as_ref(), spec.nixpkgs_commit.as_deref()) {
-        (Some(_), Some(commit)) => crate::software_updates::ready_commit(&state.db, commit)
-            .await
-            .unwrap_or_else(|error| {
-                warn!(job_id = job.id, error = %error, "could not read detected nixpkgs commits");
-                None
-            }),
+        (Some(_), Some(commit)) => crate::software_updates::ready_commit(
+            &state.config.paths.data_dir,
+            commit,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            warn!(job_id = job.id, error = %error, "could not read detected nixpkgs commits");
+            None
+        }),
         _ => None,
     };
     let (target, admitted_commit) = match admit_build_target(

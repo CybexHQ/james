@@ -1102,6 +1102,39 @@ class NestReleaseToolTests(unittest.TestCase):
         )
         self.assertEqual(accepted.returncode, 0, accepted.stderr.decode())
 
+        # The release manifests must be the ones the assets name, given together.
+        successor_arguments = (
+            "verify-successor",
+            "--previous-compatibility",
+            str(previous),
+            "--current-compatibility",
+            str(successor),
+            "--trusted-public-key",
+            self.public_key(),
+        )
+        with_manifests = self.run_tool(
+            *successor_arguments,
+            "--previous-release",
+            str(manifest_path),
+            "--current-release",
+            str(manifest_path),
+        )
+        self.assertEqual(with_manifests.returncode, 0, with_manifests.stderr.decode())
+        other = self.directory / "other-release.json"
+        other.write_bytes(manifest_path.read_bytes() + b" ")
+        unnamed = self.run_tool(
+            *successor_arguments,
+            "--previous-release",
+            str(manifest_path),
+            "--current-release",
+            str(other),
+        )
+        self.assertEqual(unnamed.returncode, 2)
+        self.assertIn(b"not the manifest its compatibility asset names", unnamed.stderr)
+        alone = self.run_tool(*successor_arguments, "--current-release", str(manifest_path))
+        self.assertEqual(alone.returncode, 2)
+        self.assertIn(b"together", alone.stderr)
+
         for version in ("0.1.1", "0.1.0"):
             rejected_asset = signed_version(
                 version,

@@ -34,11 +34,13 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{FromRow, SqlitePool};
+
+use crate::state_files;
 use tokio::{sync::Notify, time::sleep};
 use tracing::{info, warn};
 
@@ -86,6 +88,140 @@ pub(crate) const REASON_PACKAGE_STATUS_UNAVAILABLE: &str = "package_status_unava
 /// One ref's evaluation when the batch evaluation of all refs fails.
 const PACKAGE_REF_EVAL_TIMEOUT: Duration = Duration::from_secs(120);
 const NVD_DATABASE_FILE: &str = "Data.fs";
+const HINTS_FILE: &str = "candidate-hints.json";
+const HINTS_SCHEMA: &str = "tiaris.nest.software-update-hints.v1";
+const MAX_HINTS: usize = 4096;
+const MAX_HINTS_BYTES: u64 = 1024 * 1024;
+const SCAN_SCHEMA: &str = "tiaris.nest.software-update-scan.v1";
+/// One scan: at most `MAX_ADVISORIES` advisories and `MAX_PACKAGE_REFS`
+/// package statuses.
+const MAX_SCAN_BYTES: u64 = 4 * 1024 * 1024;
+/// Scans kept at most, the newest, after those of jobs Nest no longer holds
+/// are gone.
+const MAX_SCAN_RECORDS: usize = 1024;
+
+fn scans_dir(data_dir: &Path) -> PathBuf {
+    super::state_dir(data_dir).join("scans")
+}
+
+/// A Manage job or Blueprint revision id, safe as part of a file name.
+fn valid_id(value: &str) -> bool {
+    (1..=64).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+/// One scan record (`scans/<commit>.<revision>.json`).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ScanFile {
+    commit_rev: String,
+    blueprint_revision_id: String,
+    candidate_job_id: i64,
+    release_job_id: Option<i64>,
+    /// `succeeded`, `failed` or `skipped` (`missing_release_hint`).
+    state: String,
+    reason: Option<String>,
+    detail: String,
+    attempts: i64,
+    advisories: Vec<Advisory>,
+    package_delivery: Vec<PackageDelivery>,
+    scanned_at: String,
+}
+
+impl ScanFile {
+    fn name(commit: &str, revision: &str) -> String {
+        format!("{commit}.{revision}.json")
+    }
+
+    fn is_valid(&self, name: &str) -> bool {
+        matches!(self.state.as_str(), "succeeded" | "failed" | "skipped")
+            && (self.state == "succeeded") == self.reason.is_none()
+            && super::valid_commit(&self.commit_rev)
+            && valid_id(&self.blueprint_revision_id)
+            && Self::name(&self.commit_rev, &self.blueprint_revision_id) == name
+            && (0..=MAX_ATTEMPTS).contains(&self.attempts)
+            && self.advisories.len() <= MAX_ADVISORIES
+            && self.package_delivery.len() <= MAX_PACKAGE_REFS
+            && self
+                .advisories
+                .iter()
+                .all(|advisory| valid_advisory_id(&advisory.id))
+            && self.package_delivery.iter().all(|item| {
+                valid_package_ref(&item.package_ref)
+                    && matches!(
+                        item.status.as_str(),
+                        "public_cache" | "software_cache" | "preparation_required"
+                    )
+            })
+            && chrono::DateTime::parse_from_rfc3339(&self.scanned_at).is_ok()
+    }
+}
+
+fn read_scan(data_dir: &Path, name: &str) -> Option<ScanFile> {
+    state_files::read::<ScanFile>(&scans_dir(data_dir), name, SCAN_SCHEMA, MAX_SCAN_BYTES).filter(
+        |scan| {
+            let valid = scan.is_valid(name);
+            if !valid {
+                warn!(
+                    record = name,
+                    "ignoring a scan record that breaks its rules"
+                );
+            }
+            valid
+        },
+    )
+}
+
+fn scan_of(data_dir: &Path, commit: &str, revision: &str) -> Option<ScanFile> {
+    if !super::valid_commit(commit) || !valid_id(revision) {
+        return None;
+    }
+    read_scan(data_dir, &ScanFile::name(commit, revision))
+}
+
+fn all_scans(data_dir: &Path) -> Vec<(String, ScanFile)> {
+    state_files::list(&scans_dir(data_dir), ".json", 4 * MAX_SCAN_RECORDS)
+        .into_iter()
+        .filter_map(|name| read_scan(data_dir, &name).map(|scan| (name, scan)))
+        .collect()
+}
+
+/// Managed job id → the release Manage named for it.
+fn read_hints(data_dir: &Path) -> BTreeMap<String, String> {
+    state_files::read::<BTreeMap<String, String>>(
+        &super::state_dir(data_dir),
+        HINTS_FILE,
+        HINTS_SCHEMA,
+        MAX_HINTS_BYTES,
+    )
+    .filter(|hints| {
+        hints.len() <= MAX_HINTS
+            && hints
+                .iter()
+                .all(|(job, release)| valid_id(job) && uuid::Uuid::parse_str(release).is_ok())
+    })
+    .unwrap_or_default()
+}
+
+async fn update_hints(
+    data_dir: &Path,
+    change: impl FnOnce(&mut BTreeMap<String, String>),
+) -> Result<()> {
+    let dir = super::state_dir(data_dir);
+    let _guard = state_files::lock(&dir).await;
+    let mut hints = read_hints(data_dir);
+    let before = hints.clone();
+    change(&mut hints);
+    if hints == before {
+        return Ok(());
+    }
+    if hints.len() > MAX_HINTS {
+        bail!("more than {MAX_HINTS} software update release hints");
+    }
+    state_files::write(&dir, HINTS_FILE, HINTS_SCHEMA, MAX_HINTS_BYTES, &hints)
+}
 
 fn candidate_built_signal() -> &'static Notify {
     static SIGNAL: OnceLock<Notify> = OnceLock::new();
@@ -385,7 +521,7 @@ fn timestamp(value: chrono::DateTime<Utc>) -> String {
 
 /// Record the release Manage named for a candidate job, or forget it.
 pub(crate) async fn record_hint(
-    db: &SqlitePool,
+    data_dir: &Path,
     managed_job_id: &str,
     software_update: Option<&Value>,
 ) -> Result<()> {
@@ -395,27 +531,18 @@ pub(crate) async fn record_hint(
         .map(str::trim)
         .and_then(|value| uuid::Uuid::parse_str(value).ok())
         .map(|value| value.hyphenated().to_string());
-    match release {
+    if !valid_id(managed_job_id) {
+        return Ok(());
+    }
+    update_hints(data_dir, |hints| match release {
         Some(release) => {
-            sqlx::query(
-                "INSERT INTO software_update_candidate_hints
-                     (managed_job_id, release_blueprint_revision_id) VALUES (?, ?)
-                 ON CONFLICT(managed_job_id) DO UPDATE SET
-                     release_blueprint_revision_id = excluded.release_blueprint_revision_id",
-            )
-            .bind(managed_job_id)
-            .bind(release)
-            .execute(db)
-            .await?;
+            hints.insert(managed_job_id.to_string(), release);
         }
         None => {
-            sqlx::query("DELETE FROM software_update_candidate_hints WHERE managed_job_id = ?")
-                .bind(managed_job_id)
-                .execute(db)
-                .await?;
+            hints.remove(managed_job_id);
         }
-    }
-    Ok(())
+    })
+    .await
 }
 
 /// Start the scanner (only on Nests that check for updates).
@@ -438,18 +565,21 @@ pub(crate) fn spawn(state: AppState) {
 
 /// Scan every pending candidate, one at a time, while no build runs.
 async fn scan_pending(state: &AppState) -> Result<usize> {
-    prune(&state.db).await?;
+    let data_dir = &state.config.paths.data_dir;
+    prune(&state.db, data_dir).await?;
     let mut scanned = 0;
     loop {
         if build_running(&state.db).await? {
             return Ok(scanned);
         }
         let release_pins = crate::config::workstation_nixpkgs_commits(&state.config);
-        let Some(candidate) = next_candidate(&state.db, &release_pins, Utc::now()).await? else {
+        let Some(candidate) =
+            next_candidate(&state.db, data_dir, &release_pins, Utc::now()).await?
+        else {
             return Ok(scanned);
         };
         let scanner = Scanner::from_config(&state.config);
-        if !scan_and_record(&state.db, &scanner, &candidate).await? {
+        if !scan_and_record(&state.db, data_dir, &scanner, &candidate).await? {
             // A build started: scan again once it is done.
             return Ok(scanned);
         }
@@ -465,21 +595,38 @@ async fn build_running(db: &SqlitePool) -> Result<bool> {
     .await?)
 }
 
-/// Scans and hints of jobs Nest no longer holds go with them.
-async fn prune(db: &SqlitePool) -> Result<()> {
-    sqlx::query(
-        "DELETE FROM software_update_scans
-         WHERE candidate_job_id NOT IN (SELECT id FROM nest_build_jobs)",
+/// Scans and hints of jobs Nest no longer holds go with them; beyond those,
+/// at most `MAX_SCAN_RECORDS` scans are kept, the newest.
+async fn prune(db: &SqlitePool, data_dir: &Path) -> Result<()> {
+    let jobs = sqlx::query_as::<_, (i64, Option<String>)>(
+        "SELECT id, managed_job_id FROM nest_build_jobs",
     )
-    .execute(db)
+    .fetch_all(db)
     .await?;
-    sqlx::query(
-        "DELETE FROM software_update_candidate_hints WHERE managed_job_id NOT IN
-             (SELECT managed_job_id FROM nest_build_jobs WHERE managed_job_id IS NOT NULL)",
-    )
-    .execute(db)
-    .await?;
-    Ok(())
+    let ids = jobs.iter().map(|(id, _)| *id).collect::<BTreeSet<_>>();
+    let managed = jobs
+        .into_iter()
+        .filter_map(|(_, managed)| managed)
+        .collect::<BTreeSet<_>>();
+    let dir = scans_dir(data_dir);
+    let _guard = state_files::lock(&dir).await;
+    let mut kept = Vec::new();
+    for (name, scan) in all_scans(data_dir) {
+        if ids.contains(&scan.candidate_job_id) {
+            kept.push((name, scan));
+        } else {
+            state_files::remove(&dir, &name)?;
+        }
+    }
+    kept.sort_by(|left, right| right.1.scanned_at.cmp(&left.1.scanned_at));
+    for (name, _) in kept.iter().skip(MAX_SCAN_RECORDS) {
+        state_files::remove(&dir, name)?;
+    }
+    drop(_guard);
+    update_hints(data_dir, |hints| {
+        hints.retain(|job, _| managed.contains(job))
+    })
+    .await
 }
 
 /// A built candidate: a Blueprint job at a ready detected commit (not a
@@ -496,31 +643,19 @@ struct Candidate {
 
 async fn next_candidate(
     db: &SqlitePool,
+    data_dir: &Path,
     release_pins: &[String],
     now: chrono::DateTime<Utc>,
 ) -> Result<Option<Candidate>> {
     let rows = sqlx::query_as::<_, JobRow>(&format!(
         "SELECT {JOB_COLUMNS} FROM nest_build_jobs AS jobs
          WHERE {BLUEPRINT_JOB_FILTER}
-           AND EXISTS (SELECT 1 FROM detected_nixpkgs_commits AS detected
-                       WHERE detected.commit_rev = json_extract(jobs.build_spec, '$.nixpkgs_commit')
-                         AND detected.state = 'ready')
-           AND NOT EXISTS (SELECT 1 FROM software_update_scans AS scans
-                           WHERE scans.commit_rev = json_extract(jobs.build_spec, '$.nixpkgs_commit')
-                             AND scans.blueprint_revision_id
-                                 = json_extract(jobs.build_spec, '$.blueprint_revision_id')
-                             AND (scans.state = 'succeeded'
-                                  OR (scans.state = 'failed'
-                                      AND (scans.attempts >= ? OR scans.scanned_at > ?))
-                                  OR (scans.state = 'skipped' AND NOT EXISTS (
-                                      SELECT 1 FROM software_update_candidate_hints AS hints
-                                      WHERE hints.managed_job_id = jobs.managed_job_id))))
          ORDER BY completed_at, id"
     ))
-    .bind(MAX_ATTEMPTS)
-    .bind(timestamp(now - RETRY_INTERVAL))
     .fetch_all(db)
     .await?;
+    let retry_before = timestamp(now - RETRY_INTERVAL);
+    let hints = read_hints(data_dir);
     for row in rows {
         let Some(job) = Job::from_row(&row) else {
             continue;
@@ -528,7 +663,31 @@ async fn next_candidate(
         if release_pins.contains(&job.commit) {
             continue;
         }
-        let Some(nar_hash) = super::current_ready_nar_hash(db, &job.commit).await? else {
+        // A scan of these could never be stored; skip it instead of scanning
+        // it again on every pass ahead of every later candidate.
+        if !valid_id(&job.blueprint_revision_id)
+            || job
+                .managed_job_id
+                .as_deref()
+                .is_some_and(|id| !valid_id(id))
+        {
+            continue;
+        }
+        let done = scan_of(data_dir, &job.commit, &job.blueprint_revision_id).is_some_and(|scan| {
+            match scan.state.as_str() {
+                "succeeded" => true,
+                "failed" => scan.attempts >= MAX_ATTEMPTS || scan.scanned_at > retry_before,
+                // Skipped until the job names its release.
+                _ => !job
+                    .managed_job_id
+                    .as_ref()
+                    .is_some_and(|managed| hints.contains_key(managed)),
+            }
+        });
+        if done {
+            continue;
+        }
+        let Some(nar_hash) = super::current_ready_nar_hash(data_dir, &job.commit).await? else {
             continue;
         };
         return Ok(Some(Candidate {
@@ -543,17 +702,9 @@ async fn next_candidate(
 }
 
 /// The release Manage named for the candidate, if it did.
-async fn release_hint(db: &SqlitePool, candidate: &Candidate) -> Result<Option<String>> {
-    let Some(managed) = candidate.job.managed_job_id.as_deref() else {
-        return Ok(None);
-    };
-    Ok(sqlx::query_scalar::<_, String>(
-        "SELECT release_blueprint_revision_id FROM software_update_candidate_hints
-         WHERE managed_job_id = ?",
-    )
-    .bind(managed)
-    .fetch_optional(db)
-    .await?)
+fn release_hint(data_dir: &Path, candidate: &Candidate) -> Option<String> {
+    let managed = candidate.job.managed_job_id.as_deref()?;
+    read_hints(data_dir).remove(managed)
 }
 
 /// The built closure of `release`, the revision the candidate was prepared
@@ -622,10 +773,11 @@ impl ScanOutcome {
 /// and nothing was recorded.
 async fn scan_and_record(
     db: &SqlitePool,
+    data_dir: &Path,
     scanner: &Scanner,
     candidate: &Candidate,
 ) -> Result<bool> {
-    let outcome = scan(db, scanner, candidate).await?;
+    let outcome = scan(db, data_dir, scanner, candidate).await?;
     let now = timestamp(Utc::now());
     let (state, reason, detail, advisories, delivery) = match outcome.result {
         ScanResult::Deferred => return Ok(false),
@@ -642,36 +794,32 @@ async fn scan_and_record(
         ScanResult::Failed(failure) => not_scanned(candidate, "failed", failure),
         ScanResult::Skipped(failure) => not_scanned(candidate, "skipped", failure),
     };
-    let attempt = i64::from(state == "failed");
-    sqlx::query(
-        "INSERT INTO software_update_scans (
-             commit_rev, blueprint_revision_id, candidate_job_id, release_job_id, state,
-             reason, detail, attempts, advisories, package_delivery, scanned_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(commit_rev, blueprint_revision_id) DO UPDATE SET
-             candidate_job_id = excluded.candidate_job_id,
-             release_job_id = excluded.release_job_id,
-             state = excluded.state,
-             reason = excluded.reason,
-             detail = excluded.detail,
-             attempts = attempts + excluded.attempts,
-             advisories = excluded.advisories,
-             package_delivery = excluded.package_delivery,
-             scanned_at = excluded.scanned_at",
+    let dir = scans_dir(data_dir);
+    let _guard = state_files::lock(&dir).await;
+    let previous = scan_of(
+        data_dir,
+        &candidate.job.commit,
+        &candidate.job.blueprint_revision_id,
     )
-    .bind(&candidate.job.commit)
-    .bind(&candidate.job.blueprint_revision_id)
-    .bind(candidate.job.id)
-    .bind(outcome.release_job_id)
-    .bind(state)
-    .bind(reason)
-    .bind(detail)
-    .bind(attempt)
-    .bind(serde_json::to_string(&advisories)?)
-    .bind(serde_json::to_string(&delivery)?)
-    .bind(now)
-    .execute(db)
-    .await?;
+    .map_or(0, |scan| scan.attempts);
+    let record = ScanFile {
+        commit_rev: candidate.job.commit.clone(),
+        blueprint_revision_id: candidate.job.blueprint_revision_id.clone(),
+        candidate_job_id: candidate.job.id,
+        release_job_id: outcome.release_job_id,
+        state: state.to_string(),
+        reason: reason.map(str::to_string),
+        detail,
+        attempts: (previous + i64::from(state == "failed")).min(MAX_ATTEMPTS),
+        advisories,
+        package_delivery: delivery,
+        scanned_at: now,
+    };
+    let name = ScanFile::name(&record.commit_rev, &record.blueprint_revision_id);
+    if !record.is_valid(&name) {
+        bail!("a scan of {name} would break its record's rules");
+    }
+    state_files::write(&dir, &name, SCAN_SCHEMA, MAX_SCAN_BYTES, &record)?;
     Ok(true)
 }
 
@@ -703,8 +851,13 @@ fn not_scanned(candidate: &Candidate, state: &'static str, failure: ScanFailure)
 
 /// Scan one candidate. Database errors are returned; everything about the
 /// closures, vulnix or the network is a recorded failure.
-async fn scan(db: &SqlitePool, scanner: &Scanner, candidate: &Candidate) -> Result<ScanOutcome> {
-    let Some(release) = release_hint(db, candidate).await? else {
+async fn scan(
+    db: &SqlitePool,
+    data_dir: &Path,
+    scanner: &Scanner,
+    candidate: &Candidate,
+) -> Result<ScanOutcome> {
+    let Some(release) = release_hint(data_dir, candidate) else {
         return Ok(ScanOutcome {
             release_job_id: None,
             result: ScanResult::Skipped(ScanFailure::new(
@@ -1254,44 +1407,51 @@ async fn output_status(
     }
 }
 
-#[derive(Debug, FromRow)]
-struct ScanRow {
-    commit_rev: String,
-    blueprint_revision_id: String,
-    advisories: String,
-    package_delivery: String,
-    scanned_at: String,
-}
-
 /// Findings for the report: the newest successful scans of candidates Nest
 /// still holds at commits it reports ready, within Manage's limits.
 ///
 /// Manage replaces a Nest's package status for a commit with the list of
 /// whichever finding it stores last, so every finding of a commit carries
 /// the status of all scanned package refs at that commit.
-pub(crate) async fn report(db: &SqlitePool) -> Result<Vec<FindingReport>> {
-    let rows = sqlx::query_as::<_, ScanRow>(
-        "SELECT scans.commit_rev, scans.blueprint_revision_id, scans.advisories,
-                scans.package_delivery, scans.scanned_at
-         FROM software_update_scans AS scans
-         JOIN detected_nixpkgs_commits AS detected
-           ON detected.commit_rev = scans.commit_rev AND detected.state = 'ready'
-         WHERE scans.state = 'succeeded'
-           AND EXISTS (SELECT 1 FROM nest_build_jobs AS jobs
-                       WHERE jobs.id = scans.candidate_job_id)
-         ORDER BY scans.scanned_at DESC, scans.commit_rev, scans.blueprint_revision_id
-         LIMIT ?",
-    )
-    .bind(MAX_REPORTED_FINDINGS)
-    .fetch_all(db)
-    .await?;
+pub(crate) async fn report(db: &SqlitePool, data_dir: &Path) -> Result<Vec<FindingReport>> {
+    let jobs = sqlx::query_scalar::<_, i64>("SELECT id FROM nest_build_jobs")
+        .fetch_all(db)
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let mut ready = BTreeMap::new();
+    let mut rows = Vec::new();
+    for (_, scan) in all_scans(data_dir) {
+        if scan.state != "succeeded" || !jobs.contains(&scan.candidate_job_id) {
+            continue;
+        }
+        let commit_ready = match ready.get(&scan.commit_rev) {
+            Some(ready) => *ready,
+            None => {
+                let is_ready = super::detected_row(data_dir, &scan.commit_rev)
+                    .await?
+                    .is_some_and(|row| row.state == "ready");
+                ready.insert(scan.commit_rev.clone(), is_ready);
+                is_ready
+            }
+        };
+        if commit_ready {
+            rows.push(scan);
+        }
+    }
+    rows.sort_by(|left, right| {
+        right
+            .scanned_at
+            .cmp(&left.scanned_at)
+            .then_with(|| left.commit_rev.cmp(&right.commit_rev))
+            .then_with(|| left.blueprint_revision_id.cmp(&right.blueprint_revision_id))
+    });
+    rows.truncate(MAX_REPORTED_FINDINGS as usize);
     let mut delivery_by_commit: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     let mut parsed = Vec::with_capacity(rows.len());
-    for row in rows {
-        let advisories: Vec<Advisory> = serde_json::from_str(&row.advisories)
-            .with_context(|| anyhow!("parse stored advisories of {}", row.commit_rev))?;
-        let delivery: Vec<PackageDelivery> = serde_json::from_str(&row.package_delivery)
-            .with_context(|| anyhow!("parse stored package status of {}", row.commit_rev))?;
+    for mut row in rows {
+        let advisories = std::mem::take(&mut row.advisories);
+        let delivery = std::mem::take(&mut row.package_delivery);
         // Rows are newest first: a newer scan's status of a ref wins.
         let merged = delivery_by_commit
             .entry(row.commit_rev.clone())
