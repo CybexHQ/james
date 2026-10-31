@@ -138,6 +138,47 @@ the `.19` development appliances. Later builds must preserve that migration
 and its checksum even when the multicast capability is unavailable, so those
 appliances can restart or upgrade without discarding their state.
 
+## Off-site software uploads
+
+A computer away from school cannot reach its Nest. For updates it may
+download off-site (Manage `docs/software-cache.md`, design section 7), Nest
+uploads what it built itself to its organization's tree of the Tiaris
+software cache (`src/software_cache_upload.rs`).
+
+- **Capability.** Nest advertises `software_cache_upload_v1` only when
+  Manage's configuration says it accepts it
+  (`software_cache_upload_supported: true`); a Manage that does not know the
+  capability rejects the whole report.
+- **Configuration.** `software_cache.upload` is `{url, token, expires_at,
+  grants}`: the tree `https://cache.tiaris.com/o/<issuer>/o-<organization hex>`,
+  a `tsc2` write token, and Manage's signed upload grants
+  (`[{grant: "tug1.<payload>.<mac>", grant_id, …}]`). The token is kept in
+  `<data_dir>/software-cache-upload.json` (0600, written and read without
+  following links) and never logged. Grants Manage stops sending are
+  forgotten; without `upload`, the token file and every grant are removed.
+- **Uploading.** Each grant is registered (`POST <tree>/upload-grants`), then
+  each granted store path is uploaded from the Nest cache, NAR before
+  narinfo, the narinfo exactly as Nix wrote it with the Nest signature, then
+  each granted file (`manage-source/<revision>.tar` from
+  `/usr/share/tiaris-nest/manage-source`). Every PUT carries the write token
+  as the Basic password and `X-Tiaris-Upload-Grant: <grant id>`. Nothing
+  outside a grant is sent: a path whose local narinfo or NAR, or a file whose
+  size or SHA-256, does not match the grant is refused locally
+  (`narinfo_mismatch`, `nar_mismatch`, `file_mismatch`, `not_in_cache`); a
+  NAR's FileHash and a file's SHA-256 are checked before the same open file
+  is sent. A path already in the tree is skipped; a stored grant that no
+  longer decodes fails alone (`grant_invalid`).
+- **Bounds.** One grant and one upload at a time, at most 8 MiB/s. Network,
+  server and token errors stop the pass and retry the grant 1, 2, 4 …
+  minutes, at most an hour, after the failure (not after the pass started);
+  success resets the backoff. An expired grant or token is never used. A 507
+  fails the grant (`quota_exceeded`).
+- **Report.** To such a Manage each report carries
+  `software_cache_uploads`: per grant `{grant_id, manifest_id, state:
+  pending|uploading|uploaded|failed|expired, paths_total, paths_uploaded,
+  files_total, files_uploaded, items_failed, bytes_uploaded, error?,
+  updated_at}`.
+
 ## Wake-on-LAN
 
 Nest advertises `wake_on_lan_v1` and accepts bounded, signed wake requests

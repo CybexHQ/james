@@ -1231,6 +1231,64 @@ fn read_safe_narinfo(cache_root: &Path, filename: &str) -> Result<String> {
     String::from_utf8(raw).context("generated NARInfo was not UTF-8")
 }
 
+/// A signed narinfo of the cache root, as uploaded to the software cache.
+#[derive(Clone, Debug)]
+pub(crate) struct CachedNarInfo {
+    /// The file as Nix wrote it, signatures included.
+    pub(crate) text: String,
+    pub(crate) store_path: String,
+    pub(crate) url: String,
+    pub(crate) compression: String,
+    pub(crate) file_hash: [u8; 32],
+    pub(crate) file_size: u64,
+    pub(crate) nar_hash: [u8; 32],
+    pub(crate) nar_size: u64,
+    /// Store basenames.
+    pub(crate) references: BTreeSet<String>,
+}
+
+/// The narinfo of `store_path` in the cache root, strictly parsed.
+pub(crate) fn read_cached_narinfo(cache_root: &Path, store_path: &str) -> Result<CachedNarInfo> {
+    let filename = narinfo_filename_for_store_path(store_path)?;
+    let text = read_safe_narinfo(cache_root, &filename)?;
+    let parsed = parse_narinfo_strict(&text)?;
+    if parsed.store_path != store_path {
+        bail!("cached NARInfo names another store path");
+    }
+    validate_nar_url(&parsed.url)?;
+    Ok(CachedNarInfo {
+        store_path: parsed.store_path,
+        url: parsed.url,
+        compression: parsed.compression,
+        file_hash: parse_strong_sha256(&parsed.file_hash, "FileHash")?,
+        file_size: u64::try_from(parsed.file_size).context("cached NARInfo FileSize")?,
+        nar_hash: parse_strong_sha256(&parsed.nar_hash, "NarHash")?,
+        nar_size: u64::try_from(parsed.nar_size).context("cached NARInfo NarSize")?,
+        references: parsed
+            .references
+            .iter()
+            .map(|reference| reference.trim_start_matches("/nix/store/").to_string())
+            .collect(),
+        text,
+    })
+}
+
+/// The NAR file `nar_url` (`nar/<name>`) of the cache root, opened without
+/// following links.
+pub(crate) fn open_cached_nar(cache_root: &Path, nar_url: &str) -> Result<fs::File> {
+    let filename = validate_nar_url(nar_url)?;
+    let file = open_nar_member_at(cache_root, filename)?;
+    if !file.metadata()?.file_type().is_file() {
+        bail!("cached NAR is not a regular file");
+    }
+    Ok(file)
+}
+
+/// A SHA-256 hash in any of Nix's notations (SRI, `sha256:` hex or base32).
+pub(crate) fn sha256_digest(value: &str) -> Result<[u8; 32]> {
+    parse_strong_sha256(value, "hash")
+}
+
 fn hash_safe_cache_member(cache_root: &Path, relative: &str) -> Result<(PathBuf, u64, [u8; 32])> {
     let filename = validate_nar_url(relative)?;
     let path = cache_root.join("nar").join(filename);
@@ -1454,7 +1512,7 @@ fn decode_nix_base32_sha256(encoded: &str) -> Result<[u8; 32]> {
     Ok(decoded)
 }
 
-fn encode_nix_base32_sha256(digest: &[u8; 32]) -> String {
+pub(crate) fn encode_nix_base32_sha256(digest: &[u8; 32]) -> String {
     let mut encoded = [b'0'; 52];
     for position in 0..encoded.len() {
         let bit = position * 5;
