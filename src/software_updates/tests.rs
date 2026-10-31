@@ -192,6 +192,14 @@ fn fake_nix_full(
 set -eu
 root='{root}'
 printf '%s\n' "$*" >> "$root/calls"
+for argument in "$@"; do
+  case "$argument" in
+    local\?root=*)
+      store="${{argument#local?root=}}"
+      ls -d "$(dirname "$store")"/source-policy-store-* | wc -l >> "$root/stores"
+      ;;
+  esac
+done
 case " $* " in
   *" eval "*referenceBlueprints*)
     cat "$root/references.json"
@@ -922,9 +930,10 @@ fn provenance_needs_the_branch_to_contain_the_commit_after_the_pin() {
 }
 
 #[test]
-fn failed_commits_are_evaluated_again_at_most_daily() {
+fn failed_commits_are_evaluated_again_at_most_daily_and_after_an_update() {
     let now = Utc.with_ymd_and_hms(2026, 10, 31, 12, 0, 0).unwrap();
-    let row = |reason: Option<&str>, hours_ago: i64| DetectedRow {
+    let build = "0.2.49 release=0.2.49 source=a tiaris=b";
+    let row = |reason: Option<&str>, hours_ago: i64, derived_by: &str| DetectedRow {
         commit_rev: COMMIT.to_string(),
         channel: DEFAULT_CHANNEL.to_string(),
         last_modified: "2026-10-29T17:25:25Z".to_string(),
@@ -935,21 +944,58 @@ fn failed_commits_are_evaluated_again_at_most_daily() {
         profile: None,
         tiaris_derivations: "[]".to_string(),
         detected_at: (now - chrono::Duration::hours(hours_ago)).to_rfc3339(),
+        derived_by: derived_by.to_string(),
     };
-    assert!(needs_evaluation(None, now));
-    for reason in [REASON_EVALUATION_FAILED, REASON_PROVENANCE_UNVERIFIED] {
-        assert!(!needs_evaluation(Some(&row(Some(reason), 1)), now));
-        assert!(!needs_evaluation(Some(&row(Some(reason), 23)), now));
-        assert!(needs_evaluation(Some(&row(Some(reason), 24)), now));
+    assert!(needs_evaluation_by(None, now, build));
+    for reason in [
+        REASON_EVALUATION_FAILED,
+        REASON_PROVENANCE_UNVERIFIED,
+        REASON_INSUFFICIENT_DISK,
+    ] {
+        assert!(!needs_evaluation_by(
+            Some(&row(Some(reason), 1, build)),
+            now,
+            build
+        ));
+        assert!(!needs_evaluation_by(
+            Some(&row(Some(reason), 23, build)),
+            now,
+            build
+        ));
+        assert!(needs_evaluation_by(
+            Some(&row(Some(reason), 24, build)),
+            now,
+            build
+        ));
     }
     for reason in [
         REASON_BUILD_SCRIPT_CHANGED,
         REASON_SOURCE_BUILD_REQUIRED,
         REASON_REFERENCE_BLUEPRINTS_MISSING,
     ] {
-        assert!(!needs_evaluation(Some(&row(Some(reason), 48)), now));
+        assert!(!needs_evaluation_by(
+            Some(&row(Some(reason), 48, build)),
+            now,
+            build
+        ));
+        // A Nest update (another build or shipped Tiaris source) may ship
+        // the references or reviewed content the commit lacked.
+        assert!(needs_evaluation_by(
+            Some(&row(
+                Some(reason),
+                1,
+                "0.2.48 release=0.2.48 source=a tiaris=c"
+            )),
+            now,
+            build
+        ));
     }
-    assert!(!needs_evaluation(Some(&row(None, 48)), now));
+    // Ready commits are derived again through their stale profile instead.
+    assert!(!needs_evaluation_by(
+        Some(&row(None, 48, "other")),
+        now,
+        build
+    ));
 }
 
 #[tokio::test]
@@ -966,6 +1012,8 @@ async fn a_profile_from_another_nest_build_is_derived_again() {
     .unwrap();
     assert!(ready_commit(&pool, COMMIT).await.unwrap().is_some());
     assert!(stale_ready_rows(&pool).await.unwrap().is_empty());
+    assert_eq!(report(&pool).await.unwrap()[0].state, "ready");
+    assert_eq!(ready_commits_in_use(&pool).await.unwrap(), [COMMIT]);
     for (field, value) in [
         ("schema", json!(PROFILE_SCHEMA - 1)),
         ("nest_build", json!("0.2.47 release=other")),
@@ -988,9 +1036,17 @@ async fn a_profile_from_another_nest_build_is_derived_again() {
             .execute(&pool)
             .await
             .unwrap();
-        // Never re-mapped: the commit admits nothing until derived again.
+        // Never re-mapped: the commit admits nothing, is not reported or
+        // kept as ready, until derived again.
         assert!(ready_commit(&pool, COMMIT).await.is_err());
         assert_eq!(stale_ready_rows(&pool).await.unwrap().len(), 1);
+        let reported = report(&pool).await.unwrap();
+        assert_eq!(reported[0].state, "blocked");
+        assert_eq!(
+            reported[0].reason.as_deref(),
+            Some(REASON_REDERIVATION_PENDING)
+        );
+        assert!(ready_commits_in_use(&pool).await.unwrap().is_empty());
         stored[field] = current;
         sqlx::query("UPDATE detected_nixpkgs_commits SET profile = ? WHERE commit_rev = ?")
             .bind(stored.to_string())
@@ -1019,5 +1075,107 @@ async fn real_commit_provenance() {
     eprintln!(
         "provenance: {:?}",
         verify_provenance(&channel, &commit).await
+    );
+}
+
+#[tokio::test]
+async fn the_check_keeps_one_isolated_store_at_a_time() {
+    let fake = fake_nix(
+        "one-store",
+        Some(evaluated_identities("26.05", &[])),
+        &[AGENT_DRV],
+    );
+    let root = fake.root.clone();
+    let outcome = evaluate_with(&fake, true).await.unwrap();
+    let stores = std::fs::read_to_string(root.join("stores")).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(outcome.state(), "ready");
+    // Seven dry runs (Tiaris packages, three references twice) and their
+    // derivation queries, each with its store alone.
+    assert!(stores.lines().count() >= 7, "{stores}");
+    assert!(stores.lines().all(|count| count.trim() == "1"), "{stores}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_cancelled_check_removes_its_work_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let root =
+        std::env::temp_dir().join(format!("tiaris-nest-check-cancel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join(format!("{CHECK_WORK_DIR_PREFIX}{}", "b".repeat(32)));
+    let check = {
+        let path = path.clone();
+        async move {
+            let work = CheckWorkDir::create(path).unwrap();
+            let read_only = work.path.join("stores/source-policy-store-x/nix/store/y");
+            std::fs::create_dir_all(&read_only).unwrap();
+            std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o555)).unwrap();
+            std::future::pending::<()>().await;
+            drop(work);
+        }
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), check)
+            .await
+            .is_err()
+    );
+    assert!(!path.exists(), "a timed-out check left its work directory");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn startup_removes_interrupted_checks_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let root =
+        std::env::temp_dir().join(format!("tiaris-nest-check-startup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut config = AppConfig::default();
+    config.build.work_dir = root.clone();
+    let interrupted = root.join(format!("{CHECK_WORK_DIR_PREFIX}{}", "c".repeat(32)));
+    let read_only = interrupted.join("stores/s/nix/store/y");
+    std::fs::create_dir_all(&read_only).unwrap();
+    std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let job = root.join("job-7-input");
+    let other = root.join(format!("{CHECK_WORK_DIR_PREFIX}notes"));
+    std::fs::create_dir_all(&job).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    remove_interrupted_checks(&config).await;
+    assert!(!interrupted.exists());
+    assert!(job.exists() && other.exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn a_check_short_of_disk_space_records_insufficient_disk() {
+    let pool = pool().await;
+    store_detected(
+        &pool,
+        COMMIT,
+        DEFAULT_CHANNEL,
+        &metadata(1_793_294_725),
+        &DetectedOutcome::blocked(
+            String::new(),
+            REASON_INSUFFICIENT_DISK,
+            vec!["10 MiB free".to_string()],
+        ),
+    )
+    .await
+    .unwrap();
+    let reported = report(&pool).await.unwrap();
+    assert_eq!(
+        reported[0].reason.as_deref(),
+        Some(REASON_INSUFFICIENT_DISK)
+    );
+    let mut config = AppConfig::default();
+    config.build.work_dir = std::env::temp_dir();
+    let available = crate::disk::stats(&config.build.work_dir)
+        .unwrap()
+        .available_bytes;
+    assert_eq!(
+        enough_disk(&config).is_ok(),
+        available >= MIN_CHECK_FREE_BYTES
     );
 }

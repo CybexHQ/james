@@ -66,10 +66,20 @@ admits.
   and descend from the release pin (`compare/<pin>...<commit>` is `ahead`). A
   fork-only commit diverges from the branch. Any failure, including the
   API's rate limit, records `blocked`, `provenance_unverified`.
-- **Retries and time.** A recorded commit is evaluated again only when its
-  evaluation or provenance failed at least a day ago; a request from Manage
-  repeats only the channel lookup. One commit's evaluation is bounded to 60
-  minutes (`evaluation_failed`, `time limit`).
+- **Retries and time.** A recorded commit is evaluated again when its
+  evaluation, provenance or disk check failed at least a day ago, and when
+  it is blocked and another Nest build or shipped Tiaris source evaluated it
+  (an update may ship the references or reviewed content it lacked); a
+  request from Manage repeats only the channel lookup. One commit's
+  evaluation is bounded to 60 minutes (`evaluation_failed`, `time limit`).
+- **Disk.** The check needs 4 GiB free in the build work directory
+  (`insufficient_disk` otherwise, retried daily). Each dry run keeps its
+  isolated store (a nixpkgs source of about 330 MB) only while it runs: the
+  local work, derivation records and source-file hashes are kept, the store
+  is removed, and classification runs from them. The 6f06d204 check peaked
+  at 652 MB. Its work directory is removed on every exit, including a
+  timeout; interrupted check directories and isolated stores are removed at
+  startup.
 - **Commit identities.** `src/software_updates/identities.nix` evaluates every
   identity of `COMMIT_IDENTITIES` from the same nixpkgs attribute; at 74cc63f
   it reproduces all 40 compiled paths exactly. The derived profile maps each
@@ -96,7 +106,12 @@ admits.
   reviewed builder files used on both sides become reviewed content **of that
   role only**, recorded against the pin content they replace. A Blueprint job
   at the commit is then admitted under exactly the pin's rules, each
-  derivation seeing only its own role's content.
+  derivation seeing only its own role's content. The pin admits the NixOS
+  system closure (`nixos-system-<host>`) by its store-normalized script
+  alone, since its executables follow the configuration; its counterpart
+  maps that half, in one `nixos-system` role whatever the host name, so an
+  organization Blueprint built from the same modules as a reference is
+  admitted with its own host name, activation script and App List.
 
   Why this keeps the trust boundary: every input of the commit's profile is
   the shipped Tiaris source and nixpkgs at that commit, pinned by `narHash`
@@ -124,8 +139,10 @@ admits.
 - **Stored profile.** A ready commit stores its identities, counterpart
   content and Tiaris package derivations with a profile schema version and
   the deriving Nest build (version, release, source and Tiaris source
-  revisions). A profile from another schema or build admits nothing; Nest
-  derives it again (at startup after an update, then at most two per check).
+  revisions). A profile from another schema or build admits nothing and is
+  reported `blocked`, `rederivation_pending`, and left out of
+  `workstation_nixpkgs_commits`, until Nest derives it again (at startup
+  after an update, then at most two per check).
 - **Admission.** A Blueprint job is admitted at the release pin or at a ready
   detected commit (`target_not_allowed` otherwise). A job without a
   Blueprint is admitted at its target flake's nixpkgs pin, and a
@@ -133,6 +150,12 @@ admits.
   profile by the admitted commit: the built-in profile at the built-in
   commit, the persisted profile at a ready detected commit, and none
   otherwise, which stops a source-disabled job with `source_build_blocked`.
+- **A Blueprint that blocks at the commit.** Its job fails with
+  `error_kind: source_build_blocked` and `source_build_candidates` (the
+  first 50 derivations it would compile or that have no reviewed
+  counterpart); its result metadata names the job's Blueprint and revision
+  and `nixpkgs_revision`/`nixpkgs_flake` of the commit, narHash-pinned. A job
+  at a commit that is not ready fails with `target_not_allowed`.
 
 The first real channel commit, 6f06d204 (2026-10-29), evaluated with the
 pin's Nix 2.34.7: with the Tiaris source as shipped today (no reference

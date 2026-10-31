@@ -1,16 +1,19 @@
 //! Counterparts: the reviewed content a detected commit derives from itself.
 //!
-//! The reference set is exactly the local derivations admitted at the pin in
-//! jobs Nest already built there. The same job inputs, evaluated with only
-//! nixpkgs replaced, give each of them a counterpart at the detected commit:
-//! the derivation of the same name in the same job. A counterpart's scripts,
-//! stock commands and builder files become reviewed content of the detected
-//! commit's profile, recorded against the pin content they replace, so every
-//! existing check applies unchanged. Everything in that content is produced
-//! by the detected commit's nixpkgs (pinned by `narHash`) from inputs that
-//! were already admitted at the pin; a Blueprint cannot add a derivation that
-//! was not admitted there. A derivation without an unambiguous counterpart
-//! gains nothing and stays rejected.
+//! The references are configurations of the shipped Tiaris source only (the
+//! reference Blueprints and the plain desktop profiles), never an
+//! organization's Blueprint, whose Nix could render reviewed content at the
+//! pin and a payload at any other commit. Each reference is evaluated at the
+//! pin and at the detected commit; every local derivation the pin admits
+//! gets a counterpart: the derivation of the same role (package name) in the
+//! same reference at the commit. A counterpart's scripts, stock commands and
+//! builder files become reviewed content of that role only, recorded
+//! against the pin content they replace, so every existing check applies
+//! unchanged and one role's content cannot admit another derivation.
+//! Everything in that content is produced by the detected commit's nixpkgs
+//! (pinned by `narHash`, verified on the channel's branch) from the shipped
+//! Tiaris source. A derivation without an unambiguous counterpart gains
+//! nothing and stays rejected.
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde_json::Value;
@@ -21,8 +24,8 @@ use super::{
     derivation_attr_text, derivation_attributes, derivation_input_sources,
     etc_script_with_time_zone_placeholder,
     profile::{
-        BuilderFileCounterpart, FingerprintCounterpart, STOCK_COMMANDS, StockCommandCounterpart,
-        package_name,
+        BuilderFileCounterpart, FingerprintCounterpart, NORMALIZED_ONLY_FINGERPRINTS,
+        NormalizedCounterpart, STOCK_COMMANDS, StockCommandCounterpart, package_name,
     },
 };
 use crate::nix_log::derivation_display_name;
@@ -43,6 +46,8 @@ pub(crate) struct Counterparts {
     fingerprints: BTreeMap<(String, (String, String)), (String, String)>,
     conflicting: BTreeSet<(String, (String, String))>,
     stock_commands: BTreeMap<(String, String), String>,
+    normalized: BTreeMap<(String, String), String>,
+    conflicting_normalized: BTreeSet<(String, String)>,
     /// `(role, builder file)` → its sha256 at the detected commit.
     pub(crate) builder_files: BTreeMap<(String, String), String>,
     /// Roles whose content differs from the pin's.
@@ -72,6 +77,16 @@ impl Counterparts {
                 .stock_commands
                 .iter()
                 .map(|((role, commit), reviewed)| StockCommandCounterpart {
+                    role: role.clone(),
+                    commit: commit.clone(),
+                    reviewed: reviewed.clone(),
+                })
+                .collect(),
+            normalized: self
+                .normalized
+                .iter()
+                .filter(|(key, _)| !self.conflicting_normalized.contains(*key))
+                .map(|((role, commit), reviewed)| NormalizedCounterpart {
                     role: role.clone(),
                     commit: commit.clone(),
                     reviewed: reviewed.clone(),
@@ -109,8 +124,8 @@ impl Counterparts {
     }
 }
 
-/// Pair one reference job's local derivations at the pin (`pin`, classified
-/// with the built-in profile) with the same job's at the detected commit
+/// Pair one reference's local derivations at the pin (`pin`, classified
+/// with the built-in profile) with the same reference's at the detected commit
 /// (`detected`, classified with `base`: the detected commit's identities and
 /// Tiaris packages, no counterparts yet). `commit_files` are the reviewed
 /// builder files' hashes at the detected commit.
@@ -185,7 +200,7 @@ pub(crate) fn add_counterparts(
     }
 }
 
-/// One-to-one pairs within a name group: a single member pairs directly;
+/// One-to-one pairs within a role group: a single member pairs directly;
 /// several pair only by identical attributes after whole store paths and the
 /// version label are set aside, and only when that is unambiguous.
 fn pair_group(
@@ -298,6 +313,20 @@ fn add_pair(
         let reviewed = builtin.fingerprints(pin_text);
         let commit = base.fingerprints(commit_text);
         changed |= reviewed != commit;
+        // The system closure is admitted by its normalized half; its
+        // executable half varies with the configuration.
+        if NORMALIZED_ONLY_FINGERPRINTS.contains(&reviewed.0.as_str()) && commit.0 != reviewed.0 {
+            let key = (role.to_string(), commit.0.clone());
+            match counterparts.normalized.get(&key) {
+                Some(previous) if *previous != reviewed.0 => {
+                    counterparts.conflicting_normalized.insert(key);
+                }
+                Some(_) => {}
+                None => {
+                    counterparts.normalized.insert(key, reviewed.0.clone());
+                }
+            }
+        }
         counterparts.add_fingerprint(role, commit, reviewed);
         // `/etc` recipes are also compared with their zone set aside.
         if let (Some(pin_zone), Some(commit_zone)) = (

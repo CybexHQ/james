@@ -24,10 +24,11 @@ use super::{
     DESKTOP_FILE_VALIDATE, FIREFOX_WRAPPER_TOOL_INPUTS, GTK_IMMODULE_TOOL_INPUTS,
     IBUS_LINK_FARM_TOOL_INPUTS, INITRD_GENERATOR_TOOL_INPUTS, LOGROTATE_CHECK_INPUTS,
     NIX_CONFIG_CHECK_INPUT, NIXOS_GENERATE_CONFIG_TOOL_INPUTS, NIXOS_SYSTEM_SETUP_HOOK,
-    PERL_ENV_LINK_FARM_TOOL_INPUTS, REMARSHAL_GENERATOR_TOOL_INPUTS, SECURITY_WRAPPER_TOOL_INPUTS,
-    STOCK_CONCAT_TEXT_COMMAND, STOCK_JSON_TO_TOML_COMMAND, STOCK_WRITE_TEXT_COMMAND,
-    SYSTEM_PATH_POST_BUILD_TOOLS, TRUSTED_DEFAULT_BUILDER_SHA256, TRUSTED_LINK_FARM_BUILDER,
-    TRUSTED_LINK_FARM_BUILDER_SHA256, TRUSTED_LINK_FARM_PERL, TRUSTED_SECURITY_WRAPPER_INCLUDE_DRV,
+    PERL_ENV_LINK_FARM_TOOL_INPUTS, PINNED_NIXOS_TOPLEVEL_GENERATOR_FINGERPRINT,
+    REMARSHAL_GENERATOR_TOOL_INPUTS, SECURITY_WRAPPER_TOOL_INPUTS, STOCK_CONCAT_TEXT_COMMAND,
+    STOCK_JSON_TO_TOML_COMMAND, STOCK_WRITE_TEXT_COMMAND, SYSTEM_PATH_POST_BUILD_TOOLS,
+    TRUSTED_DEFAULT_BUILDER_SHA256, TRUSTED_LINK_FARM_BUILDER, TRUSTED_LINK_FARM_BUILDER_SHA256,
+    TRUSTED_LINK_FARM_PERL, TRUSTED_SECURITY_WRAPPER_INCLUDE_DRV,
     TRUSTED_SECURITY_WRAPPER_INCLUDE_PATH, TRUSTED_SECURITY_WRAPPER_SHA256,
     TRUSTED_STDENV_BASH_BUILDER, TRUSTED_STDENV_BASH_DRV, TRUSTED_STDENV_FULL_OUTPUT,
     TRUSTED_STDENV_NO_CC_OUTPUT, TRUSTED_STDENV_SOURCE_SHA256, TRUSTED_STDENV_STATIC_OUTPUT,
@@ -336,6 +337,9 @@ pub(crate) struct WorkstationBuildProfile {
 struct RoleCounterparts {
     /// This commit's script fingerprint pair → the pin pair it replaces.
     fingerprints: BTreeMap<(String, String), (String, String)>,
+    /// This commit's store-normalized fingerprint → the pin's, for scripts
+    /// the pin admits by that half alone (the NixOS system closure).
+    normalized: BTreeMap<String, String>,
     /// This commit's bytes → the reviewed stock command they replace.
     stock_commands: BTreeMap<String, &'static str>,
     /// Reviewed builder file hash at the pin → its hash at this commit.
@@ -346,6 +350,17 @@ struct RoleCounterparts {
 /// `parseDrvName` splits it (up to the first `-` followed by a digit).
 /// `firefox-153.6.0esr` and `firefox-152.4.0esr` have the same role.
 pub(crate) fn package_name(name: &str) -> &str {
+    let name = package_name_with_version_split(name);
+    // The system closure is named after the configured host name; its role
+    // is the same whatever the host is called.
+    if name.starts_with("nixos-system-") {
+        "nixos-system"
+    } else {
+        name
+    }
+}
+
+fn package_name_with_version_split(name: &str) -> &str {
     let bytes = name.as_bytes();
     (0..bytes.len().saturating_sub(1))
         .find(|index| bytes[*index] == b'-' && bytes[index + 1].is_ascii_digit())
@@ -383,6 +398,8 @@ pub(crate) struct ReviewedContent {
     pub(crate) stock_commands: Vec<StockCommandCounterpart>,
     #[serde(default)]
     pub(crate) builder_files: Vec<BuilderFileCounterpart>,
+    #[serde(default)]
+    pub(crate) normalized: Vec<NormalizedCounterpart>,
 }
 
 /// `[normalized, executable-pinned]` fingerprints of a counterpart script at
@@ -398,6 +415,21 @@ pub(crate) struct FingerprintCounterpart {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StockCommandCounterpart {
+    pub(crate) role: String,
+    pub(crate) commit: String,
+    pub(crate) reviewed: String,
+}
+
+/// Pin fingerprints the preflight admits by their store-normalized half
+/// alone; a counterpart maps that half only.
+pub(crate) const NORMALIZED_ONLY_FINGERPRINTS: [&str; 1] =
+    [PINNED_NIXOS_TOPLEVEL_GENERATOR_FINGERPRINT];
+
+/// The store-normalized fingerprint of a counterpart script at the detected
+/// commit and the pin's, for one role.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NormalizedCounterpart {
     pub(crate) role: String,
     pub(crate) commit: String,
     pub(crate) reviewed: String,
@@ -604,6 +636,23 @@ impl WorkstationBuildProfile {
                 bail!("a counterpart command maps to two stock commands");
             }
         }
+        for entry in &content.normalized {
+            if !valid_role(&entry.role)
+                || !is_sha256_hex(&entry.commit)
+                || !NORMALIZED_ONLY_FINGERPRINTS.contains(&entry.reviewed.as_str())
+            {
+                bail!("a normalized counterpart must replace a script the pin admits by that half");
+            }
+            if counterparts
+                .entry(entry.role.clone())
+                .or_default()
+                .normalized
+                .insert(entry.commit.clone(), entry.reviewed.clone())
+                .is_some_and(|previous| previous != entry.reviewed)
+            {
+                bail!("a normalized counterpart maps to two reviewed scripts");
+            }
+        }
         for entry in &content.builder_files {
             let Some((_, reviewed)) = REVIEWED_BUILDER_FILES
                 .iter()
@@ -796,11 +845,16 @@ impl WorkstationBuildProfile {
             normalized_script_sha256(&rendered),
             executable_pinned_script_sha256(&rendered),
         );
-        match self
-            .role_counterparts()
-            .and_then(|role| role.fingerprints.get(&pair))
-        {
-            Some(reviewed) => reviewed.clone(),
+        let Some(role) = self.role_counterparts() else {
+            return pair;
+        };
+        if let Some(reviewed) = role.fingerprints.get(&pair) {
+            return reviewed.clone();
+        }
+        // Only the normalized half is the pin's; the executable half stays
+        // this commit's, which no pinned pair contains.
+        match role.normalized.get(&pair.0) {
+            Some(reviewed) => (reviewed.clone(), pair.1),
             None => pair,
         }
     }

@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS detected_nixpkgs_commits (
             'source_build_required',
             'evaluation_failed',
             'provenance_unverified',
+            'insufficient_disk',
             'reference_blueprints_missing'
         )
     ),
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS detected_nixpkgs_commits (
     profile TEXT,
     tiaris_derivations TEXT NOT NULL DEFAULT '[]',
     detected_at TEXT NOT NULL,
+    derived_by TEXT NOT NULL DEFAULT '',
     CHECK ((state = 'ready') = (reason IS NULL)),
     CHECK (state = 'blocked' OR profile IS NOT NULL)
 );
