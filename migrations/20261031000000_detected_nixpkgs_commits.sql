@@ -10,7 +10,13 @@ CREATE TABLE IF NOT EXISTS detected_nixpkgs_commits (
     state TEXT NOT NULL CHECK (state IN ('ready', 'blocked')),
     reason TEXT CHECK (
         reason IS NULL
-        OR reason IN ('build_script_changed', 'source_build_required', 'evaluation_failed')
+        OR reason IN (
+            'build_script_changed',
+            'source_build_required',
+            'evaluation_failed',
+            'provenance_unverified',
+            'reference_blueprints_missing'
+        )
     ),
     reason_details TEXT NOT NULL DEFAULT '[]',
     profile TEXT,

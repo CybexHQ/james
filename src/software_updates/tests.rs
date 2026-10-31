@@ -161,6 +161,7 @@ fn fake_nix_full(
         }
     };
     std::fs::write(root.join("tiaris-listing"), listing(tiaris_listing)).unwrap();
+    std::fs::write(root.join("references.json"), r#"["standard"]"#).unwrap();
     std::fs::write(root.join("blueprint-listing"), listing(blueprint_listing)).unwrap();
     let mut agent = compile(AGENT_DRV);
     agent["inputDrvs"] = agent_inputs
@@ -192,6 +193,9 @@ set -eu
 root='{root}'
 printf '%s\n' "$*" >> "$root/calls"
 case " $* " in
+  *" eval "*referenceBlueprints*)
+    cat "$root/references.json"
+    ;;
   *" eval "*)
     [ -f "$root/identities.json" ] || exit 3
     cat "$root/identities.json"
@@ -225,14 +229,10 @@ esac
 }
 
 async fn evaluate(fake: &FakeNix) -> Result<DetectedOutcome> {
-    evaluate_with(fake, &pool().await, false).await
+    evaluate_with(fake, false).await
 }
 
-async fn evaluate_with(
-    fake: &FakeNix,
-    db: &SqlitePool,
-    keep_root: bool,
-) -> Result<DetectedOutcome> {
+async fn evaluate_with(fake: &FakeNix, keep_root: bool) -> Result<DetectedOutcome> {
     let metadata = FlakeMetadata {
         path: "/nix/store/ydk30pf7qngrw0ws113m9p005p681rxy-source".to_string(),
         last_modified: 1_793_294_725,
@@ -242,7 +242,6 @@ async fn evaluate_with(
     create_private_dir(&work).unwrap();
     let outcome = evaluate_commit_in(
         &fake.config,
-        db,
         COMMIT,
         &metadata,
         "tarball+file:///usr/share/tiaris-nest/manage-source/0000000000000000000000000000000000000000.tar",
@@ -430,7 +429,7 @@ async fn evaluation_failures_block_with_evaluation_failed() {
     std::fs::write(fake.root.join("fail-dry-run"), "").unwrap();
     let outcome = evaluate(&fake).await.unwrap();
     assert_eq!(outcome.reason, Some(REASON_EVALUATION_FAILED));
-    assert_eq!(outcome.details, vec!["taskbar"]);
+    assert_eq!(outcome.details, vec!["reference-standard"]);
 }
 
 #[tokio::test]
@@ -733,22 +732,46 @@ async fn the_database_rejects_inconsistent_detected_commits() {
 }
 
 #[test]
-fn the_check_flake_dry_runs_tiaris_packages_and_every_builtin_blueprint() {
-    let flake = builtin_blueprint_flake(
+fn the_check_flake_evaluates_only_the_shipped_tiaris_source_and_nixpkgs() {
+    let flake = reference_flake(
         &build::nixpkgs_flake_ref(COMMIT, Some(NAR_HASH)).unwrap(),
         "tarball+file:///usr/share/tiaris-nest/manage-source/0000000000000000000000000000000000000000.tar",
     );
     assert!(flake.contains(&format!(
         "inputs.nixpkgs.url = \"github:NixOS/nixpkgs/{COMMIT}?narHash="
     )));
+    // Two inputs only: nixpkgs and the shipped Tiaris source.
+    assert_eq!(flake.matches("inputs.").count(), 2);
     assert!(flake.contains("tiaris-workstation-cache-seeds.nix"));
     assert!(flake.contains("tiaris-packages = pkgs.writeText"));
+    assert!(flake.contains(&format!("manage + \"/{REFERENCE_BLUEPRINTS_DIR}\"")));
+    assert!(flake.contains("referenceBlueprints = referenceNames;"));
     for profile in BUILTIN_BLUEPRINT_PROFILES {
         assert!(flake.contains(&format!("{profile} = blueprint \"{profile}\";")));
     }
-    let files = build::blueprint_job_template_files();
+    let files = build::blueprint_job_template_files().unwrap();
     assert!(files[0].1.contains("./tiaris-blueprints.nix"));
     assert!(files[0].1.contains("./blueprint.nix"));
+    // The reference configuration is the job configuration with the
+    // reference's modules in the places of the job's.
+    assert!(files[1].1.starts_with("{ desktop, blueprint }:"));
+    assert_eq!(
+        files[1]
+            .1
+            .strip_prefix("{ desktop, blueprint }:\n\n")
+            .unwrap()
+            .replace(
+                "    desktop\n    blueprint\n",
+                "    ./tiaris-blueprints.nix\n    ./blueprint.nix\n"
+            ),
+        files[0].1
+    );
+    for name in ["standard", "taskbar-de", "a1"] {
+        assert!(valid_reference_name(name));
+    }
+    for name in ["", "Standard", "../etc", "1st", &"a".repeat(33)] {
+        assert!(!valid_reference_name(name));
+    }
 }
 
 /// Real evaluation of a channel commit with the local Nix. Not part of CI:
@@ -774,62 +797,19 @@ async fn real_channel_commit_evaluation() {
     eprintln!("metadata: {metadata:?}");
     let work = config.build.work_dir.join("evaluation");
     create_private_dir(&work).unwrap();
-    let db = pool().await;
-    // Optionally a Blueprint job this Nest built at the pin: a directory
-    // with Manage's compiler exports `blueprint.nix` and `desktop.nix`.
-    if let Ok(job) = std::env::var("TIARIS_SOFTWARE_UPDATE_JOB_DIR") {
-        let job = PathBuf::from(job);
-        config.build.targets = vec![crate::config::BuildTargetConfig {
-            artifact_type: "nixos_closure".to_string(),
-            target: "blueprint".to_string(),
-            system: "x86_64-linux".to_string(),
-            flake: format!("github:NixOS/nixpkgs/{}", build::BUILTIN_NIXPKGS_COMMIT),
-            attr: "packages.x86_64-linux.desktop-experience".to_string(),
-        }];
-        let spec = json!({
-            "schema_version": 1,
-            "artifact_type": "nixos_closure",
-            "target": "blueprint",
-            "system": "x86_64-linux",
-            "input_revision": "rev",
-            "input_config_hash": "a".repeat(64),
-            "nixpkgs_commit": build::BUILTIN_NIXPKGS_COMMIT,
-            "source_lock_sha256": "b".repeat(64),
-            "build_input": {
-                "kind": "blueprint_nixos_module",
-                "generated_nix": std::fs::read_to_string(job.join("blueprint.nix")).unwrap(),
-                "desktop_module_nix": std::fs::read_to_string(job.join("desktop.nix")).unwrap(),
-                "expected_state": serde_json::from_str::<Value>(
-                    &std::fs::read_to_string(job.join("expected-state.json")).unwrap()
-                ).unwrap(),
-                "blueprint_name": "Cache contract",
-                "blueprint_revision": 1
-            }
-        });
-        sqlx::query(
-            "INSERT INTO nest_build_jobs (requested_artifact_type, build_spec, target, system,
-                 input_revision, input_config_hash, status, created_at, updated_at)
-             VALUES ('nixos_closure', ?, 'blueprint', 'x86_64-linux', 'rev', ?, 'succeeded',
-                 '2026-10-31T00:00:00Z', '2026-10-31T00:00:00Z')",
-        )
-        .bind(spec.to_string())
-        .bind("a".repeat(64))
-        .execute(&db)
-        .await
-        .unwrap();
-    }
-    let outcome = evaluate_commit_in(&config, &db, &commit, &metadata, &manage, &work)
+    let outcome = evaluate_commit_in(&config, &commit, &metadata, &manage, &work)
         .await
         .unwrap();
     let _ = std::fs::remove_dir_all(&config.build.work_dir);
     eprintln!(
-        "state={} reason={:?} kernel={} tiaris_closure={} tiaris_derivations={:#?}\ndetails={:#?}\ncounterparts={:#?}\nreviewed fingerprints={} stock commands={} builder files={:?}",
+        "state={} reason={:?} kernel={} tiaris_closure={} tiaris_derivations={:#?}\ndetails={:#?}\ncoverage={:#?}\ncounterparts={:#?}\nreviewed fingerprints={} stock commands={} builder files={:?}",
         outcome.state(),
         outcome.reason,
         outcome.kernel_version,
         outcome.tiaris_closure_size,
         outcome.tiaris_derivations,
         outcome.details,
+        outcome.coverage,
         outcome.counterparts,
         outcome.reviewed.fingerprints.len(),
         outcome.reviewed.stock_commands.len(),
@@ -846,7 +826,7 @@ fn write_check_flake_for_inspection() {
     let nar_hash = std::env::var("TIARIS_SOFTWARE_UPDATE_NAR_HASH").unwrap();
     let manage = std::env::var("TIARIS_SOFTWARE_UPDATE_MANAGE_SOURCE").unwrap();
     create_private_dir(&dir).unwrap();
-    write_builtin_blueprint_flake(
+    write_reference_flake(
         &dir,
         &build::nixpkgs_flake_ref(&commit, Some(&nar_hash)).unwrap(),
         &manage,
@@ -855,83 +835,189 @@ fn write_check_flake_for_inspection() {
 }
 
 #[tokio::test]
-async fn the_nests_own_blueprints_are_checked_with_only_nixpkgs_changed() {
-    let db = pool().await;
-    let pin = build::BUILTIN_NIXPKGS_COMMIT;
-    let spec = |name: &str, commit: &str, allow_source_builds: bool| {
-        json!({
-            "schema_version": 1,
-            "artifact_type": "nixos_closure",
-            "target": "blueprint",
-            "system": "x86_64-linux",
-            "input_revision": "rev",
-            "input_config_hash": "a".repeat(64),
-            "blueprint_id": "4c20e5ca-a7ae-4b27-8ce6-dff50192ed21",
-            "nixpkgs_commit": commit,
-            "source_lock_sha256": "b".repeat(64),
-            "allow_source_builds": allow_source_builds,
-            "build_input": {
-                "kind": "blueprint_nixos_module",
-                "generated_nix": format!("{{ lib, ... }}: {{ networking.hostName = lib.mkDefault \"{name}\"; }}"),
-                "blueprint_name": name,
-                "blueprint_revision": 3
-            }
-        })
-    };
-    let insert = |value: Value, status: &'static str| {
-        let db = db.clone();
-        async move {
-            sqlx::query(
-                "INSERT INTO nest_build_jobs (requested_artifact_type, build_spec, target, system,
-                     input_revision, input_config_hash, status, created_at, updated_at)
-                 VALUES ('nixos_closure', ?, 'blueprint', 'x86_64-linux', 'rev', ?, ?,
-                     '2026-10-31T00:00:00Z', '2026-10-31T00:00:00Z')",
-            )
-            .bind(value.to_string())
-            .bind("a".repeat(64))
-            .bind(status)
-            .execute(&db)
-            .await
-            .unwrap()
-            .last_insert_rowid()
-        }
-    };
-    insert(spec("older", pin, false), "succeeded").await;
-    let newest = insert(spec("newest", pin, false), "succeeded").await;
-    insert(spec("failed", pin, false), "failed").await;
-    insert(spec("source", pin, true), "succeeded").await;
-    insert(spec("other", &"1".repeat(40), false), "succeeded").await;
-
-    let mut fake = fake_nix(
-        "retained",
+async fn only_shipped_references_are_evaluated_never_organization_jobs() {
+    // Organization Blueprint jobs are not an input of the check: whatever
+    // the database holds, the dry runs name only the Tiaris packages, the
+    // shipped reference Blueprints and the plain profiles.
+    let fake = fake_nix(
+        "references-only",
         Some(evaluated_identities("26.05", &[])),
         &[AGENT_DRV],
     );
-    fake.config.build.targets = vec![crate::config::BuildTargetConfig {
-        artifact_type: "nixos_closure".to_string(),
-        target: "blueprint".to_string(),
-        system: "x86_64-linux".to_string(),
-        flake: format!("github:NixOS/nixpkgs/{pin}"),
-        attr: "packages.x86_64-linux.desktop-experience".to_string(),
-    }];
     let root = fake.root.clone();
-    let outcome = evaluate_with(&fake, &db, true).await;
+    let outcome = evaluate_with(&fake, true).await.unwrap();
     let calls = std::fs::read_to_string(root.join("calls")).unwrap();
     let _ = std::fs::remove_dir_all(&root);
-    assert_eq!(outcome.unwrap().state(), "ready");
-    let blueprint_runs = calls
+    assert_eq!(outcome.state(), "ready");
+    let builds = calls
         .lines()
-        .filter(|call| call.contains(" build ") && !call.contains("tiaris-packages"))
+        .filter(|call| call.contains(" build "))
         .collect::<Vec<_>>();
-    // The job at the pin, at the commit for its counterparts, and at the
-    // commit under the full profile.
-    assert_eq!(blueprint_runs.len(), 3, "{calls}");
-    let installable = format!("job-{newest}-input#packages.x86_64-linux.desktop-experience");
-    assert!(
-        blueprint_runs[0].contains(&format!("/pin-jobs/{installable}")),
-        "{calls}"
+    let installables = builds
+        .iter()
+        .map(|call| {
+            call.split_whitespace()
+                .find(|word| word.contains("#packages."))
+                .unwrap()
+                .rsplit_once("#packages.x86_64-linux.")
+                .unwrap()
+                .1
+        })
+        .collect::<Vec<_>>();
+    // Tiaris packages once; each reference at the pin and once at the commit.
+    assert_eq!(
+        installables,
+        [
+            "tiaris-packages",
+            "reference-standard",
+            "reference-standard",
+            "taskbar",
+            "taskbar",
+            "dock",
+            "dock"
+        ]
     );
-    for run in &blueprint_runs[1..] {
-        assert!(run.contains(&format!("/jobs/{installable}")), "{calls}");
+    assert!(!calls.contains("job-"), "{calls}");
+    for call in &builds[1..] {
+        assert!(
+            call.contains("/pin-flake#") || call.contains("/flake#"),
+            "{call}"
+        );
     }
+}
+
+#[tokio::test]
+async fn a_tiaris_source_without_reference_blueprints_blocks() {
+    let fake = fake_nix(
+        "no-references",
+        Some(evaluated_identities("26.05", &[])),
+        &[AGENT_DRV],
+    );
+    std::fs::write(fake.root.join("references.json"), "[]").unwrap();
+    let outcome = evaluate(&fake).await.unwrap();
+    assert_eq!(outcome.reason, Some(REASON_REFERENCE_BLUEPRINTS_MISSING));
+
+    let fake = fake_nix(
+        "unsafe-references",
+        Some(evaluated_identities("26.05", &[])),
+        &[AGENT_DRV],
+    );
+    std::fs::write(fake.root.join("references.json"), r#"["../../etc"]"#).unwrap();
+    let outcome = evaluate(&fake).await.unwrap();
+    assert_eq!(outcome.reason, Some(REASON_EVALUATION_FAILED));
+}
+
+#[test]
+fn provenance_needs_the_branch_to_contain_the_commit_after_the_pin() {
+    assert_eq!(
+        compare_status(br#"{"status":"ahead","ahead_by":3}"#).unwrap(),
+        "ahead"
+    );
+    assert_eq!(
+        compare_status(br#"{"status":"diverged"}"#).unwrap(),
+        "diverged"
+    );
+    assert!(compare_status(br#"{"status":"unknown"}"#).is_err());
+    assert!(compare_status(b"not json").is_err());
+}
+
+#[test]
+fn failed_commits_are_evaluated_again_at_most_daily() {
+    let now = Utc.with_ymd_and_hms(2026, 10, 31, 12, 0, 0).unwrap();
+    let row = |reason: Option<&str>, hours_ago: i64| DetectedRow {
+        commit_rev: COMMIT.to_string(),
+        channel: DEFAULT_CHANNEL.to_string(),
+        last_modified: "2026-10-29T17:25:25Z".to_string(),
+        nar_hash: NAR_HASH.to_string(),
+        kernel_version: String::new(),
+        state: if reason.is_some() { "blocked" } else { "ready" }.to_string(),
+        reason: reason.map(str::to_string),
+        profile: None,
+        tiaris_derivations: "[]".to_string(),
+        detected_at: (now - chrono::Duration::hours(hours_ago)).to_rfc3339(),
+    };
+    assert!(needs_evaluation(None, now));
+    for reason in [REASON_EVALUATION_FAILED, REASON_PROVENANCE_UNVERIFIED] {
+        assert!(!needs_evaluation(Some(&row(Some(reason), 1)), now));
+        assert!(!needs_evaluation(Some(&row(Some(reason), 23)), now));
+        assert!(needs_evaluation(Some(&row(Some(reason), 24)), now));
+    }
+    for reason in [
+        REASON_BUILD_SCRIPT_CHANGED,
+        REASON_SOURCE_BUILD_REQUIRED,
+        REASON_REFERENCE_BLUEPRINTS_MISSING,
+    ] {
+        assert!(!needs_evaluation(Some(&row(Some(reason), 48)), now));
+    }
+    assert!(!needs_evaluation(Some(&row(None, 48)), now));
+}
+
+#[tokio::test]
+async fn a_profile_from_another_nest_build_is_derived_again() {
+    let pool = pool().await;
+    store_detected(
+        &pool,
+        COMMIT,
+        DEFAULT_CHANNEL,
+        &metadata(1_793_294_725),
+        &ready_outcome(),
+    )
+    .await
+    .unwrap();
+    assert!(ready_commit(&pool, COMMIT).await.unwrap().is_some());
+    assert!(stale_ready_rows(&pool).await.unwrap().is_empty());
+    for (field, value) in [
+        ("schema", json!(PROFILE_SCHEMA - 1)),
+        ("nest_build", json!("0.2.47 release=other")),
+    ] {
+        let mut stored: Value = serde_json::from_str(
+            &sqlx::query_scalar::<_, String>(
+                "SELECT profile FROM detected_nixpkgs_commits WHERE commit_rev = ?",
+            )
+            .bind(COMMIT)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        let current = stored[field].clone();
+        stored[field] = value;
+        sqlx::query("UPDATE detected_nixpkgs_commits SET profile = ? WHERE commit_rev = ?")
+            .bind(stored.to_string())
+            .bind(COMMIT)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Never re-mapped: the commit admits nothing until derived again.
+        assert!(ready_commit(&pool, COMMIT).await.is_err());
+        assert_eq!(stale_ready_rows(&pool).await.unwrap().len(), 1);
+        stored[field] = current;
+        sqlx::query("UPDATE detected_nixpkgs_commits SET profile = ? WHERE commit_rev = ?")
+            .bind(stored.to_string())
+            .bind(COMMIT)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    // A profile in the format before this schema is stale too.
+    sqlx::query("UPDATE detected_nixpkgs_commits SET profile = '{\"identities\":{},\"reviewed\":{}}' WHERE commit_rev = ?")
+        .bind(COMMIT)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stale_ready_rows(&pool).await.unwrap().len(), 1);
+}
+
+/// Provenance of a real commit through the GitHub API. Not part of CI.
+/// Set `TIARIS_SOFTWARE_UPDATE_COMMIT` (and optionally `..._CHANNEL`).
+#[tokio::test]
+#[ignore]
+async fn real_commit_provenance() {
+    let commit = std::env::var("TIARIS_SOFTWARE_UPDATE_COMMIT").unwrap();
+    let channel = std::env::var("TIARIS_SOFTWARE_UPDATE_CHANNEL")
+        .unwrap_or_else(|_| DEFAULT_CHANNEL.to_string());
+    eprintln!(
+        "provenance: {:?}",
+        verify_provenance(&channel, &commit).await
+    );
 }

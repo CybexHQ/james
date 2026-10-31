@@ -13,7 +13,7 @@
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
 };
 
 use anyhow::{Result, bail};
@@ -313,25 +313,43 @@ pub(crate) struct WorkstationBuildProfile {
     builtin: bool,
     /// Built-in store item (`<hash>-<name>`, including `.drv` items) of every
     /// identity to this commit's store item.
-    items: BTreeMap<String, String>,
+    items: Arc<BTreeMap<String, String>>,
     /// The inverse for a derived profile: this commit's identity store items
     /// to their built-in items, so a script is fingerprinted as the reviewed
     /// script it renders. Empty for the built-in profile.
-    reviewed_items: BTreeMap<String, String>,
+    reviewed_items: Arc<BTreeMap<String, String>>,
     /// This commit's full revision and NixOS version label, each with the
     /// built-in commit's. Empty for the built-in profile.
-    reviewed_labels: Vec<(String, String)>,
+    reviewed_labels: Arc<Vec<(String, String)>>,
     /// Exact Tiaris package derivations this detected commit may compile.
-    tiaris_derivations: BTreeSet<String>,
-    /// Counterpart fingerprint pairs: this commit's script → the pin script
-    /// it replaces. Empty for the built-in profile.
-    fingerprint_counterparts: BTreeMap<(String, String), (String, String)>,
-    /// Counterpart stock commands: this commit's bytes → the reviewed stock
-    /// command they replace.
-    stock_command_counterparts: BTreeMap<String, &'static str>,
-    /// Reviewed builder file hash at the pin → its counterpart's hash at this
-    /// commit, only for files a counterpart uses.
-    builder_file_counterparts: BTreeMap<&'static str, String>,
+    tiaris_derivations: Arc<BTreeSet<String>>,
+    /// Counterpart content per derivation role (package name). Empty for the
+    /// built-in profile.
+    counterparts: Arc<BTreeMap<String, RoleCounterparts>>,
+    /// The role of the derivation under classification
+    /// ([`Self::for_derivation`]): only that role's counterparts apply.
+    role: Option<String>,
+}
+
+/// One derivation role's counterpart content at a detected commit.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RoleCounterparts {
+    /// This commit's script fingerprint pair → the pin pair it replaces.
+    fingerprints: BTreeMap<(String, String), (String, String)>,
+    /// This commit's bytes → the reviewed stock command they replace.
+    stock_commands: BTreeMap<String, &'static str>,
+    /// Reviewed builder file hash at the pin → its hash at this commit.
+    builder_files: BTreeMap<&'static str, String>,
+}
+
+/// The role of a derivation: its name up to its version, as Nix's
+/// `parseDrvName` splits it (up to the first `-` followed by a digit).
+/// `firefox-153.6.0esr` and `firefox-152.4.0esr` have the same role.
+pub(crate) fn package_name(name: &str) -> &str {
+    let bytes = name.as_bytes();
+    (0..bytes.len().saturating_sub(1))
+        .find(|index| bytes[*index] == b'-' && bytes[index + 1].is_ascii_digit())
+        .map_or(name, |index| &name[..index])
 }
 
 /// The reviewed builder files and their commit-independent hashes at the pin.
@@ -351,10 +369,11 @@ pub(crate) const STOCK_COMMANDS: [&str; 3] = [
 ];
 
 /// Reviewed content a detected commit derives from itself: for every
-/// derivation admitted at the pin in a job this Nest built there, the same
-/// derivation of the same job evaluated at the detected commit (its
-/// counterpart). Each entry pairs the counterpart's content with the pin
-/// content it replaces, so every existing check applies unchanged.
+/// derivation admitted at the pin in a reference configuration of the
+/// shipped Tiaris source, the same derivation of the same reference evaluated
+/// at the detected commit (its counterpart). Each entry pairs the
+/// counterpart's content with the pin content it replaces, for that
+/// derivation's role only, so every existing check applies unchanged.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReviewedContent {
@@ -362,16 +381,16 @@ pub(crate) struct ReviewedContent {
     pub(crate) fingerprints: Vec<FingerprintCounterpart>,
     #[serde(default)]
     pub(crate) stock_commands: Vec<StockCommandCounterpart>,
-    /// Builder file name → its sha256 at the detected commit.
     #[serde(default)]
-    pub(crate) builder_files: BTreeMap<String, String>,
+    pub(crate) builder_files: Vec<BuilderFileCounterpart>,
 }
 
 /// `[normalized, executable-pinned]` fingerprints of a counterpart script at
-/// the detected commit and of the pin script it replaces.
+/// the detected commit and of the pin script it replaces, for one role.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FingerprintCounterpart {
+    pub(crate) role: String,
     pub(crate) commit: [String; 2],
     pub(crate) reviewed: [String; 2],
 }
@@ -379,8 +398,19 @@ pub(crate) struct FingerprintCounterpart {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StockCommandCounterpart {
+    pub(crate) role: String,
     pub(crate) commit: String,
     pub(crate) reviewed: String,
+}
+
+/// A reviewed builder file whose bytes changed at the detected commit, as
+/// one role's counterpart uses it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BuilderFileCounterpart {
+    pub(crate) role: String,
+    pub(crate) file: String,
+    pub(crate) sha256: String,
 }
 
 fn is_sha256_hex(value: &str) -> bool {
@@ -412,13 +442,12 @@ impl WorkstationBuildProfile {
             Self {
                 nixpkgs_commit: BUILTIN_NIXPKGS_COMMIT.to_string(),
                 builtin: true,
-                items,
-                reviewed_items: BTreeMap::new(),
-                reviewed_labels: Vec::new(),
-                tiaris_derivations: BTreeSet::new(),
-                fingerprint_counterparts: BTreeMap::new(),
-                stock_command_counterparts: BTreeMap::new(),
-                builder_file_counterparts: BTreeMap::new(),
+                items: Arc::new(items),
+                reviewed_items: Arc::default(),
+                reviewed_labels: Arc::default(),
+                tiaris_derivations: Arc::default(),
+                counterparts: Arc::default(),
+                role: None,
             }
         })
     }
@@ -503,44 +532,54 @@ impl WorkstationBuildProfile {
         Ok(Self {
             nixpkgs_commit: nixpkgs_commit.to_string(),
             builtin: false,
-            items,
-            reviewed_items,
-            reviewed_labels: vec![
+            items: Arc::new(items),
+            reviewed_items: Arc::new(reviewed_items),
+            reviewed_labels: Arc::new(vec![
                 (
                     nixpkgs_commit.to_string(),
                     BUILTIN_NIXPKGS_COMMIT.to_string(),
                 ),
                 (label, reviewed_label),
-            ],
-            tiaris_derivations,
-            fingerprint_counterparts: BTreeMap::new(),
-            stock_command_counterparts: BTreeMap::new(),
-            builder_file_counterparts: BTreeMap::new(),
+            ]),
+            tiaris_derivations: Arc::new(tiaris_derivations),
+            counterparts: Arc::default(),
+            role: None,
         })
     }
 
     /// The derived profile with the reviewed content its counterparts give
-    /// it. Every entry must be well formed and unambiguous: one commit
-    /// fingerprint pair or command maps to exactly one reviewed one, a
-    /// reviewed command is a stock command and a builder file is one of the
-    /// reviewed files.
+    /// it, per derivation role. Every entry must be well formed and
+    /// unambiguous within its role: one commit fingerprint pair or command
+    /// maps to exactly one reviewed one, a reviewed command is a stock
+    /// command and a builder file is one of the reviewed files.
     pub(crate) fn with_reviewed_content(mut self, content: &ReviewedContent) -> Result<Self> {
         if self.builtin {
             bail!("the built-in profile has no counterparts");
         }
+        let valid_role = |role: &str| {
+            !role.is_empty()
+                && role.len() <= 211
+                && role
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"+-._?=".contains(&byte))
+        };
+        let mut counterparts = BTreeMap::<String, RoleCounterparts>::new();
         for entry in &content.fingerprints {
-            if !entry
-                .commit
-                .iter()
-                .chain(&entry.reviewed)
-                .all(|value| is_sha256_hex(value))
+            if !valid_role(&entry.role)
+                || !entry
+                    .commit
+                    .iter()
+                    .chain(&entry.reviewed)
+                    .all(|value| is_sha256_hex(value))
             {
-                bail!("counterpart fingerprints must be sha256 hex");
+                bail!("counterpart fingerprints must name a role and be sha256 hex");
             }
             let key = (entry.commit[0].clone(), entry.commit[1].clone());
             let value = (entry.reviewed[0].clone(), entry.reviewed[1].clone());
-            if self
-                .fingerprint_counterparts
+            if counterparts
+                .entry(entry.role.clone())
+                .or_default()
+                .fingerprints
                 .insert(key, value.clone())
                 .is_some_and(|previous| previous != value)
             {
@@ -554,41 +593,82 @@ impl WorkstationBuildProfile {
             else {
                 bail!("a counterpart command does not replace a stock command");
             };
-            if self
-                .stock_command_counterparts
-                .insert(entry.commit.clone(), reviewed)
-                .is_some_and(|previous| previous != *reviewed)
+            if !valid_role(&entry.role)
+                || counterparts
+                    .entry(entry.role.clone())
+                    .or_default()
+                    .stock_commands
+                    .insert(entry.commit.clone(), reviewed)
+                    .is_some_and(|previous| previous != *reviewed)
             {
                 bail!("a counterpart command maps to two stock commands");
             }
         }
-        for (name, sha256) in &content.builder_files {
-            let Some((_, reviewed)) = REVIEWED_BUILDER_FILES.iter().find(|(file, _)| file == name)
+        for entry in &content.builder_files {
+            let Some((_, reviewed)) = REVIEWED_BUILDER_FILES
+                .iter()
+                .find(|(file, _)| *file == entry.file)
             else {
-                bail!("{name} is not a reviewed builder file");
+                bail!("{} is not a reviewed builder file", entry.file);
             };
-            if !is_sha256_hex(sha256) {
-                bail!("counterpart builder file hash must be sha256 hex");
+            if !valid_role(&entry.role) || !is_sha256_hex(&entry.sha256) {
+                bail!("counterpart builder file must name a role and be sha256 hex");
             }
-            self.builder_file_counterparts
-                .insert(reviewed, sha256.clone());
+            counterparts
+                .entry(entry.role.clone())
+                .or_default()
+                .builder_files
+                .insert(reviewed, entry.sha256.clone());
         }
+        self.counterparts = Arc::new(counterparts);
         Ok(self)
     }
 
+    /// The profile as it applies to one derivation: only the counterpart
+    /// content of that derivation's role, so content derived for one role
+    /// cannot admit another derivation.
+    pub(crate) fn for_derivation(&self, drv_path: &str) -> Self {
+        let mut scoped = self.clone();
+        if !self.builtin {
+            scoped.role = Some(self.derivation_role(drv_path));
+        }
+        scoped
+    }
+
+    /// The role of a derivation at this profile's commit: its name with the
+    /// version label rendered back, up to its version.
+    pub(crate) fn derivation_role(&self, drv_path: &str) -> String {
+        let name = crate::nix_log::derivation_display_name(drv_path);
+        package_name(&self.reviewed_script(&name)).to_string()
+    }
+
+    fn role_counterparts(&self) -> Option<&RoleCounterparts> {
+        self.counterparts.get(self.role.as_deref()?)
+    }
+
     /// This commit's hash for the reviewed builder file with the pin hash
-    /// `reviewed`, when a counterpart uses a changed copy of it.
+    /// `reviewed`, when this role's counterpart uses a changed copy of it.
     pub(crate) fn builder_file_counterpart(&self, reviewed: &str) -> Option<&str> {
-        self.builder_file_counterparts
+        self.role_counterparts()?
+            .builder_files
             .get(reviewed)
             .map(String::as_str)
     }
 
-    /// The reviewed stock command `command` is, or replaces at this commit.
+    /// Every counterpart hash of a reviewed builder file, in any role: for
+    /// checks that precede per-derivation classification (fetching the
+    /// buildEnv helper). Its users are then checked in their own role.
+    pub(crate) fn any_builder_file_counterparts(&self, reviewed: &str) -> Vec<&str> {
+        self.counterparts
+            .values()
+            .filter_map(|role| role.builder_files.get(reviewed).map(String::as_str))
+            .collect()
+    }
+
+    /// The reviewed stock command `command` is, or replaces in this role.
     pub(crate) fn stock_command<'a>(&'a self, command: &'a str) -> &'a str {
-        self.stock_command_counterparts
-            .get(command)
-            .copied()
+        self.role_counterparts()
+            .and_then(|role| role.stock_commands.get(command).copied())
             .unwrap_or(command)
     }
 
@@ -657,7 +737,7 @@ impl WorkstationBuildProfile {
             return Cow::Borrowed(script);
         }
         let mut rendered = self.reviewed_store_items(script);
-        for (label, reviewed) in &self.reviewed_labels {
+        for (label, reviewed) in self.reviewed_labels.iter() {
             if rendered.contains(label.as_str()) {
                 rendered = Cow::Owned(rendered.replace(label.as_str(), reviewed));
             }
@@ -716,7 +796,10 @@ impl WorkstationBuildProfile {
             normalized_script_sha256(&rendered),
             executable_pinned_script_sha256(&rendered),
         );
-        match self.fingerprint_counterparts.get(&pair) {
+        match self
+            .role_counterparts()
+            .and_then(|role| role.fingerprints.get(&pair))
+        {
             Some(reviewed) => reviewed.clone(),
             None => pair,
         }

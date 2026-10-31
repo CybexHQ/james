@@ -45,7 +45,8 @@ A protocol-4 Tiaris gets today's report: the release pins only.
 Nest checks its NixOS channel itself (Manage
 `docs/design/nest-driven-software-updates.md`, sections 1 to 3). No person
 reviews an update: the reviewed content of a new commit is derived from that
-commit, anchored on what the Nest already admitted at its release pin.
+commit and the shipped Tiaris source alone, anchored on what the release pin
+admits.
 
 - **When.** Once a day at a random minute between 01:00 and 05:00 in the
   update-schedule time zone (UTC without a schedule), and when Manage's Nest
@@ -56,89 +57,91 @@ commit, anchored on what the Nest already admitted at its release pin.
   Manage check.
 - **Fetch.** `https://channels.nixos.org/<channel>/git-revision` names the
   commit. `nix flake metadata` records its `lastModified` and `narHash`; every
-  later fetch, including Blueprint jobs at the commit, uses
-  `github:NixOS/nixpkgs/<commit>?narHash=<recorded>`. A commit already handled
-  is skipped (an on-demand check retries one whose evaluation failed);
-  network errors record nothing.
+  later fetch uses `github:NixOS/nixpkgs/<commit>?narHash=<recorded>`: the
+  check, Blueprint jobs, their package-version probe and the `nixpkgs_flake`
+  in their result metadata.
+- **Provenance.** Through the GitHub API, the commit must be on the
+  channel's branch of NixOS/nixpkgs (`compare/<commit>...<channel>` is
+  `identical` or `ahead`: the commit is the branch tip or an ancestor of it)
+  and descend from the release pin (`compare/<pin>...<commit>` is `ahead`). A
+  fork-only commit diverges from the branch. Any failure, including the
+  API's rate limit, records `blocked`, `provenance_unverified`.
+- **Retries and time.** A recorded commit is evaluated again only when its
+  evaluation or provenance failed at least a day ago; a request from Manage
+  repeats only the channel lookup. One commit's evaluation is bounded to 60
+  minutes (`evaluation_failed`, `time limit`).
 - **Commit identities.** `src/software_updates/identities.nix` evaluates every
   identity of `COMMIT_IDENTITIES` from the same nixpkgs attribute; at 74cc63f
   it reproduces all 40 compiled paths exactly. The derived profile maps each
-  built-in store item to the commit's one-to-one and renders the commit's
-  revision and NixOS version label (`26.05.<yyyymmdd>.<short rev>`) back to
-  the pin's before fingerprinting.
-- **Reference jobs.** The newest succeeded source-disabled job of each
-  Blueprint this Nest built at its pin (at most 8). Without such jobs Nest
-  uses the bare Taskbar and Dock profiles, which are not the configurations
-  the built-in fingerprints were recorded from: their `/etc` and unit link
-  farms are not admitted at the pin, so such a Nest's commits block until it
-  has built a Blueprint.
-- **Counterparts.** Each reference job is dry-run in isolated stores at the
-  pin (built-in profile) and with only nixpkgs replaced at the commit. Every
-  local derivation admitted on its own at the pin gets a counterpart: the
-  derivation of the same package name (the name up to its version, as Nix's
-  `parseDrvName` splits it, after the version label is rendered back) in the
-  same job at the commit, with the same builder and attribute names. Several
-  derivations of one name pair only when their attributes, with whole store
-  paths set aside, match one to one. Each counterpart's content becomes
-  reviewed content of the commit's profile, recorded against the pin content
-  it replaces:
-  - its script fingerprint pairs (and `/etc` zone-independent pairs);
-  - its stock materializer commands;
-  - the hash at the commit of a reviewed builder file (`source-stdenv.sh`,
-    `default-builder.sh`, `substitute.sh`, `builder.pl`, `wrapper.c`) that
-    both the pin derivation and its counterpart use.
+  built-in store item to the commit's one-to-one, renders the commit's
+  revision and NixOS version label (`26.05.<yyyymmdd>.<short rev>`) back to the
+  pin's before fingerprinting, and renders a built-in provider the commit
+  replaced to text no reviewed script contains.
+- **References.** Only configurations of the shipped Tiaris source: each
+  reference Blueprint in `deploy/nixos/reference-blueprints/<name>/`
+  (`blueprint.nix` and `desktop.nix`, the built-in Blueprints' compiler
+  exports; at most 16), configured exactly like a Blueprint job, plus the
+  plain Taskbar and Dock profiles of `tiaris-blueprints.nix`. Organization
+  Blueprint jobs are never an input. A Tiaris source without reference
+  Blueprints records `blocked`, `reference_blueprints_missing`.
+- **Counterparts.** Each reference is dry-run in isolated stores at the pin
+  (built-in profile) and at the commit. Every local derivation admitted on
+  its own at the pin gets a counterpart: the derivation of the same role (its
+  package name, the name up to its version as Nix's `parseDrvName` splits
+  it, after the version label is rendered back) in the same reference at the
+  commit, with the same builder and attribute names. Several derivations of
+  one role pair only when their attributes, with whole store paths set
+  aside, match one to one. The counterpart's script fingerprint pairs (and
+  `/etc` zone-independent pairs), stock materializer commands and changed
+  reviewed builder files used on both sides become reviewed content **of that
+  role only**, recorded against the pin content they replace. A Blueprint job
+  at the commit is then admitted under exactly the pin's rules, each
+  derivation seeing only its own role's content.
 
-  A Blueprint job at the commit is then admitted under exactly the pin's
-  rules against that profile.
-
-  Why this keeps the trust boundary: everything in the commit's profile is
-  produced by nixpkgs at that commit (pinned by `narHash`) from job inputs
-  that were already admitted at the pin. A Blueprint cannot add a script, a
-  materializer or a builder file that was not admitted at the pin. A
-  derivation class or generator without a pin counterpart stays rejected.
-  Store paths are not normalized beyond their hashes; the counterpart
-  replaces that.
+  Why this keeps the trust boundary: every input of the commit's profile is
+  the shipped Tiaris source and nixpkgs at that commit, pinned by `narHash`
+  and verified to be on the channel's branch after the release pin. A
+  Blueprint can neither contribute content nor use one role's content for
+  another derivation; what the references do not cover stays rejected, as at
+  the pin. Store paths are not normalized beyond their hashes.
 - **Tiaris packages.** Manage's `tiaris-workstation-cache-seeds.nix` (agent,
   gsettings helpers, patched Avahi), evaluated with the commit's nixpkgs and
-  the Tiaris source shipped with this Nest (`system-identity.json`), never
-  from Blueprint input, is dry-run in an isolated store. Its local build
+  the shipped Tiaris source, is dry-run in an isolated store. Its local build
   closure may compile at the commit: the top-level packages and every local
   derivation they reach (vendored crates, per-crate builds, patches,
   generated schemas). At most 256 derivations
-  (`MAX_TIARIS_PACKAGE_DERIVATIONS`); a larger closure blocks the commit with
-  `source_build_required`. Fixed-output derivations are not admitted by
-  membership: they must pass the ordinary fetch rule. Local work the
+  (`MAX_TIARIS_PACKAGE_DERIVATIONS`), otherwise `source_build_required`.
+  Fixed-output derivations must pass the ordinary fetch rule; local work the
   closure does not reach is not admitted.
-- **Readiness.** Every reference job is dry-run again at the commit with the
-  full profile:
-  - `blocked`, `build_script_changed`: a local script with no pin
-    counterpart (rejected on its own, not merely waiting for another
-    rejected derivation), or a changed builder file no counterpart vouches
-    for;
-  - otherwise `blocked`, `source_build_required`, with the first 50
-    derivations that would compile;
-  - `blocked`, `evaluation_failed`, when evaluation or a dry run fails;
-  - otherwise `ready`. The identities, counterpart content and Tiaris
-    package derivations are stored with the record
-    (`detected_nixpkgs_commits.profile`).
-- **Admission.** A Blueprint job is admitted at the release pin or at a
-  ready detected commit (`target_not_allowed` otherwise). A job without a
+- **Readiness.** The commit's dry run of each reference is classified again
+  with the full profile (no second evaluation). Every derivation the pin
+  admitted in that reference must be admitted at the commit; roles the pin
+  did not cover there stay uncovered and are not the commit's regression.
+  The outcome is `build_script_changed` (a local script with no counterpart,
+  or a changed builder file no counterpart vouches for),
+  `source_build_required` (first 50 derivations that would compile),
+  `evaluation_failed`, or `ready`.
+- **Stored profile.** A ready commit stores its identities, counterpart
+  content and Tiaris package derivations with a profile schema version and
+  the deriving Nest build (version, release, source and Tiaris source
+  revisions). A profile from another schema or build admits nothing; Nest
+  derives it again (at startup after an update, then at most two per check).
+- **Admission.** A Blueprint job is admitted at the release pin or at a ready
+  detected commit (`target_not_allowed` otherwise). A job without a
   Blueprint is admitted at its target flake's nixpkgs pin, and a
   `nixpkgs_commit` it names must be that pin. The preflight selects its
-  profile by the admitted commit, never by the job's text: the built-in
-  profile at the built-in commit, the persisted profile at a ready detected
-  commit, and none otherwise, which stops a source-disabled job with
-  `source_build_blocked`. A derived profile renders a built-in provider the
-  commit replaced to text no reviewed script contains, so a script cannot
-  use the pin's providers in place of the commit's.
+  profile by the admitted commit: the built-in profile at the built-in
+  commit, the persisted profile at a ready detected commit, and none
+  otherwise, which stops a source-disabled job with `source_build_blocked`.
 
 The first real channel commit, 6f06d204 (2026-10-29), evaluated with the
-pin's Nix 2.34.7 and the Taskbar compiler export as the reference job, is
-`ready`: 107 counterparts, among them changed `etc`, `system-units`,
-`user-units`, `udev-rules`, `fc-cache`, Firefox and the system closure
-(package version bumps and a new `gnome-session-monitor` user unit), and a
-Tiaris package closure of 35 derivations (its 6 crate tarballs pass the
-fetch rule).
+pin's Nix 2.34.7: with the Tiaris source as shipped today (no reference
+Blueprints) it is `reference_blueprints_missing`. With
+`deploy/nixos/reference-blueprints/{taskbar,dock}` from Manage's compiler
+exports it is `ready`: 308 counterpart pairs (11 role-scoped fingerprint
+pairs for changed `etc`, `system-units`, `user-units`, `udev-rules`,
+`fc-cache`, Firefox and the system closure), a Tiaris package closure of 35
+derivations, and every derivation the pin admits in each reference admitted.
 
 ## Publishing a base
 

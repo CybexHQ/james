@@ -57,9 +57,25 @@ pub(crate) const MAX_REPORTED_DETECTED_COMMITS: i64 = 32;
 const MAX_REASON_DETAILS: usize = 50;
 const CHANNEL_ORIGIN: &str = "https://channels.nixos.org";
 const MAX_CHANNEL_RESPONSE_BYTES: usize = 128;
+/// Desktop profiles of the shipped `tiaris-blueprints.nix`, used as plain
+/// references next to the shipped reference Blueprints.
 const BUILTIN_BLUEPRINT_PROFILES: [&str; 2] = ["taskbar", "dock"];
-/// Blueprints of this Nest re-checked at a detected commit.
-const MAX_RETAINED_BLUEPRINTS: usize = 8;
+/// Directory of the shipped Tiaris source holding the built-in Blueprints'
+/// compiler exports, one `<name>/{blueprint.nix,desktop.nix}` each.
+const REFERENCE_BLUEPRINTS_DIR: &str = "deploy/nixos/reference-blueprints";
+const MAX_REFERENCE_BLUEPRINTS: usize = 16;
+/// Wall-clock bound on evaluating one commit.
+const CHECK_TIME_LIMIT: Duration = Duration::from_secs(60 * 60);
+/// A commit whose evaluation or provenance failed is retried at most daily,
+/// whoever asks; a request only repeats the channel lookup.
+const RETRY_INTERVAL: chrono::Duration = chrono::Duration::hours(24);
+/// Ready commits derived by another Nest build are derived again, a few per
+/// check.
+const MAX_REDERIVED_PER_CHECK: usize = 2;
+/// Version of the stored profile format and derivation rules.
+const PROFILE_SCHEMA: u32 = 2;
+const GITHUB_COMPARE: &str = "https://api.github.com/repos/NixOS/nixpkgs/compare";
+const MAX_GITHUB_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const SYSTEM_IDENTITY_PATH: &str = "/usr/share/tiaris-nest/system-identity.json";
 const MAX_SYSTEM_IDENTITY_BYTES: u64 = 64 * 1024;
 /// 01:00 local time, and the length of the daily window in minutes.
@@ -75,6 +91,12 @@ const IDENTITIES_NIX: &str = include_str!("software_updates/identities.nix");
 pub(crate) const REASON_BUILD_SCRIPT_CHANGED: &str = "build_script_changed";
 pub(crate) const REASON_SOURCE_BUILD_REQUIRED: &str = "source_build_required";
 pub(crate) const REASON_EVALUATION_FAILED: &str = "evaluation_failed";
+/// The commit could not be shown to be on the channel's branch of
+/// NixOS/nixpkgs after the release pin.
+pub(crate) const REASON_PROVENANCE_UNVERIFIED: &str = "provenance_unverified";
+/// The shipped Tiaris source has no reference Blueprints to derive reviewed
+/// content from.
+pub(crate) const REASON_REFERENCE_BLUEPRINTS_MISSING: &str = "reference_blueprints_missing";
 
 fn check_now() -> &'static Notify {
     static CHECK_NOW: OnceLock<Notify> = OnceLock::new();
@@ -262,12 +284,50 @@ pub(crate) async fn ready_commit(db: &SqlitePool, commit: &str) -> Result<Option
     ready_commit_from_row(row).map(Some)
 }
 
-/// The derived profile of a ready commit as stored with its record.
+/// The derived profile of a ready commit as stored with its record, with the
+/// rules and the Nest build that derived it. A profile from another schema
+/// or build is derived again, never re-mapped.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StoredProfile {
+    schema: u32,
+    nest_build: String,
     identities: BTreeMap<String, DerivedIdentity>,
     reviewed: ReviewedContent,
+}
+
+impl StoredProfile {
+    fn is_current(&self) -> bool {
+        self.schema == PROFILE_SCHEMA && self.nest_build == nest_build_identity()
+    }
+}
+
+/// This Nest build: its version and the release, source and Tiaris source
+/// revisions of the installed system.
+fn nest_build_identity() -> String {
+    #[derive(Deserialize)]
+    struct Installed {
+        #[serde(default)]
+        release_id: String,
+        #[serde(default)]
+        source_revision: String,
+        #[serde(default)]
+        manage_source_revision: String,
+    }
+    let installed = std::fs::read(SYSTEM_IDENTITY_PATH)
+        .ok()
+        .filter(|body| body.len() as u64 <= MAX_SYSTEM_IDENTITY_BYTES)
+        .and_then(|body| serde_json::from_slice::<Installed>(&body).ok());
+    match installed {
+        Some(installed) => format!(
+            "{} release={} source={} tiaris={}",
+            env!("CARGO_PKG_VERSION"),
+            installed.release_id,
+            installed.source_revision,
+            installed.manage_source_revision
+        ),
+        None => format!("{} release=unknown", env!("CARGO_PKG_VERSION")),
+    }
 }
 
 fn ready_commit_from_row(row: DetectedRow) -> Result<ReadyCommit> {
@@ -277,6 +337,9 @@ fn ready_commit_from_row(row: DetectedRow) -> Result<ReadyCommit> {
             .ok_or_else(|| anyhow!("ready detected commit has no build profile"))?,
     )
     .context("parse detected commit build profile")?;
+    if !stored.is_current() {
+        bail!("detected commit profile was derived by another Nest build; it is derived again");
+    }
     let tiaris: BTreeSet<String> = serde_json::from_str(&row.tiaris_derivations)
         .context("parse detected commit Tiaris packages")?;
     if !build::valid_nar_hash(&row.nar_hash) {
@@ -352,6 +415,16 @@ async fn run(state: AppState) {
         Ok(_) => {}
         Err(error) => warn!(error = %error, "could not read software update check state"),
     }
+    // After an update of this Nest, ready commits are derived again soon
+    // rather than waiting for the daily check; until then they admit nothing.
+    if stale_ready_rows(&state.db)
+        .await
+        .is_ok_and(|rows| !rows.is_empty())
+    {
+        if let Err(error) = check(&state).await {
+            warn!(error = %error, "software update check after an update of this Nest failed");
+        }
+    }
     loop {
         let timezone = crate::appliance::nixos::is_nixos()
             .then(crate::appliance::update_schedule::timezone)
@@ -379,7 +452,7 @@ async fn run(state: AppState) {
             }
             continue;
         }
-        let outcome = match check(&state, on_demand).await {
+        let outcome = match check(&state).await {
             Ok(()) => Ok(()),
             Err(error) => {
                 warn!(error = %error, "software update check failed");
@@ -475,10 +548,12 @@ fn next_daily_check<Tz: TimeZone>(
     now + chrono::Duration::days(1)
 }
 
-/// Read the channel and handle its newest commit once. Network failures
-/// record nothing, so the next check retries; an on-demand check also retries
-/// a commit whose evaluation failed.
-async fn check(state: &AppState, on_demand: bool) -> Result<()> {
+/// Read the channel and handle its newest commit, then derive again a few
+/// ready commits whose profile another Nest build derived. A commit already
+/// recorded is evaluated again only when its evaluation or provenance failed
+/// at least a day ago; a request from Manage repeats only the channel lookup.
+/// Network failures before evaluation record nothing.
+async fn check(state: &AppState) -> Result<()> {
     let channel = check_state(&state.db)
         .await?
         .channel
@@ -487,40 +562,164 @@ async fn check(state: &AppState, on_demand: bool) -> Result<()> {
         bail!("channel {channel} is not this Nest's NixOS release");
     }
     let commit = channel_revision(&channel).await?;
-    if crate::config::workstation_nixpkgs_commits(&state.config).contains(&commit) {
-        return Ok(());
+    if !crate::config::workstation_nixpkgs_commits(&state.config).contains(&commit) {
+        let existing = detected_row(&state.db, &commit).await?;
+        if needs_evaluation(existing.as_ref(), Utc::now()) {
+            evaluate_and_record(state, &channel, &commit, existing.as_ref(), true).await?;
+        }
     }
-    let existing = detected_row(&state.db, &commit).await?;
-    if existing
-        .as_ref()
-        .is_some_and(|row| !(on_demand && row.reason.as_deref() == Some(REASON_EVALUATION_FAILED)))
+    for row in stale_ready_rows(&state.db)
+        .await?
+        .into_iter()
+        .take(MAX_REDERIVED_PER_CHECK)
     {
-        return Ok(());
+        info!(commit = %row.commit_rev, "deriving a ready commit's profile again for this Nest build");
+        evaluate_and_record(
+            state,
+            &row.channel.clone(),
+            &row.commit_rev.clone(),
+            Some(&row),
+            false,
+        )
+        .await?;
     }
+    Ok(())
+}
+
+fn needs_evaluation(existing: Option<&DetectedRow>, now: DateTime<Utc>) -> bool {
+    existing.is_none_or(|row| {
+        matches!(
+            row.reason.as_deref(),
+            Some(REASON_EVALUATION_FAILED | REASON_PROVENANCE_UNVERIFIED)
+        ) && parse_timestamp(Some(&row.detected_at))
+            .is_none_or(|detected| now - detected >= RETRY_INTERVAL)
+    })
+}
+
+/// Ready commits whose stored profile is from another schema or Nest build.
+async fn stale_ready_rows(db: &SqlitePool) -> Result<Vec<DetectedRow>> {
+    Ok(sqlx::query_as::<_, DetectedRow>(&format!(
+        "SELECT {DETECTED_COLUMNS} FROM detected_nixpkgs_commits WHERE state = 'ready'
+         ORDER BY last_modified DESC, commit_rev"
+    ))
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .filter(|row| {
+        !row.profile
+            .as_deref()
+            .and_then(|profile| serde_json::from_str::<StoredProfile>(profile).ok())
+            .is_some_and(|stored| stored.is_current())
+    })
+    .collect())
+}
+
+async fn evaluate_and_record(
+    state: &AppState,
+    channel: &str,
+    commit: &str,
+    existing: Option<&DetectedRow>,
+    channel_head: bool,
+) -> Result<()> {
     let metadata = flake_metadata(
         &state.config,
-        &commit,
-        existing.as_ref().map(|row| row.nar_hash.as_str()),
+        commit,
+        existing.map(|row| row.nar_hash.as_str()),
     )
     .await?;
     if metadata.last_modified <= BUILTIN_LAST_MODIFIED {
         bail!("channel commit {commit} is not newer than the release pin");
     }
-    let newest: Option<i64> = sqlx::query_scalar(
-        "SELECT CAST(strftime('%s', MAX(last_modified)) AS INTEGER) FROM detected_nixpkgs_commits
-         WHERE commit_rev != ?",
-    )
-    .bind(&commit)
-    .fetch_one(&state.db)
-    .await?;
-    if newest.is_some_and(|newest| metadata.last_modified < newest) {
-        bail!("channel commit {commit} is older than a commit this Nest already detected");
+    if channel_head {
+        let newest: Option<i64> = sqlx::query_scalar(
+            "SELECT CAST(strftime('%s', MAX(last_modified)) AS INTEGER) FROM detected_nixpkgs_commits
+             WHERE commit_rev != ?",
+        )
+        .bind(commit)
+        .fetch_one(&state.db)
+        .await?;
+        if newest.is_some_and(|newest| metadata.last_modified < newest) {
+            bail!("channel commit {commit} is older than a commit this Nest already detected");
+        }
     }
-    info!(%commit, %channel, "evaluating new NixOS channel commit");
-    let outcome = evaluate_commit(&state.config, &state.db, &commit, &metadata).await?;
-    store_detected(&state.db, &commit, &channel, &metadata, &outcome).await?;
+    let outcome = match verify_provenance(channel, commit).await {
+        Err(error) => {
+            warn!(%commit, error = %format!("{error:#}"), "could not verify the commit's provenance");
+            DetectedOutcome::blocked(
+                String::new(),
+                REASON_PROVENANCE_UNVERIFIED,
+                vec![format!("{error:#}").chars().take(200).collect()],
+            )
+        }
+        Ok(()) => {
+            info!(%commit, %channel, "evaluating NixOS channel commit");
+            match tokio::time::timeout(
+                CHECK_TIME_LIMIT,
+                evaluate_commit(&state.config, commit, &metadata),
+            )
+            .await
+            {
+                Ok(outcome) => outcome?,
+                Err(_) => {
+                    warn!(%commit, "evaluating the commit exceeded its time limit");
+                    DetectedOutcome::blocked(
+                        String::new(),
+                        REASON_EVALUATION_FAILED,
+                        vec!["time limit".to_string()],
+                    )
+                }
+            }
+        }
+    };
+    store_detected(&state.db, commit, channel, &metadata, &outcome).await?;
     info!(%commit, state = outcome.state(), reason = outcome.reason, "recorded detected nixpkgs commit");
     Ok(())
+}
+
+/// The commit is on the channel's branch of NixOS/nixpkgs (an ancestor of,
+/// or the same as, its tip) and descends from the release pin. A fork-only
+/// commit diverges from the branch. Any failure leaves the commit unverified.
+async fn verify_provenance(channel: &str, commit: &str) -> Result<()> {
+    let on_branch = github_compare(commit, channel).await?;
+    if !matches!(on_branch.as_str(), "ahead" | "identical") {
+        bail!("{commit} is not on NixOS/nixpkgs {channel} (compare status {on_branch})");
+    }
+    let after_pin = github_compare(build::BUILTIN_NIXPKGS_COMMIT, commit).await?;
+    if after_pin != "ahead" {
+        bail!("{commit} does not descend from the release pin (compare status {after_pin})");
+    }
+    Ok(())
+}
+
+/// GitHub's comparison of `base...head` on NixOS/nixpkgs: `ahead` when head
+/// descends from base, `identical`, `behind` or `diverged`.
+async fn github_compare(base: &str, head: &str) -> Result<String> {
+    let client = reqwest::Client::builder()
+        .https_only(true)
+        .timeout(CHANNEL_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("tiaris-nest/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("build GitHub client")?;
+    let response = client
+        .get(format!("{GITHUB_COMPARE}/{base}...{head}?per_page=1"))
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .send()
+        .await
+        .context("compare commits on GitHub")?;
+    if !response.status().is_success() {
+        bail!("GitHub compare returned {}", response.status());
+    }
+    let body = crate::bounded_io::response_bytes(response, MAX_GITHUB_RESPONSE_BYTES).await?;
+    compare_status(&body)
+}
+
+fn compare_status(body: &[u8]) -> Result<String> {
+    let value: Value = serde_json::from_slice(body).context("parse GitHub compare")?;
+    match value.get("status").and_then(Value::as_str) {
+        Some(status @ ("ahead" | "behind" | "identical" | "diverged")) => Ok(status.to_string()),
+        _ => bail!("GitHub compare has no status"),
+    }
 }
 
 async fn channel_revision(channel: &str) -> Result<String> {
@@ -623,6 +822,9 @@ struct DetectedOutcome {
     counterparts: Option<build::Counterparts>,
     /// Local derivations of the Tiaris packages' build closure.
     tiaris_closure_size: usize,
+    /// Per reference: local work at the commit and roles the pin did not
+    /// cover.
+    coverage: Vec<String>,
 }
 
 impl DetectedOutcome {
@@ -646,6 +848,7 @@ impl DetectedOutcome {
             reviewed: ReviewedContent::default(),
             counterparts: None,
             tiaris_closure_size: 0,
+            coverage: Vec::new(),
         }
     }
 }
@@ -666,6 +869,8 @@ async fn store_detected(
         .filter(|_| outcome.reason.is_none())
         .map(|identities| {
             serde_json::to_string(&StoredProfile {
+                schema: PROFILE_SCHEMA,
+                nest_build: nest_build_identity(),
                 identities: identities.clone(),
                 reviewed: outcome.reviewed.clone(),
             })
@@ -715,7 +920,6 @@ struct EvaluatedIdentities {
 /// shipped Tiaris source) are returned and record nothing.
 async fn evaluate_commit(
     config: &AppConfig,
-    db: &SqlitePool,
     commit: &str,
     metadata: &FlakeMetadata,
 ) -> Result<DetectedOutcome> {
@@ -727,7 +931,7 @@ async fn evaluate_commit(
         .join(format!("software-update-{}", hex::encode(nonce)));
     let manage_source_url = shipped_manage_source_url(config)?;
     create_private_dir(&work)?;
-    let result = evaluate_commit_in(config, db, commit, metadata, &manage_source_url, &work).await;
+    let result = evaluate_commit_in(config, commit, metadata, &manage_source_url, &work).await;
     let _ = tokio::fs::remove_dir_all(&work).await;
     result
 }
@@ -755,7 +959,6 @@ fn write_private_file(path: PathBuf, contents: &str) -> Result<()> {
 
 async fn evaluate_commit_in(
     config: &AppConfig,
-    db: &SqlitePool,
     commit: &str,
     metadata: &FlakeMetadata,
     manage_source_url: &str,
@@ -783,6 +986,9 @@ async fn evaluate_commit_in(
         .chars()
         .take(64)
         .collect::<String>();
+    let blocked = |reason: &'static str, details: Vec<String>| {
+        DetectedOutcome::blocked(kernel.clone(), reason, details)
+    };
     let identities_only = match WorkstationBuildProfile::derived(
         commit,
         metadata.last_modified,
@@ -792,24 +998,26 @@ async fn evaluate_commit_in(
         Ok(profile) => profile,
         Err(error) => {
             warn!(%commit, error = %error, "derived build identities are unusable");
-            return Ok(DetectedOutcome::blocked(
-                kernel,
+            return Ok(blocked(
                 REASON_EVALUATION_FAILED,
                 vec!["build identities".to_string()],
             ));
         }
     };
 
+    // Everything below is evaluated from the shipped Tiaris source and
+    // nixpkgs (the commit, narHash-pinned, or the pin): never from an
+    // organization's Blueprint.
     let commit_flake = work.join("flake");
     let pin_flake = work.join("pin-flake");
     create_private_dir(&commit_flake)?;
     create_private_dir(&pin_flake)?;
-    write_builtin_blueprint_flake(
+    write_reference_flake(
         &commit_flake,
         &build::nixpkgs_flake_ref(commit, Some(&metadata.nar_hash))?,
         manage_source_url,
     )?;
-    write_builtin_blueprint_flake(
+    write_reference_flake(
         &pin_flake,
         &build::nixpkgs_flake_ref(build::BUILTIN_NIXPKGS_COMMIT, None)?,
         manage_source_url,
@@ -821,8 +1029,7 @@ async fn evaluate_commit_in(
         )
     };
 
-    // Tiaris packages: the local build closure of the top-level packages,
-    // from the shipped Tiaris source and this commit's nixpkgs only.
+    // Tiaris packages: the local build closure of the top-level packages.
     let tiaris = match build::unadmitted_local_derivations(
         config,
         &installable(&commit_flake, "tiaris-packages"),
@@ -833,8 +1040,7 @@ async fn evaluate_commit_in(
         Ok(unadmitted) => unadmitted,
         Err(error) => {
             warn!(%commit, error = %error, "could not evaluate the Tiaris packages");
-            return Ok(DetectedOutcome::blocked(
-                kernel,
+            return Ok(blocked(
                 REASON_EVALUATION_FAILED,
                 vec!["tiaris-packages".to_string()],
             ));
@@ -848,8 +1054,7 @@ async fn evaluate_commit_in(
         "evaluated the Tiaris packages' local build closure"
     );
     if closure.admitted.len() > MAX_TIARIS_PACKAGE_DERIVATIONS {
-        let mut outcome = DetectedOutcome::blocked(
-            kernel,
+        let mut outcome = blocked(
             REASON_SOURCE_BUILD_REQUIRED,
             closure
                 .admitted
@@ -869,68 +1074,86 @@ async fn evaluate_commit_in(
         tiaris_derivations.clone(),
     )?;
 
-    // The reference set: the Blueprints this Nest built at the pin, or the
-    // built-in profiles when it has built none.
-    let jobs = match build::retained_blueprint_commands(
-        config,
-        db,
-        work,
-        commit,
-        &metadata.nar_hash,
-        MAX_RETAINED_BLUEPRINTS,
-    )
-    .await
-    {
-        Ok(jobs) if !jobs.is_empty() => jobs,
-        Ok(_) => BUILTIN_BLUEPRINT_PROFILES
-            .iter()
-            .map(|profile| build::ReferenceJob {
-                label: profile.to_string(),
-                pin: installable(&pin_flake, profile),
-                detected: installable(&commit_flake, profile),
-            })
-            .collect(),
+    // The references: the shipped reference Blueprints, plus the plain
+    // desktop profiles of the shipped module.
+    let names = match reference_blueprint_names(config, &commit_flake).await {
+        Ok(names) => names,
         Err(error) => {
-            warn!(%commit, error = %format!("{error:#}"), "could not prepare this Nest's Blueprints");
-            return Ok(DetectedOutcome::blocked(
-                kernel,
+            warn!(%commit, error = %format!("{error:#}"), "could not list the reference Blueprints");
+            return Ok(blocked(
                 REASON_EVALUATION_FAILED,
-                vec!["blueprints".to_string()],
+                vec!["reference blueprints".to_string()],
             ));
         }
     };
+    if names.is_empty() {
+        return Ok(blocked(
+            REASON_REFERENCE_BLUEPRINTS_MISSING,
+            vec![REFERENCE_BLUEPRINTS_DIR.to_string()],
+        ));
+    }
+    let references = names
+        .iter()
+        .map(|name| format!("reference-{name}"))
+        .chain(
+            BUILTIN_BLUEPRINT_PROFILES
+                .iter()
+                .map(|profile| profile.to_string()),
+        )
+        .collect::<Vec<_>>();
 
-    // Counterparts of everything admitted at the pin.
+    // Each reference at the pin (built-in profile) and at the commit. The
+    // commit's dry run is kept for the readiness pass.
     let builtin = WorkstationBuildProfile::builtin();
     let mut counterparts = build::Counterparts::default();
-    for job in &jobs {
-        let pair = async {
-            let pin = build::unadmitted_local_derivations(config, &job.pin, builtin).await?;
-            let detected =
-                build::unadmitted_local_derivations(config, &job.detected, &base).await?;
-            anyhow::Ok((pin, detected))
-        };
-        match pair.await {
-            Ok((pin, detected)) => {
-                build::add_counterparts(&base, &evaluated.files, &pin, &detected, &mut counterparts)
-            }
+    let mut sessions = Vec::new();
+    for reference in &references {
+        let pin = match build::unadmitted_local_derivations(
+            config,
+            &installable(&pin_flake, reference),
+            builtin,
+        )
+        .await
+        {
+            Ok(pin) => pin,
             Err(error) => {
-                warn!(%commit, job = job.label, error = %format!("{error:#}"), "could not evaluate a reference job");
-                return Ok(DetectedOutcome::blocked(
-                    kernel,
-                    REASON_EVALUATION_FAILED,
-                    vec![job.label.clone()],
-                ));
+                warn!(%commit, reference, error = %format!("{error:#}"), "could not evaluate a reference at the pin");
+                return Ok(blocked(REASON_EVALUATION_FAILED, vec![reference.clone()]));
             }
-        }
+        };
+        let session = match build::DryRunSession::start(
+            config,
+            &installable(&commit_flake, reference),
+        )
+        .await
+        {
+            Ok(session) => session,
+            Err(error) => {
+                warn!(%commit, reference, error = %format!("{error:#}"), "could not evaluate a reference");
+                return Ok(blocked(REASON_EVALUATION_FAILED, vec![reference.clone()]));
+            }
+        };
+        let detected = match session.classify(&base).await {
+            Ok(detected) => detected,
+            Err(error) => {
+                warn!(%commit, reference, error = %format!("{error:#}"), "could not classify a reference");
+                return Ok(blocked(REASON_EVALUATION_FAILED, vec![reference.clone()]));
+            }
+        };
+        build::add_counterparts(&base, &evaluated.files, &pin, &detected, &mut counterparts);
+        let uncovered_at_pin = pin
+            .rejected_on_their_own
+            .iter()
+            .map(|path| builtin.derivation_role(path))
+            .collect::<BTreeSet<_>>();
+        sessions.push((reference.clone(), session, uncovered_at_pin));
     }
     let content = counterparts.content();
     let profile = match base.clone().with_reviewed_content(&content) {
         Ok(profile) => profile,
         Err(error) => {
             warn!(%commit, error = %error, "counterpart content is unusable");
-            return Ok(DetectedOutcome::blocked(
-                kernel,
+            return Ok(blocked(
                 REASON_EVALUATION_FAILED,
                 vec!["counterparts".to_string()],
             ));
@@ -945,27 +1168,40 @@ async fn evaluate_commit_in(
         "derived reviewed content from counterparts"
     );
 
-    // Readiness: every reference job at the commit under the full profile.
+    // Readiness: at the commit, every reference must leave nothing
+    // unadmitted that the pin admitted. Roles the pin did not cover in that
+    // reference are not the commit's regressions; they stay uncovered.
     let mut changed = BTreeSet::new();
     let mut compiles = Vec::new();
-    for job in &jobs {
-        let unadmitted = match build::unadmitted_local_derivations(config, &job.detected, &profile)
-            .await
-        {
+    let mut coverage = Vec::new();
+    for (reference, session, uncovered_at_pin) in sessions {
+        let classified = session.classify(&profile).await;
+        let _ = session.finish().await;
+        let unadmitted = match classified {
             Ok(unadmitted) => unadmitted,
             Err(error) => {
-                warn!(%commit, job = job.label, error = %format!("{error:#}"), "could not dry-run a Blueprint");
-                return Ok(DetectedOutcome::blocked(
-                    kernel,
-                    REASON_EVALUATION_FAILED,
-                    vec![job.label.clone()],
-                ));
+                warn!(%commit, reference, error = %format!("{error:#}"), "could not classify a reference");
+                return Ok(blocked(REASON_EVALUATION_FAILED, vec![reference]));
             }
         };
-        let (scripts, others) = classify_unadmitted(&profile, &unadmitted);
+        coverage.push(format!(
+            "{reference}: {} local, not covered at the pin: {:?}",
+            unadmitted.would_build.len(),
+            uncovered_at_pin.iter().take(10).collect::<Vec<_>>()
+        ));
+        let regressions = build::UnadmittedDerivations {
+            rejected_on_their_own: unadmitted
+                .rejected_on_their_own
+                .iter()
+                .filter(|path| !uncovered_at_pin.contains(&profile.derivation_role(path)))
+                .cloned()
+                .collect(),
+            ..unadmitted
+        };
+        let (scripts, others) = classify_unadmitted(&profile, &regressions);
         changed.extend(scripts);
         changed.extend(
-            unadmitted
+            regressions
                 .changed_builder_files
                 .iter()
                 .map(|name| name.to_string()),
@@ -976,8 +1212,9 @@ async fn evaluate_commit_in(
             }
         }
     }
+    info!(%commit, coverage = ?coverage, "checked the references at the commit");
     let mut outcome = decide(
-        kernel,
+        kernel.clone(),
         changed,
         compiles,
         evaluated.identities,
@@ -988,7 +1225,50 @@ async fn evaluate_commit_in(
     }
     outcome.counterparts = Some(counterparts);
     outcome.tiaris_closure_size = tiaris_closure_size;
+    outcome.coverage = coverage;
     Ok(outcome)
+}
+
+/// The shipped reference Blueprints (`deploy/nixos/reference-blueprints/<name>`).
+async fn reference_blueprint_names(config: &AppConfig, flake: &Path) -> Result<Vec<String>> {
+    let mut command = crate::nix_command::tokio_command(&config.build.nix_binary);
+    command
+        .args(["eval", "--json", "--no-write-lock-file"])
+        .args(["--option", "allow-import-from-derivation", "false"])
+        .args(["--option", "accept-flake-config", "false"])
+        .arg(format!("{}#referenceBlueprints", flake.display()))
+        .env("LC_ALL", "C")
+        .env("LANG", "C");
+    let output = run_bounded_command(
+        command,
+        EVALUATION_TIMEOUT,
+        EVALUATION_STDOUT_MAX_BYTES,
+        EVALUATION_STDERR_MAX_BYTES,
+        "list reference Blueprints",
+    )
+    .await?;
+    if !output.status.success() {
+        bail!(
+            "nix eval failed: {}",
+            tail(&String::from_utf8_lossy(&output.stderr), 300)
+        );
+    }
+    let names: Vec<String> =
+        serde_json::from_slice(&output.stdout).context("parse reference Blueprint names")?;
+    if names.len() > MAX_REFERENCE_BLUEPRINTS
+        || !names.iter().all(|name| valid_reference_name(name))
+    {
+        bail!("the shipped reference Blueprints are not a bounded list of safe names");
+    }
+    Ok(names)
+}
+
+fn valid_reference_name(name: &str) -> bool {
+    (1..=32).contains(&name.len())
+        && name.as_bytes()[0].is_ascii_lowercase()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 /// The Tiaris packages' local build closure in the dry run of the
@@ -1077,6 +1357,7 @@ fn decide(
         reviewed: ReviewedContent::default(),
         counterparts: None,
         tiaris_closure_size: 0,
+        coverage: Vec::new(),
     }
 }
 
@@ -1171,10 +1452,12 @@ fn shipped_manage_source_url(config: &AppConfig) -> Result<String> {
     .url)
 }
 
-/// The flake the check dry-runs: the Tiaris packages and each built-in
-/// Blueprint, configured by the same Nest templates as Blueprint jobs.
-fn write_builtin_blueprint_flake(work: &Path, nixpkgs_ref: &str, manage_url: &str) -> Result<()> {
-    for (name, contents) in build::blueprint_job_template_files() {
+/// The flake the check dry-runs: the Tiaris packages, each shipped
+/// reference Blueprint and the plain desktop profiles, configured by the same
+/// Nest templates as Blueprint jobs. Every input is the shipped Tiaris source
+/// or nixpkgs.
+fn write_reference_flake(work: &Path, nixpkgs_ref: &str, manage_url: &str) -> Result<()> {
+    for (name, contents) in build::blueprint_job_template_files()? {
         write_private_file(work.join(name), &contents)?;
     }
     write_private_file(work.join("blueprint.nix"), "{ ... }:\n\n{ }\n")?;
@@ -1184,14 +1467,14 @@ fn write_builtin_blueprint_flake(work: &Path, nixpkgs_ref: &str, manage_url: &st
     )?;
     write_private_file(
         work.join("flake.nix"),
-        &builtin_blueprint_flake(nixpkgs_ref, manage_url),
+        &reference_flake(nixpkgs_ref, manage_url),
     )
 }
 
-fn builtin_blueprint_flake(nixpkgs_ref: &str, manage_url: &str) -> String {
+fn reference_flake(nixpkgs_ref: &str, manage_url: &str) -> String {
     let nixpkgs = serde_json::to_string(nixpkgs_ref).expect("string serializes");
     let manage = serde_json::to_string(manage_url).expect("string serializes");
-    let blueprints = BUILTIN_BLUEPRINT_PROFILES
+    let profiles = BUILTIN_BLUEPRINT_PROFILES
         .iter()
         .fold(String::new(), |mut lines, profile| {
             use std::fmt::Write;
@@ -1211,6 +1494,7 @@ fn builtin_blueprint_flake(nixpkgs_ref: &str, manage_url: &str) -> String {
   outputs = {{ self, nixpkgs, manage }}:
     let
       system = "x86_64-linux";
+      lib = nixpkgs.lib;
       pkgs = import nixpkgs {{ inherit system; }};
       workstationAgent = import (manage + "/deploy/nixos/tiaris-agent-package.nix") {{
         inherit pkgs;
@@ -1222,7 +1506,7 @@ fn builtin_blueprint_flake(nixpkgs_ref: &str, manage_url: &str) -> String {
         manageRepo = manage;
       }};
       blueprint = profile:
-        (nixpkgs.lib.nixosSystem {{
+        (lib.nixosSystem {{
           inherit system;
           specialArgs.manageSource = manage;
           modules = [
@@ -1230,11 +1514,32 @@ fn builtin_blueprint_flake(nixpkgs_ref: &str, manage_url: &str) -> String {
             {{ tiaris.desktop.profile = profile; }}
           ];
         }}).config.system.build.toplevel;
+      references = manage + "/{REFERENCE_BLUEPRINTS_DIR}";
+      referenceNames =
+        if builtins.pathExists references
+        then builtins.attrNames (lib.filterAttrs (_: type: type == "directory") (builtins.readDir references))
+        else [ ];
+      # The job configuration with the reference's compiler exports in the
+      # places of a job's desktop module and generated Blueprint.
+      reference = name:
+        (lib.nixosSystem {{
+          inherit system;
+          modules = [
+            (import ./reference-configuration.nix {{
+              desktop = references + "/${{name}}/desktop.nix";
+              blueprint = references + "/${{name}}/blueprint.nix";
+            }})
+          ];
+        }}).config.system.build.toplevel;
     in {{
+      referenceBlueprints = referenceNames;
       packages.${{system}} = {{
         tiaris-packages = pkgs.writeText "tiaris-packages"
           (builtins.concatStringsSep "\n" (map (package: package.outPath) ([ workstationAgent ] ++ seeds.packages)));
-{blueprints}      }};
+{profiles}      }} // lib.listToAttrs (map (name: {{
+        name = "reference-${{name}}";
+        value = reference name;
+      }}) referenceNames);
     }};
 }}
 "#

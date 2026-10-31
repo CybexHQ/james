@@ -20,7 +20,10 @@ use super::{
     REVIEWED_BUILDER_FILES, ReviewedContent, UnadmittedDerivations, WorkstationBuildProfile,
     derivation_attr_text, derivation_attributes, derivation_input_sources,
     etc_script_with_time_zone_placeholder,
-    profile::{FingerprintCounterpart, STOCK_COMMANDS, StockCommandCounterpart},
+    profile::{
+        BuilderFileCounterpart, FingerprintCounterpart, STOCK_COMMANDS, StockCommandCounterpart,
+        package_name,
+    },
 };
 use crate::nix_log::derivation_display_name;
 
@@ -33,31 +36,34 @@ const SCRIPT_ATTRIBUTES: [&str; 5] = [
     "installPhase",
 ];
 
-/// Counterparts collected over every reference job of one detected commit.
+/// Counterparts collected over every reference of one detected commit, per
+/// derivation role.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Counterparts {
-    fingerprints: BTreeMap<(String, String), (String, String)>,
-    conflicting: BTreeSet<(String, String)>,
-    stock_commands: BTreeMap<String, String>,
-    pub(crate) builder_files: BTreeMap<String, String>,
-    /// Pairs whose content differs from the pin's.
+    fingerprints: BTreeMap<(String, (String, String)), (String, String)>,
+    conflicting: BTreeSet<(String, (String, String))>,
+    stock_commands: BTreeMap<(String, String), String>,
+    /// `(role, builder file)` → its sha256 at the detected commit.
+    pub(crate) builder_files: BTreeMap<(String, String), String>,
+    /// Roles whose content differs from the pin's.
     pub(crate) changed: BTreeSet<String>,
-    /// Local derivations at the detected commit without a counterpart.
+    /// Roles at the detected commit without a counterpart.
     pub(crate) unpaired: BTreeSet<String>,
     pub(crate) paired: usize,
 }
 
 impl Counterparts {
     /// The reviewed content for the detected commit's profile. A commit
-    /// fingerprint that two counterparts would map to different pin scripts
-    /// is ambiguous and dropped.
+    /// fingerprint that two counterparts of one role would map to different
+    /// pin scripts is ambiguous and dropped.
     pub(crate) fn content(&self) -> ReviewedContent {
         ReviewedContent {
             fingerprints: self
                 .fingerprints
                 .iter()
-                .filter(|(commit, _)| !self.conflicting.contains(*commit))
-                .map(|(commit, reviewed)| FingerprintCounterpart {
+                .filter(|(key, _)| !self.conflicting.contains(*key))
+                .map(|((role, commit), reviewed)| FingerprintCounterpart {
+                    role: role.clone(),
                     commit: [commit.0.clone(), commit.1.clone()],
                     reviewed: [reviewed.0.clone(), reviewed.1.clone()],
                 })
@@ -65,26 +71,41 @@ impl Counterparts {
             stock_commands: self
                 .stock_commands
                 .iter()
-                .map(|(commit, reviewed)| StockCommandCounterpart {
+                .map(|((role, commit), reviewed)| StockCommandCounterpart {
+                    role: role.clone(),
                     commit: commit.clone(),
                     reviewed: reviewed.clone(),
                 })
                 .collect(),
-            builder_files: self.builder_files.clone(),
+            builder_files: self
+                .builder_files
+                .iter()
+                .map(|((role, file), sha256)| BuilderFileCounterpart {
+                    role: role.clone(),
+                    file: file.clone(),
+                    sha256: sha256.clone(),
+                })
+                .collect(),
         }
     }
 
-    fn add_fingerprint(&mut self, commit: (String, String), reviewed: (String, String)) {
+    fn add_fingerprint(
+        &mut self,
+        role: &str,
+        commit: (String, String),
+        reviewed: (String, String),
+    ) {
         if commit == reviewed {
             return;
         }
-        if let Some(previous) = self.fingerprints.get(&commit) {
+        let key = (role.to_string(), commit);
+        if let Some(previous) = self.fingerprints.get(&key) {
             if *previous != reviewed {
-                self.conflicting.insert(commit);
+                self.conflicting.insert(key);
             }
             return;
         }
-        self.fingerprints.insert(commit, reviewed);
+        self.fingerprints.insert(key, reviewed);
     }
 }
 
@@ -150,6 +171,7 @@ pub(crate) fn add_counterparts(
             }
             counterparts.paired += 1;
             if add_pair(
+                &name,
                 builtin,
                 base,
                 commit_files,
@@ -161,16 +183,6 @@ pub(crate) fn add_counterparts(
             }
         }
     }
-}
-
-/// The name without its version, as Nix's `parseDrvName` splits it: up to
-/// the first `-` followed by a digit. `firefox-153.6.0esr` and
-/// `firefox-152.4.0esr` are the same package of the same job.
-fn package_name(name: &str) -> &str {
-    let bytes = name.as_bytes();
-    (0..bytes.len().saturating_sub(1))
-        .find(|index| bytes[*index] == b'-' && bytes[index + 1].is_ascii_digit())
-        .map_or(name, |index| &name[..index])
 }
 
 /// One-to-one pairs within a name group: a single member pairs directly;
@@ -266,6 +278,7 @@ fn same_shape(base: &WorkstationBuildProfile, pin_drv: &Value, commit_drv: &Valu
 
 /// Record a pair's content. Returns whether any of it differs from the pin.
 fn add_pair(
+    role: &str,
     builtin: &WorkstationBuildProfile,
     base: &WorkstationBuildProfile,
     commit_files: &BTreeMap<String, String>,
@@ -285,21 +298,23 @@ fn add_pair(
         let reviewed = builtin.fingerprints(pin_text);
         let commit = base.fingerprints(commit_text);
         changed |= reviewed != commit;
-        counterparts.add_fingerprint(commit, reviewed);
+        counterparts.add_fingerprint(role, commit, reviewed);
         // `/etc` recipes are also compared with their zone set aside.
         if let (Some(pin_zone), Some(commit_zone)) = (
             etc_script_with_time_zone_placeholder(pin_text),
             etc_script_with_time_zone_placeholder(commit_text),
         ) {
             counterparts.add_fingerprint(
+                role,
                 base.fingerprints(&commit_zone),
                 builtin.fingerprints(&pin_zone),
             );
         }
         if STOCK_COMMANDS.contains(&pin_text) && commit_text != pin_text {
-            counterparts
-                .stock_commands
-                .insert(commit_text.to_string(), pin_text.to_string());
+            counterparts.stock_commands.insert(
+                (role.to_string(), commit_text.to_string()),
+                pin_text.to_string(),
+            );
         }
     }
     for (name, reviewed_sha256) in REVIEWED_BUILDER_FILES {
@@ -312,7 +327,7 @@ fn add_pair(
         {
             counterparts
                 .builder_files
-                .insert(name.to_string(), commit_sha256.clone());
+                .insert((role.to_string(), name.to_string()), commit_sha256.clone());
             changed = true;
         }
     }
@@ -327,28 +342,4 @@ fn uses_builder_file(drv: &Value, name: &str) -> bool {
     let suffix = format!("-{name}");
     derivation_input_sources(drv)
         .is_some_and(|sources| sources.iter().any(|source| source.ends_with(&suffix)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::package_name;
-
-    #[test]
-    fn package_names_drop_the_version_like_parse_drv_name() {
-        assert_eq!(package_name("firefox-153.6.0esr"), "firefox");
-        assert_eq!(
-            package_name("python3.13-remarshal-1.3.0"),
-            "python3.13-remarshal"
-        );
-        assert_eq!(package_name("etc"), "etc");
-        assert_eq!(
-            package_name("unit-dbus-broker.service"),
-            "unit-dbus-broker.service"
-        );
-        assert_eq!(
-            package_name("nixos-system-tiaris-nest-build-26.05.20260708.74cc63f"),
-            "nixos-system-tiaris-nest-build"
-        );
-        assert_eq!(package_name("x-"), "x-");
-    }
 }
