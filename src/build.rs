@@ -33,6 +33,10 @@ use crate::{
     subprocess::{PIPE_DRAIN_TIMEOUT, ProcessGroup, run_bounded_command},
 };
 
+mod profile;
+
+pub(crate) use profile::WorkstationBuildProfile;
+
 const BLUEPRINT_BUILD_INPUT_KIND: &str = "blueprint_nixos_module";
 const LEGACY_DESKTOP_EXPERIENCE_BUILD_INPUT_KIND: &str = "desktop_experience_nixos_module";
 const INSTALLER_TARGET_BUILD_INPUT_KIND: &str = "installer_target_nixos_module";
@@ -654,7 +658,8 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
             "Checking binary cache coverage",
         )
         .await?;
-        match preflight_source_build_check(&state.config, &command).await {
+        let profile = WorkstationBuildProfile::for_build(spec.nixpkgs_commit.as_deref());
+        match preflight_source_build_check_for_profile(&state.config, &command, profile).await {
             Ok(offenders) if !offenders.is_empty() => {
                 let mut metadata = build_result_metadata(
                     &state.config,
@@ -2210,16 +2215,49 @@ fn source_build_blocked_message(candidates: &[String]) -> String {
 /// compiled from source. Only structurally constrained NixOS-generated glue
 /// and plain, hash-verified downloads are exempt — an empty result means the
 /// closure is fully substitutable apart from that bounded local materialization.
+#[cfg(test)]
 async fn preflight_source_build_check(
     config: &AppConfig,
     command: &NixBuildCommand,
 ) -> Result<Vec<String>> {
-    preflight_source_build_check_with_limits(config, command, PreflightLimits::default()).await
+    preflight_source_build_check_for_profile(config, command, WorkstationBuildProfile::builtin())
+        .await
 }
 
+/// The preflight with the commit identities of the job's nixpkgs commit.
+async fn preflight_source_build_check_for_profile(
+    config: &AppConfig,
+    command: &NixBuildCommand,
+    profile: &WorkstationBuildProfile,
+) -> Result<Vec<String>> {
+    preflight_source_build_check_with_profile_and_limits(
+        config,
+        command,
+        profile,
+        PreflightLimits::default(),
+    )
+    .await
+}
+
+#[cfg(test)]
 async fn preflight_source_build_check_with_limits(
     config: &AppConfig,
     command: &NixBuildCommand,
+    limits: PreflightLimits,
+) -> Result<Vec<String>> {
+    preflight_source_build_check_with_profile_and_limits(
+        config,
+        command,
+        WorkstationBuildProfile::builtin(),
+        limits,
+    )
+    .await
+}
+
+async fn preflight_source_build_check_with_profile_and_limits(
+    config: &AppConfig,
+    command: &NixBuildCommand,
+    profile: &WorkstationBuildProfile,
     limits: PreflightLimits,
 ) -> Result<Vec<String>> {
     tokio::fs::create_dir_all(&config.build.work_dir)
@@ -2239,7 +2277,8 @@ async fn preflight_source_build_check_with_limits(
     tokio::fs::create_dir(&store_root)
         .await
         .with_context(|| format!("create isolated preflight store {}", store_root.display()))?;
-    let result = preflight_source_build_check_in_store(config, command, &store_root, limits).await;
+    let result =
+        preflight_source_build_check_in_store(config, command, profile, &store_root, limits).await;
     let cleanup = remove_source_policy_store(&store_root).await;
     match (result, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
@@ -2301,6 +2340,7 @@ fn make_source_policy_directories_owner_writable(path: &Path) -> std::io::Result
 async fn preflight_source_build_check_in_store(
     config: &AppConfig,
     command: &NixBuildCommand,
+    profile: &WorkstationBuildProfile,
     store_root: &Path,
     limits: PreflightLimits,
 ) -> Result<Vec<String>> {
@@ -2452,16 +2492,18 @@ async fn preflight_source_build_check_in_store(
     // are still required for the independent pinned-source check below. Fetch
     // only that exact reviewed store output, with local and remote compilation
     // disabled and normal cache signature verification required.
-    if !would_build_set.contains(TRUSTED_LINK_FARM_BUILDER.drv_path)
+    let link_farm_builder = profile.path(TRUSTED_LINK_FARM_BUILDER.path);
+    let link_farm_builder_drv = profile.path(TRUSTED_LINK_FARM_BUILDER.drv_path);
+    if !would_build_set.contains(link_farm_builder_drv.as_ref())
         && derivations.values().any(|drv| {
-            input_drv_output_reference(drv, TRUSTED_LINK_FARM_BUILDER.path).is_some_and(|input| {
-                input.drv_path == TRUSTED_LINK_FARM_BUILDER.drv_path
+            input_drv_output_reference(drv, &link_farm_builder).is_some_and(|input| {
+                input.drv_path == link_farm_builder_drv
                     && input.output == TRUSTED_LINK_FARM_BUILDER.output
             })
         })
         && !isolated_store_source_matches_sha256(
             store_root,
-            TRUSTED_LINK_FARM_BUILDER.path,
+            &link_farm_builder,
             TRUSTED_LINK_FARM_BUILDER_SHA256,
         )
     {
@@ -2485,7 +2527,7 @@ async fn preflight_source_build_check_in_store(
             "--option",
             "accept-flake-config",
             "false",
-            TRUSTED_LINK_FARM_BUILDER.path,
+            &link_farm_builder,
         ]);
         let output = run_bounded_command(
             fetch,
@@ -2498,7 +2540,7 @@ async fn preflight_source_build_check_in_store(
         if !output.status.success()
             || !isolated_store_source_matches_sha256(
                 store_root,
-                TRUSTED_LINK_FARM_BUILDER.path,
+                &link_farm_builder,
                 TRUSTED_LINK_FARM_BUILDER_SHA256,
             )
         {
@@ -2516,7 +2558,8 @@ async fn preflight_source_build_check_in_store(
     let verify_source = |path: &str, expected: &str| {
         isolated_store_source_matches_sha256(store_root, path, expected)
     };
-    let trusted_local = classify_trusted_local_derivations(
+    let trusted_local = classify_trusted_local_derivations_for_profile(
+        profile,
         &would_build,
         &derivations,
         &verify_source,
@@ -2538,7 +2581,27 @@ fn bounded_diagnostic_tail(bytes: &[u8], max_chars: usize) -> String {
     text.chars().skip(skip).collect()
 }
 
+#[cfg(test)]
 fn classify_trusted_local_derivations<F>(
+    would_build: &[String],
+    derivations: &BTreeMap<String, Value>,
+    verify_source: &F,
+    would_build_set: &HashSet<String>,
+) -> HashSet<String>
+where
+    F: Fn(&str, &str) -> bool,
+{
+    classify_trusted_local_derivations_for_profile(
+        WorkstationBuildProfile::builtin(),
+        would_build,
+        derivations,
+        verify_source,
+        would_build_set,
+    )
+}
+
+fn classify_trusted_local_derivations_for_profile<F>(
+    profile: &WorkstationBuildProfile,
     would_build: &[String],
     derivations: &BTreeMap<String, Value>,
     verify_source: &F,
@@ -2554,7 +2617,8 @@ where
             if trusted_local.contains(path) {
                 continue;
             }
-            if derivation_is_exempt_from_source_policy_with_verifier_and_would_build_and_trusted(
+            if derivation_is_exempt_for_profile(
+                profile,
                 path,
                 derivations.get(path),
                 verify_source,
@@ -2647,7 +2711,29 @@ where
     )
 }
 
+#[cfg(test)]
 fn derivation_is_exempt_from_source_policy_with_verifier_and_would_build_and_trusted<F>(
+    drv_path: &str,
+    drv: Option<&Value>,
+    verify_source: &F,
+    would_build: &HashSet<String>,
+    trusted_local: &HashSet<String>,
+) -> bool
+where
+    F: Fn(&str, &str) -> bool,
+{
+    derivation_is_exempt_for_profile(
+        WorkstationBuildProfile::builtin(),
+        drv_path,
+        drv,
+        verify_source,
+        would_build,
+        trusted_local,
+    )
+}
+
+fn derivation_is_exempt_for_profile<F>(
+    profile: &WorkstationBuildProfile,
     drv_path: &str,
     drv: Option<&Value>,
     verify_source: &F,
@@ -2672,53 +2758,65 @@ where
         return false;
     }
     derivation_is_plain_fixed_output_fetch(drv, &attrs)
-        || (stdenv_builder_and_tool_inputs_are_trusted(drv, &attrs, would_build, trusted_local)
-            && ((!derivation_has_shell_environment_injection(&attrs)
-                && (derivation_is_pinned_nixos_materialization(
-                    drv,
-                    &attrs,
-                    verify_source,
-                    would_build,
-                    trusted_local,
-                ) || derivation_is_reviewed_nixos_generator(
-                    drv,
-                    &attrs,
-                    verify_source,
-                    would_build,
-                    trusted_local,
-                ) || derivation_is_reviewed_json_to_toml_materialization(
-                    drv,
-                    &attrs,
-                    verify_source,
-                    would_build,
-                    trusted_local,
-                ) || derivation_is_nixos_substitution_glue(
-                    drv,
-                    &attrs,
-                    verify_source,
-                    would_build,
-                    trusted_local,
-                ) || derivation_is_reviewed_low_level_substitution(
-                    drv,
-                    &attrs,
-                    verify_source,
-                    would_build,
-                    trusted_local,
-                ) || derivation_is_reviewed_xkb_validation(
-                    drv,
-                    &attrs,
-                    verify_source,
-                    would_build,
-                    trusted_local,
-                )))
-                || derivation_is_nixos_security_wrapper(
-                    drv_path,
-                    drv,
-                    &attrs,
-                    verify_source,
-                    would_build,
-                    trusted_local,
-                )))
+        || (stdenv_builder_and_tool_inputs_are_trusted(
+            profile,
+            drv,
+            &attrs,
+            would_build,
+            trusted_local,
+        ) && ((!derivation_has_shell_environment_injection(&attrs)
+            && (derivation_is_pinned_nixos_materialization(
+                profile,
+                drv,
+                &attrs,
+                verify_source,
+                would_build,
+                trusted_local,
+            ) || derivation_is_reviewed_nixos_generator(
+                profile,
+                drv,
+                &attrs,
+                verify_source,
+                would_build,
+                trusted_local,
+            ) || derivation_is_reviewed_json_to_toml_materialization(
+                profile,
+                drv,
+                &attrs,
+                verify_source,
+                would_build,
+                trusted_local,
+            ) || derivation_is_nixos_substitution_glue(
+                profile,
+                drv,
+                &attrs,
+                verify_source,
+                would_build,
+                trusted_local,
+            ) || derivation_is_reviewed_low_level_substitution(
+                profile,
+                drv,
+                &attrs,
+                verify_source,
+                would_build,
+                trusted_local,
+            ) || derivation_is_reviewed_xkb_validation(
+                profile,
+                drv,
+                &attrs,
+                verify_source,
+                would_build,
+                trusted_local,
+            )))
+            || derivation_is_nixos_security_wrapper(
+                profile,
+                drv_path,
+                drv,
+                &attrs,
+                verify_source,
+                would_build,
+                trusted_local,
+            )))
 }
 
 #[cfg(test)]
@@ -3392,15 +3490,16 @@ fn reviewed_store_output_is_nonlocal(
 }
 
 fn reviewed_store_output_is_trusted(
+    profile: &WorkstationBuildProfile,
     drv: &Value,
     actual_path: &str,
     expected: ReviewedStoreOutput,
     would_build: &HashSet<String>,
     trusted_local: &HashSet<String>,
 ) -> bool {
-    actual_path == expected.path
+    profile.is(actual_path, expected.path)
         && input_drv_output_reference(drv, actual_path).is_some_and(|reference| {
-            reference.drv_path == expected.drv_path
+            profile.is(&reference.drv_path, expected.drv_path)
                 && reference.output == expected.output
                 && input_derivation_is_nonlocal_or_trusted(
                     &reference.drv_path,
@@ -3468,6 +3567,7 @@ fn stdenv_tool_inputs_are_empty(attrs: &serde_json::Map<String, Value>) -> bool 
 }
 
 fn stdenv_builder_and_tool_inputs_are_trusted(
+    profile: &WorkstationBuildProfile,
     drv: &Value,
     attrs: &serde_json::Map<String, Value>,
     would_build: &HashSet<String>,
@@ -3477,8 +3577,8 @@ fn stdenv_builder_and_tool_inputs_are_trusted(
     let Some(builder_reference) = input_drv_output_reference(drv, builder) else {
         return false;
     };
-    if builder != TRUSTED_STDENV_BASH_BUILDER
-        || builder_reference.drv_path != TRUSTED_STDENV_BASH_DRV
+    if !profile.is(builder, TRUSTED_STDENV_BASH_BUILDER)
+        || !profile.is(&builder_reference.drv_path, TRUSTED_STDENV_BASH_DRV)
         || builder_reference.output != "out"
         || !input_derivation_is_nonlocal_or_trusted(
             &builder_reference.drv_path,
@@ -3736,7 +3836,28 @@ const TRUSTED_SECURITY_WRAPPER_INCLUDE_PATH: &str =
 const TRUSTED_SECURITY_WRAPPER_INCLUDE_DRV: &str =
     "/nix/store/iw8yjjhv5qnbj90n4lkmr2dj3wk8rfz2-glibc-2.42-67-source-unsecvars.drv";
 
+#[cfg(test)]
 fn reviewed_tool_inputs_match(
+    drv: &Value,
+    attrs: &serde_json::Map<String, Value>,
+    expected: &[ReviewedToolInput],
+    would_build: &HashSet<String>,
+    trusted_local: &HashSet<String>,
+) -> bool {
+    reviewed_tool_inputs_match_for_profile(
+        WorkstationBuildProfile::builtin(),
+        drv,
+        attrs,
+        expected,
+        would_build,
+        trusted_local,
+    )
+}
+
+/// The reviewed descriptors name each tool input by its built-in path; the
+/// profile supplies the commit's path for it.
+fn reviewed_tool_inputs_match_for_profile(
+    profile: &WorkstationBuildProfile,
     drv: &Value,
     attrs: &serde_json::Map<String, Value>,
     expected: &[ReviewedToolInput],
@@ -3753,18 +3874,19 @@ fn reviewed_tool_inputs_match(
     let mut positions = BTreeMap::<&str, usize>::new();
     for descriptor in expected {
         let position = positions.entry(descriptor.attribute).or_default();
+        let path = profile.path(descriptor.path);
         let matches_path = actual
             .get(descriptor.attribute)
             .and_then(|paths| paths.get(*position))
-            .is_some_and(|path| path == descriptor.path);
+            .is_some_and(|actual| actual == path.as_ref());
         *position += 1;
         if !matches_path {
             return false;
         }
-        let Some(reference) = input_drv_output_reference(drv, descriptor.path) else {
+        let Some(reference) = input_drv_output_reference(drv, &path) else {
             return false;
         };
-        if reference.drv_path != descriptor.drv_path
+        if !profile.is(&reference.drv_path, descriptor.drv_path)
             || reference.output != descriptor.output
             || !input_derivation_is_nonlocal_or_trusted(
                 &reference.drv_path,
@@ -4323,6 +4445,7 @@ fn derivation_name<'a>(
 }
 
 fn reviewed_zone_independent_etc_recipe(
+    profile: &WorkstationBuildProfile,
     drv: &Value,
     attrs: &serde_json::Map<String, Value>,
     build_command: &str,
@@ -4331,8 +4454,8 @@ fn reviewed_zone_independent_etc_recipe(
         && !derivation_uses_structured_attributes(drv, attrs)
         && etc_script_with_time_zone_placeholder(build_command).is_some_and(|script| {
             reviewed_zone_independent_etc_fingerprints_match(
-                &normalized_script_sha256(&script),
-                &executable_pinned_script_sha256(&script),
+                &profile.normalized_sha256(&script),
+                &profile.executable_sha256(&script),
             )
         })
 }
@@ -4379,6 +4502,7 @@ fn derivation_is_plain_fixed_output_fetch(
 }
 
 fn has_pinned_stdenv_materializer<F>(
+    profile: &WorkstationBuildProfile,
     drv: &Value,
     attrs: &serde_json::Map<String, Value>,
     verify_source: &F,
@@ -4411,10 +4535,14 @@ where
                 && args[1].as_str() == Some(source_stdenv[0].as_str())
                 && args[2].as_str() == Some(builder[0].as_str())
         })
-        && drv.get("builder").and_then(Value::as_str) == Some(TRUSTED_STDENV_BASH_BUILDER)
+        && drv
+            .get("builder")
+            .and_then(Value::as_str)
+            .is_some_and(|builder| profile.is(builder, TRUSTED_STDENV_BASH_BUILDER))
         && derivation_attr_is_empty(attrs, "NIX_ATTRS_SH_FILE")
         && derivation_attr_is_empty(attrs, "NIX_ATTRS_JSON_FILE")
         && reviewed_store_output_is_trusted(
+            profile,
             drv,
             derivation_attr_text(attrs, "stdenv"),
             expected_stdenv,
@@ -4443,6 +4571,7 @@ const STOCK_CONCAT_TEXT_COMMAND: &str = "file=$out$destination\nmkdir -p \"$(dir
 const STOCK_JSON_TO_TOML_COMMAND: &str = "valuePath=\"$TMPDIR/value\"\nprintf \"%s\" \"$value\" > \"$valuePath\"\njson2toml \"$valuePath\" \"$out\"\n";
 
 fn stock_write_text_check_phase(
+    profile: &WorkstationBuildProfile,
     drv: &Value,
     attrs: &serde_json::Map<String, Value>,
     builder: &str,
@@ -4452,12 +4581,12 @@ fn stock_write_text_check_phase(
     let check = derivation_attr_text(attrs, "checkPhase");
     if check.is_empty()
         || (check == format!("{builder} -n -O extglob \"$target\"\n")
-            && builder == TRUSTED_STDENV_BASH_BUILDER)
+            && profile.is(builder, TRUSTED_STDENV_BASH_BUILDER))
     {
         return true;
     }
-    let normalized = normalized_script_sha256(check);
-    let executable_pinned = executable_pinned_script_sha256(check);
+    let normalized = profile.normalized_sha256(check);
+    let executable_pinned = profile.executable_sha256(check);
     let expected_inputs: &[ReviewedStoreOutput] =
         match (normalized.as_str(), executable_pinned.as_str()) {
             (
@@ -4475,8 +4604,16 @@ fn stock_write_text_check_phase(
             _ => return false,
         };
     expected_inputs.iter().all(|input| {
-        check.contains(input.path)
-            && reviewed_store_output_is_trusted(drv, input.path, *input, would_build, trusted_local)
+        let path = profile.path(input.path);
+        check.contains(path.as_ref())
+            && reviewed_store_output_is_trusted(
+                profile,
+                drv,
+                &path,
+                *input,
+                would_build,
+                trusted_local,
+            )
     })
 }
 
@@ -4511,6 +4648,7 @@ fn stock_disabled_unit_materializer(script: &str) -> bool {
 }
 
 fn derivation_is_pinned_nixos_materialization<F>(
+    profile: &WorkstationBuildProfile,
     drv: &Value,
     attrs: &serde_json::Map<String, Value>,
     verify_source: &F,
@@ -4522,6 +4660,7 @@ where
 {
     if !derivation_attr_truthy(attrs, "preferLocalBuild")
         || !has_pinned_stdenv_materializer(
+            profile,
             drv,
             attrs,
             verify_source,
@@ -4539,6 +4678,7 @@ where
         return empty_build_tool_attributes(attrs)
             && only_reviewed_phase_hooks(attrs, &["checkPhase"])
             && stock_write_text_check_phase(
+                profile,
                 drv,
                 attrs,
                 drv.get("builder").and_then(Value::as_str).unwrap_or(""),
@@ -4552,7 +4692,14 @@ where
     if stock_unit_materializer(build_command) || stock_disabled_unit_materializer(build_command) {
         return empty_build_tool_attributes(attrs) && only_reviewed_phase_hooks(attrs, &[]);
     }
-    derivation_is_pinned_link_farm(drv, attrs, verify_source, would_build, trusted_local)
+    derivation_is_pinned_link_farm(
+        profile,
+        drv,
+        attrs,
+        verify_source,
+        would_build,
+        trusted_local,
+    )
 }
 
 /// NixOS renders typed service settings through the pinned remarshal
@@ -4561,6 +4708,7 @@ where
 /// cache-backed converter. Keep it separate from the general generator
 /// fingerprint set so TOML data cannot authorize another shell recipe.
 fn derivation_is_reviewed_json_to_toml_materialization<F>(
+    profile: &WorkstationBuildProfile,
     drv: &Value,
     attrs: &serde_json::Map<String, Value>,
     verify_source: &F,
@@ -4582,6 +4730,7 @@ where
             .and_then(|value| serde_json::from_str::<Value>(value).ok())
             .is_some_and(|value| value.is_object())
         && has_pinned_stdenv_materializer(
+            profile,
             drv,
             attrs,
             verify_source,
@@ -4589,7 +4738,8 @@ where
             would_build,
             trusted_local,
         )
-        && reviewed_tool_inputs_match(
+        && reviewed_tool_inputs_match_for_profile(
+            profile,
             drv,
             attrs,
             REMARSHAL_GENERATOR_TOOL_INPUTS,
@@ -4612,6 +4762,7 @@ where
 }
 
 fn derivation_is_pinned_link_farm<F>(
+    profile: &WorkstationBuildProfile,
     drv: &Value,
     attrs: &serde_json::Map<String, Value>,
     verify_source: &F,
@@ -4628,22 +4779,24 @@ where
         .collect::<Vec<_>>();
     if builders.len() != 1
         || !reviewed_store_output_is_trusted(
+            profile,
             drv,
             builders[0],
             TRUSTED_LINK_FARM_BUILDER,
             would_build,
             trusted_local,
         )
-        || (!trusted_local.contains(TRUSTED_LINK_FARM_BUILDER.drv_path)
+        || (!trusted_local.contains(profile.path(TRUSTED_LINK_FARM_BUILDER.drv_path).as_ref())
             && !verify_source(builders[0], TRUSTED_LINK_FARM_BUILDER_SHA256))
         || !only_reviewed_phase_hooks(attrs, &["postBuild"])
-        || normalized_script_sha256(build_command)
+        || profile.normalized_sha256(build_command)
             != "a6cf60ebc58cc0369cee59040fd37c46b321146b484103ff4aa18b35b8b41b00"
-        || executable_pinned_script_sha256(build_command)
+        || profile.executable_sha256(build_command)
             != "99a4422a8e4f1e8438da233af92e5fde1dd815ef5cb8e6d798f71cb70eca85a3"
         || !reviewed_store_output_is_trusted(
+            profile,
             drv,
-            TRUSTED_LINK_FARM_PERL.path,
+            &profile.path(TRUSTED_LINK_FARM_PERL.path),
             TRUSTED_LINK_FARM_PERL,
             would_build,
             trusted_local,
@@ -4652,8 +4805,8 @@ where
         return false;
     }
     let post_build = derivation_attr_text(attrs, "postBuild");
-    let normalized = normalized_script_sha256(post_build);
-    let executable_pinned = executable_pinned_script_sha256(post_build);
+    let normalized = profile.normalized_sha256(post_build);
+    let executable_pinned = profile.executable_sha256(post_build);
     let expected_tools = match (normalized.as_str(), executable_pinned.as_str()) {
         (
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -4687,7 +4840,10 @@ where
             "88e1c26fe3f7b058516d0fb1a994bcfae08b4a65423075641322d4345e3d859f",
             "635bcd083f60852265836ba5800762b6ea89ecb8b03cac9a8ef888901d98f7ea",
         ) => {
-            if !post_build.starts_with(&format!("source {TRUSTED_STDENV_NO_CC}/setup\n")) {
+            if !post_build.starts_with(&format!(
+                "source {}/setup\n",
+                profile.path(TRUSTED_STDENV_NO_CC)
+            )) {
                 return false;
             }
             &[]
@@ -4697,14 +4853,14 @@ where
             "6a15544ea5c4361d80965ece2094126161bd8413fe80c7f8b91fb68e03e5e931",
         ) => {
             if !SYSTEM_PATH_POST_BUILD_TOOLS.iter().all(|tool| {
-                post_build.contains(tool.path)
-                    && reviewed_store_output_is_trusted(
-                        drv,
-                        tool.path,
-                        *tool,
-                        would_build,
-                        trusted_local,
-                    )
+                post_build_tool_is_trusted(
+                    profile,
+                    drv,
+                    post_build,
+                    *tool,
+                    would_build,
+                    trusted_local,
+                )
             }) {
                 return false;
             }
@@ -4718,14 +4874,14 @@ where
             // the GTK icon-cache branch while retaining the other three
             // cache-backed index updaters from the stock system-path hook.
             if !SYSTEM_PATH_POST_BUILD_TOOLS[..3].iter().all(|tool| {
-                post_build.contains(tool.path)
-                    && reviewed_store_output_is_trusted(
-                        drv,
-                        tool.path,
-                        *tool,
-                        would_build,
-                        trusted_local,
-                    )
+                post_build_tool_is_trusted(
+                    profile,
+                    drv,
+                    post_build,
+                    *tool,
+                    would_build,
+                    trusted_local,
+                )
             }) {
                 return false;
             }
@@ -4733,8 +4889,27 @@ where
         }
         _ => return false,
     };
-    reviewed_tool_inputs_match(drv, attrs, expected_tools, would_build, trusted_local)
-        && link_farm_dynamic_paths_are_trusted(drv, attrs, would_build, trusted_local)
+    reviewed_tool_inputs_match_for_profile(
+        profile,
+        drv,
+        attrs,
+        expected_tools,
+        would_build,
+        trusted_local,
+    ) && link_farm_dynamic_paths_are_trusted(drv, attrs, would_build, trusted_local)
+}
+
+fn post_build_tool_is_trusted(
+    profile: &WorkstationBuildProfile,
+    drv: &Value,
+    post_build: &str,
+    tool: ReviewedStoreOutput,
+    would_build: &HashSet<String>,
+    trusted_local: &HashSet<String>,
+) -> bool {
+    let path = profile.path(tool.path);
+    post_build.contains(path.as_ref())
+        && reviewed_store_output_is_trusted(profile, drv, &path, tool, would_build, trusted_local)
 }
 
 fn link_farm_dynamic_paths_are_trusted(
@@ -4826,6 +5001,7 @@ fn reviewed_generator_tool_inputs(fingerprint: &str) -> &'static [ReviewedToolIn
 /// rejected by the caller. Updating nixpkgs therefore requires reviewing and
 /// deliberately refreshing these fingerprints.
 fn derivation_is_reviewed_nixos_generator<F>(
+    profile: &WorkstationBuildProfile,
     drv: &Value,
     attrs: &serde_json::Map<String, Value>,
     verify_source: &F,
@@ -4836,8 +5012,8 @@ where
     F: Fn(&str, &str) -> bool,
 {
     let build_command = derivation_attr_text(attrs, "buildCommand");
-    let fingerprint = normalized_script_sha256(build_command);
-    let executable_fingerprint = executable_pinned_script_sha256(build_command);
+    let fingerprint = profile.normalized_sha256(build_command);
+    let executable_fingerprint = profile.executable_sha256(build_command);
     let expected_stdenv = if matches!(
         fingerprint.as_str(),
         "c061170cd0760a05e004a38f9c4014f960d2d96c9985b5c733b034ada5fb144d"
@@ -4848,6 +5024,7 @@ where
         TRUSTED_STDENV_NO_CC_OUTPUT
     };
     if !has_pinned_stdenv_materializer(
+        profile,
         drv,
         attrs,
         verify_source,
@@ -4867,38 +5044,43 @@ where
         return false;
     }
     let expected_tools = reviewed_generator_tool_inputs(&fingerprint);
-    let reviewed_script_inputs = fingerprint
-        != "3f7791ecb20d5bb1c5b1569d18ecc47e3ecb139e006fb11967418dee604bacf4"
-        || (build_command.contains(NIXOS_SYSTEM_SETUP_HOOK.path)
+    let setup_hook = profile.path(NIXOS_SYSTEM_SETUP_HOOK.path);
+    let setup_hook_is_trusted = || {
+        build_command.contains(setup_hook.as_ref())
             && reviewed_store_output_is_trusted(
+                profile,
                 drv,
-                NIXOS_SYSTEM_SETUP_HOOK.path,
+                &setup_hook,
                 NIXOS_SYSTEM_SETUP_HOOK,
                 would_build,
                 trusted_local,
-            ));
+            )
+    };
+    let reviewed_script_inputs = fingerprint
+        != "3f7791ecb20d5bb1c5b1569d18ecc47e3ecb139e006fb11967418dee604bacf4"
+        || setup_hook_is_trusted();
     let reviewed_fingerprint = if fingerprint == PINNED_NIXOS_TOPLEVEL_GENERATOR_FINGERPRINT {
         // The final NixOS toplevel script has exact, reviewed command bytes,
         // but its executable store hashes legitimately vary with Blueprint
         // configuration. Require every literal store item to be supplied by a
         // substitutable or independently reviewed input instead of enumerating
         // every valid configuration-dependent executable fingerprint.
-        build_command.contains(NIXOS_SYSTEM_SETUP_HOOK.path)
-            && reviewed_store_output_is_trusted(
-                drv,
-                NIXOS_SYSTEM_SETUP_HOOK.path,
-                NIXOS_SYSTEM_SETUP_HOOK,
-                would_build,
-                trusted_local,
-            )
+        setup_hook_is_trusted()
             && script_store_item_paths_are_trusted(drv, build_command, would_build, trusted_local)
     } else {
         reviewed_generator_fingerprints_match(&fingerprint, &executable_fingerprint)
-            || reviewed_zone_independent_etc_recipe(drv, attrs, build_command)
+            || reviewed_zone_independent_etc_recipe(profile, drv, attrs, build_command)
     };
     reviewed_fingerprint
         && reviewed_script_inputs
-        && reviewed_tool_inputs_match(drv, attrs, expected_tools, would_build, trusted_local)
+        && reviewed_tool_inputs_match_for_profile(
+            profile,
+            drv,
+            attrs,
+            expected_tools,
+            would_build,
+            trusted_local,
+        )
 }
 
 // NixOS' X11 module validates the configured keyboard with
@@ -4946,6 +5128,7 @@ fn xkb_validation_attribute_is_safe(
 /// tool, the reviewed cache-backed xkeyboard-config directory, safe layout
 /// attributes, and no extra phase, environment hook or input.
 fn derivation_is_reviewed_xkb_validation<F>(
+    profile: &WorkstationBuildProfile,
     drv: &Value,
     attrs: &serde_json::Map<String, Value>,
     verify_source: &F,
@@ -4961,14 +5144,15 @@ where
         TRUSTED_STDENV_NO_CC_DRV,
         XKB_VALIDATION_TOOL_INPUTS[0].drv_path,
         XKB_VALIDATION_CONFIG_DIR.drv_path,
-    ];
+    ]
+    .map(|reviewed| profile.path(reviewed));
     derivation_name(drv, attrs) == Some("xkb-validated")
         && !derivation_uses_structured_attributes(drv, attrs)
-        && normalized_script_sha256(build_command) == PINNED_XKB_VALIDATION_FINGERPRINT
-        && executable_pinned_script_sha256(build_command)
-            == PINNED_XKB_VALIDATION_EXECUTABLE_FINGERPRINT
+        && profile.normalized_sha256(build_command) == PINNED_XKB_VALIDATION_FINGERPRINT
+        && profile.executable_sha256(build_command) == PINNED_XKB_VALIDATION_EXECUTABLE_FINGERPRINT
         && derivation_attr_truthy(attrs, "preferLocalBuild")
         && has_pinned_stdenv_materializer(
+            profile,
             drv,
             attrs,
             verify_source,
@@ -4991,7 +5175,8 @@ where
         ]
         .iter()
         .all(|key| derivation_attr_is_empty(attrs, key))
-        && reviewed_tool_inputs_match(
+        && reviewed_tool_inputs_match_for_profile(
+            profile,
             drv,
             attrs,
             XKB_VALIDATION_TOOL_INPUTS,
@@ -5000,6 +5185,7 @@ where
         )
         && attrs.get("dir").and_then(Value::as_str).is_some_and(|dir| {
             reviewed_store_output_is_trusted(
+                profile,
                 drv,
                 dir,
                 XKB_VALIDATION_CONFIG_DIR,
@@ -5014,7 +5200,9 @@ where
         && derivation_input_drvs(drv).is_some_and(|inputs| {
             inputs.len() == reviewed_input_drvs.len()
                 && inputs.iter().all(|(path, outputs)| {
-                    reviewed_input_drvs.contains(&path.as_str())
+                    reviewed_input_drvs
+                        .iter()
+                        .any(|reviewed| reviewed.as_ref() == path.as_str())
                         && outputs.len() == 1
                         && outputs[0] == "out"
                 })
@@ -5027,6 +5215,7 @@ where
 /// this exemption tied to the exact 74cc helper bytes, source, replacement,
 /// stdenv and input providers used for NixOS' coredump sysctl materialization.
 fn derivation_is_reviewed_low_level_substitution<F>(
+    profile: &WorkstationBuildProfile,
     drv: &Value,
     attrs: &serde_json::Map<String, Value>,
     verify_source: &F,
@@ -5043,26 +5232,27 @@ where
     let source_stdenv = sources
         .iter()
         .find(|path| path.ends_with("-source-stdenv.sh"));
+    let substitute_builder = profile.path(TRUSTED_SUBSTITUTE_BUILDER);
     let exact_sources = source_stdenv.is_some_and(|source_stdenv| {
         sources.len() == 2
             && sources
                 .iter()
-                .any(|path| path == TRUSTED_SUBSTITUTE_BUILDER)
+                .any(|path| path == substitute_builder.as_ref())
             && verify_source(source_stdenv, TRUSTED_STDENV_SOURCE_SHA256)
-            && verify_source(
-                TRUSTED_SUBSTITUTE_BUILDER,
-                TRUSTED_SUBSTITUTE_BUILDER_SHA256,
-            )
+            && verify_source(&substitute_builder, TRUSTED_SUBSTITUTE_BUILDER_SHA256)
             && args.is_some_and(|args| {
                 args.len() == 3
                     && args[0].as_str() == Some("-e")
                     && args[1].as_str() == Some(source_stdenv.as_str())
-                    && args[2].as_str() == Some(TRUSTED_SUBSTITUTE_BUILDER)
+                    && args[2].as_str() == Some(substitute_builder.as_ref())
             })
     });
+    let coredump_source = profile.path(COREDUMP_SOURCE.path);
+    let coredump_target = profile.path(COREDUMP_SUBSTITUTION_TARGET.path);
     exact_sources
         && derivation_attr_truthy(attrs, "preferLocalBuild")
         && reviewed_store_output_is_trusted(
+            profile,
             drv,
             derivation_attr_text(attrs, "stdenv"),
             TRUSTED_STDENV_NO_CC_OUTPUT,
@@ -5083,10 +5273,11 @@ where
         ]
         .iter()
         .all(|key| derivation_attr_is_empty(attrs, key))
-        && derivation_attr_text(attrs, "src") == COREDUMP_SOURCE.path
+        && derivation_attr_text(attrs, "src") == coredump_source.as_ref()
         && reviewed_store_output_is_trusted(
+            profile,
             drv,
-            COREDUMP_SOURCE.path,
+            &coredump_source,
             COREDUMP_SOURCE,
             would_build,
             trusted_local,
@@ -5094,15 +5285,15 @@ where
         && derivation_attr_text(attrs, "substitutions")
             == format!(
                 "--replace-fail {} {}",
-                COREDUMP_SOURCE
-                    .path
+                coredump_source
                     .strip_suffix("/example/sysctl.d/50-coredump.conf")
                     .unwrap_or(""),
-                COREDUMP_SUBSTITUTION_TARGET.path
+                coredump_target
             )
         && reviewed_store_output_is_trusted(
+            profile,
             drv,
-            COREDUMP_SUBSTITUTION_TARGET.path,
+            &coredump_target,
             COREDUMP_SUBSTITUTION_TARGET,
             would_build,
             trusted_local,
@@ -5115,6 +5306,7 @@ where
 /// phase skeleton and require the exact source to be an input before allowing
 /// this second, narrowly defined glue shape.
 fn derivation_is_nixos_substitution_glue<F>(
+    profile: &WorkstationBuildProfile,
     drv: &Value,
     attrs: &serde_json::Map<String, Value>,
     verify_source: &F,
@@ -5127,6 +5319,7 @@ where
     if !derivation_attr_truthy(attrs, "preferLocalBuild")
         || !derivation_attr_truthy(attrs, "dontUnpack")
         || !has_pinned_stdenv_materializer(
+            profile,
             drv,
             attrs,
             verify_source,
@@ -5149,9 +5342,9 @@ where
             .is_some_and(|sources| sources.iter().any(|candidate| candidate == source));
     let build_phase = derivation_attr_text(attrs, "buildPhase");
     let post_install = derivation_attr_text(attrs, "postInstall");
-    let check_phase_hash = normalized_script_sha256(derivation_attr_text(attrs, "checkPhase"));
-    let phase_hash = normalized_script_sha256(build_phase);
-    let executable_phase_hash = executable_pinned_script_sha256(build_phase);
+    let check_phase_hash = profile.normalized_sha256(derivation_attr_text(attrs, "checkPhase"));
+    let phase_hash = profile.normalized_sha256(build_phase);
+    let executable_phase_hash = profile.executable_sha256(build_phase);
     let expected_tools = match (phase_hash.as_str(), executable_phase_hash.as_str()) {
         (
             "8cafb28f90f8f504b034abd094be4d6970a2870f34246605ee3471411ce22405",
@@ -5198,7 +5391,14 @@ where
         && build_phase.starts_with("runHook preBuild\n\ntarget=$out\n")
         && build_phase.contains("substitute \"$src\" \"$target\"")
         && build_phase.ends_with("runHook postBuild\n")
-        && reviewed_tool_inputs_match(drv, attrs, expected_tools, would_build, trusted_local);
+        && reviewed_tool_inputs_match_for_profile(
+            profile,
+            drv,
+            attrs,
+            expected_tools,
+            would_build,
+            trusted_local,
+        );
     let reviewed_check = matches!(
         check_phase_hash.as_str(),
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -5228,6 +5428,7 @@ fn pinned_hyprland_nixos_generate_config_phase(normalized: &str, executable_pinn
 /// the standard wrapper name, generated no-unpack phase, one wrapper.c input,
 /// and fixed output filename must all agree.
 fn derivation_is_nixos_security_wrapper<F>(
+    profile: &WorkstationBuildProfile,
     drv_path: &str,
     drv: &Value,
     attrs: &serde_json::Map<String, Value>,
@@ -5275,6 +5476,7 @@ where
     drv_path.ends_with(".drv")
         && name.starts_with("security-wrapper-")
         && has_pinned_stdenv_materializer(
+            profile,
             drv,
             attrs,
             verify_source,
@@ -5285,7 +5487,14 @@ where
         && !derivation_has_shell_environment_injection_except(attrs, &["NIX_CFLAGS_LINK"])
         && derivation_attr_truthy(attrs, "dontUnpack")
         && derivation_attr_is_empty(attrs, "src")
-        && reviewed_tool_inputs_match(drv, attrs, expected_tools, would_build, trusted_local)
+        && reviewed_tool_inputs_match_for_profile(
+            profile,
+            drv,
+            attrs,
+            expected_tools,
+            would_build,
+            trusted_local,
+        )
         && derivation_attr_is_empty(attrs, "buildPhase")
         && derivation_attr_is_empty(attrs, "configurePhase")
         && derivation_attr_is_empty(attrs, "CC")
@@ -5299,9 +5508,9 @@ where
         && compile_words[0] == "$CC"
         && compile_words[1] == "$CFLAGS"
         && compile_words[2] == wrapper_sources[0]
-        && include_path == TRUSTED_SECURITY_WRAPPER_INCLUDE_PATH
+        && profile.is(include_path, TRUSTED_SECURITY_WRAPPER_INCLUDE_PATH)
         && include_reference.is_some_and(|reference| {
-            reference.drv_path == TRUSTED_SECURITY_WRAPPER_INCLUDE_DRV
+            profile.is(&reference.drv_path, TRUSTED_SECURITY_WRAPPER_INCLUDE_DRV)
                 && reference.output == "out"
                 && input_derivation_is_nonlocal_or_trusted(
                     &reference.drv_path,
@@ -11313,5 +11522,108 @@ esac
         assert_eq!(destination["closure_manifest"], json!({"verified": true}));
         assert_eq!(destination["closure_manifest_sha256"], "a".repeat(64));
         assert_eq!(destination["target"], "blueprint");
+    }
+
+    /// Every real derivation graph the reviewed fixtures retain.
+    fn reviewed_fixture_graphs() -> Vec<(&'static str, BTreeMap<String, Value>)> {
+        let mut graphs = [
+            (
+                "production-tiling",
+                include_str!("../tests/fixtures/source-policy/production-tiling-generators.json"),
+            ),
+            (
+                "production-standard",
+                include_str!("../tests/fixtures/source-policy/production-standard-generators.json"),
+            ),
+            (
+                "production-dock",
+                include_str!("../tests/fixtures/source-policy/production-dock-generators.json"),
+            ),
+            (
+                "tiaris-production",
+                include_str!("../tests/fixtures/source-policy/tiaris-production-generators.json"),
+            ),
+            (
+                "regional-taskbar-new-york-de",
+                include_str!(
+                    "../tests/fixtures/source-policy/regional-taskbar-new-york-de-generators.json"
+                ),
+            ),
+            (
+                "regional-xkb-validated",
+                include_str!("../tests/fixtures/source-policy/regional-xkb-validated.json"),
+            ),
+        ]
+        .into_iter()
+        .map(|(name, fixture)| (name, serde_json::from_str(fixture).unwrap()))
+        .collect::<Vec<_>>();
+        graphs.push((
+            "generic-desktop-prebuild",
+            generic_desktop_prebuild_derivations(),
+        ));
+        graphs
+    }
+
+    #[test]
+    fn builtin_build_profile_reproduces_the_reviewed_fixture_decisions() {
+        // Admitted derivations per fixture when the whole fixture is the
+        // local work, recorded with the pre-profile classifier at d3e82f1.
+        let expected = BTreeMap::from([
+            ("production-tiling", (3, 3)),
+            ("production-standard", (3, 3)),
+            ("production-dock", (3, 3)),
+            ("tiaris-production", (7, 7)),
+            ("regional-taskbar-new-york-de", (10, 10)),
+            ("regional-xkb-validated", (2, 2)),
+            ("generic-desktop-prebuild", (3, 3)),
+        ]);
+        let profile = WorkstationBuildProfile::builtin();
+        for (name, derivations) in reviewed_fixture_graphs() {
+            let would_build = derivations.keys().cloned().collect::<Vec<_>>();
+            let would_build_set = would_build.iter().cloned().collect::<HashSet<_>>();
+            let admitted = classify_trusted_local_derivations_for_profile(
+                profile,
+                &would_build,
+                &derivations,
+                &synthetic_pinned_source,
+                &would_build_set,
+            );
+            assert_eq!(
+                (derivations.len(), admitted.len()),
+                expected[name],
+                "{name}"
+            );
+            // A foreign builder shell or stdenv is rejected, so every
+            // admission above depends on the profile's identities.
+            for (path, drv) in &derivations {
+                if !admitted.contains(path) {
+                    continue;
+                }
+                let text = drv.to_string();
+                for identity in &profile::COMMIT_IDENTITIES[..4] {
+                    let Some(item) = profile::store_item(identity.path) else {
+                        continue;
+                    };
+                    if !text.contains(item) {
+                        continue;
+                    }
+                    let foreign = format!("{}{}", "f".repeat(32), &item[32..]);
+                    let swapped: Value =
+                        serde_json::from_str(&text.replace(item, &foreign)).unwrap();
+                    assert!(
+                        !derivation_is_exempt_for_profile(
+                            profile,
+                            path,
+                            Some(&swapped),
+                            &synthetic_pinned_source,
+                            &would_build_set,
+                            &admitted,
+                        ),
+                        "{name}: {path} admitted with a foreign {}",
+                        identity.role
+                    );
+                }
+            }
+        }
     }
 }
