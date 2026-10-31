@@ -160,11 +160,14 @@ software cache (`src/software_cache_upload.rs`).
   as the Basic password and `X-Tiaris-Upload-Grant: <grant id>`. Nothing
   outside a grant is sent: a path whose local narinfo or NAR, or a file whose
   size or SHA-256, does not match the grant is refused locally
-  (`narinfo_mismatch`, `nar_mismatch`, `file_mismatch`, `not_in_cache`). A
-  path already in the tree is skipped.
+  (`narinfo_mismatch`, `nar_mismatch`, `file_mismatch`, `not_in_cache`); a
+  NAR's FileHash and a file's SHA-256 are checked before the same open file
+  is sent. A path already in the tree is skipped; a stored grant that no
+  longer decodes fails alone (`grant_invalid`).
 - **Bounds.** One grant and one upload at a time, at most 8 MiB/s. Network,
-  server and token errors stop the pass and retry the grant after 1, 2, 4 …
-  minutes, at most hourly; an expired grant or token is never used. A 507
+  server and token errors stop the pass and retry the grant 1, 2, 4 …
+  minutes, at most an hour, after the failure (not after the pass started);
+  success resets the backoff. An expired grant or token is never used. A 507
   fails the grant (`quota_exceeded`).
 - **Report.** To such a Manage each report carries
   `software_cache_uploads`: per grant `{grant_id, manifest_id, state:

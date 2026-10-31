@@ -480,6 +480,10 @@ struct NestAgentReportRequest {
     appliance: Option<crate::appliance::ApplianceReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     appliance_report_error: Option<&'static str>,
+    /// To a Manage that accepts `software_cache_upload_v1`: the state of each
+    /// upload grant this Nest holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    software_cache_uploads: Option<Vec<crate::software_cache_upload::UploadReport>>,
     /// Workstation software bases (nixpkgs commits) this Nest can build.
     workstation_nixpkgs_commits: Vec<String>,
     /// Protocol 5: NixOS channel commits this Nest checked, newest first.
@@ -488,10 +492,6 @@ struct NestAgentReportRequest {
     /// Protocol 5: when the channel check last completed.
     #[serde(skip_serializing_if = "Option::is_none")]
     software_update_checked_at: Option<String>,
-    /// To a Manage that accepts `software_cache_upload_v1`: the state of each
-    /// upload grant this Nest holds.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    software_cache_uploads: Option<Vec<crate::software_cache_upload::UploadReport>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1429,6 +1429,16 @@ async fn report_nest_state(
     .into_iter()
     .take(MAX_REPORT_CACHE_ARTIFACTS)
     .collect();
+    let software_cache_uploads = if peer_accepts_uploads {
+        crate::software_cache_upload::report(&state.db)
+            .await
+            .inspect_err(|error| {
+                warn!(error = %error, "could not read software cache uploads");
+            })
+            .ok()
+    } else {
+        None
+    };
     // A protocol-4 Tiaris keeps today's report: the release pins only.
     // Each list replaces Manage's previous one, so an unreadable store
     // omits the lane instead of sending an empty list.
@@ -1456,16 +1466,6 @@ async fn report_nest_state(
                 None,
             )
         };
-    let software_cache_uploads = if peer_accepts_uploads {
-        crate::software_cache_upload::report(&state.db)
-            .await
-            .inspect_err(|error| {
-                warn!(error = %error, "could not read software cache uploads");
-            })
-            .ok()
-    } else {
-        None
-    };
     let body = NestAgentReportRequest {
         protocol_version: report_protocol,
         capabilities: nest_capabilities(
@@ -1486,10 +1486,10 @@ async fn report_nest_state(
         wake_on_lan,
         appliance,
         appliance_report_error,
+        software_cache_uploads,
         workstation_nixpkgs_commits,
         detected_nixpkgs_commits,
         software_update_checked_at,
-        software_cache_uploads,
     };
     let (body, body_bytes) =
         fit_nest_report_body(body, MAX_NEST_REPORT_BODY_BYTES, report_priority)?;
@@ -5930,10 +5930,10 @@ mod tests {
             wake_on_lan: vec![],
             appliance: None,
             appliance_report_error: None,
+            software_cache_uploads: None,
             workstation_nixpkgs_commits: vec!["74cc63f702f7d60a557e152a57b40fb1fd0f72ac".into()],
             detected_nixpkgs_commits: None,
             software_update_checked_at: None,
-            software_cache_uploads: None,
         }
     }
 

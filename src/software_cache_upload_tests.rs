@@ -487,7 +487,8 @@ async fn transient_failures_back_off_and_resume_where_they_stopped() {
         .unwrap();
     let (state, error, next) = grant_state(&db).await;
     assert_eq!((state.as_str(), error.as_str()), ("uploading", "http_503"));
-    assert_eq!(next, start.timestamp() + BACKOFF_BASE_SECONDS);
+    let window = start.timestamp()..=Utc::now().timestamp();
+    assert!(window.contains(&(next - BACKOFF_BASE_SECONDS)), "{next}");
 
     server.lock().unwrap().requests.clear();
     upload_pass(
@@ -521,6 +522,124 @@ async fn transient_failures_back_off_and_resume_where_they_stopped() {
             .any(|request| request.contains(&fixture.paths[0].nar_url))
     );
     assert_eq!(grant_state(&db).await.0, "uploaded");
+    let attempts: i64 = sqlx::query_scalar("SELECT attempts FROM software_cache_upload_grants")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(attempts, 0, "success resets the backoff");
+}
+
+#[tokio::test]
+async fn backoff_counts_from_the_failure_not_from_the_start_of_the_pass() {
+    let db = pool().await;
+    let fixture = fixture("backoff");
+    let server = Arc::new(Mutex::new(Server::default()));
+    let url = serve(server.clone()).await;
+    let granted = grant(&fixture, SCOPE, 4_102_444_800, json!([]));
+    apply_with(
+        &db,
+        &fixture.data_dir,
+        Some(&upload_config(&url, TOKEN, &[granted])),
+        true,
+    )
+    .await
+    .unwrap();
+    // A pass that started ten minutes ago (a long upload) and then failed.
+    server.lock().unwrap().fail_puts = vec![503, 503];
+    let long_ago = Utc::now() - chrono::Duration::minutes(10);
+    upload_pass(&db, &fixture.data_dir, &fixture.uploader, long_ago)
+        .await
+        .unwrap();
+    let (_, _, next) = grant_state(&db).await;
+    assert!(
+        next >= Utc::now().timestamp() + BACKOFF_BASE_SECONDS - 1,
+        "{next}"
+    );
+    server.lock().unwrap().requests.clear();
+    upload_pass(&db, &fixture.data_dir, &fixture.uploader, Utc::now())
+        .await
+        .unwrap();
+    assert!(server.lock().unwrap().requests.is_empty());
+    // The next failure waits twice as long.
+    upload_pass(
+        &db,
+        &fixture.data_dir,
+        &fixture.uploader,
+        Utc::now() + chrono::Duration::seconds(61),
+    )
+    .await
+    .unwrap();
+    let (_, _, later) = grant_state(&db).await;
+    assert!(
+        later >= Utc::now().timestamp() + 2 * BACKOFF_BASE_SECONDS - 1,
+        "{later}"
+    );
+}
+
+#[tokio::test]
+async fn a_corrupted_nar_is_never_sent_and_a_broken_grant_fails_alone() {
+    let db = pool().await;
+    let fixture = fixture("corrupt");
+    let server = Arc::new(Mutex::new(Server::default()));
+    let url = serve(server.clone()).await;
+    // Same size, other bytes: only the FileHash check catches it.
+    let nar = fixture.uploader.cache_root.join(&fixture.paths[0].nar_url);
+    let mut bytes = fs::read(&nar).unwrap();
+    bytes[0] ^= 0xff;
+    fs::write(&nar, bytes).unwrap();
+    let broken = grant(&fixture, SCOPE, 4_102_444_800, json!([]));
+    let good = grant(&fixture, SCOPE, 4_102_444_801, source_file(&fixture));
+    let config = upload_config(&url, TOKEN, &[broken.clone(), good.clone()]);
+    apply_with(&db, &fixture.data_dir, Some(&config), true)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE software_cache_upload_grants SET grant_text = 'tug1.bm90IGpzb24.mac'
+         WHERE grant_id = ?",
+    )
+    .bind(&broken.1)
+    .execute(&db)
+    .await
+    .unwrap();
+    upload_pass(&db, &fixture.data_dir, &fixture.uploader, Utc::now())
+        .await
+        .unwrap();
+    let requests = server.lock().unwrap().requests.clone();
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.contains(&fixture.paths[0].nar_url))
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains(&fixture.paths[1].nar_url))
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("manage-source"))
+    );
+    let reports = report(&db).await.unwrap();
+    let entry = |id: &str| reports.iter().find(|entry| entry.grant_id == id).unwrap();
+    let broken = entry(&broken.1);
+    assert_eq!(
+        (
+            broken.state.as_str(),
+            broken.error.as_str(),
+            broken.paths_total
+        ),
+        ("failed", "grant_invalid", 0)
+    );
+    let good = entry(&good.1);
+    assert_eq!(
+        (good.state.as_str(), good.error.as_str()),
+        ("failed", "nar_mismatch")
+    );
+    assert_eq!(
+        (good.paths_uploaded, good.files_uploaded, good.items_failed),
+        (1, 1, 1)
+    );
 }
 
 #[tokio::test]

@@ -623,6 +623,13 @@ struct Session<'a> {
     uploader: &'a Uploader,
 }
 
+/// 1, 2, 4 … minutes after the `attempts`-th retry, at most an hour.
+fn backoff_seconds(attempts: i64) -> i64 {
+    BACKOFF_BASE_SECONDS
+        .saturating_mul(1 << attempts.clamp(0, 6))
+        .min(BACKOFF_MAX_SECONDS)
+}
+
 /// What a status means for one upload.
 fn classify(status: StatusCode, uploaded: u64) -> ItemOutcome {
     match status.as_u16() {
@@ -639,7 +646,11 @@ fn classify(status: StatusCode, uploaded: u64) -> ItemOutcome {
 
 impl Session<'_> {
     async fn upload_grant(&self, row: &GrantRow) -> Result<GrantOutcome> {
-        let (id, grant) = decode_grant(&row.grant_text, self.destination)?;
+        // A stored grant that no longer decodes fails on its own; the other
+        // grants still upload.
+        let Ok((id, grant)) = decode_grant(&row.grant_text, self.destination) else {
+            return Ok(GrantOutcome::Failed("grant_invalid".to_string()));
+        };
         if id != row.grant_id {
             return Ok(GrantOutcome::Failed("grant_mismatch".to_string()));
         }
@@ -787,21 +798,25 @@ impl Session<'_> {
         Ok(())
     }
 
+    /// Records a grant's outcome. A retry waits from the moment it failed,
+    /// not from the start of the pass, so a long failing upload is not
+    /// repeated on the next pass; success resets the backoff.
     async fn finish_grant(
         &self,
         row: &GrantRow,
         outcome: GrantOutcome,
-        now: DateTime<Utc>,
+        pass_started: DateTime<Utc>,
     ) -> Result<()> {
-        let (state, error, next) = match &outcome {
-            GrantOutcome::Uploaded => ("uploaded", String::new(), 0),
-            GrantOutcome::Failed(reason) => ("failed", reason.clone(), 0),
-            GrantOutcome::Retry(reason) => {
-                let delay = BACKOFF_BASE_SECONDS
-                    .saturating_mul(1 << row.attempts.clamp(0, 6))
-                    .min(BACKOFF_MAX_SECONDS);
-                ("uploading", reason.clone(), now.timestamp() + delay)
-            }
+        let failed_at = Utc::now().max(pass_started).timestamp();
+        let (state, error, next, attempts) = match &outcome {
+            GrantOutcome::Uploaded => ("uploaded", String::new(), 0, 0),
+            GrantOutcome::Failed(reason) => ("failed", reason.clone(), 0, row.attempts),
+            GrantOutcome::Retry(reason) => (
+                "uploading",
+                reason.clone(),
+                failed_at + backoff_seconds(row.attempts),
+                row.attempts + 1,
+            ),
             GrantOutcome::Gone => return Ok(()),
         };
         match &outcome {
@@ -813,14 +828,13 @@ impl Session<'_> {
         }
         sqlx::query(
             "UPDATE software_cache_upload_grants
-             SET state = ?, error = ?, next_attempt_at = ?,
-                 attempts = attempts + ?, updated_at = ?
+             SET state = ?, error = ?, next_attempt_at = ?, attempts = ?, updated_at = ?
              WHERE grant_id = ?",
         )
         .bind(state)
         .bind(error)
         .bind(next)
-        .bind(i64::from(matches!(outcome, GrantOutcome::Retry(_))))
+        .bind(attempts)
         .bind(now_text())
         .bind(&row.grant_id)
         .execute(self.db)
@@ -859,9 +873,13 @@ impl Session<'_> {
             Ok(nar) => nar,
             Err(_) => return ItemOutcome::Refused("not_in_cache".into()),
         };
-        if nar.metadata().map(|metadata| metadata.len()).ok() != Some(path.file_size) {
-            return ItemOutcome::Refused("nar_mismatch".into());
-        }
+        // A corrupted NAR is never sent: its size and FileHash are checked
+        // first, and the same handle is uploaded.
+        let nar = match checked_file(nar, path.file_size, narinfo.file_hash).await {
+            Ok(Some(nar)) => nar,
+            Ok(None) => return ItemOutcome::Refused("nar_mismatch".into()),
+            Err(_) => return ItemOutcome::Refused("not_in_cache".into()),
+        };
         let nar_url = format!("{}/{}", self.destination.base, path.nar_url);
         match self.put_file(id, &nar_url, nar, path.file_size).await {
             ItemOutcome::Uploaded(_) => {}
@@ -892,34 +910,23 @@ impl Session<'_> {
             return ItemOutcome::Refused("invalid_file".into());
         };
         let local = self.uploader.source_dir.join(format!("{revision}.tar"));
-        let expected = file.sha256.to_ascii_lowercase();
-        let size = file.size;
-        let checked = tokio::task::spawn_blocking(move || -> Result<Option<fs::File>> {
-            let mut handle = fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(&local)?;
-            if !handle.metadata()?.is_file() || handle.metadata()?.len() != size {
-                return Ok(None);
-            }
-            let mut hasher = Sha256::new();
-            io::copy(&mut handle, &mut hasher)?;
-            if hex::encode(hasher.finalize()) != expected {
-                return Ok(None);
-            }
-            Ok(Some(
-                fs::OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                    .open(&local)?,
-            ))
-        })
-        .await;
-        let handle = match checked {
-            Ok(Ok(Some(handle))) => handle,
-            Ok(Ok(None)) => return ItemOutcome::Refused("file_mismatch".into()),
-            _ => return ItemOutcome::Refused("file_unavailable".into()),
+        let Ok(Ok(expected)) = hex::decode(&file.sha256).map(<[u8; 32]>::try_from) else {
+            return ItemOutcome::Refused("invalid_file".into());
         };
+        let opened = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&local);
+        let handle = match opened {
+            Ok(handle) => checked_file(handle, file.size, expected).await,
+            Err(error) => Err(error.into()),
+        };
+        let handle = match handle {
+            Ok(Some(handle)) => handle,
+            Ok(None) => return ItemOutcome::Refused("file_mismatch".into()),
+            Err(_) => return ItemOutcome::Refused("file_unavailable".into()),
+        };
+        let size = file.size;
         let url = format!("{}/{}", self.destination.base, file.path);
         self.put_file(id, &url, handle, size).await
     }
@@ -947,6 +954,28 @@ impl Session<'_> {
             Err(error) => ItemOutcome::Retry(transport_error(&error)),
         }
     }
+}
+
+/// `file`, rewound, when it is a regular file of `size` bytes whose SHA-256
+/// is `expected`; `None` when it is not. The caller uploads this very handle.
+async fn checked_file(file: fs::File, size: u64, expected: [u8; 32]) -> Result<Option<fs::File>> {
+    tokio::task::spawn_blocking(move || -> Result<Option<fs::File>> {
+        use std::io::{Seek, SeekFrom};
+        let mut file = file;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() != size {
+            return Ok(None);
+        }
+        let mut hasher = Sha256::new();
+        let copied = io::copy(&mut (&mut file).take(size), &mut hasher)?;
+        if copied != size || <[u8; 32]>::from(hasher.finalize()) != expected {
+            return Ok(None);
+        }
+        file.seek(SeekFrom::Start(0))?;
+        Ok(Some(file))
+    })
+    .await
+    .context("join file check")?
 }
 
 /// A reason code for a transport error. reqwest errors carry the URL but
@@ -1077,11 +1106,11 @@ pub(crate) async fn report(db: &SqlitePool) -> Result<Vec<UploadReport>> {
     .await?;
     let mut reports = Vec::with_capacity(rows.len());
     for row in rows {
-        let Some(Ok((_, grant))) =
-            Destination::from_tree(&row.tree).map(|tree| decode_grant(&row.grant_text, &tree))
-        else {
-            continue;
-        };
+        // A grant that no longer decodes is still reported (failed, with no
+        // totals), so Manage sees it.
+        let (paths_total, files_total) = Destination::from_tree(&row.tree)
+            .and_then(|tree| decode_grant(&row.grant_text, &tree).ok())
+            .map_or((0, 0), |(_, grant)| (grant.paths.len(), grant.files.len()));
         let items = sqlx::query_as::<_, (String, String)>(
             "SELECT item, state FROM software_cache_upload_items WHERE grant_id = ?",
         )
@@ -1098,9 +1127,9 @@ pub(crate) async fn report(db: &SqlitePool) -> Result<Vec<UploadReport>> {
             grant_id: row.grant_id,
             manifest_id: row.manifest_id,
             state: row.state,
-            paths_total: grant.paths.len(),
+            paths_total,
             paths_uploaded: uploaded(true),
-            files_total: grant.files.len(),
+            files_total,
             files_uploaded: uploaded(false),
             items_failed: items.iter().filter(|(_, state)| state == "failed").count(),
             bytes_uploaded: row.bytes_uploaded,
