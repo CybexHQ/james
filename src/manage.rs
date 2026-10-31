@@ -362,6 +362,10 @@ struct ManagedBuildJob {
     input_config_hash: String,
     #[serde(default)]
     cache_metadata: Option<Value>,
+    /// For an update-only candidate, the release it was prepared from
+    /// (`{"release_blueprint_revision_id": …}`); the scan compares the two.
+    #[serde(default)]
+    software_update: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -484,6 +488,10 @@ struct NestAgentReportRequest {
     /// Protocol 5: when the channel check last completed.
     #[serde(skip_serializing_if = "Option::is_none")]
     software_update_checked_at: Option<String>,
+    /// Protocol 5: what each built update candidate fixes, and the status of
+    /// its App List packages at the candidate's commit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    software_update_findings: Option<Vec<crate::software_updates::findings::FindingReport>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1109,7 +1117,18 @@ async fn apply_nest_desired(
             )
             .await;
             match sync {
-                Ok(_) => {}
+                Ok(_) => {
+                    if let Err(error) = crate::software_updates::findings::record_hint(
+                        &state.db,
+                        &job.id,
+                        job.software_update.as_ref(),
+                    )
+                    .await
+                    {
+                        warn!(job_id = %job.id, error = %error,
+                            "could not record the release of a software update candidate");
+                    }
+                }
                 Err(AppError::Validation(reason)) => {
                     warn!(
                         job_id = %job.id,
@@ -1411,30 +1430,43 @@ async fn report_nest_state(
     // A protocol-4 Tiaris keeps today's report: the release pins only.
     // Each list replaces Manage's previous one, so an unreadable store
     // omits the lane instead of sending an empty list.
-    let (workstation_nixpkgs_commits, detected_nixpkgs_commits, software_update_checked_at) =
-        if report_protocol >= TIARIS_DETECTED_COMMITS_PROTOCOL_VERSION {
-            let detected = crate::software_updates::report(&state.db)
-                .await
-                .inspect_err(|error| {
-                    warn!(error = %error, "could not read detected nixpkgs commits");
-                })
-                .ok();
-            let checked_at = crate::software_updates::checked_at(&state.db)
-                .await
-                .ok()
-                .flatten();
-            (
-                crate::software_updates::workstation_nixpkgs_commits(state).await,
-                detected,
-                checked_at,
-            )
-        } else {
-            (
-                crate::config::workstation_nixpkgs_commits(&state.config),
-                None,
-                None,
-            )
-        };
+    let (
+        workstation_nixpkgs_commits,
+        detected_nixpkgs_commits,
+        software_update_checked_at,
+        software_update_findings,
+    ) = if report_protocol >= TIARIS_DETECTED_COMMITS_PROTOCOL_VERSION {
+        let detected = crate::software_updates::report(&state.db)
+            .await
+            .inspect_err(|error| {
+                warn!(error = %error, "could not read detected nixpkgs commits");
+            })
+            .ok();
+        let checked_at = crate::software_updates::checked_at(&state.db)
+            .await
+            .ok()
+            .flatten();
+        let findings = crate::software_updates::findings::report(&state.db)
+            .await
+            .inspect_err(|error| {
+                warn!(error = %error, "could not read software update findings");
+            })
+            .ok()
+            .filter(|findings| !findings.is_empty());
+        (
+            crate::software_updates::workstation_nixpkgs_commits(state).await,
+            detected,
+            checked_at,
+            findings,
+        )
+    } else {
+        (
+            crate::config::workstation_nixpkgs_commits(&state.config),
+            None,
+            None,
+            None,
+        )
+    };
     let body = NestAgentReportRequest {
         protocol_version: report_protocol,
         capabilities: nest_capabilities(&state.config, peer_supports_scheduling),
@@ -1454,6 +1486,7 @@ async fn report_nest_state(
         workstation_nixpkgs_commits,
         detected_nixpkgs_commits,
         software_update_checked_at,
+        software_update_findings,
     };
     let (body, body_bytes) =
         fit_nest_report_body(body, MAX_NEST_REPORT_BODY_BYTES, report_priority)?;
@@ -1897,6 +1930,10 @@ fn fit_nest_report_body(
         }
     }
 
+    if !nest_report_body_fits(&body, max_bytes) {
+        // Findings are stored idempotently and sent again with every report.
+        body.software_update_findings = None;
+    }
     if !nest_report_body_fits(&body, max_bytes) {
         bail!("managed nest report base body exceeded {max_bytes} bytes");
     }
@@ -5874,6 +5911,7 @@ mod tests {
             workstation_nixpkgs_commits: vec!["74cc63f702f7d60a557e152a57b40fb1fd0f72ac".into()],
             detected_nixpkgs_commits: None,
             software_update_checked_at: None,
+            software_update_findings: None,
         }
     }
 

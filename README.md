@@ -56,6 +56,10 @@ on its channel's branch after the release pin, and records the commit as
 `ready` or `blocked` with a reason. Ready
 commits are admitted for Blueprint jobs and, to a Tiaris that accepts Nest
 protocol 5, reported in `detected_nixpkgs_commits`.
+When Nest has built the update candidate Manage prepares from a released
+Blueprint at such a commit, it scans the release and candidate closures with
+vulnix and reports the advisories the candidate fixes, with the cache status
+of each App List package at that commit, in `software_update_findings`.
 
 ## Development
 
