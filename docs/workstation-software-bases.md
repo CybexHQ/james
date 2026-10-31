@@ -15,21 +15,30 @@ builder Nest reports its commit, and tells the administrator which Nest needs
 an update otherwise. Nests that predate the field build only the commit they
 were released with.
 
-To a Tiaris that accepts Nest protocol 5 (its compatibility range includes 5),
-the report is protocol 5: `workstation_nixpkgs_commits` lists the release pins,
-the newest ready detected commit and every ready detected commit a Blueprint
-job this Nest still holds uses, and `detected_nixpkgs_commits` lists the
-newest 32 detected commits:
+To a Tiaris that accepts Nest protocol 5 (its compatibility range includes 5;
+`protocol/compatibility.json` is byte-identical with Manage's: Tiaris stays
+protocol 4 and accepts Nest protocols 4 and 5), the report is protocol 5:
+`workstation_nixpkgs_commits` lists the release pins, the newest ready
+detected commit and every ready detected commit a Blueprint job this Nest
+still holds uses. Two fields are added:
 
 ```json
-{"commit": "6f06d204…", "channel": "nixos-26.05", "last_modified": "2026-10-29T17:25:25Z",
- "nar_hash": "sha256-…", "kernel_version": "6.18.59", "state": "blocked",
- "reason": "build_script_changed", "reason_details": ["wrapper.c"],
- "detected_at": "2026-10-31T03:12:00Z"}
+{"detected_nixpkgs_commits": [
+   {"commit": "6f06d204…", "channel": "nixos-26.05", "last_modified": "2026-10-29T17:25:25Z",
+    "nar_hash": "sha256-…", "kernel_version": "6.18.59", "state": "blocked",
+    "reason": "source_build_required", "detected_at": "2026-10-31T03:12:00Z"}],
+ "software_update_checked_at": "2026-10-31T03:12:00Z"}
 ```
 
-`reason` and `reason_details` (at most 50 names) are omitted for ready
-commits. A protocol-4 Tiaris gets today's report: the release pins only.
+- `detected_nixpkgs_commits` is always the Nest's full current list (at most
+  32: ready commits a Blueprint job still uses first, then the newest); each
+  report replaces the previous one in Manage. When the Nest cannot read its
+  records it omits the field rather than send an empty list. `reason` is set
+  only for blocked commits; the names behind it stay in the Nest's record.
+- `software_update_checked_at` is when a channel check last completed,
+  whether or not it found a new commit; a failed check does not move it.
+
+A protocol-4 Tiaris gets today's report: the release pins only.
 
 ## Detected commits (Nest-driven updates)
 

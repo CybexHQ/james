@@ -172,7 +172,6 @@ struct DetectedRow {
     kernel_version: String,
     state: String,
     reason: Option<String>,
-    reason_details: String,
     profile: Option<String>,
     tiaris_derivations: String,
     detected_at: String,
@@ -185,12 +184,13 @@ pub(crate) struct DetectedCommitReport {
     pub(crate) channel: String,
     pub(crate) last_modified: String,
     pub(crate) nar_hash: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub(crate) kernel_version: String,
     pub(crate) state: String,
+    /// Why a commit is blocked. The names behind it stay in the Nest's
+    /// record (`reason_details`); Manage's wire carries the reason only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) reason_details: Vec<String>,
     pub(crate) detected_at: String,
 }
 
@@ -204,14 +204,13 @@ impl From<DetectedRow> for DetectedCommitReport {
             kernel_version: row.kernel_version,
             state: row.state,
             reason: row.reason,
-            reason_details: serde_json::from_str(&row.reason_details).unwrap_or_default(),
             detected_at: row.detected_at,
         }
     }
 }
 
 const DETECTED_COLUMNS: &str = "commit_rev, channel, last_modified, nar_hash, kernel_version, \
-     state, reason, reason_details, profile, tiaris_derivations, detected_at";
+     state, reason, profile, tiaris_derivations, detected_at";
 
 async fn detected_row(db: &SqlitePool, commit: &str) -> Result<Option<DetectedRow>> {
     Ok(sqlx::query_as::<_, DetectedRow>(&format!(
@@ -222,11 +221,20 @@ async fn detected_row(db: &SqlitePool, commit: &str) -> Result<Option<DetectedRo
     .await?)
 }
 
-/// The newest detected commits, newest first, for the Nest report.
+/// The Nest's full current list for the report; each report replaces the
+/// previous one in Manage. Ready commits a Blueprint job still uses come
+/// first, so the 32-entry limit never drops a commit this Nest builds; then
+/// the newest.
 pub(crate) async fn report(db: &SqlitePool) -> Result<Vec<DetectedCommitReport>> {
     Ok(sqlx::query_as::<_, DetectedRow>(&format!(
-        "SELECT {DETECTED_COLUMNS} FROM detected_nixpkgs_commits
-         ORDER BY last_modified DESC, commit_rev LIMIT ?"
+        "SELECT {DETECTED_COLUMNS} FROM detected_nixpkgs_commits AS detected
+         ORDER BY (detected.state = 'ready' AND EXISTS (
+                 SELECT 1 FROM nest_build_jobs AS jobs
+                 WHERE json_valid(jobs.build_spec)
+                   AND json_extract(jobs.build_spec, '$.nixpkgs_commit') = detected.commit_rev
+             )) DESC,
+             last_modified DESC, commit_rev
+         LIMIT ?"
     ))
     .bind(MAX_REPORTED_DETECTED_COMMITS)
     .fetch_all(db)
@@ -367,18 +375,18 @@ async fn run(state: AppState) {
             // Duplicate wake-ups and requests within minutes of a check are
             // answered by the check that just ran.
             if let Some(request) = request {
-                let _ = mark_checked(&state.db, Some(&request), "").await;
+                let _ = mark_checked(&state.db, Some(&request), None).await;
             }
             continue;
         }
-        let error = match check(&state, on_demand).await {
-            Ok(()) => String::new(),
+        let outcome = match check(&state, on_demand).await {
+            Ok(()) => Ok(()),
             Err(error) => {
                 warn!(error = %error, "software update check failed");
-                format!("{error:#}").chars().take(500).collect()
+                Err(format!("{error:#}").chars().take(500).collect::<String>())
             }
         };
-        if let Err(error) = mark_checked(&state.db, request.as_deref(), &error).await {
+        if let Err(error) = mark_checked(&state.db, request.as_deref(), Some(outcome)).await {
             warn!(error = %error, "could not record software update check");
         }
     }
@@ -392,21 +400,50 @@ fn pending_request(state: &CheckState) -> Option<String> {
         .flatten()
 }
 
-async fn mark_checked(db: &SqlitePool, handled_request: Option<&str>, error: &str) -> Result<()> {
+/// Record a handled request and, when a check ran (`outcome`), its result.
+/// Only a check that completed moves `last_completed_at`.
+async fn mark_checked(
+    db: &SqlitePool,
+    handled_request: Option<&str>,
+    outcome: Option<std::result::Result<(), String>>,
+) -> Result<()> {
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let ran = outcome.is_some();
+    let completed = matches!(outcome, Some(Ok(())));
+    let error = match outcome {
+        Some(Err(error)) => error,
+        _ => String::new(),
+    };
     sqlx::query(
-        "INSERT INTO software_update_check_state (id, check_handled_at, last_checked_at, last_error)
-         VALUES (1, ?, ?, ?)
+        "INSERT INTO software_update_check_state
+             (id, check_handled_at, last_checked_at, last_completed_at, last_error)
+         VALUES (1, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
              check_handled_at = COALESCE(excluded.check_handled_at, check_handled_at),
-             last_checked_at = excluded.last_checked_at,
-             last_error = excluded.last_error",
+             last_checked_at = COALESCE(excluded.last_checked_at, last_checked_at),
+             last_completed_at = COALESCE(excluded.last_completed_at, last_completed_at),
+             last_error = CASE WHEN excluded.last_checked_at IS NULL
+                 THEN last_error ELSE excluded.last_error END",
     )
     .bind(handled_request)
-    .bind(Utc::now().to_rfc3339())
+    .bind(ran.then_some(&now))
+    .bind(completed.then_some(&now))
     .bind(error)
     .execute(db)
     .await?;
     Ok(())
+}
+
+/// When a channel check last completed, whether or not it found a new
+/// commit (`software_update_checked_at`).
+pub(crate) async fn checked_at(db: &SqlitePool) -> Result<Option<String>> {
+    let value: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT last_completed_at FROM software_update_check_state WHERE id = 1",
+    )
+    .fetch_optional(db)
+    .await?;
+    Ok(parse_timestamp(value.flatten().as_deref())
+        .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)))
 }
 
 /// The next daily check after `now`: 01:00 plus `offset_minutes` (below 240)

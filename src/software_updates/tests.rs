@@ -453,9 +453,22 @@ async fn manage_names_the_channel_and_requests_checks_without_crossing_releases(
         parse_timestamp(state.check_requested_at.as_deref()),
         parse_timestamp(first.as_str())
     );
-    mark_checked(&pool, state.check_requested_at.as_deref(), "")
-        .await
-        .unwrap();
+    assert_eq!(checked_at(&pool).await.unwrap(), None);
+    // A failed check handles the request but is not a completed check.
+    mark_checked(
+        &pool,
+        state.check_requested_at.as_deref(),
+        Some(Err("network".to_string())),
+    )
+    .await
+    .unwrap();
+    assert_eq!(checked_at(&pool).await.unwrap(), None);
+    mark_checked(&pool, None, Some(Ok(()))).await.unwrap();
+    let completed = checked_at(&pool).await.unwrap().unwrap();
+    assert!(parse_timestamp(Some(&completed)).is_some() && completed.ends_with('Z'));
+    // A deduplicated wake-up records nothing about the last check.
+    mark_checked(&pool, None, None).await.unwrap();
+    assert_eq!(checked_at(&pool).await.unwrap(), Some(completed));
     assert!(pending_request(&check_state(&pool).await.unwrap()).is_none());
     // A later sync that omits the request keeps it handled.
     apply_managed(&pool, None, None).await.unwrap();
@@ -551,7 +564,8 @@ async fn ready_commits_are_admitted_reported_and_kept_while_used() {
         })
     );
     assert_eq!(value[0]["reason"], "build_script_changed");
-    assert_eq!(value[0]["reason_details"], json!(["wrapper.c"]));
+    // Manage's wire carries the reason only; the names stay local.
+    assert!(value[0].get("reason_details").is_none());
 
     let mut config = AppConfig::default();
     config.build.targets = vec![crate::config::BuildTargetConfig {
@@ -578,6 +592,16 @@ async fn ready_commits_are_admitted_reported_and_kept_while_used() {
     assert_eq!(
         workstation_nixpkgs_commits(&state).await,
         [older_ready, COMMIT, build::BUILTIN_NIXPKGS_COMMIT]
+    );
+    // The full list goes first with the ready commits still in use.
+    assert_eq!(
+        report(&pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|commit| commit.commit.as_str())
+            .collect::<Vec<_>>(),
+        [older_ready, blocked, COMMIT]
     );
 
     // A tampered profile fails closed.

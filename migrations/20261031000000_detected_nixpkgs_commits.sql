@@ -23,13 +23,15 @@ CREATE TABLE IF NOT EXISTS detected_nixpkgs_commits (
 CREATE INDEX IF NOT EXISTS idx_detected_nixpkgs_commits_last_modified
     ON detected_nixpkgs_commits(last_modified DESC, commit_rev);
 
--- Single row: the channel and on-demand check request Manage last sent, and
--- the outcome of the last check.
+-- Single row: the channel and on-demand check request Manage last sent, the
+-- outcome of the last check, and when a check last completed (reported to
+-- Manage as software_update_checked_at).
 CREATE TABLE IF NOT EXISTS software_update_check_state (
     id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
     channel TEXT,
     check_requested_at TEXT,
     check_handled_at TEXT,
     last_checked_at TEXT,
+    last_completed_at TEXT,
     last_error TEXT NOT NULL DEFAULT ''
 );
