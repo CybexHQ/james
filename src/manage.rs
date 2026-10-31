@@ -173,6 +173,8 @@ struct AgentNestConfigResponse {
     workstation_multicast: Option<Value>,
     #[serde(default)]
     wake_on_lan: Vec<crate::wake_on_lan::ManagedWakeRequest>,
+    #[serde(default)]
+    software_cache: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -974,6 +976,19 @@ async fn apply_nest_desired(
 ) {
     if let Err(error) = crate::wake_on_lan::apply_requests(&state.db, &desired.wake_on_lan).await {
         retain_sync_failure(first_failure, "Wake-on-LAN desired state", error.into());
+    }
+    // Its own lane: unusable access only costs this Nest the software cache.
+    let software_cache = desired
+        .software_cache
+        .clone()
+        .map(serde_json::from_value::<crate::software_cache::ManagedSoftwareCacheAccess>)
+        .transpose()
+        .map_err(anyhow::Error::from)
+        .and_then(|access| {
+            crate::software_cache::apply(&state.config.paths.data_dir, access.as_ref())
+        });
+    if let Err(error) = software_cache {
+        retain_sync_failure(first_failure, "software cache access", error);
     }
     let multicast_desired = desired.workstation_multicast.clone();
     if let Err(error) =

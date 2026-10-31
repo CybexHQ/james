@@ -102,6 +102,11 @@ Supporting more than one commit therefore needs, in this order:
    cache.nixos.org, built at the Nest pin. Build them for every reviewed
    workstation commit (the Manage seed module, evaluated with each commit's
    nixpkgs), so a source-disabled build at a new commit finds them.
+   The Tiaris software cache (`https://cache.tiaris.com`, Manage
+   `docs/software-cache.md`) carries the rest Nest would otherwise prepare:
+   unfree apps, NVIDIA's driver and the directory sign-in stacks. Nest lists it
+   after cache.nixos.org and authenticates with the token Manage sends; build
+   it for a new commit before that base becomes the default.
 4. **Review each new commit.** Run a source-disabled qualification build of the
    built-in Blueprints at the new commit. Every derivation the preflight
    refuses is reported in `source_build_candidates`; review the changed
