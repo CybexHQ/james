@@ -243,6 +243,7 @@ async fn run_server(
         .await
         .with_context(|| format!("failed to bind {listen_addr}"))?;
     tiaris_nest::build::spawn(state.clone());
+    tiaris_nest::software_updates::spawn(state.clone());
     tiaris_nest::netboot::spawn_maintenance(state.clone());
     if state.config.manage.enabled {
         tiaris_nest::manage::spawn(state.clone());

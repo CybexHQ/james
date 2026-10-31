@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -35,7 +35,12 @@ use crate::{
 
 mod profile;
 
-pub(crate) use profile::WorkstationBuildProfile;
+pub(crate) use profile::{
+    BUILTIN_LAST_MODIFIED, BUILTIN_NIXOS_RELEASE, DerivedIdentity, MAX_TIARIS_PACKAGE_DERIVATIONS,
+    WorkstationBuildProfile,
+};
+#[cfg(test)]
+pub(crate) use profile::{BUILTIN_NIXPKGS_COMMIT, COMMIT_IDENTITIES};
 
 const BLUEPRINT_BUILD_INPUT_KIND: &str = "blueprint_nixos_module";
 const LEGACY_DESKTOP_EXPERIENCE_BUILD_INPUT_KIND: &str = "desktop_experience_nixos_module";
@@ -62,15 +67,15 @@ const BUILDING_PROGRESS_END: i32 = 79;
 // by Nest's current source lock. A nixpkgs update must deliberately refresh
 // the hashes after reviewing the new scripts. Derivation attributes and names
 // alone are explicitly not treated as provenance.
-const TRUSTED_STDENV_SOURCE_SHA256: &str =
+pub(crate) const TRUSTED_STDENV_SOURCE_SHA256: &str =
     "fda2f9599062ec0533741844a0b76ea6b5b12be613d8edcb5d445a14876ca809";
-const TRUSTED_DEFAULT_BUILDER_SHA256: &str =
+pub(crate) const TRUSTED_DEFAULT_BUILDER_SHA256: &str =
     "21c4af68b16048dc99687b414d8d89e980b623cd0ce0f8106de5248f7af75619";
-const TRUSTED_SECURITY_WRAPPER_SHA256: &str =
+pub(crate) const TRUSTED_SECURITY_WRAPPER_SHA256: &str =
     "5d4752742d2e76e6a4e57dd061320d0ff96f52d65cc1e54c203dce12e8b741dc";
-const TRUSTED_LINK_FARM_BUILDER_SHA256: &str =
+pub(crate) const TRUSTED_LINK_FARM_BUILDER_SHA256: &str =
     "5b6a127611842e04d7cfccf1aefda34824bc01ac0ac300d465b317ea957b7654";
-const TRUSTED_SUBSTITUTE_BUILDER_SHA256: &str =
+pub(crate) const TRUSTED_SUBSTITUTE_BUILDER_SHA256: &str =
     "57f698eda1384c91aca909f1668331da8ac9928722f0c48ae75b433340a4f7cd";
 const TRUSTED_SUBSTITUTE_BUILDER: &str =
     "/nix/store/6n31khdh5axal16074afb98p4839q786-substitute.sh";
@@ -238,12 +243,25 @@ struct ValidatedBlueprintBuildInput {
 }
 
 #[derive(Clone, Debug)]
-struct NixBuildCommand {
+pub(crate) struct NixBuildCommand {
     program: String,
     args: Vec<String>,
     env: Vec<(String, String)>,
     out_link: PathBuf,
     installable: String,
+}
+
+impl NixBuildCommand {
+    /// A command used only for a source-policy dry run of `installable`.
+    pub(crate) fn for_dry_run(program: &str, installable: String) -> Self {
+        Self {
+            program: program.to_string(),
+            args: Vec::new(),
+            env: Vec::new(),
+            out_link: PathBuf::new(),
+            installable,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -495,7 +513,23 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
         "Build spec validated",
     )
     .await?;
-    let target = match build_target(&state.config, &spec) {
+    // A Blueprint at a ready detected commit builds with that commit's
+    // derived profile and narHash-pinned nixpkgs. Storage errors fail closed:
+    // without the record only the release pin is admitted.
+    let detected = match (spec.build_input.as_ref(), spec.nixpkgs_commit.as_deref()) {
+        (Some(_), Some(commit)) => crate::software_updates::ready_commit(&state.db, commit)
+            .await
+            .unwrap_or_else(|error| {
+                warn!(job_id = job.id, error = %error, "could not read detected nixpkgs commits");
+                None
+            }),
+        _ => None,
+    };
+    let target = match build_target_for_detected_commit(
+        &state.config,
+        &spec,
+        detected.as_ref().map(|ready| ready.commit.as_str()),
+    ) {
         Ok(target) => target.clone(),
         Err(err) => {
             db::finish_build_job(
@@ -648,7 +682,13 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
     if let Some(source) = spec.closure_source.clone() {
         return execute_replica_copy(state, &job, &spec, &target, &source).await;
     }
-    let command = nix_build_command(&state.config, &target, &spec, job.id)?;
+    let command = nix_build_command_with_nixpkgs_nar_hash(
+        &state.config,
+        &target,
+        &spec,
+        job.id,
+        detected.as_ref().map(|ready| ready.nar_hash.as_str()),
+    )?;
     if !spec.allow_source_builds {
         db::update_build_job_progress(
             &state.db,
@@ -658,7 +698,10 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
             "Checking binary cache coverage",
         )
         .await?;
-        let profile = WorkstationBuildProfile::for_build(spec.nixpkgs_commit.as_deref());
+        let profile = WorkstationBuildProfile::for_build(
+            spec.nixpkgs_commit.as_deref(),
+            detected.as_ref().map(|ready| &ready.profile),
+        );
         match preflight_source_build_check_for_profile(&state.config, &command, profile).await {
             Ok(offenders) if !offenders.is_empty() => {
                 let mut metadata = build_result_metadata(
@@ -1844,9 +1887,20 @@ fn normalize_public_identifier(field: &str, value: &str, max_chars: usize) -> Re
     Ok(value.to_string())
 }
 
+#[cfg(test)]
 fn build_target<'a>(
     config: &'a AppConfig,
     spec: &ValidatedBuildSpec,
+) -> Result<&'a BuildTargetConfig> {
+    build_target_for_detected_commit(config, spec, None)
+}
+
+/// A Blueprint job is admitted at the target's release pin or at the ready
+/// detected commit `detected` (looked up from the job's own commit).
+fn build_target_for_detected_commit<'a>(
+    config: &'a AppConfig,
+    spec: &ValidatedBuildSpec,
+    detected: Option<&str>,
 ) -> Result<&'a BuildTargetConfig> {
     let target = config
         .build
@@ -1863,8 +1917,11 @@ fn build_target<'a>(
     if spec.build_input.is_some() {
         let configured_revision = pinned_nixpkgs_revision(&target.flake)
             .context("validate configured Blueprint nixpkgs pin")?;
-        if spec.nixpkgs_commit.as_deref() != Some(configured_revision) {
-            bail!("Blueprint nixpkgs_commit does not match this Nest target's reviewed source pin");
+        let commit = spec.nixpkgs_commit.as_deref();
+        if commit != Some(configured_revision) && (detected.is_none() || commit != detected) {
+            bail!(
+                "Blueprint nixpkgs_commit does not match this Nest target's reviewed source pin or a ready detected commit"
+            );
         }
     }
     Ok(target)
@@ -2277,8 +2334,17 @@ async fn preflight_source_build_check_with_profile_and_limits(
     tokio::fs::create_dir(&store_root)
         .await
         .with_context(|| format!("create isolated preflight store {}", store_root.display()))?;
-    let result =
-        preflight_source_build_check_in_store(config, command, profile, &store_root, limits).await;
+    let result = preflight_unadmitted_in_store(config, command, profile, &store_root, limits)
+        .await
+        .map(|unadmitted| {
+            let mut offenders = unadmitted
+                .paths
+                .iter()
+                .map(|path| derivation_display_name(path))
+                .collect::<Vec<_>>();
+            offenders.truncate(SOURCE_BUILD_CANDIDATE_CAP);
+            offenders
+        });
     let cleanup = remove_source_policy_store(&store_root).await;
     match (result, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
@@ -2337,13 +2403,68 @@ fn make_source_policy_directories_owner_writable(path: &Path) -> std::io::Result
     })
 }
 
-async fn preflight_source_build_check_in_store(
+/// Local derivations a source-disabled build would need that the profile does
+/// not admit, in dry-run order, with the `nix derivation show` record of each.
+pub(crate) struct UnadmittedDerivations {
+    pub(crate) paths: Vec<String>,
+    /// The subset rejected even when every other local derivation is
+    /// trusted: the work that is itself unreviewed, not merely waiting for a
+    /// rejected input.
+    pub(crate) rejected_on_their_own: Vec<String>,
+    pub(crate) derivations: BTreeMap<String, Value>,
+    /// Builder files referenced by the local work whose bytes differ from the
+    /// reviewed ones (`source-stdenv.sh`, `default-builder.sh`, `wrapper.c`).
+    pub(crate) changed_builder_files: BTreeSet<&'static str>,
+}
+
+/// Dry-run `command` in a fresh isolated store and return what `profile`
+/// does not admit. Used by the detected-commit check; build jobs use the
+/// preflight above, which runs the same classification.
+pub(crate) async fn unadmitted_local_derivations(
+    config: &AppConfig,
+    command: &NixBuildCommand,
+    profile: &WorkstationBuildProfile,
+) -> Result<UnadmittedDerivations> {
+    tokio::fs::create_dir_all(&config.build.work_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "create build work directory {}",
+                config.build.work_dir.display()
+            )
+        })?;
+    let mut store_nonce = [0u8; 16];
+    OsRng.fill_bytes(&mut store_nonce);
+    let store_root = config
+        .build
+        .work_dir
+        .join(format!("source-policy-store-{}", hex::encode(store_nonce)));
+    tokio::fs::create_dir(&store_root)
+        .await
+        .with_context(|| format!("create isolated preflight store {}", store_root.display()))?;
+    let result = preflight_unadmitted_in_store(
+        config,
+        command,
+        profile,
+        &store_root,
+        PreflightLimits::default(),
+    )
+    .await;
+    let cleanup = remove_source_policy_store(&store_root).await;
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+async fn preflight_unadmitted_in_store(
     config: &AppConfig,
     command: &NixBuildCommand,
     profile: &WorkstationBuildProfile,
     store_root: &Path,
     limits: PreflightLimits,
-) -> Result<Vec<String>> {
+) -> Result<UnadmittedDerivations> {
     let store_url = format!("local?root={}", store_root.display());
     let mut args = vec!["--store".to_string(), store_url.clone()];
     // `nix build --dry-run` may execute import-from-derivation dependencies
@@ -2400,7 +2521,12 @@ async fn preflight_source_build_check_in_store(
     }
     let would_build = parsed.paths;
     if would_build.is_empty() {
-        return Ok(Vec::new());
+        return Ok(UnadmittedDerivations {
+            paths: Vec::new(),
+            rejected_on_their_own: Vec::new(),
+            derivations: BTreeMap::new(),
+            changed_builder_files: BTreeSet::new(),
+        });
     }
     let mut derivations = BTreeMap::<String, Value>::new();
     for chunk in would_build.chunks(PREFLIGHT_DERIVATION_SHOW_CHUNK) {
@@ -2566,13 +2692,79 @@ async fn preflight_source_build_check_in_store(
         &would_build_set,
     );
 
-    let mut offenders = would_build
+    let paths = would_build
         .iter()
         .filter(|path| !trusted_local.contains(*path))
-        .map(|path| derivation_display_name(path))
+        .cloned()
         .collect::<Vec<_>>();
-    offenders.truncate(SOURCE_BUILD_CANDIDATE_CAP);
-    Ok(offenders)
+    let rejected_on_their_own = paths
+        .iter()
+        .filter(|path| {
+            !derivation_is_exempt_for_profile(
+                profile,
+                path,
+                derivations.get(*path),
+                &verify_source,
+                &would_build_set,
+                &would_build_set,
+            )
+        })
+        .cloned()
+        .collect();
+    let mut changed_builder_files = BTreeSet::new();
+    for path in &paths {
+        for source in derivations
+            .get(path)
+            .and_then(derivation_input_sources)
+            .unwrap_or_default()
+        {
+            for (suffix, expected, name) in [
+                (
+                    "-source-stdenv.sh",
+                    TRUSTED_STDENV_SOURCE_SHA256,
+                    "source-stdenv.sh",
+                ),
+                (
+                    "-default-builder.sh",
+                    TRUSTED_DEFAULT_BUILDER_SHA256,
+                    "default-builder.sh",
+                ),
+                ("-wrapper.c", TRUSTED_SECURITY_WRAPPER_SHA256, "wrapper.c"),
+            ] {
+                if source.ends_with(suffix) && !verify_source(&source, expected) {
+                    changed_builder_files.insert(name);
+                }
+            }
+        }
+    }
+    Ok(UnadmittedDerivations {
+        paths,
+        rejected_on_their_own,
+        derivations,
+        changed_builder_files,
+    })
+}
+
+/// A safe store path's store item (`<hash>-<name>`).
+pub(crate) fn store_path_item(path: &str) -> Option<&str> {
+    safe_nix_store_path(path)
+        .then(|| profile::store_item(path))
+        .flatten()
+}
+
+/// A local materializer run by the profile's stdenv shell (NixOS generator
+/// scripts, link farms, substitutions). When the profile does not admit one,
+/// its reviewed script or builder content changed: it is not a compile.
+pub(crate) fn derivation_is_local_script(profile: &WorkstationBuildProfile, drv: &Value) -> bool {
+    let attrs = derivation_attributes(drv);
+    derivation_attr_truthy(&attrs, "preferLocalBuild")
+        && drv
+            .get("builder")
+            .and_then(Value::as_str)
+            .is_some_and(|builder| profile.is(builder, TRUSTED_STDENV_BASH_BUILDER))
+        && ["buildCommand", "postBuild", "buildPhase", "installPhase"]
+            .iter()
+            .any(|key| !derivation_attr_is_empty(&attrs, key))
 }
 
 fn bounded_diagnostic_tail(bytes: &[u8], max_chars: usize) -> String {
@@ -2757,7 +2949,11 @@ where
     {
         return false;
     }
-    derivation_is_plain_fixed_output_fetch(drv, &attrs)
+    // At a detected commit the Tiaris packages are evaluated from the shipped
+    // Tiaris source and that commit's nixpkgs; only those exact derivations
+    // compile. The built-in profile admits none.
+    profile.admits_tiaris_package(drv_path)
+        || derivation_is_plain_fixed_output_fetch(drv, &attrs)
         || (stdenv_builder_and_tool_inputs_are_trusted(
             profile,
             drv,
@@ -3442,7 +3638,7 @@ fn normalize_derivation_output_names(values: &[Value]) -> Option<Vec<String>> {
         .collect()
 }
 
-fn derivation_input_drvs(drv: &Value) -> Option<Vec<(String, Vec<String>)>> {
+pub(crate) fn derivation_input_drvs(drv: &Value) -> Option<Vec<(String, Vec<String>)>> {
     Some(derivation_inputs(drv)?.drvs)
 }
 
@@ -5757,14 +5953,34 @@ fn merge_build_metadata(destination: &mut Value, source: &Value) {
     }
 }
 
+#[cfg(test)]
 fn nix_build_command(
     config: &AppConfig,
     target: &BuildTargetConfig,
     spec: &ValidatedBuildSpec,
     job_id: i64,
 ) -> Result<NixBuildCommand> {
+    nix_build_command_with_nixpkgs_nar_hash(config, target, spec, job_id, None)
+}
+
+/// `nixpkgs_nar_hash` pins a detected commit's source to the `narHash`
+/// recorded when Nest first fetched it; Nix refuses any other content.
+fn nix_build_command_with_nixpkgs_nar_hash(
+    config: &AppConfig,
+    target: &BuildTargetConfig,
+    spec: &ValidatedBuildSpec,
+    job_id: i64,
+    nixpkgs_nar_hash: Option<&str>,
+) -> Result<NixBuildCommand> {
     if let Some(build_input) = spec.build_input.as_ref() {
-        return blueprint_nix_build_command(config, target, spec, build_input, job_id);
+        return blueprint_nix_build_command_with_nixpkgs_nar_hash(
+            config,
+            target,
+            spec,
+            build_input,
+            job_id,
+            nixpkgs_nar_hash,
+        );
     }
     let job_dir = config.build.output_dir.join(format!("job-{job_id}"));
     let out_link = job_dir.join("result");
@@ -5799,12 +6015,31 @@ fn nix_build_command(
     })
 }
 
+#[cfg(test)]
 fn blueprint_nix_build_command(
     config: &AppConfig,
     target: &BuildTargetConfig,
     spec: &ValidatedBuildSpec,
     build_input: &ValidatedBlueprintBuildInput,
     job_id: i64,
+) -> Result<NixBuildCommand> {
+    blueprint_nix_build_command_with_nixpkgs_nar_hash(
+        config,
+        target,
+        spec,
+        build_input,
+        job_id,
+        None,
+    )
+}
+
+fn blueprint_nix_build_command_with_nixpkgs_nar_hash(
+    config: &AppConfig,
+    target: &BuildTargetConfig,
+    spec: &ValidatedBuildSpec,
+    build_input: &ValidatedBlueprintBuildInput,
+    job_id: i64,
+    nixpkgs_nar_hash: Option<&str>,
 ) -> Result<NixBuildCommand> {
     // ValidatedBuildSpec is private, but keep the write boundary independently
     // guarded so future internal call sites cannot materialize protected data.
@@ -5903,12 +6138,12 @@ fn blueprint_nix_build_command(
     write_job_input_file(
         input_dir.join("flake.nix"),
         &nest_nixos_flake(
-            &format!(
-                "github:NixOS/nixpkgs/{}",
+            &nixpkgs_flake_ref(
                 spec.nixpkgs_commit
                     .as_deref()
-                    .expect("validated Blueprint source pin")
-            ),
+                    .expect("validated Blueprint source pin"),
+                nixpkgs_nar_hash,
+            )?,
             &spec.system,
             build_input,
             manage_source_url.as_deref(),
@@ -5952,6 +6187,34 @@ fn blueprint_nix_build_command(
         env,
         out_link,
         installable,
+    })
+}
+
+/// `github:NixOS/nixpkgs/<commit>`, with the recorded `narHash` when one is
+/// known so a later fetch of the same commit must have the same content.
+pub(crate) fn nixpkgs_flake_ref(commit: &str, nar_hash: Option<&str>) -> Result<String> {
+    let commit = normalize_nixpkgs_commit(commit)?;
+    let Some(nar_hash) = nar_hash else {
+        return Ok(format!("github:NixOS/nixpkgs/{commit}"));
+    };
+    if !valid_nar_hash(nar_hash) {
+        bail!("nixpkgs narHash must be an SRI sha256 hash");
+    }
+    Ok(format!(
+        "github:NixOS/nixpkgs/{commit}?narHash={}",
+        urlencoding::encode(nar_hash)
+    ))
+}
+
+pub(crate) fn valid_nar_hash(value: &str) -> bool {
+    value.strip_prefix("sha256-").is_some_and(|encoded| {
+        encoded.len() == 44
+            && encoded.ends_with('=')
+            && encoded[..43]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/'))
+            && base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+                .is_ok_and(|digest| digest.len() == 32)
     })
 }
 
@@ -6076,6 +6339,90 @@ fn nest_nixos_flake(
 }}
 "#
     )
+}
+
+/// The Blueprints this Nest built at its release pin, prepared again at a
+/// detected commit with only nixpkgs changed: the newest succeeded
+/// source-disabled job of each Blueprint (at most `limit`), with its exact
+/// generated Nix, desktop module and wallpaper. Job inputs are written below
+/// `work`. These configurations passed the preflight at the pin, so at the
+/// detected commit they may differ only in commit identities.
+pub(crate) async fn retained_blueprint_commands(
+    config: &AppConfig,
+    db: &sqlx::SqlitePool,
+    work: &Path,
+    commit: &str,
+    nar_hash: &str,
+    limit: usize,
+) -> Result<Vec<(String, NixBuildCommand)>> {
+    let pins = crate::config::workstation_nixpkgs_commits(config);
+    let mut ids = Vec::new();
+    for pin in &pins {
+        ids.extend(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT MAX(id) FROM nest_build_jobs
+                 WHERE status = 'succeeded' AND json_valid(build_spec)
+                   AND json_extract(build_spec, '$.build_input.kind')
+                       IN ('blueprint_nixos_module', 'desktop_experience_nixos_module')
+                   AND json_extract(build_spec, '$.nixpkgs_commit') = ?
+                   AND COALESCE(json_extract(build_spec, '$.allow_source_builds'), 0) = 0
+                 GROUP BY COALESCE(
+                     json_extract(build_spec, '$.blueprint_id'),
+                     json_extract(build_spec, '$.input_revision')
+                 )
+                 ORDER BY MAX(id) DESC
+                 LIMIT ?",
+            )
+            .bind(pin)
+            .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+            .fetch_all(db)
+            .await?,
+        );
+    }
+    ids.sort_unstable_by(|left, right| right.cmp(left));
+    ids.truncate(limit);
+    let mut job_config = config.clone();
+    job_config.build.work_dir = work.join("jobs");
+    job_config.build.output_dir = work.join("out");
+    let mut commands = Vec::new();
+    for id in ids {
+        let job = db::get_build_job(db, id).await?;
+        let mut spec = validate_build_spec(config, &job)
+            .with_context(|| format!("retained Blueprint job {id}"))?;
+        spec.nixpkgs_commit = Some(commit.to_string());
+        let target = build_target_for_detected_commit(config, &spec, Some(commit))?;
+        let command =
+            nix_build_command_with_nixpkgs_nar_hash(&job_config, target, &spec, id, Some(nar_hash))
+                .with_context(|| format!("prepare retained Blueprint job {id}"))?;
+        commands.push((format!("blueprint job {id}"), command));
+    }
+    Ok(commands)
+}
+
+/// The Nest configuration and option shim of a Blueprint job with a desktop
+/// module (`./tiaris-blueprints.nix` and `./blueprint.nix` are the caller's),
+/// for the detected-commit check's built-in Blueprint dry runs.
+pub(crate) fn blueprint_job_template_files() -> [(&'static str, String); 2] {
+    let input = ValidatedBlueprintBuildInput {
+        kind: BLUEPRINT_BUILD_INPUT_KIND.to_string(),
+        generated_nix: String::new(),
+        desktop_module_nix: Some(String::new()),
+        expected_state: None,
+        blueprint_name: None,
+        blueprint_revision: None,
+        hardware_module_nix: None,
+        target_module_nix: None,
+        manage_source_revision: None,
+        installer_target: None,
+        wallpaper_asset: None,
+    };
+    [
+        ("configuration.nix", nest_nixos_configuration(&input)),
+        (
+            "tiaris-compat-options.nix",
+            blueprint_compat_module(true).to_string(),
+        ),
+    ]
 }
 
 fn nest_nixos_configuration(build_input: &ValidatedBlueprintBuildInput) -> String {
@@ -11625,5 +11972,412 @@ esac
                 }
             }
         }
+    }
+
+    /// A detected-commit profile in which every identity store item has a new
+    /// hash, and the item mapping that produces that commit's derivations
+    /// from the reviewed fixtures.
+    fn shifted_detected_profile(
+        tiaris_derivations: BTreeSet<String>,
+    ) -> (WorkstationBuildProfile, BTreeMap<String, String>) {
+        const NIX_BASE32: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
+        let shift = |item: &str| {
+            let digest = Sha256::digest(item.as_bytes());
+            let hash = digest
+                .iter()
+                .take(32)
+                .map(|byte| NIX_BASE32[usize::from(*byte) % 32] as char)
+                .collect::<String>();
+            format!("{hash}{}", &item[32..])
+        };
+        let mut items = BTreeMap::new();
+        let mut identities = BTreeMap::new();
+        let shifted_path = |items: &mut BTreeMap<String, String>, path: &str| {
+            let item = profile::store_item(path).unwrap();
+            let mapped = items
+                .entry(item.to_string())
+                .or_insert_with(|| shift(item))
+                .clone();
+            path.replacen(item, &mapped, 1)
+        };
+        for identity in profile::COMMIT_IDENTITIES {
+            let path = shifted_path(&mut items, identity.path);
+            let drv = identity.drv_path.map(|drv| shifted_path(&mut items, drv));
+            identities.insert(identity.role.to_string(), DerivedIdentity { path, drv });
+        }
+        let commit = "6f06d204d8f2d8761d9da78778745974a3216381";
+        let profile = WorkstationBuildProfile::derived(
+            commit,
+            1_793_294_725,
+            &identities,
+            tiaris_derivations,
+        )
+        .unwrap();
+        (profile, items)
+    }
+
+    fn with_store_items(value: &Value, items: &BTreeMap<String, String>) -> Value {
+        let mut text = value.to_string();
+        for (reviewed, derived) in items {
+            text = text.replace(reviewed.as_str(), derived);
+        }
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn classify_with(
+        profile: &WorkstationBuildProfile,
+        derivations: &BTreeMap<String, Value>,
+    ) -> HashSet<String> {
+        let would_build = derivations.keys().cloned().collect::<Vec<_>>();
+        let would_build_set = would_build.iter().cloned().collect::<HashSet<_>>();
+        classify_trusted_local_derivations_for_profile(
+            profile,
+            &would_build,
+            derivations,
+            &synthetic_pinned_source,
+            &would_build_set,
+        )
+    }
+
+    #[test]
+    fn detected_profile_admits_reviewed_scripts_that_differ_only_in_store_paths() {
+        let (detected, items) = shifted_detected_profile(BTreeSet::new());
+        let builtin = WorkstationBuildProfile::builtin();
+        for (name, derivations) in reviewed_fixture_graphs() {
+            let expected = classify_with(builtin, &derivations).len();
+            // The same graph rendered by the detected commit: every identity
+            // (stdenv, bash, tool inputs, executables) has a new store path,
+            // in scripts, inputs and attributes alike.
+            let rendered = derivations
+                .iter()
+                .map(|(path, drv)| {
+                    let mut path = path.clone();
+                    for (reviewed, derived) in &items {
+                        path = path.replace(reviewed.as_str(), derived);
+                    }
+                    (path, with_store_items(drv, &items))
+                })
+                .collect::<BTreeMap<_, _>>();
+            assert_ne!(rendered, derivations, "{name}");
+            assert_eq!(
+                classify_with(&detected, &rendered).len(),
+                expected,
+                "{name}: detected profile"
+            );
+            // The built-in profile never admits another commit's providers,
+            // and the detected profile never admits the pin's.
+            let builtin_admits = classify_with(builtin, &rendered);
+            assert!(
+                builtin_admits.iter().all(|path| {
+                    let attrs = derivation_attributes(&rendered[path]);
+                    derivation_is_plain_fixed_output_fetch(&rendered[path], &attrs)
+                }),
+                "{name}: built-in profile admitted a detected-commit materializer"
+            );
+            assert!(
+                classify_with(&detected, &derivations).is_empty(),
+                "{name}: detected profile admitted the pin's providers"
+            );
+
+            for (path, drv) in &rendered {
+                let attrs = derivation_attributes(drv);
+                let command = derivation_attr_text(&attrs, "buildCommand");
+                if command.is_empty() || derivation_is_plain_fixed_output_fetch(drv, &attrs) {
+                    continue;
+                }
+                let single = BTreeMap::from([(path.clone(), drv.clone())]);
+                let reference = classify_with(&detected, &single);
+                // Reviewed content changed beyond store paths: rejected.
+                let mut appended = drv.clone();
+                set_derivation_text(
+                    &mut appended,
+                    "buildCommand",
+                    &format!("{command}\ngcc source.c -o $out/payload\n"),
+                );
+                let appended = BTreeMap::from([(path.clone(), appended)]);
+                assert!(
+                    classify_with(&detected, &appended).is_empty(),
+                    "{name}: {path} admitted with an appended command"
+                );
+                // An identity executable from a provider the commit does not
+                // name: rejected exactly as at the pin.
+                for derived in items.values().filter(|item| !item.ends_with(".drv")) {
+                    if !command.contains(derived.as_str()) || reference.is_empty() {
+                        continue;
+                    }
+                    let foreign = format!("{}{}", "0".repeat(32), &derived[32..]);
+                    let mut swapped = drv.clone();
+                    set_derivation_text(
+                        &mut swapped,
+                        "buildCommand",
+                        &command.replace(derived.as_str(), &foreign),
+                    );
+                    let executable = command.match_indices(derived.as_str()).any(|(index, _)| {
+                        let rest = &command[index + derived.len()..];
+                        ["/bin/", "/sbin/", "/libexec/", "/nix-support/setup-hook"]
+                            .iter()
+                            .any(|prefix| rest.starts_with(prefix))
+                    });
+                    if executable {
+                        let swapped = BTreeMap::from([(path.clone(), swapped)]);
+                        assert!(
+                            classify_with(&detected, &swapped).is_empty(),
+                            "{name}: {path} admitted a foreign executable provider"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn set_derivation_text(drv: &mut Value, key: &str, text: &str) {
+        if drv["env"].get(key).is_some() {
+            drv["env"][key] = json!(text);
+        } else if drv.get("structuredAttrs").is_some() {
+            drv["structuredAttrs"][key] = json!(text);
+        } else {
+            drv["env"][key] = json!(text);
+        }
+    }
+
+    #[test]
+    fn detected_profile_compiles_only_its_own_tiaris_packages() {
+        let agent = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-tiaris-agent-0.1.0.drv";
+        let other = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-firefox-unwrapped-145.0.drv";
+        let (detected, _) = shifted_detected_profile(BTreeSet::from([agent.to_string()]));
+        let compile = |path: &str| {
+            json!({
+                "name": derivation_display_name(path),
+                "builder": "/nix/store/cccccccccccccccccccccccccccccccc-bash-5.3p9/bin/bash",
+                "env": {"buildPhase": "cargo build --release"},
+                "inputSrcs": [],
+                "inputDrvs": {},
+            })
+        };
+        let graph = BTreeMap::from([
+            (agent.to_string(), compile(agent)),
+            (other.to_string(), compile(other)),
+        ]);
+        assert_eq!(
+            classify_with(&detected, &graph),
+            HashSet::from([agent.to_string()])
+        );
+        assert!(classify_with(WorkstationBuildProfile::builtin(), &graph).is_empty());
+        let (without, _) = shifted_detected_profile(BTreeSet::new());
+        assert!(classify_with(&without, &graph).is_empty());
+
+        // A Tiaris package with an unadmitted local input still waits.
+        let mut dependent = compile(agent);
+        dependent["inputDrvs"] = json!({ other: ["out"] });
+        let graph = BTreeMap::from([
+            (agent.to_string(), dependent),
+            (other.to_string(), compile(other)),
+        ]);
+        assert!(classify_with(&detected, &graph).is_empty());
+    }
+
+    #[test]
+    fn derived_profiles_require_every_identity_one_to_one() {
+        let (_, items) = shifted_detected_profile(BTreeSet::new());
+        let identities = profile::COMMIT_IDENTITIES
+            .iter()
+            .map(|identity| {
+                let map = |path: &str| {
+                    let item = profile::store_item(path).unwrap();
+                    path.replacen(item, &items[item], 1)
+                };
+                (
+                    identity.role.to_string(),
+                    DerivedIdentity {
+                        path: map(identity.path),
+                        drv: identity.drv_path.map(map),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let commit = "6f06d204d8f2d8761d9da78778745974a3216381";
+        assert!(
+            WorkstationBuildProfile::derived(commit, 1_793_294_725, &identities, BTreeSet::new())
+                .is_ok()
+        );
+        assert!(
+            WorkstationBuildProfile::derived(
+                &commit.to_uppercase(),
+                1_793_294_725,
+                &identities,
+                BTreeSet::new()
+            )
+            .is_err()
+        );
+
+        let mut missing = identities.clone();
+        missing.remove("stdenvNoCC");
+        assert!(
+            WorkstationBuildProfile::derived(commit, 1_793_294_725, &missing, BTreeSet::new())
+                .is_err()
+        );
+
+        let mut subpath = identities.clone();
+        subpath.get_mut("stdenv.shell").unwrap().path =
+            subpath["stdenv.shell"].path.replace("/bin/bash", "/bin/sh");
+        assert!(
+            WorkstationBuildProfile::derived(commit, 1_793_294_725, &subpath, BTreeSet::new())
+                .is_err()
+        );
+
+        // Two reviewed providers cannot collapse into one store item.
+        let mut collapsed = identities.clone();
+        collapsed.get_mut("cpio").unwrap().path = collapsed["coreutils"].path.clone();
+        assert!(
+            WorkstationBuildProfile::derived(commit, 1_793_294_725, &collapsed, BTreeSet::new())
+                .is_err()
+        );
+
+        // A role that shares a reviewed item must keep sharing it.
+        let mut split = identities.clone();
+        split.get_mut("makeShellWrapper setup hook").unwrap().path = format!(
+            "/nix/store/{}-make-shell-wrapper-hook/nix-support/setup-hook",
+            "1".repeat(32)
+        );
+        assert!(
+            WorkstationBuildProfile::derived(commit, 1_793_294_725, &split, BTreeSet::new())
+                .is_err()
+        );
+
+        let mut no_drv = identities.clone();
+        no_drv.get_mut("dbus").unwrap().drv = None;
+        assert!(
+            WorkstationBuildProfile::derived(commit, 1_793_294_725, &no_drv, BTreeSet::new())
+                .is_err()
+        );
+
+        let mut unsafe_path = identities;
+        unsafe_path.get_mut("dbus").unwrap().path = "/nix/store/../etc/passwd".to_string();
+        assert!(
+            WorkstationBuildProfile::derived(commit, 1_793_294_725, &unsafe_path, BTreeSet::new())
+                .is_err()
+        );
+        let (valid, _) = shifted_detected_profile(BTreeSet::new());
+        assert!(!valid.is_builtin());
+        assert!(
+            WorkstationBuildProfile::derived(
+                commit,
+                1_793_294_725,
+                &BTreeMap::new(),
+                BTreeSet::from(["/nix/store/x.drv".to_string()])
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn blueprint_jobs_build_only_at_the_pin_or_the_ready_detected_commit() {
+        let reviewed = "74cc63f702f7d60a557e152a57b40fb1fd0f72ac";
+        let detected = "6f06d204d8f2d8761d9da78778745974a3216381";
+        let mut config = AppConfig::default();
+        config.build.targets = vec![BuildTargetConfig {
+            artifact_type: "nixos_closure".to_string(),
+            target: "blueprint".to_string(),
+            system: "x86_64-linux".to_string(),
+            flake: format!("github:NixOS/nixpkgs/{reviewed}"),
+            attr: "packages.x86_64-linux.desktop-experience".to_string(),
+        }];
+        let mut spec = blueprint_spec_for_commit(detected);
+        assert!(build_target_for_detected_commit(&config, &spec, Some(detected)).is_ok());
+        let error = build_target_for_detected_commit(&config, &spec, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ready detected commit"));
+        assert!(
+            build_target_for_detected_commit(
+                &config,
+                &spec,
+                Some("1111111111111111111111111111111111111111")
+            )
+            .is_err()
+        );
+        spec.nixpkgs_commit = Some(reviewed.to_string());
+        assert!(build_target_for_detected_commit(&config, &spec, Some(detected)).is_ok());
+    }
+
+    fn blueprint_spec_for_commit(commit: &str) -> ValidatedBuildSpec {
+        ValidatedBuildSpec {
+            artifact_type: "nixos_closure".to_string(),
+            target: "blueprint".to_string(),
+            system: "x86_64-linux".to_string(),
+            input_revision: "rev".to_string(),
+            input_config_hash: "a".repeat(64),
+            blueprint_id: None,
+            blueprint_revision_id: None,
+            blueprint_revision_config_hash: None,
+            nixpkgs_commit: Some(commit.to_string()),
+            source_lock_sha256: Some("b".repeat(64)),
+            software_package_refs: Vec::new(),
+            build_input: Some(ValidatedBlueprintBuildInput {
+                kind: BLUEPRINT_BUILD_INPUT_KIND.to_string(),
+                generated_nix: "{ ... }: {}".to_string(),
+                desktop_module_nix: None,
+                expected_state: None,
+                blueprint_name: None,
+                blueprint_revision: None,
+                hardware_module_nix: None,
+                target_module_nix: None,
+                manage_source_revision: None,
+                installer_target: None,
+                wallpaper_asset: None,
+            }),
+            allow_source_builds: false,
+            closure_source: None,
+        }
+    }
+
+    #[test]
+    fn detected_commit_jobs_pin_nixpkgs_to_the_recorded_nar_hash() {
+        let commit = "6f06d204d8f2d8761d9da78778745974a3216381";
+        let nar_hash = "sha256-loLMnbbS4KhmG2ln9EY6f0YMNCA273Yx02oWYQ9IMeE=";
+        assert_eq!(
+            nixpkgs_flake_ref(commit, None).unwrap(),
+            format!("github:NixOS/nixpkgs/{commit}")
+        );
+        assert_eq!(
+            nixpkgs_flake_ref(commit, Some(nar_hash)).unwrap(),
+            format!(
+                "github:NixOS/nixpkgs/{commit}?narHash=sha256-loLMnbbS4KhmG2ln9EY6f0YMNCA273Yx02oWYQ9IMeE%3D"
+            )
+        );
+        for invalid in [
+            "",
+            "sha256-",
+            "sha512-loLMnbbS4KhmG2ln9EY6f0YMNCA273Yx02oWYQ9IMeE=",
+            "sha256-loLMnbbS4KhmG2ln9EY6f0YMNCA273Yx02oWYQ9IMe=",
+            "sha256-loLMnbbS4KhmG2ln9EY6f0YMNCA273Yx02oWYQ9IMe&=",
+        ] {
+            assert!(
+                nixpkgs_flake_ref(commit, Some(invalid)).is_err(),
+                "{invalid}"
+            );
+        }
+        let root =
+            std::env::temp_dir().join(format!("tiaris-nest-detected-flake-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut config = AppConfig::default();
+        config.build.work_dir = root.join("work");
+        config.build.output_dir = root.join("out");
+        let target = BuildTargetConfig {
+            artifact_type: "nixos_closure".to_string(),
+            target: "blueprint".to_string(),
+            system: "x86_64-linux".to_string(),
+            flake: "github:NixOS/nixpkgs/74cc63f702f7d60a557e152a57b40fb1fd0f72ac".to_string(),
+            attr: "packages.x86_64-linux.desktop-experience".to_string(),
+        };
+        let spec = blueprint_spec_for_commit(commit);
+        nix_build_command_with_nixpkgs_nar_hash(&config, &target, &spec, 7, Some(nar_hash))
+            .unwrap();
+        let flake =
+            std::fs::read_to_string(config.build.work_dir.join("job-7-input/flake.nix")).unwrap();
+        assert!(flake.contains(&format!(
+            "inputs.nixpkgs.url = \"github:NixOS/nixpkgs/{commit}?narHash="
+        )));
+        let _ = std::fs::remove_dir_all(root);
     }
 }

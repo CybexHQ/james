@@ -7,7 +7,7 @@
   },
   "nest": {
     "minimum_manage_protocol": 4,
-    "maximum_manage_protocol": 4
+    "maximum_manage_protocol": 5
   },
   "workstation_runtime": {
     "compatibility_epoch": 1,

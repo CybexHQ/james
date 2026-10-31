@@ -10,7 +10,14 @@
 //! The compiled 74cc63f values are the built-in profile. Every check names an
 //! identity by its built-in path and asks the profile for that commit's path,
 //! so the built-in profile reproduces today's comparisons byte for byte.
-use std::{borrow::Cow, collections::BTreeMap, sync::OnceLock};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    sync::OnceLock,
+};
+
+use anyhow::{Result, bail};
+use serde::{Deserialize, Serialize};
 
 use super::{
     COREDUMP_SOURCE, COREDUMP_SUBSTITUTION_TARGET, DBUS_GENERATOR_TOOL_INPUTS,
@@ -23,11 +30,40 @@ use super::{
     TRUSTED_STDENV_BASH_BUILDER, TRUSTED_STDENV_BASH_DRV, TRUSTED_STDENV_FULL_OUTPUT,
     TRUSTED_STDENV_NO_CC_OUTPUT, TRUSTED_STDENV_STATIC_OUTPUT, TRUSTED_SUBSTITUTE_BUILDER,
     UDEV_GENERATOR_TOOL_INPUTS, XKB_VALIDATION_CONFIG_DIR, XKB_VALIDATION_TOOL_INPUTS,
-    executable_pinned_script_sha256, normalized_script_sha256,
+    executable_pinned_script_sha256, normalize_derivation_store_path, normalized_script_sha256,
+    safe_nix_store_path,
 };
 
 /// The nixpkgs commit whose reviewed identities are compiled into Nest.
 pub(crate) const BUILTIN_NIXPKGS_COMMIT: &str = "74cc63f702f7d60a557e152a57b40fb1fd0f72ac";
+/// The NixOS release of the built-in commit. Detected commits never cross it.
+pub(crate) const BUILTIN_NIXOS_RELEASE: &str = "26.05";
+/// `lastModified` of the built-in commit (2026-07-08). A detected commit must
+/// be newer.
+pub(crate) const BUILTIN_LAST_MODIFIED: i64 = 1_783_549_019;
+/// NixOS names a system built from a nixpkgs flake
+/// `<release>.<yyyymmdd of lastModified>.<short revision>`; `nixos-version`
+/// and the system closure embed that label and the full revision. Both are
+/// commit identities: a detected profile renders them back to the built-in
+/// commit's before fingerprinting.
+pub(crate) fn nixos_version_label(last_modified: i64, commit: &str) -> Option<String> {
+    let date = chrono::DateTime::<chrono::Utc>::from_timestamp(last_modified, 0)?;
+    Some(format!(
+        "{BUILTIN_NIXOS_RELEASE}.{}.{}",
+        date.format("%Y%m%d"),
+        commit.get(..7)?
+    ))
+}
+
+/// Upper bound on the Tiaris package derivations one detected commit admits.
+pub(crate) const MAX_TIARIS_PACKAGE_DERIVATIONS: usize = 512;
+
+/// `nixos-init`'s executables appear in reviewed `/etc` and service-link
+/// scripts; no check names the path itself, so it is a fingerprint-only
+/// identity: a profile maps it so those scripts render to their reviewed
+/// executable-pinned bytes.
+const NIXOS_INIT: &str = "/nix/store/wy0mh9ah0alglg3ab5djg3jv6f0garyc-nixos-init-0.1.0";
+const NIXOS_INIT_DRV: &str = "/nix/store/2r230dqp2pg1jpcxp3va7wvbx812zaaq-nixos-init-0.1.0.drv";
 
 /// Returned for an identity a profile does not carry. It is not a store path,
 /// so no derivation attribute, input or script can ever equal it.
@@ -251,7 +287,17 @@ pub(crate) const COMMIT_IDENTITIES: &[CommitIdentity] = &[
         XKB_VALIDATION_CONFIG_DIR.path,
         XKB_VALIDATION_CONFIG_DIR.drv_path,
     ),
+    identity("nixos-init", NIXOS_INIT, NIXOS_INIT_DRV),
 ];
+
+/// One identity as evaluated at a detected commit.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DerivedIdentity {
+    pub(crate) path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) drv: Option<String>,
+}
 
 /// The commit identities of one nixpkgs commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -265,6 +311,11 @@ pub(crate) struct WorkstationBuildProfile {
     /// to their built-in items, so a script is fingerprinted as the reviewed
     /// script it renders. Empty for the built-in profile.
     reviewed_items: BTreeMap<String, String>,
+    /// This commit's full revision and NixOS version label, each with the
+    /// built-in commit's. Empty for the built-in profile.
+    reviewed_labels: Vec<(String, String)>,
+    /// Exact Tiaris package derivations this detected commit may compile.
+    tiaris_derivations: BTreeSet<String>,
 }
 
 /// The store item of a store path: `<hash>-<name>` without `/nix/store/` and
@@ -291,15 +342,124 @@ impl WorkstationBuildProfile {
                 builtin: true,
                 items,
                 reviewed_items: BTreeMap::new(),
+                reviewed_labels: Vec::new(),
+                tiaris_derivations: BTreeSet::new(),
             }
         })
     }
 
-    /// The profile a build job's preflight uses. Until Nest supports more
-    /// than one commit, every admitted job builds at the configured pin,
-    /// whose reviewed values are the built-in profile.
-    pub(crate) fn for_build(_nixpkgs_commit: Option<&str>) -> &'static Self {
-        Self::builtin()
+    /// The profile of a ready detected commit: every identity of
+    /// [`COMMIT_IDENTITIES`] evaluated at `nixpkgs_commit` by the same
+    /// attribute, plus the exact Tiaris package derivations Nest may compile
+    /// at that commit. Fails unless every role is present with the same
+    /// subpath and output shape, and the mapping is one-to-one.
+    pub(crate) fn derived(
+        nixpkgs_commit: &str,
+        last_modified: i64,
+        identities: &BTreeMap<String, DerivedIdentity>,
+        tiaris_derivations: BTreeSet<String>,
+    ) -> Result<Self> {
+        if nixpkgs_commit.len() != 40
+            || !nixpkgs_commit
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            bail!("detected nixpkgs commit must be 40 lowercase hex characters");
+        }
+        let (Some(label), Some(reviewed_label)) = (
+            nixos_version_label(last_modified, nixpkgs_commit),
+            nixos_version_label(BUILTIN_LAST_MODIFIED, BUILTIN_NIXPKGS_COMMIT),
+        ) else {
+            bail!("detected commit lastModified is out of range");
+        };
+        if last_modified <= BUILTIN_LAST_MODIFIED || nixpkgs_commit == BUILTIN_NIXPKGS_COMMIT {
+            bail!("a detected commit must be newer than the built-in commit");
+        }
+        if identities.len() != COMMIT_IDENTITIES.len() {
+            bail!("derived build profile must carry exactly the reviewed identities");
+        }
+        if tiaris_derivations.len() > MAX_TIARIS_PACKAGE_DERIVATIONS
+            || tiaris_derivations
+                .iter()
+                .any(|path| normalize_derivation_store_path(path).as_deref() != Some(path))
+        {
+            bail!("derived build profile lists invalid Tiaris package derivations");
+        }
+        let mut items = BTreeMap::<String, String>::new();
+        let mut reviewed_items = BTreeMap::<String, String>::new();
+        let mut map = |reviewed: &str, derived: &str| -> Result<()> {
+            let (Some(reviewed_item), Some(derived_item)) =
+                (store_item(reviewed), store_item(derived))
+            else {
+                bail!("derived identity is not a store path");
+            };
+            let reviewed_rest = &reviewed["/nix/store/".len() + reviewed_item.len()..];
+            let derived_rest = &derived["/nix/store/".len() + derived_item.len()..];
+            if !safe_nix_store_path(derived)
+                || reviewed_rest != derived_rest
+                || reviewed_item.ends_with(".drv") != derived_item.ends_with(".drv")
+            {
+                bail!("derived identity {derived} does not have the reviewed shape");
+            }
+            let previous = items.insert(reviewed_item.to_string(), derived_item.to_string());
+            let reverse =
+                reviewed_items.insert(derived_item.to_string(), reviewed_item.to_string());
+            if previous.is_some_and(|previous| previous != derived_item)
+                || reverse.is_some_and(|reverse| reverse != reviewed_item)
+            {
+                bail!("derived identities do not map store items one to one");
+            }
+            Ok(())
+        };
+        for identity in COMMIT_IDENTITIES {
+            let Some(derived) = identities.get(identity.role) else {
+                bail!("derived build profile lacks {}", identity.role);
+            };
+            map(identity.path, &derived.path)?;
+            match (identity.drv_path, derived.drv.as_deref()) {
+                (Some(reviewed), Some(derived)) => map(reviewed, derived)?,
+                (None, None) => {}
+                _ => bail!(
+                    "derived identity {} has the wrong derivation shape",
+                    identity.role
+                ),
+            }
+        }
+        Ok(Self {
+            nixpkgs_commit: nixpkgs_commit.to_string(),
+            builtin: false,
+            items,
+            reviewed_items,
+            reviewed_labels: vec![
+                (
+                    nixpkgs_commit.to_string(),
+                    BUILTIN_NIXPKGS_COMMIT.to_string(),
+                ),
+                (label, reviewed_label),
+            ],
+            tiaris_derivations,
+        })
+    }
+
+    /// The profile a build job's preflight uses: the ready detected commit's
+    /// profile when the job builds at that commit, otherwise the built-in
+    /// profile of the release pin (`build_target` refuses any other commit).
+    pub(crate) fn for_build<'a>(
+        nixpkgs_commit: Option<&str>,
+        detected: Option<&'a WorkstationBuildProfile>,
+    ) -> &'a Self {
+        match detected {
+            Some(profile) if nixpkgs_commit == Some(profile.nixpkgs_commit()) => profile,
+            _ => Self::builtin(),
+        }
+    }
+
+    /// Whether `drv_path` is one of the Tiaris packages (workstation agent,
+    /// gsettings helpers, patched Avahi and their uncached dependencies)
+    /// evaluated from the shipped Tiaris source at this detected commit.
+    /// The built-in profile admits none: its outputs are signed seeds.
+    pub(crate) fn admits_tiaris_package(&self, drv_path: &str) -> bool {
+        self.tiaris_derivations.contains(drv_path)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -334,12 +494,26 @@ impl WorkstationBuildProfile {
         actual == self.path(reviewed)
     }
 
-    /// The script with this commit's identity store items replaced by their
-    /// built-in items. Everything else, including every other store path,
-    /// is unchanged, so the result is the reviewed script only when the
-    /// commit renders the same script with its own tool providers.
+    /// The script with this commit's identity store items, revision and NixOS
+    /// version label replaced by the built-in commit's. Everything else,
+    /// including every other store path, is unchanged, so the result is the
+    /// reviewed script only when the commit renders the same script with its
+    /// own tool providers.
     pub(crate) fn reviewed_script<'a>(&self, script: &'a str) -> Cow<'a, str> {
-        if self.builtin || !script.contains("/nix/store/") {
+        if self.builtin {
+            return Cow::Borrowed(script);
+        }
+        let mut rendered = self.reviewed_store_items(script);
+        for (label, reviewed) in &self.reviewed_labels {
+            if rendered.contains(label.as_str()) {
+                rendered = Cow::Owned(rendered.replace(label.as_str(), reviewed));
+            }
+        }
+        rendered
+    }
+
+    fn reviewed_store_items<'a>(&self, script: &'a str) -> Cow<'a, str> {
+        if !script.contains("/nix/store/") {
             return Cow::Borrowed(script);
         }
         let bytes = script.as_bytes();
@@ -386,7 +560,7 @@ mod tests {
     use super::super::{
         BINARY_WRAPPER_TOOL_INPUTS, DCONF_GENERATOR_TOOL_INPUTS, JQ_GENERATOR_TOOL_INPUTS,
         ReviewedStoreOutput, ReviewedToolInput, SHELL_WRAPPER_TOOL_INPUTS, TRUSTED_STDENV_NO_CC,
-        TRUSTED_STDENV_NO_CC_DRV, normalize_derivation_store_path, safe_nix_store_path,
+        TRUSTED_STDENV_NO_CC_DRV,
     };
     use super::*;
 
@@ -433,11 +607,11 @@ mod tests {
         assert_eq!(profile.nixpkgs_commit(), BUILTIN_NIXPKGS_COMMIT);
         assert!(profile.is_builtin());
         assert!(std::ptr::eq(
-            WorkstationBuildProfile::for_build(Some(BUILTIN_NIXPKGS_COMMIT)),
+            WorkstationBuildProfile::for_build(Some(BUILTIN_NIXPKGS_COMMIT), None),
             profile
         ));
         assert!(std::ptr::eq(
-            WorkstationBuildProfile::for_build(None),
+            WorkstationBuildProfile::for_build(None, None),
             profile
         ));
 

@@ -206,6 +206,14 @@ pub fn report() -> Value {
     }
 }
 
+/// The time zone of the applied maintenance schedule, if any.
+pub fn timezone() -> Option<chrono_tz::Tz> {
+    read_control()
+        .ok()
+        .flatten()
+        .and_then(|policy| policy.schedule.timezone.parse().ok())
+}
+
 /// The manual exception matches one immutable attempt, never all future updates.
 pub fn readiness(now: DateTime<Utc>) -> Result<&'static str> {
     let Some(policy) = read_control()? else {

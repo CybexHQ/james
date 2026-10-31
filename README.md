@@ -49,6 +49,12 @@ publishes the Cybex-signed software bases Tiaris offers as kernel and app
 updates. See [docs/workstation-software-bases.md](docs/workstation-software-bases.md),
 including what supporting a second commit requires.
 
+Nest also checks its NixOS channel daily (and when Tiaris asks): it derives
+the build profile of a new commit, dry-runs its Blueprints without source
+builds and records the commit as `ready` or `blocked` with a reason. Ready
+commits are admitted for Blueprint jobs and, to a Tiaris that accepts Nest
+protocol 5, reported in `detected_nixpkgs_commits`.
+
 ## Development
 
 ```sh

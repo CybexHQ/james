@@ -31,6 +31,7 @@ pub(crate) mod release_transport;
 pub mod resources;
 pub mod routes;
 pub mod software_cache;
+pub mod software_updates;
 pub(crate) mod subprocess;
 pub(crate) mod verification_io;
 pub mod wake_on_lan;
