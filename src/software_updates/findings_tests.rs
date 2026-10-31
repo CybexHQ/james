@@ -95,7 +95,18 @@ async fn insert_job(
     .unwrap()
 }
 
-/// The release at the pin and its candidate at the detected commit.
+async fn name_release(db: &SqlitePool, managed: &str, release: &str) {
+    record_hint(
+        db,
+        managed,
+        Some(&json!({"release_blueprint_revision_id": release})),
+    )
+    .await
+    .unwrap();
+}
+
+/// The release at the pin and its candidate at the detected commit, which
+/// names the release.
 async fn release_and_candidate(db: &SqlitePool) -> (i64, i64) {
     insert_detected(db, COMMIT, true).await;
     let release = insert_job(
@@ -126,6 +137,7 @@ async fn release_and_candidate(db: &SqlitePool) -> (i64, i64) {
         "2026-10-31T05:00:00Z",
     )
     .await;
+    name_release(db, "candidate-job", RELEASE_REVISION).await;
     (release, candidate)
 }
 
@@ -239,7 +251,13 @@ async fn fake(name: &str) -> Fake {
         &format!(
             r#"#!/bin/sh
 root='{root}'
-printf '%s\n' "$*" >> "$root/nix-calls"
+printf '%s nice=%s\n' "$*" "$(cut -d' ' -f19 /proc/$$/stat)" >> "$root/nix-calls"
+case " $* " in
+  *" eval "*'" "'*) [ -f "$root/fail-batch" ] && exit 1 ;;
+esac
+case " $* " in
+  *" eval "*'"flaky"'*) [ -f "$root/fail-batch" ] && exit 1 ;;
+esac
 case " $* " in
   *" path-info "*) [ -f "$root/fail-path-info" ] && exit 1; cat "$root/path-info.json" ;;
   *" derivation show "*) cat "$root/derivation-show.json" ;;
@@ -269,7 +287,11 @@ exit 0
 root='{root}'
 printf '%s nice=%s\n' "$*" "$(cut -d' ' -f19 /proc/$$/stat)" >> "$root/vulnix-calls"
 [ -f "$root/fail-vulnix" ] && {{ echo 'Traceback: NVD download failed' >&2; exit 2; }}
+cache=''; previous=''
+for argument; do [ "$previous" = --cache-dir ] && cache="$argument"; previous="$argument"; done
 for last; do :; done
+case "$last" in *candidate*) [ -f "$root/touch-db-once" ] && {{ echo x >> "$cache/Data.fs"; rm "$root/touch-db-once"; }} ;; esac
+[ -f "$root/touch-db-always" ] && echo x >> "$cache/Data.fs"
 case "$last" in
   *release*|*earlier*) cat "$root/release.json" ;;
   *candidate*) cat "$root/candidate.json" ;;
@@ -354,6 +376,17 @@ struct StoredScan {
     detail: String,
     attempts: i64,
     release_job_id: Option<i64>,
+}
+
+async fn stored_scan_of(db: &SqlitePool, revision: &str) -> StoredScan {
+    sqlx::query_as(
+        "SELECT state, reason, detail, attempts, release_job_id FROM software_update_scans
+         WHERE blueprint_revision_id = ?",
+    )
+    .bind(revision)
+    .fetch_one(db)
+    .await
+    .unwrap()
 }
 
 async fn stored_scan(db: &SqlitePool) -> StoredScan {
@@ -446,6 +479,12 @@ async fn scans_a_built_candidate_once_and_reports_what_it_fixes() {
     assert!(calls.iter().all(|call| call.ends_with("nice=19")));
     assert!(fake.scanner.vulnix_cache.is_dir());
     let eval = std::fs::read_to_string(fake.root.join("nix-calls")).unwrap();
+    // path-info, valid derivers and eval run at the same low priority.
+    let niceness = eval
+        .lines()
+        .filter_map(|line| line.rsplit_once(" nice=").map(|(_, nice)| nice))
+        .collect::<Vec<_>>();
+    assert_eq!(niceness, ["19"; 5], "{eval}");
     assert!(eval.contains(&format!("github:NixOS/nixpkgs/{COMMIT}?narHash=")));
     assert!(!eval.contains("bad\"ref"));
 
@@ -543,6 +582,7 @@ async fn missing_release_closures_and_derivations_fail_soft() {
         "2026-10-31T05:00:00Z",
     )
     .await;
+    name_release(&db, "candidate-job", RELEASE_REVISION).await;
     assert!(scan_once(&db, &fake, Utc::now()).await);
     let stored = stored_scan(&db).await;
     assert_eq!(
@@ -577,12 +617,13 @@ async fn missing_release_closures_and_derivations_fail_soft() {
 }
 
 #[tokio::test]
-async fn the_release_manage_names_wins_over_an_earlier_candidate() {
+async fn a_candidate_without_its_release_is_skipped_until_manage_names_it() {
     let db = pool().await;
     let fake = fake("hint").await;
     insert_detected(&db, OLDER_COMMIT, true).await;
     let (release, _) = release_and_candidate(&db).await;
-    // An earlier candidate that was never installed.
+    record_hint(&db, "candidate-job", None).await.unwrap();
+    // An earlier candidate that was never installed: never the baseline.
     let earlier = insert_job(
         &db,
         "earlier-job",
@@ -595,33 +636,147 @@ async fn the_release_manage_names_wins_over_an_earlier_candidate() {
         .bind(OLDER_COMMIT).bind(EARLIER_CANDIDATE).bind(earlier)
         .execute(&db).await.unwrap();
 
+    assert!(scan_once(&db, &fake, Utc::now()).await);
+    let stored = stored_scan_of(&db, CANDIDATE_REVISION).await;
+    assert_eq!(
+        (
+            stored.state.as_str(),
+            stored.reason.as_deref(),
+            stored.attempts
+        ),
+        ("skipped", Some(REASON_MISSING_RELEASE_HINT), 0)
+    );
+    assert!(!fake.root.join("vulnix-calls").exists());
+    assert!(
+        report(&db)
+            .await
+            .unwrap()
+            .iter()
+            .all(|finding| finding.blueprint_revision_id != CANDIDATE_REVISION)
+    );
+    // Not scanned again, however long it waits, until the release is named.
+    assert!(!scan_once(&db, &fake, Utc::now() + chrono::Duration::days(10)).await);
+
+    name_release(&db, "candidate-job", &RELEASE_REVISION.to_uppercase()).await;
+    assert!(scan_once(&db, &fake, Utc::now()).await);
+    let stored = stored_scan_of(&db, CANDIDATE_REVISION).await;
+    assert_eq!(
+        (stored.state.as_str(), stored.release_job_id),
+        ("succeeded", Some(release))
+    );
+    let calls = std::fs::read_to_string(fake.root.join("vulnix-calls")).unwrap();
+    assert!(calls.contains(RELEASE_OUT) && !calls.contains(EARLIER_OUT));
+
+    // A named release this Nest has not built is a retried failure.
+    name_release(&db, "earlier-job", "aaaaaaaa-bbbb-4ccc-8ddd-000000000009").await;
+    sqlx::query("DELETE FROM software_update_scans WHERE blueprint_revision_id = ?")
+        .bind(EARLIER_CANDIDATE)
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(scan_once(&db, &fake, Utc::now()).await);
+    let stored = stored_scan_of(&db, EARLIER_CANDIDATE).await;
+    assert_eq!(
+        (stored.reason.as_deref(), stored.attempts),
+        (Some(REASON_RELEASE_CLOSURE_UNAVAILABLE), 1)
+    );
+}
+
+#[tokio::test]
+async fn both_closures_are_judged_by_the_same_nvd_database() {
+    let db = pool().await;
+    let fake = fake("nvd").await;
+    release_and_candidate(&db).await;
+    // The candidate's run refreshed the database: the release is scanned
+    // again with what the candidate saw.
+    std::fs::write(fake.root.join("touch-db-once"), "").unwrap();
+    assert!(scan_once(&db, &fake, Utc::now()).await);
+    assert_eq!(stored_scan(&db).await.state, "succeeded");
+    let calls = std::fs::read_to_string(fake.root.join("vulnix-calls")).unwrap();
+    let scanned = calls
+        .lines()
+        .map(|line| {
+            if line.contains(RELEASE_OUT) {
+                "release"
+            } else {
+                "candidate"
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(scanned, ["release", "candidate", "release"]);
+    assert_eq!(report(&db).await.unwrap()[0].advisories.len(), 5);
+
+    // A database that keeps changing gives no finding.
+    let db = pool().await;
+    release_and_candidate(&db).await;
+    std::fs::write(fake.root.join("touch-db-always"), "").unwrap();
+    assert!(scan_once(&db, &fake, Utc::now()).await);
+    let stored = stored_scan(&db).await;
+    assert_eq!(stored.reason.as_deref(), Some(REASON_SCAN_FAILED));
+    assert!(
+        stored.detail.contains("NVD database changed"),
+        "{}",
+        stored.detail
+    );
+}
+
+#[tokio::test]
+async fn a_build_that_starts_defers_the_scan_without_recording_it() {
+    let db = pool().await;
+    let fake = fake("deferred").await;
+    release_and_candidate(&db).await;
     let candidate = next_candidate(&db, &[PIN.to_string()], Utc::now())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(candidate.job.blueprint_revision_id, CANDIDATE_REVISION);
+    sqlx::query("INSERT INTO nest_build_jobs (requested_artifact_type, status, created_at, updated_at) VALUES ('nixos_closure', 'running', '2026-10-31T06:00:00Z', '2026-10-31T06:00:00Z')")
+        .execute(&db).await.unwrap();
+    assert!(
+        !scan_and_record(&db, &fake.scanner, &candidate)
+            .await
+            .unwrap()
+    );
+    assert!(!fake.root.join("vulnix-calls").exists());
+    let scans: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM software_update_scans")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(scans, 0);
+}
+
+#[tokio::test]
+async fn package_lookups_survive_one_bad_ref_and_retry_when_nothing_is_decided() {
+    let db = pool().await;
+    let fake = fake("packages").await;
+    release_and_candidate(&db).await;
+    // The batch evaluation fails; each ref is evaluated on its own and only
+    // the bad one is left out.
+    std::fs::write(fake.root.join("fail-batch"), "").unwrap();
+    assert!(scan_once(&db, &fake, Utc::now()).await);
+    let finding = report(&db).await.unwrap().remove(0);
     assert_eq!(
-        release_job(&db, &candidate).await.unwrap().unwrap().id,
-        earlier
+        finding
+            .package_delivery
+            .iter()
+            .map(|item| item.package_ref.as_str())
+            .collect::<Vec<_>>(),
+        ["firefox", "google-chrome", "vscode"]
     );
 
-    record_hint(
-        &db,
-        "candidate-job",
-        Some(&json!({"release_blueprint_revision_id": RELEASE_REVISION.to_uppercase()})),
-    )
-    .await
-    .unwrap();
+    // No cache answers: nothing decided, so the scan failed and is retried.
+    let db = pool().await;
+    let mut fake = fake;
+    fake.scanner.public_cache = "http://127.0.0.1:9".to_string();
+    release_and_candidate(&db).await;
+    let start = Utc::now();
+    assert!(scan_once(&db, &fake, start).await);
+    let stored = stored_scan(&db).await;
     assert_eq!(
-        release_job(&db, &candidate).await.unwrap().unwrap().id,
-        release
+        (stored.state.as_str(), stored.reason.as_deref()),
+        ("failed", Some(REASON_PACKAGE_STATUS_UNAVAILABLE))
     );
-    record_hint(&db, "candidate-job", None).await.unwrap();
-    assert_eq!(
-        release_job(&db, &candidate).await.unwrap().unwrap().id,
-        earlier
-    );
-    drop(fake);
+    assert!(report(&db).await.unwrap().is_empty());
+    assert!(scan_once(&db, &fake, start + chrono::Duration::hours(25)).await);
 }
 
 #[tokio::test]

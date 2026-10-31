@@ -5,13 +5,14 @@
 //! soon as Nest reports a ready detected commit, and Nest builds it through
 //! the ordinary build-job path. Once the candidate's closure is built, Nest:
 //!
-//! 1. finds the closure of the release the candidate was prepared from
-//!    (`software_update.release_blueprint_revision_id` on the build job; a
-//!    Manage that does not send it gets the newest lower revision of the same
-//!    Blueprint built at another commit);
+//! 1. finds the closure of the release the candidate was prepared from,
+//!    named by `software_update.release_blueprint_revision_id` on the build
+//!    job; a candidate without it is skipped (`missing_release_hint`) until
+//!    Manage names it, so a finding never compares against a guessed release;
 //! 2. scans the runtime closure of both with vulnix (`--closure`), at low CPU
 //!    and I/O priority under a memory and time limit, with its NVD database
-//!    cached in the Nest state directory;
+//!    cached in the Nest state directory; both scans must see the same
+//!    database;
 //! 3. keeps the advisories of the release the candidate no longer has, with
 //!    severity from the CVSS v3 base score;
 //! 4. looks up each App List package ref of the job at the commit:
@@ -22,8 +23,9 @@
 //!
 //! Each candidate (commit and Blueprint revision) is scanned once. A failed
 //! scan records its reason, produces no finding and never blocks a build; it
-//! is retried at most daily, three attempts in all. Scans wait while a build
-//! runs. Findings reach Manage only in protocol-5 reports
+//! is retried at most daily, three attempts in all. A lookup that decides no
+//! package at all is such a failure. Scans wait while a build runs and stop,
+//! recording nothing, when one starts before a vulnix run. Findings reach Manage only in protocol-5 reports
 //! (`software_update_findings`).
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -79,6 +81,11 @@ pub(crate) const REASON_RELEASE_CLOSURE_UNAVAILABLE: &str = "release_closure_una
 pub(crate) const REASON_CLOSURE_UNAVAILABLE: &str = "closure_unavailable";
 pub(crate) const REASON_DERIVATIONS_UNAVAILABLE: &str = "derivations_unavailable";
 pub(crate) const REASON_SCAN_FAILED: &str = "scan_failed";
+pub(crate) const REASON_MISSING_RELEASE_HINT: &str = "missing_release_hint";
+pub(crate) const REASON_PACKAGE_STATUS_UNAVAILABLE: &str = "package_status_unavailable";
+/// One ref's evaluation when the batch evaluation of all refs fails.
+const PACKAGE_REF_EVAL_TIMEOUT: Duration = Duration::from_secs(120);
+const NVD_DATABASE_FILE: &str = "Data.fs";
 
 fn candidate_built_signal() -> &'static Notify {
     static SIGNAL: OnceLock<Notify> = OnceLock::new();
@@ -282,6 +289,22 @@ pub(crate) struct Scanner {
 }
 
 impl Scanner {
+    /// `program` at nice 19, idle I/O and the scanner's memory limit, like
+    /// every process the scanner starts.
+    fn command(&self, program: &str) -> tokio::process::Command {
+        let mut command = crate::nix_command::tokio_command(program);
+        command.stdin(std::process::Stdio::null());
+        let memory = self.memory_limit_bytes;
+        // SAFETY: only async-signal-safe libc calls between fork and exec.
+        unsafe {
+            command.pre_exec(move || {
+                lower_priority(memory);
+                Ok(())
+            });
+        }
+        command
+    }
+
     fn from_config(config: &AppConfig) -> Self {
         Self {
             nix: config.build.nix_binary.clone(),
@@ -315,14 +338,6 @@ struct SpecFields {
     nixpkgs_commit: Option<String>,
     #[serde(default)]
     software_package_refs: Vec<String>,
-    #[serde(default)]
-    build_input: Option<InputFields>,
-}
-
-#[derive(Debug, Deserialize)]
-struct InputFields {
-    #[serde(default)]
-    blueprint_revision: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -331,7 +346,6 @@ struct Job {
     managed_job_id: Option<String>,
     blueprint_id: String,
     blueprint_revision_id: String,
-    blueprint_revision: Option<i64>,
     commit: String,
     package_refs: Vec<String>,
     output_path: String,
@@ -345,7 +359,6 @@ impl Job {
             managed_job_id: row.managed_job_id.clone(),
             blueprint_id: spec.blueprint_id?,
             blueprint_revision_id: spec.blueprint_revision_id?,
-            blueprint_revision: spec.build_input.and_then(|input| input.blueprint_revision),
             commit: spec.nixpkgs_commit?,
             package_refs: spec.software_package_refs,
             output_path: row.output_path.clone(),
@@ -436,7 +449,10 @@ async fn scan_pending(state: &AppState) -> Result<usize> {
             return Ok(scanned);
         };
         let scanner = Scanner::from_config(&state.config);
-        scan_and_record(&state.db, &scanner, &candidate).await?;
+        if !scan_and_record(&state.db, &scanner, &candidate).await? {
+            // A build started: scan again once it is done.
+            return Ok(scanned);
+        }
         scanned += 1;
     }
 }
@@ -467,8 +483,8 @@ async fn prune(db: &SqlitePool) -> Result<()> {
 }
 
 /// A built candidate: a Blueprint job at a ready detected commit (not a
-/// release pin) whose commit and revision have no scan yet, or only a failed
-/// one due for a retry.
+/// release pin) whose commit and revision have no scan yet, only a failed
+/// one due for a retry, or a skipped one whose job now names its release.
 #[derive(Clone, Debug)]
 struct Candidate {
     job: Job,
@@ -493,8 +509,12 @@ async fn next_candidate(
                            WHERE scans.commit_rev = json_extract(jobs.build_spec, '$.nixpkgs_commit')
                              AND scans.blueprint_revision_id
                                  = json_extract(jobs.build_spec, '$.blueprint_revision_id')
-                             AND (scans.state = 'succeeded' OR scans.attempts >= ?
-                                  OR scans.scanned_at > ?))
+                             AND (scans.state = 'succeeded'
+                                  OR (scans.state = 'failed'
+                                      AND (scans.attempts >= ? OR scans.scanned_at > ?))
+                                  OR (scans.state = 'skipped' AND NOT EXISTS (
+                                      SELECT 1 FROM software_update_candidate_hints AS hints
+                                      WHERE hints.managed_job_id = jobs.managed_job_id))))
          ORDER BY completed_at, id"
     ))
     .bind(MAX_ATTEMPTS)
@@ -522,25 +542,29 @@ async fn next_candidate(
     Ok(None)
 }
 
-/// The release closure the candidate was prepared from.
-async fn release_job(db: &SqlitePool, candidate: &Candidate) -> Result<Option<Job>> {
-    let hint = match candidate.job.managed_job_id.as_deref() {
-        Some(managed) => {
-            sqlx::query_scalar::<_, String>(
-                "SELECT release_blueprint_revision_id FROM software_update_candidate_hints
-                 WHERE managed_job_id = ?",
-            )
-            .bind(managed)
-            .fetch_optional(db)
-            .await?
-        }
-        None => None,
+/// The release Manage named for the candidate, if it did.
+async fn release_hint(db: &SqlitePool, candidate: &Candidate) -> Result<Option<String>> {
+    let Some(managed) = candidate.job.managed_job_id.as_deref() else {
+        return Ok(None);
     };
+    Ok(sqlx::query_scalar::<_, String>(
+        "SELECT release_blueprint_revision_id FROM software_update_candidate_hints
+         WHERE managed_job_id = ?",
+    )
+    .bind(managed)
+    .fetch_optional(db)
+    .await?)
+}
+
+/// The built closure of `release`, the revision the candidate was prepared
+/// from, at another commit.
+async fn release_job(db: &SqlitePool, candidate: &Candidate, release: &str) -> Result<Option<Job>> {
     let rows = sqlx::query_as::<_, JobRow>(&format!(
         "SELECT {JOB_COLUMNS} FROM nest_build_jobs
          WHERE {BLUEPRINT_JOB_FILTER}
            AND requested_artifact_type = ? AND system = ? AND target = ?
            AND json_extract(build_spec, '$.blueprint_id') = ?
+           AND json_extract(build_spec, '$.blueprint_revision_id') = ?
            AND json_extract(build_spec, '$.nixpkgs_commit') != ?
          ORDER BY completed_at DESC, id DESC"
     ))
@@ -548,25 +572,11 @@ async fn release_job(db: &SqlitePool, candidate: &Candidate) -> Result<Option<Jo
     .bind(&candidate.system)
     .bind(&candidate.target)
     .bind(&candidate.job.blueprint_id)
+    .bind(release)
     .bind(&candidate.job.commit)
     .fetch_all(db)
     .await?;
-    let jobs = rows.iter().filter_map(Job::from_row);
-    Ok(match hint {
-        Some(release) => jobs
-            .into_iter()
-            .find(|job| job.blueprint_revision_id == release),
-        // Without Manage's hint: the newest lower revision. That is the
-        // release unless an earlier candidate was never installed.
-        None => {
-            let below = candidate.job.blueprint_revision;
-            jobs.filter(|job| match (job.blueprint_revision, below) {
-                (Some(revision), Some(below)) => revision < below,
-                _ => false,
-            })
-            .max_by_key(|job| job.blueprint_revision)
-        }
-    })
+    Ok(rows.iter().find_map(Job::from_row))
 }
 
 #[derive(Debug)]
@@ -584,53 +594,67 @@ impl ScanFailure {
     }
 }
 
-struct ScanOutcome {
-    release_job_id: Option<i64>,
-    result: std::result::Result<(Vec<Advisory>, Vec<PackageDelivery>), ScanFailure>,
+enum ScanResult {
+    Succeeded(Vec<Advisory>, Vec<PackageDelivery>),
+    /// Retried at most daily, `MAX_ATTEMPTS` in all.
+    Failed(ScanFailure),
+    /// Nothing to compare with until Manage names the release.
+    Skipped(ScanFailure),
+    /// A build started; nothing is recorded and the scan runs again later.
+    Deferred,
 }
 
-async fn scan_and_record(db: &SqlitePool, scanner: &Scanner, candidate: &Candidate) -> Result<()> {
+struct ScanOutcome {
+    release_job_id: Option<i64>,
+    result: ScanResult,
+}
+
+impl ScanOutcome {
+    fn failed(release_job_id: Option<i64>, failure: ScanFailure) -> Self {
+        Self {
+            release_job_id,
+            result: ScanResult::Failed(failure),
+        }
+    }
+}
+
+/// Scan one candidate and record the outcome; `false` when a build started
+/// and nothing was recorded.
+async fn scan_and_record(
+    db: &SqlitePool,
+    scanner: &Scanner,
+    candidate: &Candidate,
+) -> Result<bool> {
     let outcome = scan(db, scanner, candidate).await?;
     let now = timestamp(Utc::now());
     let (state, reason, detail, advisories, delivery) = match outcome.result {
-        Ok((advisories, delivery)) => {
+        ScanResult::Deferred => return Ok(false),
+        ScanResult::Succeeded(advisories, delivery) => {
             info!(
                 commit = %candidate.job.commit,
                 blueprint_revision_id = %candidate.job.blueprint_revision_id,
                 fixed = advisories.len(),
+                packages = delivery.len(),
                 "scanned software update candidate"
             );
             ("succeeded", None, String::new(), advisories, delivery)
         }
-        Err(failure) => {
-            warn!(
-                commit = %candidate.job.commit,
-                blueprint_revision_id = %candidate.job.blueprint_revision_id,
-                reason = failure.reason,
-                detail = %failure.detail,
-                "software update candidate scan failed; no finding is reported"
-            );
-            (
-                "failed",
-                Some(failure.reason),
-                failure.detail,
-                Vec::new(),
-                Vec::new(),
-            )
-        }
+        ScanResult::Failed(failure) => not_scanned(candidate, "failed", failure),
+        ScanResult::Skipped(failure) => not_scanned(candidate, "skipped", failure),
     };
+    let attempt = i64::from(state == "failed");
     sqlx::query(
         "INSERT INTO software_update_scans (
              commit_rev, blueprint_revision_id, candidate_job_id, release_job_id, state,
              reason, detail, attempts, advisories, package_delivery, scanned_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(commit_rev, blueprint_revision_id) DO UPDATE SET
              candidate_job_id = excluded.candidate_job_id,
              release_job_id = excluded.release_job_id,
              state = excluded.state,
              reason = excluded.reason,
              detail = excluded.detail,
-             attempts = attempts + 1,
+             attempts = attempts + excluded.attempts,
              advisories = excluded.advisories,
              package_delivery = excluded.package_delivery,
              scanned_at = excluded.scanned_at",
@@ -642,51 +666,127 @@ async fn scan_and_record(db: &SqlitePool, scanner: &Scanner, candidate: &Candida
     .bind(state)
     .bind(reason)
     .bind(detail)
+    .bind(attempt)
     .bind(serde_json::to_string(&advisories)?)
     .bind(serde_json::to_string(&delivery)?)
     .bind(now)
     .execute(db)
     .await?;
-    Ok(())
+    Ok(true)
+}
+
+type ScanRecord = (
+    &'static str,
+    Option<&'static str>,
+    String,
+    Vec<Advisory>,
+    Vec<PackageDelivery>,
+);
+
+fn not_scanned(candidate: &Candidate, state: &'static str, failure: ScanFailure) -> ScanRecord {
+    warn!(
+        commit = %candidate.job.commit,
+        blueprint_revision_id = %candidate.job.blueprint_revision_id,
+        state,
+        reason = failure.reason,
+        detail = %failure.detail,
+        "software update candidate not scanned; no finding is reported"
+    );
+    (
+        state,
+        Some(failure.reason),
+        failure.detail,
+        Vec::new(),
+        Vec::new(),
+    )
 }
 
 /// Scan one candidate. Database errors are returned; everything about the
 /// closures, vulnix or the network is a recorded failure.
 async fn scan(db: &SqlitePool, scanner: &Scanner, candidate: &Candidate) -> Result<ScanOutcome> {
-    let Some(release) = release_job(db, candidate).await? else {
+    let Some(release) = release_hint(db, candidate).await? else {
         return Ok(ScanOutcome {
             release_job_id: None,
-            result: Err(ScanFailure::new(
-                REASON_RELEASE_CLOSURE_UNAVAILABLE,
-                "no built release closure of this Blueprint at another commit",
+            result: ScanResult::Skipped(ScanFailure::new(
+                REASON_MISSING_RELEASE_HINT,
+                "the build job does not name the release this update was prepared from",
             )),
         });
     };
+    let Some(release) = release_job(db, candidate, &release).await? else {
+        return Ok(ScanOutcome::failed(
+            None,
+            ScanFailure::new(
+                REASON_RELEASE_CLOSURE_UNAVAILABLE,
+                "no built closure of the named release at another commit",
+            ),
+        ));
+    };
     let release_job_id = Some(release.id);
-    let mut scans = Vec::with_capacity(2);
     for path in [&release.output_path, &candidate.job.output_path] {
         if let Err(failure) = check_derivers(scanner, path).await {
+            return Ok(ScanOutcome::failed(release_job_id, failure));
+        }
+    }
+    // Both closures must be judged by the same NVD data. vulnix refreshes its
+    // database at most every two hours, before it scans; if the candidate's
+    // run changed it, the release is scanned again with what the candidate
+    // saw.
+    let mut scanned = Vec::with_capacity(3);
+    let mut paths = vec![&release.output_path, &candidate.job.output_path];
+    let mut stamp = nvd_stamp(scanner);
+    while let Some(path) = paths.first().copied() {
+        if build_running(db).await? {
             return Ok(ScanOutcome {
                 release_job_id,
-                result: Err(failure),
+                result: ScanResult::Deferred,
             });
         }
         match run_vulnix(scanner, path).await {
-            Ok(advisories) => scans.push(advisories),
+            Ok(advisories) => scanned.push(advisories),
             Err(error) => {
-                return Ok(ScanOutcome {
+                return Ok(ScanOutcome::failed(
                     release_job_id,
-                    result: Err(ScanFailure::new(REASON_SCAN_FAILED, format!("{error:#}"))),
-                });
+                    ScanFailure::new(REASON_SCAN_FAILED, format!("{error:#}")),
+                ));
             }
         }
+        paths.remove(0);
+        let current = nvd_stamp(scanner);
+        if scanned.len() >= 2 && current != stamp {
+            if scanned.len() == 3 {
+                return Ok(ScanOutcome::failed(
+                    release_job_id,
+                    ScanFailure::new(
+                        REASON_SCAN_FAILED,
+                        "the NVD database changed between the two scans twice",
+                    ),
+                ));
+            }
+            paths.push(&release.output_path);
+        }
+        stamp = current;
     }
-    let fixed = fixed_advisories(&scans[0], &scans[1]);
-    let delivery = package_delivery(scanner, candidate).await;
+    let release_scan = scanned
+        .last()
+        .filter(|_| scanned.len() == 3)
+        .unwrap_or(&scanned[0]);
+    let fixed = fixed_advisories(release_scan, &scanned[1]);
+    let delivery = match package_delivery(scanner, candidate).await {
+        Ok(delivery) => delivery,
+        Err(failure) => return Ok(ScanOutcome::failed(release_job_id, failure)),
+    };
     Ok(ScanOutcome {
         release_job_id,
-        result: Ok((fixed, delivery)),
+        result: ScanResult::Succeeded(fixed, delivery),
     })
+}
+
+/// Size and modification time of vulnix's database; vulnix rewrites it only
+/// when the NVD data changes (or it packs it).
+fn nvd_stamp(scanner: &Scanner) -> Option<(u64, std::time::SystemTime)> {
+    let metadata = std::fs::metadata(scanner.vulnix_cache.join(NVD_DATABASE_FILE)).ok()?;
+    Some((metadata.len(), metadata.modified().ok()?))
 }
 
 fn valid_store_path(path: &str) -> bool {
@@ -712,7 +812,7 @@ async fn check_derivers(scanner: &Scanner, path: &str) -> std::result::Result<()
             "the job's output is not a store path",
         ));
     }
-    let closure = nix_json(&scanner.nix, &["path-info", "--recursive", "--json", path])
+    let closure = nix_json(scanner, &["path-info", "--recursive", "--json", path])
         .await
         .and_then(|value| closure_derivers(&value))
         .map_err(|error| ScanFailure::new(REASON_CLOSURE_UNAVAILABLE, format!("{error:#}")))?;
@@ -744,8 +844,8 @@ async fn check_derivers(scanner: &Scanner, path: &str) -> std::result::Result<()
 }
 
 /// Bounded `nix … --json`.
-async fn nix_json(nix: &str, args: &[&str]) -> Result<Value> {
-    let mut command = crate::nix_command::tokio_command(nix);
+async fn nix_json(scanner: &Scanner, args: &[&str]) -> Result<Value> {
+    let mut command = scanner.command(&scanner.nix);
     command.args(args);
     let output = run_bounded_command(
         command,
@@ -810,7 +910,7 @@ async fn valid_deriver_outputs(scanner: &Scanner, paths: &[String]) -> Result<BT
     };
     let mut derivers = BTreeSet::new();
     for chunk in paths.chunks(CHUNK) {
-        let mut command = crate::nix_command::tokio_command(&nix_store);
+        let mut command = scanner.command(&nix_store);
         command.args(["--query", "--valid-derivers"]).args(chunk);
         let output = run_bounded_command(
             command,
@@ -839,7 +939,7 @@ async fn valid_deriver_outputs(scanner: &Scanner, paths: &[String]) -> Result<BT
     for chunk in derivers.chunks(CHUNK) {
         let mut args = vec!["derivation", "show"];
         args.extend(chunk.iter().map(String::as_str));
-        let shown = nix_json(&scanner.nix, &args).await?;
+        let shown = nix_json(scanner, &args).await?;
         let shown = shown.get("derivations").unwrap_or(&shown);
         for derivation in shown.as_object().into_iter().flat_map(|map| map.values()) {
             for output in derivation
@@ -860,19 +960,10 @@ async fn valid_deriver_outputs(scanner: &Scanner, paths: &[String]) -> Result<BT
 /// `vulnix --json --closure` of one closure at idle priority.
 async fn run_vulnix(scanner: &Scanner, path: &str) -> Result<BTreeMap<String, Advisory>> {
     create_private_dir(&scanner.vulnix_cache)?;
-    let mut command = crate::nix_command::tokio_command(&scanner.vulnix);
+    let mut command = scanner.command(&scanner.vulnix);
     command.args(["--json", "--closure", "--cache-dir"]);
     command.arg(&scanner.vulnix_cache);
     command.arg(path);
-    command.stdin(std::process::Stdio::null());
-    let memory = scanner.memory_limit_bytes;
-    // SAFETY: only async-signal-safe libc calls between fork and exec.
-    unsafe {
-        command.pre_exec(move || {
-            lower_priority(memory);
-            Ok(())
-        });
-    }
     let output = run_bounded_command(
         command,
         VULNIX_TIMEOUT,
@@ -947,8 +1038,12 @@ fn valid_package_ref(value: &str) -> bool {
 
 /// Status of each package ref of the job at the candidate's commit. Refs
 /// whose output Nest cannot evaluate, or whose caches do not answer, are left
-/// out.
-async fn package_delivery(scanner: &Scanner, candidate: &Candidate) -> Vec<PackageDelivery> {
+/// out, so Manage keeps its compiled catalog for them. A lookup that decides
+/// none of the refs failed as a whole (network, time limit) and is retried.
+async fn package_delivery(
+    scanner: &Scanner,
+    candidate: &Candidate,
+) -> std::result::Result<Vec<PackageDelivery>, ScanFailure> {
     let refs = candidate
         .job
         .package_refs
@@ -960,27 +1055,17 @@ async fn package_delivery(scanner: &Scanner, candidate: &Candidate) -> Vec<Packa
         .take(MAX_PACKAGE_REFS)
         .collect::<Vec<_>>();
     if refs.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let outputs = match package_outputs(scanner, candidate, &refs).await {
-        Ok(outputs) => outputs,
-        Err(error) => {
-            warn!(error = %error, commit = %candidate.job.commit,
-                "could not evaluate App List packages; reporting no package status");
-            return Vec::new();
-        }
-    };
-    let client = match reqwest::Client::builder()
+    let unavailable = |detail: String| ScanFailure::new(REASON_PACKAGE_STATUS_UNAVAILABLE, detail);
+    let outputs = package_outputs(scanner, candidate, &refs)
+        .await
+        .map_err(|error| unavailable(format!("{error:#}")))?;
+    let client = reqwest::Client::builder()
         .timeout(NARINFO_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
         .build()
-    {
-        Ok(client) => client,
-        Err(error) => {
-            warn!(error = %error, "could not create the package status client");
-            return Vec::new();
-        }
-    };
+        .map_err(|error| unavailable(error.to_string()))?;
     let deadline = tokio::time::Instant::now() + PACKAGE_LOOKUP_DEADLINE;
     let mut delivery = Vec::new();
     for (package_ref, output) in outputs {
@@ -994,10 +1079,18 @@ async fn package_delivery(scanner: &Scanner, candidate: &Candidate) -> Vec<Packa
             });
         }
     }
-    delivery
+    if delivery.is_empty() {
+        return Err(unavailable(format!(
+            "no status decided for any of {} App List packages",
+            refs.len()
+        )));
+    }
+    Ok(delivery)
 }
 
-/// ref → output path at the commit, for the refs that evaluate.
+/// ref → output path at the commit, for the refs that evaluate. All refs are
+/// evaluated at once; when that fails (a ref Nix cannot recover from), each
+/// ref is evaluated on its own so one ref cannot hide the others.
 async fn package_outputs(
     scanner: &Scanner,
     candidate: &Candidate,
@@ -1011,8 +1104,46 @@ async fn package_outputs(
     {
         bail!("job system is not a Nix system name");
     }
-    let expression = package_outputs_expression(&flake, &candidate.system, refs)?;
-    let mut command = crate::nix_command::tokio_command(&scanner.nix);
+    let batch = eval_package_outputs(
+        scanner,
+        &flake,
+        &candidate.system,
+        refs,
+        PACKAGE_EVAL_TIMEOUT,
+    )
+    .await;
+    let error = match batch {
+        Ok(outputs) => return Ok(outputs),
+        Err(error) => error,
+    };
+    warn!(error = %error, commit = %candidate.job.commit,
+        "App List packages did not evaluate together; evaluating them one by one");
+    let deadline = tokio::time::Instant::now() + PACKAGE_EVAL_TIMEOUT;
+    let mut outputs = BTreeMap::new();
+    for package_ref in refs {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let single = std::slice::from_ref(package_ref);
+        let limit = remaining.min(PACKAGE_REF_EVAL_TIMEOUT);
+        match eval_package_outputs(scanner, &flake, &candidate.system, single, limit).await {
+            Ok(found) => outputs.extend(found),
+            Err(error) => warn!(error = %error, %package_ref, "App List package did not evaluate"),
+        }
+    }
+    Ok(outputs)
+}
+
+async fn eval_package_outputs(
+    scanner: &Scanner,
+    flake: &str,
+    system: &str,
+    refs: &[String],
+    time_limit: Duration,
+) -> Result<BTreeMap<String, String>> {
+    let expression = package_outputs_expression(flake, system, refs)?;
+    let mut command = scanner.command(&scanner.nix);
     command.args([
         "--option",
         "accept-flake-config",
@@ -1027,7 +1158,7 @@ async fn package_outputs(
     ]);
     let output = run_bounded_command(
         command,
-        PACKAGE_EVAL_TIMEOUT,
+        time_limit,
         PACKAGE_EVAL_STDOUT_MAX_BYTES,
         VULNIX_STDERR_MAX_BYTES,
         "nix eval of App List package outputs",
@@ -1052,9 +1183,10 @@ async fn package_outputs(
         .collect())
 }
 
-/// Each ref's `outPath` at the narHash-pinned commit, `null` when it does
-/// not evaluate. Unfree packages are allowed: the output path does not
-/// depend on the licence decision, which the Blueprint makes.
+/// Each ref's `(package.out or package).outPath` at the narHash-pinned
+/// commit, as Manage's cache catalog takes it; `null` when it does not
+/// evaluate. Unfree packages are allowed: the output path does not depend on
+/// the licence decision, which the Blueprint makes.
 fn package_outputs_expression(flake: &str, system: &str, refs: &[String]) -> Result<String> {
     if refs.iter().any(|value| !valid_package_ref(value)) || flake.contains('"') {
         bail!("package refs must be attribute paths");
@@ -1073,9 +1205,11 @@ fn package_outputs_expression(flake: &str, system: &str, refs: &[String]) -> Res
   output = ref:
     let
       found = builtins.tryEval (
-        let package = pkgs.lib.attrByPath (pkgs.lib.splitString "." ref) null pkgs;
-        in if builtins.isAttrs package && package ? outPath
-           then builtins.toString package.outPath else null
+        let
+          package = pkgs.lib.attrByPath (pkgs.lib.splitString "." ref) null pkgs;
+          out = if builtins.isAttrs package then package.out or package else null;
+        in if builtins.isAttrs out && out ? outPath
+           then builtins.toString out.outPath else null
       );
     in if found.success then found.value else null;
 in builtins.listToAttrs (map (ref: {{ name = ref; value = output ref; }}) [ {refs} ])"#

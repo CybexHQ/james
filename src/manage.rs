@@ -1900,6 +1900,11 @@ fn fit_nest_report_body(
     for job in &mut body.build_jobs {
         job.logs.clear();
     }
+    // Findings are stored idempotently and sent again with every report, so
+    // they go before any build or cache evidence.
+    if !nest_report_body_fits(&body, max_bytes) {
+        body.software_update_findings = None;
+    }
 
     trim_workstation_multicast_reports(&mut body, max_bytes);
 
@@ -1930,10 +1935,6 @@ fn fit_nest_report_body(
         }
     }
 
-    if !nest_report_body_fits(&body, max_bytes) {
-        // Findings are stored idempotently and sent again with every report.
-        body.software_update_findings = None;
-    }
     if !nest_report_body_fits(&body, max_bytes) {
         bail!("managed nest report base body exceeded {max_bytes} bytes");
     }
@@ -4661,6 +4662,35 @@ mod tests {
             Some(&Value::Null)
         );
         assert_eq!(jobs[1]["rejection_code"], "protected_material");
+    }
+
+    #[test]
+    fn software_update_findings_go_before_build_and_cache_evidence() {
+        let mut job = NestBuildJobReport::from(sample_build_job(""));
+        job.logs.clear();
+        let mut with_findings = sample_nest_report(vec![job]);
+        with_findings.cache_artifacts = vec![sample_cache_artifact("x".repeat(1024))];
+        let evidence_bytes = serialize_nest_report_body(&with_findings).unwrap();
+        with_findings.software_update_findings =
+            Some(vec![crate::software_updates::findings::FindingReport {
+                commit: "6f06d204d8f2d8761d9da78778745974a3216381".into(),
+                blueprint_revision_id: "aaaaaaaa-bbbb-4ccc-8ddd-000000000004".into(),
+                scanned_at: "2026-10-31T05:10:00Z".into(),
+                advisories: Vec::new(),
+                package_delivery: Vec::new(),
+            }]);
+
+        let (trimmed, trimmed_bytes) = fit_nest_report_body(
+            with_findings,
+            evidence_bytes.len(),
+            NestReportPriority::ActiveBuilds,
+        )
+        .unwrap();
+
+        assert!(trimmed.software_update_findings.is_none());
+        assert_eq!(trimmed.build_jobs.len(), 1);
+        assert_eq!(trimmed.cache_artifacts.len(), 1);
+        assert_eq!(trimmed_bytes, evidence_bytes);
     }
 
     #[test]
