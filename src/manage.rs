@@ -61,6 +61,9 @@ const CAPABILITY_APPLIANCE_UPDATE_V1: &str = crate::appliance::APPLIANCE_UPDATE_
 const CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1: &str =
     crate::appliance::APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_CAPABILITY;
 const TIARIS_COMPONENT_PROTOCOL_VERSION: u32 = 4;
+/// Nest reports additionally speak protocol 5 (`detected_nixpkgs_commits`)
+/// to a Tiaris that accepts it; protocol 4 stays the baseline.
+const TIARIS_DETECTED_COMMITS_PROTOCOL_VERSION: u32 = 5;
 const TIARIS_MINIMUM_MANAGE_PROTOCOL_VERSION: u32 = 4;
 const TIARIS_MAXIMUM_MANAGE_PROTOCOL_VERSION: u32 = 4;
 const MAX_MANAGED_PROFILES: usize = 1_000;
@@ -175,6 +178,10 @@ struct AgentNestConfigResponse {
     wake_on_lan: Vec<crate::wake_on_lan::ManagedWakeRequest>,
     #[serde(default)]
     software_cache: Option<Value>,
+    #[serde(default)]
+    software_update_channel: Option<Value>,
+    #[serde(default)]
+    software_update_check_requested_at: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -471,6 +478,12 @@ struct NestAgentReportRequest {
     appliance_report_error: Option<&'static str>,
     /// Workstation software bases (nixpkgs commits) this Nest can build.
     workstation_nixpkgs_commits: Vec<String>,
+    /// Protocol 5: NixOS channel commits this Nest checked, newest first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detected_nixpkgs_commits: Option<Vec<crate::software_updates::DetectedCommitReport>>,
+    /// Protocol 5: when the channel check last completed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    software_update_checked_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -919,9 +932,11 @@ async fn sync_nest_foundation(
     let mut first_failure = None;
     let mut peer_runtime_epoch = None;
     let mut peer_supports_scheduling = false;
+    let mut report_protocol = TIARIS_COMPONENT_PROTOCOL_VERSION;
     match fetch_nest_config(state, managed).await {
         Ok(desired) => {
             peer_supports_scheduling = desired.update_schedule_supported;
+            report_protocol = negotiated_report_protocol(desired.compatibility.as_ref());
             peer_runtime_epoch = desired
                 .compatibility
                 .as_ref()
@@ -939,6 +954,7 @@ async fn sync_nest_foundation(
         managed,
         peer_runtime_epoch.is_some(),
         peer_supports_scheduling,
+        report_protocol,
     )
     .await
     {
@@ -989,6 +1005,16 @@ async fn apply_nest_desired(
         });
     if let Err(error) = software_cache {
         retain_sync_failure(first_failure, "software cache access", error);
+    }
+    // Its own lane: an unusable channel or request only stops update checks.
+    if let Err(error) = crate::software_updates::apply_managed(
+        &state.db,
+        desired.software_update_channel.as_ref(),
+        desired.software_update_check_requested_at.as_ref(),
+    )
+    .await
+    {
+        retain_sync_failure(first_failure, "software update check settings", error);
     }
     let multicast_desired = desired.workstation_multicast.clone();
     if let Err(error) =
@@ -1225,6 +1251,7 @@ async fn report_nest_state(
     managed: &mut ManagedState,
     peer_supports_runtime_fencing: bool,
     peer_supports_scheduling: bool,
+    report_protocol: u32,
 ) -> Result<NestReportReceipt> {
     let (build_jobs, build_listing_valid) = match db::list_build_jobs_report_page(
         &state.db,
@@ -1381,8 +1408,35 @@ async fn report_nest_state(
     .into_iter()
     .take(MAX_REPORT_CACHE_ARTIFACTS)
     .collect();
+    // A protocol-4 Tiaris keeps today's report: the release pins only.
+    // Each list replaces Manage's previous one, so an unreadable store
+    // omits the lane instead of sending an empty list.
+    let (workstation_nixpkgs_commits, detected_nixpkgs_commits, software_update_checked_at) =
+        if report_protocol >= TIARIS_DETECTED_COMMITS_PROTOCOL_VERSION {
+            let detected = crate::software_updates::report(&state.db)
+                .await
+                .inspect_err(|error| {
+                    warn!(error = %error, "could not read detected nixpkgs commits");
+                })
+                .ok();
+            let checked_at = crate::software_updates::checked_at(&state.db)
+                .await
+                .ok()
+                .flatten();
+            (
+                crate::software_updates::workstation_nixpkgs_commits(state).await,
+                detected,
+                checked_at,
+            )
+        } else {
+            (
+                crate::config::workstation_nixpkgs_commits(&state.config),
+                None,
+                None,
+            )
+        };
     let body = NestAgentReportRequest {
-        protocol_version: TIARIS_COMPONENT_PROTOCOL_VERSION,
+        protocol_version: report_protocol,
         capabilities: nest_capabilities(&state.config, peer_supports_scheduling),
         cache,
         build_jobs,
@@ -1397,7 +1451,9 @@ async fn report_nest_state(
         wake_on_lan,
         appliance,
         appliance_report_error,
-        workstation_nixpkgs_commits: crate::config::workstation_nixpkgs_commits(&state.config),
+        workstation_nixpkgs_commits,
+        detected_nixpkgs_commits,
+        software_update_checked_at,
     };
     let (body, body_bytes) =
         fit_nest_report_body(body, MAX_NEST_REPORT_BODY_BYTES, report_priority)?;
@@ -3090,11 +3146,26 @@ fn validate_boot_config(config: &AgentBootConfigResponse) -> Result<()> {
     Ok(())
 }
 
+/// The Nest report protocol both sides accept: 5 when Tiaris accepts it,
+/// otherwise the protocol-4 baseline.
+fn negotiated_report_protocol(contract: Option<&ComponentCompatibilityContract>) -> u32 {
+    contract
+        .filter(|contract| {
+            (contract.minimum_nest_protocol..=contract.maximum_nest_protocol)
+                .contains(&TIARIS_DETECTED_COMMITS_PROTOCOL_VERSION)
+        })
+        .map_or(TIARIS_COMPONENT_PROTOCOL_VERSION, |_| {
+            TIARIS_DETECTED_COMMITS_PROTOCOL_VERSION
+        })
+}
+
 fn validate_component_compatibility(
     contract: Option<&ComponentCompatibilityContract>,
 ) -> Result<()> {
     let contract =
         contract.ok_or_else(|| anyhow!("managed protocol-4 compatibility is required"))?;
+    // Boot and other reports stay protocol 4; protocol 5 only adds
+    // detected commits to the Nest report, so Tiaris must still accept 4.
     if !(TIARIS_MINIMUM_MANAGE_PROTOCOL_VERSION..=TIARIS_MAXIMUM_MANAGE_PROTOCOL_VERSION)
         .contains(&contract.protocol_version)
         || !(contract.minimum_nest_protocol..=contract.maximum_nest_protocol)
@@ -5223,6 +5294,18 @@ mod tests {
             manifest["nest"]["minimum_manage_protocol"].as_u64(),
             Some(u64::from(TIARIS_MINIMUM_MANAGE_PROTOCOL_VERSION))
         );
+        assert_eq!(
+            manifest["nest"]["maximum_manage_protocol"].as_u64(),
+            Some(u64::from(TIARIS_MAXIMUM_MANAGE_PROTOCOL_VERSION))
+        );
+        // Tiaris accepts the protocol that adds detected commits.
+        assert!(
+            manifest["manage"]["maximum_nest_protocol"]
+                .as_u64()
+                .is_some_and(
+                    |maximum| maximum >= u64::from(TIARIS_DETECTED_COMMITS_PROTOCOL_VERSION)
+                )
+        );
         #[cfg(not(feature = "resilience-qualification-epoch-2"))]
         assert_eq!(
             manifest["workstation_runtime"]["compatibility_epoch"].as_u64(),
@@ -5249,6 +5332,60 @@ mod tests {
             workstation_runtime_epoch: Some(crate::netboot::COMPATIBILITY_EPOCH),
         };
         assert!(validate_component_compatibility(Some(&incompatible)).is_err());
+    }
+
+    #[test]
+    fn detected_commits_are_reported_only_to_a_tiaris_that_accepts_protocol_5() {
+        let contract = |protocol_version, minimum_nest_protocol, maximum_nest_protocol| {
+            ComponentCompatibilityContract {
+                protocol_version,
+                minimum_nest_protocol,
+                maximum_nest_protocol,
+                manage_version: "0.1.0".to_string(),
+                manage_release: "test".to_string(),
+                workstation_runtime_epoch: Some(crate::netboot::COMPATIBILITY_EPOCH),
+            }
+        };
+        // Today's Tiaris: protocol 4 only. Nest keeps the protocol-4 report.
+        let legacy = contract(4, 4, 4);
+        validate_component_compatibility(Some(&legacy)).unwrap();
+        assert_eq!(negotiated_report_protocol(Some(&legacy)), 4);
+        assert_eq!(negotiated_report_protocol(None), 4);
+        // A Tiaris that accepts protocol 5 gets the detection fields, and a
+        // protocol-5 Tiaris remains compatible with this Nest.
+        // Tiaris itself stays protocol 4 and accepts Nest protocols 4-5
+        // (protocol/compatibility.json, byte-identical with Manage's).
+        let current = contract(4, 4, 5);
+        validate_component_compatibility(Some(&current)).unwrap();
+        assert_eq!(negotiated_report_protocol(Some(&current)), 5);
+        // Tiaris must keep accepting protocol 4: boot reports use it.
+        assert!(validate_component_compatibility(Some(&contract(4, 5, 5))).is_err());
+        assert!(validate_component_compatibility(Some(&contract(5, 4, 5))).is_err());
+
+        let detected = crate::software_updates::DetectedCommitReport {
+            commit: "6f06d204d8f2d8761d9da78778745974a3216381".to_string(),
+            channel: "nixos-26.05".to_string(),
+            last_modified: "2026-10-29T17:25:25Z".to_string(),
+            nar_hash: "sha256-loLMnbbS4KhmG2ln9EY6f0YMNCA273Yx02oWYQ9IMeE=".to_string(),
+            kernel_version: "6.18.59".to_string(),
+            state: "blocked".to_string(),
+            reason: Some("build_script_changed".to_string()),
+            detected_at: "2026-10-31T03:12:00Z".to_string(),
+        };
+        let value = serde_json::to_value(&detected).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "commit": "6f06d204d8f2d8761d9da78778745974a3216381",
+                "channel": "nixos-26.05",
+                "last_modified": "2026-10-29T17:25:25Z",
+                "nar_hash": "sha256-loLMnbbS4KhmG2ln9EY6f0YMNCA273Yx02oWYQ9IMeE=",
+                "kernel_version": "6.18.59",
+                "state": "blocked",
+                "reason": "build_script_changed",
+                "detected_at": "2026-10-31T03:12:00Z",
+            })
+        );
     }
 
     #[test]
@@ -5735,6 +5872,8 @@ mod tests {
             appliance: None,
             appliance_report_error: None,
             workstation_nixpkgs_commits: vec!["74cc63f702f7d60a557e152a57b40fb1fd0f72ac".into()],
+            detected_nixpkgs_commits: None,
+            software_update_checked_at: None,
         }
     }
 

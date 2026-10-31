@@ -3,7 +3,7 @@
   "protocol_version": 4,
   "manage": {
     "minimum_nest_protocol": 4,
-    "maximum_nest_protocol": 4
+    "maximum_nest_protocol": 5
   },
   "nest": {
     "minimum_manage_protocol": 4,
