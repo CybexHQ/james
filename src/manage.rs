@@ -178,6 +178,10 @@ struct AgentNestConfigResponse {
     wake_on_lan: Vec<crate::wake_on_lan::ManagedWakeRequest>,
     #[serde(default)]
     software_cache: Option<Value>,
+    /// Manage accepts `software_cache_upload_v1` in reports; until it says
+    /// so, Nest does not advertise it (an older Manage rejects the report).
+    #[serde(default)]
+    software_cache_upload_supported: bool,
     #[serde(default)]
     software_update_channel: Option<Value>,
     #[serde(default)]
@@ -484,6 +488,10 @@ struct NestAgentReportRequest {
     /// Protocol 5: when the channel check last completed.
     #[serde(skip_serializing_if = "Option::is_none")]
     software_update_checked_at: Option<String>,
+    /// To a Manage that accepts `software_cache_upload_v1`: the state of each
+    /// upload grant this Nest holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    software_cache_uploads: Option<Vec<crate::software_cache_upload::UploadReport>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -932,10 +940,12 @@ async fn sync_nest_foundation(
     let mut first_failure = None;
     let mut peer_runtime_epoch = None;
     let mut peer_supports_scheduling = false;
+    let mut peer_accepts_uploads = false;
     let mut report_protocol = TIARIS_COMPONENT_PROTOCOL_VERSION;
     match fetch_nest_config(state, managed).await {
         Ok(desired) => {
             peer_supports_scheduling = desired.update_schedule_supported;
+            peer_accepts_uploads = desired.software_cache_upload_supported;
             report_protocol = negotiated_report_protocol(desired.compatibility.as_ref());
             peer_runtime_epoch = desired
                 .compatibility
@@ -954,6 +964,7 @@ async fn sync_nest_foundation(
         managed,
         peer_runtime_epoch.is_some(),
         peer_supports_scheduling,
+        peer_accepts_uploads,
         report_protocol,
     )
     .await
@@ -1005,6 +1016,15 @@ async fn apply_nest_desired(
         });
     if let Err(error) = software_cache {
         retain_sync_failure(first_failure, "software cache access", error);
+    }
+    // Its own lane: unusable upload access only stops off-site uploads.
+    let upload = desired
+        .software_cache
+        .as_ref()
+        .and_then(|access| access.get("upload"))
+        .filter(|_| desired.software_cache_upload_supported);
+    if let Err(error) = crate::software_cache_upload::apply(state, upload).await {
+        retain_sync_failure(first_failure, "software cache upload access", error);
     }
     // Its own lane: an unusable channel or request only stops update checks.
     if let Err(error) = crate::software_updates::apply_managed(
@@ -1251,6 +1271,7 @@ async fn report_nest_state(
     managed: &mut ManagedState,
     peer_supports_runtime_fencing: bool,
     peer_supports_scheduling: bool,
+    peer_accepts_uploads: bool,
     report_protocol: u32,
 ) -> Result<NestReportReceipt> {
     let (build_jobs, build_listing_valid) = match db::list_build_jobs_report_page(
@@ -1435,9 +1456,23 @@ async fn report_nest_state(
                 None,
             )
         };
+    let software_cache_uploads = if peer_accepts_uploads {
+        crate::software_cache_upload::report(&state.db)
+            .await
+            .inspect_err(|error| {
+                warn!(error = %error, "could not read software cache uploads");
+            })
+            .ok()
+    } else {
+        None
+    };
     let body = NestAgentReportRequest {
         protocol_version: report_protocol,
-        capabilities: nest_capabilities(&state.config, peer_supports_scheduling),
+        capabilities: nest_capabilities(
+            &state.config,
+            peer_supports_scheduling,
+            peer_accepts_uploads,
+        ),
         cache,
         build_jobs,
         cache_artifacts,
@@ -1454,6 +1489,7 @@ async fn report_nest_state(
         workstation_nixpkgs_commits,
         detected_nixpkgs_commits,
         software_update_checked_at,
+        software_cache_uploads,
     };
     let (body, body_bytes) =
         fit_nest_report_body(body, MAX_NEST_REPORT_BODY_BYTES, report_priority)?;
@@ -2576,12 +2612,20 @@ async fn signed_request_for_config(
     })
 }
 
-fn nest_capabilities(config: &AppConfig, peer_supports_scheduling: bool) -> Vec<&'static str> {
-    nest_capabilities_for_mode(
+fn nest_capabilities(
+    config: &AppConfig,
+    peer_supports_scheduling: bool,
+    peer_accepts_uploads: bool,
+) -> Vec<&'static str> {
+    let mut capabilities = nest_capabilities_for_mode(
         config,
         peer_supports_scheduling,
         crate::appliance::nixos::is_nixos(),
-    )
+    );
+    if peer_accepts_uploads {
+        capabilities.push(crate::software_cache_upload::CAPABILITY);
+    }
+    capabilities
 }
 
 fn nest_capabilities_for_mode(
@@ -4568,6 +4612,21 @@ mod tests {
     }
 
     #[test]
+    fn upload_capability_requires_explicit_manage_support() {
+        // A Manage that does not know `software_cache_upload_v1` rejects the
+        // whole report, so Nest advertises it only when Manage says it may.
+        let older: AgentNestConfigResponse = serde_json::from_value(json!({})).unwrap();
+        let newer: AgentNestConfigResponse =
+            serde_json::from_value(json!({"software_cache_upload_supported": true})).unwrap();
+        let config = AppConfig::default();
+        let legacy = nest_capabilities(&config, false, older.software_cache_upload_supported);
+        let modern = nest_capabilities(&config, false, newer.software_cache_upload_supported);
+        assert!(!legacy.contains(&crate::software_cache_upload::CAPABILITY));
+        assert!(modern.contains(&crate::software_cache_upload::CAPABILITY));
+        assert_eq!(modern.len(), legacy.len() + 1);
+    }
+
+    #[test]
     fn scheduling_capability_requires_explicit_manage_support() {
         let older: AgentNestConfigResponse = serde_json::from_value(json!({})).unwrap();
         let newer: AgentNestConfigResponse =
@@ -5874,6 +5933,7 @@ mod tests {
             workstation_nixpkgs_commits: vec!["74cc63f702f7d60a557e152a57b40fb1fd0f72ac".into()],
             detected_nixpkgs_commits: None,
             software_update_checked_at: None,
+            software_cache_uploads: None,
         }
     }
 
