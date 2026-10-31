@@ -5,7 +5,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::*;
-use crate::build::{COMMIT_IDENTITIES, store_path_item};
+use crate::build::{COMMIT_IDENTITIES, REVIEWED_BUILDER_FILES, store_path_item};
 
 const COMMIT: &str = "6f06d204d8f2d8761d9da78778745974a3216381";
 const NAR_HASH: &str = "sha256-loLMnbbS4KhmG2ln9EY6f0YMNCA273Yx02oWYQ9IMeE=";
@@ -13,6 +13,7 @@ const AGENT_DRV: &str = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-tiaris-agen
 const WRAPPER_DRV: &str = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-tiaris-packages.drv";
 const FIREFOX_DRV: &str = "/nix/store/cccccccccccccccccccccccccccccccc-firefox-unwrapped-145.0.drv";
 const UNITS_DRV: &str = "/nix/store/dddddddddddddddddddddddddddddddd-system-units.drv";
+const VENDOR_DRV: &str = "/nix/store/ffffffffffffffffffffffffffffffff-cargo-vendor-dir.drv";
 
 async fn pool() -> SqlitePool {
     let pool = crate::db::connect_with_url("sqlite::memory:")
@@ -96,6 +97,25 @@ struct FakeNix {
 /// A `nix` that answers the check's evaluation, dry runs and derivation
 /// queries from files, so every outcome is reached without real Nix.
 fn fake_nix(name: &str, identities: Option<Value>, blueprint_listing: &[&str]) -> FakeNix {
+    fake_nix_with(
+        name,
+        identities,
+        blueprint_listing,
+        &[AGENT_DRV, WRAPPER_DRV],
+        &[],
+    )
+}
+
+/// `tiaris_listing` is what the Tiaris packages' dry run lists and
+/// `agent_inputs` the agent's local inputs. Pin runs list nothing: the
+/// reference jobs were fully admitted there.
+fn fake_nix_with(
+    name: &str,
+    identities: Option<Value>,
+    blueprint_listing: &[&str],
+    tiaris_listing: &[&str],
+    agent_inputs: &[&str],
+) -> FakeNix {
     let root = std::env::temp_dir().join(format!(
         "tiaris-nest-software-updates-{name}-{}",
         std::process::id()
@@ -120,15 +140,20 @@ fn fake_nix(name: &str, identities: Option<Value>, blueprint_listing: &[&str]) -
             )
         }
     };
-    std::fs::write(
-        root.join("tiaris-listing"),
-        listing(&[AGENT_DRV, WRAPPER_DRV]),
-    )
-    .unwrap();
+    std::fs::write(root.join("tiaris-listing"), listing(tiaris_listing)).unwrap();
     std::fs::write(root.join("blueprint-listing"), listing(blueprint_listing)).unwrap();
+    let mut agent = compile(AGENT_DRV);
+    agent["inputDrvs"] = agent_inputs
+        .iter()
+        .map(|path| (path.to_string(), json!(["out"])))
+        .collect::<serde_json::Map<_, _>>()
+        .into();
+    let mut list = compile(WRAPPER_DRV);
+    list["inputDrvs"] = json!({ AGENT_DRV: ["out"] });
     let derivations = json!({
-        AGENT_DRV: compile(AGENT_DRV),
-        WRAPPER_DRV: compile(WRAPPER_DRV),
+        AGENT_DRV: agent,
+        WRAPPER_DRV: list,
+        VENDOR_DRV: compile(VENDOR_DRV),
         FIREFOX_DRV: compile(FIREFOX_DRV),
         UNITS_DRV: changed_script(),
     });
@@ -148,6 +173,10 @@ case " $* " in
     ;;
   *" build "*"tiaris-packages"*)
     cat "$root/tiaris-listing" >&2
+    ;;
+  *" build "*pin-*)
+    [ -f "$root/fail-dry-run" ] && exit 4
+    :
     ;;
   *" build "*)
     [ -f "$root/fail-dry-run" ] && exit 4
@@ -257,7 +286,7 @@ async fn a_changed_generator_script_blocks_with_its_name() {
 }
 
 #[tokio::test]
-async fn a_changed_builder_file_blocks_with_build_script_changed() {
+async fn a_changed_builder_file_no_admitted_derivation_uses_does_not_block() {
     let fake = fake_nix(
         "wrapper",
         Some(evaluated_identities(
@@ -267,8 +296,25 @@ async fn a_changed_builder_file_blocks_with_build_script_changed() {
         &[AGENT_DRV],
     );
     let outcome = evaluate(&fake).await.unwrap();
-    assert_eq!(outcome.reason, Some(REASON_BUILD_SCRIPT_CHANGED));
-    assert_eq!(outcome.details, vec!["wrapper.c"]);
+    assert_eq!(outcome.state(), "ready");
+    assert!(outcome.reviewed.builder_files.is_empty());
+}
+
+#[tokio::test]
+async fn only_the_top_level_tiaris_packages_compile() {
+    // The agent's vendored crates are local work too. They are not a Tiaris
+    // package: they must be cached or admitted by the ordinary rules.
+    let fake = fake_nix_with(
+        "tiaris-inputs",
+        Some(evaluated_identities("26.05", &[])),
+        &[AGENT_DRV, VENDOR_DRV],
+        &[AGENT_DRV, VENDOR_DRV, WRAPPER_DRV],
+        &[VENDOR_DRV],
+    );
+    let outcome = evaluate(&fake).await.unwrap();
+    assert_eq!(outcome.reason, Some(REASON_SOURCE_BUILD_REQUIRED));
+    assert_eq!(outcome.details, vec!["cargo-vendor-dir"]);
+    assert_eq!(outcome.tiaris_dependencies, vec!["cargo-vendor-dir"]);
 }
 
 #[tokio::test]
@@ -324,10 +370,6 @@ fn reasons_are_bounded_and_ordered() {
     );
     assert_eq!(outcome.reason, Some(REASON_BUILD_SCRIPT_CHANGED));
     assert_eq!(outcome.details, vec!["etc"]);
-    assert_eq!(
-        changed_builder_files(&BTreeMap::new()).len(),
-        REVIEWED_BUILDER_FILES.len()
-    );
 }
 
 #[test]
@@ -616,17 +658,65 @@ async fn real_channel_commit_evaluation() {
     let work = config.build.work_dir.join("evaluation");
     create_private_dir(&work).unwrap();
     let db = pool().await;
+    // Optionally a Blueprint job this Nest built at the pin: a directory
+    // with Manage's compiler exports `blueprint.nix` and `desktop.nix`.
+    if let Ok(job) = std::env::var("TIARIS_SOFTWARE_UPDATE_JOB_DIR") {
+        let job = PathBuf::from(job);
+        config.build.targets = vec![crate::config::BuildTargetConfig {
+            artifact_type: "nixos_closure".to_string(),
+            target: "blueprint".to_string(),
+            system: "x86_64-linux".to_string(),
+            flake: format!("github:NixOS/nixpkgs/{}", build::BUILTIN_NIXPKGS_COMMIT),
+            attr: "packages.x86_64-linux.desktop-experience".to_string(),
+        }];
+        let spec = json!({
+            "schema_version": 1,
+            "artifact_type": "nixos_closure",
+            "target": "blueprint",
+            "system": "x86_64-linux",
+            "input_revision": "rev",
+            "input_config_hash": "a".repeat(64),
+            "nixpkgs_commit": build::BUILTIN_NIXPKGS_COMMIT,
+            "source_lock_sha256": "b".repeat(64),
+            "build_input": {
+                "kind": "blueprint_nixos_module",
+                "generated_nix": std::fs::read_to_string(job.join("blueprint.nix")).unwrap(),
+                "desktop_module_nix": std::fs::read_to_string(job.join("desktop.nix")).unwrap(),
+                "expected_state": serde_json::from_str::<Value>(
+                    &std::fs::read_to_string(job.join("expected-state.json")).unwrap()
+                ).unwrap(),
+                "blueprint_name": "Cache contract",
+                "blueprint_revision": 1
+            }
+        });
+        sqlx::query(
+            "INSERT INTO nest_build_jobs (requested_artifact_type, build_spec, target, system,
+                 input_revision, input_config_hash, status, created_at, updated_at)
+             VALUES ('nixos_closure', ?, 'blueprint', 'x86_64-linux', 'rev', ?, 'succeeded',
+                 '2026-10-31T00:00:00Z', '2026-10-31T00:00:00Z')",
+        )
+        .bind(spec.to_string())
+        .bind("a".repeat(64))
+        .execute(&db)
+        .await
+        .unwrap();
+    }
     let outcome = evaluate_commit_in(&config, &db, &commit, &metadata, &manage, &work)
         .await
         .unwrap();
     let _ = std::fs::remove_dir_all(&config.build.work_dir);
     eprintln!(
-        "state={} reason={:?} kernel={} tiaris_derivations={}\ndetails={:#?}",
+        "state={} reason={:?} kernel={} tiaris_derivations={:#?}\ndetails={:#?}\ntiaris_dependencies={:#?}\ncounterparts={:#?}\nreviewed fingerprints={} stock commands={} builder files={:?}",
         outcome.state(),
         outcome.reason,
         outcome.kernel_version,
-        outcome.tiaris_derivations.len(),
-        outcome.details
+        outcome.tiaris_derivations,
+        outcome.details,
+        outcome.tiaris_dependencies,
+        outcome.counterparts,
+        outcome.reviewed.fingerprints.len(),
+        outcome.reviewed.stock_commands.len(),
+        outcome.reviewed.builder_files,
     );
 }
 
@@ -716,11 +806,15 @@ async fn the_nests_own_blueprints_are_checked_with_only_nixpkgs_changed() {
         .lines()
         .filter(|call| call.contains(" build ") && !call.contains("tiaris-packages"))
         .collect::<Vec<_>>();
-    assert_eq!(blueprint_runs.len(), 1, "{calls}");
+    // The job at the pin, at the commit for its counterparts, and at the
+    // commit under the full profile.
+    assert_eq!(blueprint_runs.len(), 3, "{calls}");
+    let installable = format!("job-{newest}-input#packages.x86_64-linux.desktop-experience");
     assert!(
-        blueprint_runs[0].contains(&format!(
-            "/jobs/job-{newest}-input#packages.x86_64-linux.desktop-experience"
-        )),
+        blueprint_runs[0].contains(&format!("/pin-jobs/{installable}")),
         "{calls}"
     );
+    for run in &blueprint_runs[1..] {
+        assert!(run.contains(&format!("/jobs/{installable}")), "{calls}");
+    }
 }

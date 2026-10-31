@@ -33,14 +33,18 @@ use crate::{
     subprocess::{PIPE_DRAIN_TIMEOUT, ProcessGroup, run_bounded_command},
 };
 
+mod counterpart;
 mod profile;
 
+pub(crate) use counterpart::{Counterparts, add_counterparts};
+
+#[cfg(test)]
+pub(crate) use profile::COMMIT_IDENTITIES;
 pub(crate) use profile::{
-    BUILTIN_LAST_MODIFIED, BUILTIN_NIXOS_RELEASE, DerivedIdentity, MAX_TIARIS_PACKAGE_DERIVATIONS,
+    BUILTIN_LAST_MODIFIED, BUILTIN_NIXOS_RELEASE, BUILTIN_NIXPKGS_COMMIT, DerivedIdentity,
+    MAX_TIARIS_PACKAGE_DERIVATIONS, REVIEWED_BUILDER_FILES, ReviewedContent,
     WorkstationBuildProfile,
 };
-#[cfg(test)]
-pub(crate) use profile::{BUILTIN_NIXPKGS_COMMIT, COMMIT_IDENTITIES};
 
 const BLUEPRINT_BUILD_INPUT_KIND: &str = "blueprint_nixos_module";
 const LEGACY_DESKTOP_EXPERIENCE_BUILD_INPUT_KIND: &str = "desktop_experience_nixos_module";
@@ -2406,6 +2410,8 @@ fn make_source_policy_directories_owner_writable(path: &Path) -> std::io::Result
 /// Local derivations a source-disabled build would need that the profile does
 /// not admit, in dry-run order, with the `nix derivation show` record of each.
 pub(crate) struct UnadmittedDerivations {
+    /// Every local derivation the build needs, apart from signed seeds.
+    pub(crate) would_build: Vec<String>,
     pub(crate) paths: Vec<String>,
     /// The subset rejected even when every other local derivation is
     /// trusted: the work that is itself unreviewed, not merely waiting for a
@@ -2522,6 +2528,7 @@ async fn preflight_unadmitted_in_store(
     let would_build = parsed.paths;
     if would_build.is_empty() {
         return Ok(UnadmittedDerivations {
+            would_build: Vec::new(),
             paths: Vec::new(),
             rejected_on_their_own: Vec::new(),
             derivations: BTreeMap::new(),
@@ -2627,8 +2634,11 @@ async fn preflight_unadmitted_in_store(
                     && input.output == TRUSTED_LINK_FARM_BUILDER.output
             })
         })
-        && !isolated_store_source_matches_sha256(
-            store_root,
+        && !reviewed_source_matches(
+            profile,
+            &|path: &str, expected: &str| {
+                isolated_store_source_matches_sha256(store_root, path, expected)
+            },
             &link_farm_builder,
             TRUSTED_LINK_FARM_BUILDER_SHA256,
         )
@@ -2664,8 +2674,11 @@ async fn preflight_unadmitted_in_store(
         )
         .await?;
         if !output.status.success()
-            || !isolated_store_source_matches_sha256(
-                store_root,
+            || !reviewed_source_matches(
+                profile,
+                &|path: &str, expected: &str| {
+                    isolated_store_source_matches_sha256(store_root, path, expected)
+                },
                 &link_farm_builder,
                 TRUSTED_LINK_FARM_BUILDER_SHA256,
             )
@@ -2731,13 +2744,16 @@ async fn preflight_unadmitted_in_store(
                 ),
                 ("-wrapper.c", TRUSTED_SECURITY_WRAPPER_SHA256, "wrapper.c"),
             ] {
-                if source.ends_with(suffix) && !verify_source(&source, expected) {
+                if source.ends_with(suffix)
+                    && !reviewed_source_matches(profile, &verify_source, &source, expected)
+                {
                     changed_builder_files.insert(name);
                 }
             }
         }
     }
     Ok(UnadmittedDerivations {
+        would_build,
         paths,
         rejected_on_their_own,
         derivations,
@@ -2924,6 +2940,23 @@ where
     )
 }
 
+/// A reviewed builder file: the pin's bytes, or at a detected commit the
+/// changed bytes one of its counterparts uses.
+fn reviewed_source_matches<F>(
+    profile: &WorkstationBuildProfile,
+    verify_source: &F,
+    path: &str,
+    expected: &str,
+) -> bool
+where
+    F: Fn(&str, &str) -> bool,
+{
+    verify_source(path, expected)
+        || profile
+            .builder_file_counterpart(expected)
+            .is_some_and(|counterpart| verify_source(path, counterpart))
+}
+
 fn derivation_is_exempt_for_profile<F>(
     profile: &WorkstationBuildProfile,
     drv_path: &str,
@@ -2935,6 +2968,10 @@ fn derivation_is_exempt_for_profile<F>(
 where
     F: Fn(&str, &str) -> bool,
 {
+    let reviewed_source = |path: &str, expected: &str| {
+        reviewed_source_matches(profile, verify_source, path, expected)
+    };
+    let verify_source = &reviewed_source;
     let Some(drv) = drv else {
         return false;
     };
@@ -4762,9 +4799,9 @@ fn empty_build_tool_attributes(attrs: &serde_json::Map<String, Value>) -> bool {
         .all(|key| derivation_attr_is_empty(attrs, key))
 }
 
-const STOCK_WRITE_TEXT_COMMAND: &str = "target=$out$destination\nmkdir -p \"$(dirname \"$target\")\"\n\nif [ -e \"$textPath\" ]; then\n  mv \"$textPath\" \"$target\"\nelse\n  printf \"%s\" \"$text\" > \"$target\"\nfi\n\nif [ -n \"$executable\" ]; then\n  chmod +x \"$target\"\nfi\n\neval \"$checkPhase\"\n";
-const STOCK_CONCAT_TEXT_COMMAND: &str = "file=$out$destination\nmkdir -p \"$(dirname \"$file\")\"\ncat $files > \"$file\"\n\nif [ -n \"$executable\" ]; then\n  chmod +x \"$file\"\nfi\n\neval \"$checkPhase\"\n";
-const STOCK_JSON_TO_TOML_COMMAND: &str = "valuePath=\"$TMPDIR/value\"\nprintf \"%s\" \"$value\" > \"$valuePath\"\njson2toml \"$valuePath\" \"$out\"\n";
+pub(crate) const STOCK_WRITE_TEXT_COMMAND: &str = "target=$out$destination\nmkdir -p \"$(dirname \"$target\")\"\n\nif [ -e \"$textPath\" ]; then\n  mv \"$textPath\" \"$target\"\nelse\n  printf \"%s\" \"$text\" > \"$target\"\nfi\n\nif [ -n \"$executable\" ]; then\n  chmod +x \"$target\"\nfi\n\neval \"$checkPhase\"\n";
+pub(crate) const STOCK_CONCAT_TEXT_COMMAND: &str = "file=$out$destination\nmkdir -p \"$(dirname \"$file\")\"\ncat $files > \"$file\"\n\nif [ -n \"$executable\" ]; then\n  chmod +x \"$file\"\nfi\n\neval \"$checkPhase\"\n";
+pub(crate) const STOCK_JSON_TO_TOML_COMMAND: &str = "valuePath=\"$TMPDIR/value\"\nprintf \"%s\" \"$value\" > \"$valuePath\"\njson2toml \"$valuePath\" \"$out\"\n";
 
 fn stock_write_text_check_phase(
     profile: &WorkstationBuildProfile,
@@ -4870,7 +4907,8 @@ where
         return false;
     }
     let build_command = derivation_attr_text(attrs, "buildCommand");
-    if build_command == STOCK_WRITE_TEXT_COMMAND {
+    let stock_command = profile.stock_command(build_command);
+    if stock_command == STOCK_WRITE_TEXT_COMMAND {
         return empty_build_tool_attributes(attrs)
             && only_reviewed_phase_hooks(attrs, &["checkPhase"])
             && stock_write_text_check_phase(
@@ -4882,7 +4920,7 @@ where
                 trusted_local,
             );
     }
-    if build_command == STOCK_CONCAT_TEXT_COMMAND {
+    if stock_command == STOCK_CONCAT_TEXT_COMMAND {
         return empty_build_tool_attributes(attrs) && only_reviewed_phase_hooks(attrs, &[]);
     }
     if stock_unit_materializer(build_command) || stock_disabled_unit_materializer(build_command) {
@@ -4915,7 +4953,8 @@ where
     F: Fn(&str, &str) -> bool,
 {
     derivation_attr_truthy(attrs, "preferLocalBuild")
-        && derivation_attr_text(attrs, "buildCommand") == STOCK_JSON_TO_TOML_COMMAND
+        && profile.stock_command(derivation_attr_text(attrs, "buildCommand"))
+            == STOCK_JSON_TO_TOML_COMMAND
         && attrs
             .get("passAsFile")
             .and_then(Value::as_array)
@@ -5953,7 +5992,6 @@ fn merge_build_metadata(destination: &mut Value, source: &Value) {
     }
 }
 
-#[cfg(test)]
 fn nix_build_command(
     config: &AppConfig,
     target: &BuildTargetConfig,
@@ -6354,7 +6392,7 @@ pub(crate) async fn retained_blueprint_commands(
     commit: &str,
     nar_hash: &str,
     limit: usize,
-) -> Result<Vec<(String, NixBuildCommand)>> {
+) -> Result<Vec<ReferenceJob>> {
     let pins = crate::config::workstation_nixpkgs_commits(config);
     let mut ids = Vec::new();
     for pin in &pins {
@@ -6381,22 +6419,40 @@ pub(crate) async fn retained_blueprint_commands(
     }
     ids.sort_unstable_by(|left, right| right.cmp(left));
     ids.truncate(limit);
+    let mut pin_config = config.clone();
+    pin_config.build.work_dir = work.join("pin-jobs");
+    pin_config.build.output_dir = work.join("pin-out");
     let mut job_config = config.clone();
     job_config.build.work_dir = work.join("jobs");
     job_config.build.output_dir = work.join("out");
-    let mut commands = Vec::new();
+    let mut jobs = Vec::new();
     for id in ids {
         let job = db::get_build_job(db, id).await?;
         let mut spec = validate_build_spec(config, &job)
             .with_context(|| format!("retained Blueprint job {id}"))?;
+        let pin_target = build_target_for_detected_commit(config, &spec, None)?;
+        let pin = nix_build_command(&pin_config, pin_target, &spec, id)
+            .with_context(|| format!("prepare retained Blueprint job {id} at the pin"))?;
         spec.nixpkgs_commit = Some(commit.to_string());
         let target = build_target_for_detected_commit(config, &spec, Some(commit))?;
-        let command =
+        let detected =
             nix_build_command_with_nixpkgs_nar_hash(&job_config, target, &spec, id, Some(nar_hash))
                 .with_context(|| format!("prepare retained Blueprint job {id}"))?;
-        commands.push((format!("blueprint job {id}"), command));
+        jobs.push(ReferenceJob {
+            label: format!("blueprint job {id}"),
+            pin,
+            detected,
+        });
     }
-    Ok(commands)
+    Ok(jobs)
+}
+
+/// One reference job of a detected-commit check: the same inputs at the pin
+/// and at the detected commit.
+pub(crate) struct ReferenceJob {
+    pub(crate) label: String,
+    pub(crate) pin: NixBuildCommand,
+    pub(crate) detected: NixBuildCommand,
 }
 
 /// The Nest configuration and option shim of a Blueprint job with a desktop
@@ -12379,5 +12435,397 @@ esac
             "inputs.nixpkgs.url = \"github:NixOS/nixpkgs/{commit}?narHash="
         )));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// What a dry run reports for `derivations`, classified like the
+    /// preflight with `verify_source` standing in for the isolated store.
+    fn local_derivations<F>(
+        profile: &WorkstationBuildProfile,
+        derivations: &BTreeMap<String, Value>,
+        verify_source: &F,
+    ) -> UnadmittedDerivations
+    where
+        F: Fn(&str, &str) -> bool,
+    {
+        let would_build = derivations.keys().cloned().collect::<Vec<_>>();
+        let set = would_build.iter().cloned().collect::<HashSet<_>>();
+        let trusted = classify_trusted_local_derivations_for_profile(
+            profile,
+            &would_build,
+            derivations,
+            verify_source,
+            &set,
+        );
+        let rejected_on_their_own = would_build
+            .iter()
+            .filter(|path| {
+                !derivation_is_exempt_for_profile(
+                    profile,
+                    path,
+                    derivations.get(*path),
+                    verify_source,
+                    &set,
+                    &set,
+                )
+            })
+            .cloned()
+            .collect();
+        UnadmittedDerivations {
+            paths: would_build
+                .iter()
+                .filter(|path| !trusted.contains(*path))
+                .cloned()
+                .collect(),
+            would_build,
+            rejected_on_their_own,
+            derivations: derivations.clone(),
+            changed_builder_files: BTreeSet::new(),
+        }
+    }
+
+    fn render_at_detected_commit(
+        derivations: &BTreeMap<String, Value>,
+        items: &BTreeMap<String, String>,
+        edits: &[(&str, &str)],
+    ) -> BTreeMap<String, Value> {
+        derivations
+            .iter()
+            .map(|(path, drv)| {
+                let mut path = path.clone();
+                let mut text = drv.to_string();
+                for (reviewed, derived) in items {
+                    path = path.replace(reviewed.as_str(), derived);
+                    text = text.replace(reviewed.as_str(), derived);
+                }
+                for (from, to) in edits {
+                    path = path.replace(from, to);
+                    text = text.replace(from, to);
+                }
+                (path, serde_json::from_str(&text).unwrap())
+            })
+            .collect()
+    }
+
+    fn pin_builder_files() -> BTreeMap<String, String> {
+        REVIEWED_BUILDER_FILES
+            .iter()
+            .map(|(name, sha256)| (name.to_string(), sha256.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_version_only_change_is_admitted_through_its_counterpart() {
+        let pin_graph: BTreeMap<String, Value> = serde_json::from_str(include_str!(
+            "../tests/fixtures/source-policy/production-standard-generators.json"
+        ))
+        .unwrap();
+        let builtin = WorkstationBuildProfile::builtin();
+        let pin = local_derivations(builtin, &pin_graph, &synthetic_pinned_source);
+        assert!(pin.rejected_on_their_own.is_empty());
+
+        let (base, items) = shifted_detected_profile(BTreeSet::new());
+        // The detected commit ships a newer accountsservice: its store path
+        // names, and so the reviewed assembly scripts, change.
+        let bump = [("accountsservice-23.13.9", "accountsservice-23.13.10")];
+        let commit_graph = render_at_detected_commit(&pin_graph, &items, &bump);
+        let detected = local_derivations(&base, &commit_graph, &synthetic_pinned_source);
+        assert!(
+            !detected.rejected_on_their_own.is_empty(),
+            "without counterparts the version bump is new content"
+        );
+
+        let mut counterparts = Counterparts::default();
+        add_counterparts(
+            &base,
+            &pin_builder_files(),
+            &pin,
+            &detected,
+            &mut counterparts,
+        );
+        assert!(
+            counterparts.unpaired.is_empty(),
+            "{:?}",
+            counterparts.unpaired
+        );
+        assert_eq!(counterparts.paired, pin_graph.len());
+        assert!(!counterparts.changed.is_empty());
+        let profile = base
+            .clone()
+            .with_reviewed_content(&counterparts.content())
+            .unwrap();
+        assert_eq!(
+            classify_with(&profile, &commit_graph).len(),
+            pin_graph.len()
+        );
+
+        // A Blueprint at the commit cannot ride on a counterpart: one more
+        // command in a paired script, or a script with no pin counterpart,
+        // is rejected.
+        for (path, drv) in &commit_graph {
+            let attrs = derivation_attributes(drv);
+            let command = derivation_attr_text(&attrs, "buildCommand");
+            if command.is_empty() {
+                continue;
+            }
+            let mut appended = drv.clone();
+            set_derivation_text(
+                &mut appended,
+                "buildCommand",
+                &format!("{command}\ngcc source.c -o $out/payload\n"),
+            );
+            assert!(
+                classify_with(&profile, &BTreeMap::from([(path.clone(), appended)])).is_empty(),
+                "{path}"
+            );
+        }
+        let (path, drv) = commit_graph
+            .iter()
+            .find(|(_, drv)| {
+                !derivation_attr_text(&derivation_attributes(drv), "buildCommand").is_empty()
+            })
+            .unwrap();
+        let mut unreviewed = drv.clone();
+        unreviewed["env"]["name"] = json!("extra-units");
+        let command = derivation_attr_text(&derivation_attributes(drv), "buildCommand").to_string();
+        set_derivation_text(
+            &mut unreviewed,
+            "buildCommand",
+            &command.replace("accountsservice", "accounts-service"),
+        );
+        let extra = path
+            .replace("system-units", "extra-units")
+            .replace("user-units", "extra-units")
+            .replace("-etc.drv", "-extra-units.drv");
+        assert!(classify_with(&profile, &BTreeMap::from([(extra, unreviewed)])).is_empty());
+        // The built-in profile gains nothing from another commit's counterparts.
+        assert!(classify_with(builtin, &commit_graph).is_empty());
+    }
+
+    #[test]
+    fn a_changed_wrapper_c_is_admitted_only_through_a_security_wrapper_counterpart() {
+        let path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-wrapper-Hyprland-x86_64-unknown-linux-musl.drv";
+        let mut wrapper = synthetic_materializer(
+            json!({
+                "preferLocalBuild": "",
+                "name": "security-wrapper-Hyprland-x86_64-unknown-linux-musl",
+                "dontUnpack": "1",
+                "stdenv": TRUSTED_STDENV_STATIC,
+                "NIX_CFLAGS_LINK": " -static",
+                "propagatedBuildInputs": SECURITY_WRAPPER_TOOL_INPUTS[0].path,
+                "CFLAGS": "-DSOURCE_PROG=\"/nix/store/ffffffffffffffffffffffffffffffff-hyprland/bin/Hyprland\" -Wall -O2",
+                "installPhase": format!("mkdir -p $out/bin\n$CC $CFLAGS /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-wrapper.c -I{} -o $out/bin/security-wrapper\n", TRUSTED_SECURITY_WRAPPER_INCLUDE_PATH)
+            }),
+            vec!["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-wrapper.c"],
+        );
+        wrapper["name"] = json!("security-wrapper-Hyprland-x86_64-unknown-linux-musl");
+        wrapper["inputDrvs"] = json!({
+            "/nix/store/dddddddddddddddddddddddddddddddd-hyprland.drv": ["out"],
+            (TRUSTED_SECURITY_WRAPPER_INCLUDE_DRV): ["out"],
+            (TRUSTED_STDENV_BASH_DRV): ["out"],
+            (TRUSTED_STDENV_STATIC_DRV): ["out"],
+            (SECURITY_WRAPPER_TOOL_INPUTS[0].drv_path): [SECURITY_WRAPPER_TOOL_INPUTS[0].output]
+        });
+        let pin_graph = BTreeMap::from([(path.to_string(), wrapper)]);
+        let builtin = WorkstationBuildProfile::builtin();
+        let pin = local_derivations(builtin, &pin_graph, &synthetic_pinned_source);
+        assert!(pin.rejected_on_their_own.is_empty());
+
+        // At the commit wrapper.c has new bytes (a new store path).
+        let changed_sha256 = "e".repeat(64);
+        let commit_wrapper_c = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-wrapper.c";
+        let commit_source = |path: &str, expected: &str| {
+            if path.ends_with("-wrapper.c") {
+                path == commit_wrapper_c && expected == changed_sha256
+            } else {
+                synthetic_pinned_source(path, expected)
+            }
+        };
+        let (base, items) = shifted_detected_profile(BTreeSet::new());
+        let commit_graph = render_at_detected_commit(
+            &pin_graph,
+            &items,
+            &[(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-wrapper.c",
+                &commit_wrapper_c[11..],
+            )],
+        );
+        let detected = local_derivations(&base, &commit_graph, &commit_source);
+        assert_eq!(detected.rejected_on_their_own.len(), 1);
+        let mut files = pin_builder_files();
+        files.insert("wrapper.c".to_string(), changed_sha256.clone());
+
+        let classify = |profile: &WorkstationBuildProfile| {
+            let set = commit_graph.keys().cloned().collect::<HashSet<_>>();
+            classify_trusted_local_derivations_for_profile(
+                profile,
+                &commit_graph.keys().cloned().collect::<Vec<_>>(),
+                &commit_graph,
+                &commit_source,
+                &set,
+            )
+        };
+        // No security wrapper was admitted at the pin in this reference set:
+        // the changed file stays unreviewed.
+        let unrelated: BTreeMap<String, Value> = serde_json::from_str(include_str!(
+            "../tests/fixtures/source-policy/production-tiling-generators.json"
+        ))
+        .unwrap();
+        let mut without = Counterparts::default();
+        add_counterparts(
+            &base,
+            &files,
+            &local_derivations(builtin, &unrelated, &synthetic_pinned_source),
+            &local_derivations(
+                &base,
+                &render_at_detected_commit(&unrelated, &items, &[]),
+                &synthetic_pinned_source,
+            ),
+            &mut without,
+        );
+        assert!(without.builder_files.is_empty());
+        let profile = base
+            .clone()
+            .with_reviewed_content(&without.content())
+            .unwrap();
+        assert!(classify(&profile).is_empty());
+
+        // Its counterpart admits exactly the changed wrapper.c.
+        let mut counterparts = Counterparts::default();
+        add_counterparts(&base, &files, &pin, &detected, &mut counterparts);
+        assert_eq!(
+            counterparts.builder_files,
+            BTreeMap::from([("wrapper.c".to_string(), changed_sha256.clone())])
+        );
+        let profile = base
+            .clone()
+            .with_reviewed_content(&counterparts.content())
+            .unwrap();
+        assert_eq!(classify(&profile).len(), 1);
+        // Any other wrapper.c bytes are still rejected.
+        let other_source = |path: &str, expected: &str| {
+            !path.ends_with("-wrapper.c") && synthetic_pinned_source(path, expected)
+        };
+        let set = commit_graph.keys().cloned().collect::<HashSet<_>>();
+        assert!(
+            classify_trusted_local_derivations_for_profile(
+                &profile,
+                &commit_graph.keys().cloned().collect::<Vec<_>>(),
+                &commit_graph,
+                &other_source,
+                &set,
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn ambiguous_or_reshaped_counterparts_add_nothing() {
+        let pin_graph: BTreeMap<String, Value> = serde_json::from_str(include_str!(
+            "../tests/fixtures/source-policy/production-standard-generators.json"
+        ))
+        .unwrap();
+        let builtin = WorkstationBuildProfile::builtin();
+        let pin = local_derivations(builtin, &pin_graph, &synthetic_pinned_source);
+        let (base, items) = shifted_detected_profile(BTreeSet::new());
+        let bump = [("accountsservice-23.13.9", "accountsservice-23.13.10")];
+        let mut commit_graph = render_at_detected_commit(&pin_graph, &items, &bump);
+        // A counterpart with another builder or extra attributes is not the
+        // same derivation.
+        for drv in commit_graph.values_mut() {
+            drv["env"]["extraAttribute"] = json!("1");
+        }
+        let detected = local_derivations(&base, &commit_graph, &synthetic_pinned_source);
+        let mut counterparts = Counterparts::default();
+        add_counterparts(
+            &base,
+            &pin_builder_files(),
+            &pin,
+            &detected,
+            &mut counterparts,
+        );
+        assert_eq!(counterparts.paired, 0);
+        assert_eq!(counterparts.content(), ReviewedContent::default());
+
+        // A name that occurs twice at the commit but once at the pin has no
+        // counterpart.
+        let (path, drv) = pin_graph.iter().next().unwrap();
+        let mut duplicated = render_at_detected_commit(&pin_graph, &items, &bump);
+        duplicated.insert(
+            path.replace("/nix/store/", "/nix/store/0")
+                .replacen("0", "", 0)
+                .replace(&path[11..13], "00"),
+            render_at_detected_commit(
+                &BTreeMap::from([(path.clone(), drv.clone())]),
+                &items,
+                &bump,
+            )
+            .into_values()
+            .next()
+            .unwrap(),
+        );
+        let detected = local_derivations(&base, &duplicated, &synthetic_pinned_source);
+        let mut counterparts = Counterparts::default();
+        add_counterparts(
+            &base,
+            &pin_builder_files(),
+            &pin,
+            &detected,
+            &mut counterparts,
+        );
+        assert!(!counterparts.unpaired.is_empty());
+    }
+
+    #[test]
+    fn counterpart_content_must_be_well_formed_and_unambiguous() {
+        use profile::{FingerprintCounterpart, StockCommandCounterpart};
+        let (base, _) = shifted_detected_profile(BTreeSet::new());
+        let pair = |commit: &str, reviewed: &str| FingerprintCounterpart {
+            commit: [commit.repeat(64), commit.repeat(64)],
+            reviewed: [reviewed.repeat(64), reviewed.repeat(64)],
+        };
+        let valid = ReviewedContent {
+            fingerprints: vec![pair("a", "b")],
+            stock_commands: vec![StockCommandCounterpart {
+                commit: "new writeText command".to_string(),
+                reviewed: STOCK_WRITE_TEXT_COMMAND.to_string(),
+            }],
+            builder_files: BTreeMap::from([("wrapper.c".to_string(), "c".repeat(64))]),
+        };
+        let profile = base.clone().with_reviewed_content(&valid).unwrap();
+        assert_eq!(
+            profile.fingerprints("x"),
+            WorkstationBuildProfile::builtin().fingerprints("x")
+        );
+        assert_eq!(
+            profile.stock_command("new writeText command"),
+            STOCK_WRITE_TEXT_COMMAND
+        );
+        assert_eq!(
+            profile.builder_file_counterpart(TRUSTED_SECURITY_WRAPPER_SHA256),
+            Some("c".repeat(64).as_str())
+        );
+        assert_eq!(
+            profile.builder_file_counterpart(TRUSTED_STDENV_SOURCE_SHA256),
+            None
+        );
+
+        let mut conflicting = valid.clone();
+        conflicting.fingerprints.push(pair("a", "d"));
+        assert!(base.clone().with_reviewed_content(&conflicting).is_err());
+        let mut short = valid.clone();
+        short.fingerprints[0].commit[1] = "a".repeat(63);
+        assert!(base.clone().with_reviewed_content(&short).is_err());
+        let mut not_stock = valid.clone();
+        not_stock.stock_commands[0].reviewed = "gcc source.c".to_string();
+        assert!(base.clone().with_reviewed_content(&not_stock).is_err());
+        let mut unknown_file = valid.clone();
+        unknown_file.builder_files = BTreeMap::from([("setup.sh".to_string(), "c".repeat(64))]);
+        assert!(base.clone().with_reviewed_content(&unknown_file).is_err());
+        assert!(
+            WorkstationBuildProfile::builtin()
+                .clone()
+                .with_reviewed_content(&valid)
+                .is_err()
+        );
     }
 }

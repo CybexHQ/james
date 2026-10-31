@@ -34,7 +34,9 @@ commits. A protocol-4 Tiaris gets today's report: the release pins only.
 ## Detected commits (Nest-driven updates)
 
 Nest checks its NixOS channel itself (Manage
-`docs/design/nest-driven-software-updates.md`, sections 1 to 3):
+`docs/design/nest-driven-software-updates.md`, sections 1 to 3). No person
+reviews an update: the reviewed content of a new commit is derived from that
+commit, anchored on what the Nest already admitted at its release pin.
 
 - **When.** Once a day at a random minute between 01:00 and 05:00 in the
   update-schedule time zone (UTC without a schedule), and when Manage's Nest
@@ -49,47 +51,73 @@ Nest checks its NixOS channel itself (Manage
   `github:NixOS/nixpkgs/<commit>?narHash=<recorded>`. A commit already handled
   is skipped (an on-demand check retries one whose evaluation failed);
   network errors record nothing.
-- **Build profile.** `src/software_updates/identities.nix` evaluates every
-  commit identity of `COMMIT_IDENTITIES` from the same nixpkgs attribute; at
-  74cc63f it reproduces all 40 compiled paths exactly. It also hashes the
-  reviewed builder files (`source-stdenv.sh`, `default-builder.sh`,
-  `substitute.sh`, the replaced `builder.pl` and `wrapper.c`). The derived
-  profile maps each built-in store item to the commit's one-to-one and renders
-  the commit's revision and NixOS version label
-  (`26.05.<yyyymmdd>.<short rev>`) back to the pin's, so reviewed scripts are
-  fingerprinted exactly as the pin's: only the commit's own providers pass the
-  executable-pinned half.
+- **Commit identities.** `src/software_updates/identities.nix` evaluates every
+  identity of `COMMIT_IDENTITIES` from the same nixpkgs attribute; at 74cc63f
+  it reproduces all 40 compiled paths exactly. The derived profile maps each
+  built-in store item to the commit's one-to-one and renders the commit's
+  revision and NixOS version label (`26.05.<yyyymmdd>.<short rev>`) back to
+  the pin's before fingerprinting.
+- **Reference jobs.** The newest succeeded source-disabled job of each
+  Blueprint this Nest built at its pin (at most 8). Without such jobs Nest
+  uses the bare Taskbar and Dock profiles, which are not the configurations
+  the built-in fingerprints were recorded from: their `/etc` and unit link
+  farms are not admitted at the pin, so such a Nest's commits block until it
+  has built a Blueprint.
+- **Counterparts.** Each reference job is dry-run in isolated stores at the
+  pin (built-in profile) and with only nixpkgs replaced at the commit. Every
+  local derivation admitted on its own at the pin gets a counterpart: the
+  derivation of the same package name (the name up to its version, as Nix's
+  `parseDrvName` splits it, after the version label is rendered back) in the
+  same job at the commit, with the same builder and attribute names. Several
+  derivations of one name pair only when their attributes, with whole store
+  paths set aside, match one to one. Each counterpart's content becomes
+  reviewed content of the commit's profile, recorded against the pin content
+  it replaces:
+  - its script fingerprint pairs (and `/etc` zone-independent pairs);
+  - its stock materializer commands;
+  - the hash at the commit of a reviewed builder file (`source-stdenv.sh`,
+    `default-builder.sh`, `substitute.sh`, `builder.pl`, `wrapper.c`) that
+    both the pin derivation and its counterpart use.
+
+  A Blueprint job at the commit is then admitted under exactly the pin's
+  rules against that profile.
+
+  Why this keeps the trust boundary: everything in the commit's profile is
+  produced by nixpkgs at that commit (pinned by `narHash`) from job inputs
+  that were already admitted at the pin. A Blueprint cannot add a script, a
+  materializer or a builder file that was not admitted at the pin. A
+  derivation class or generator without a pin counterpart stays rejected.
+  Store paths are not normalized beyond their hashes; the counterpart
+  replaces that.
 - **Tiaris packages.** Manage's `tiaris-workstation-cache-seeds.nix` (agent,
   gsettings helpers, patched Avahi), evaluated with the commit's nixpkgs and
-  the Tiaris source shipped with this Nest (`system-identity.json`), is
-  dry-run in an isolated store. The derivations it would compile (at most 512)
-  are the only real compiles the commit admits; the preflight admits exactly
-  these derivations at that commit and no other.
-- **Readiness.** The newest succeeded source-disabled job of each Blueprint
-  this Nest built at its pin (at most 8) is prepared again with only nixpkgs
-  replaced and dry-run in an isolated store with the derived profile. Without
-  such jobs Nest dry-runs the bare Taskbar and Dock profiles. The commit is:
-  - `blocked`, `build_script_changed`, with the names of reviewed builder
-    files whose bytes changed and of local scripts rejected on their own (not
-    merely waiting for another rejected derivation);
+  the Tiaris source shipped with this Nest (`system-identity.json`). Only
+  these top-level derivations may compile at the commit. Every other input
+  of theirs (vendored crates, patches, generated schemas) must be cached or
+  admitted by the ordinary rules.
+- **Readiness.** Every reference job is dry-run again at the commit with the
+  full profile:
+  - `blocked`, `build_script_changed`: a local script with no pin
+    counterpart (rejected on its own, not merely waiting for another
+    rejected derivation), or a changed builder file no counterpart vouches
+    for;
   - otherwise `blocked`, `source_build_required`, with the first 50
     derivations that would compile;
   - `blocked`, `evaluation_failed`, when evaluation or a dry run fails;
-  - otherwise `ready`. The derived profile and Tiaris package derivations are
-    stored with the record (`detected_nixpkgs_commits` table).
+  - otherwise `ready`. The identities, counterpart content and Tiaris
+    package derivations are stored with the record
+    (`detected_nixpkgs_commits.profile`).
 - **Admission.** `build_target` admits a Blueprint job at the release pin or
   at a ready detected commit (`target_not_allowed` otherwise); the preflight
   selects the commit's profile by `spec.nixpkgs_commit`.
 
-What the first real channel commit shows: at 6f06d204 (2026-10-29, evaluated
-with the pin's Nix 2.34.7) every identity derives, and 42 Tiaris package
-derivations would compile. It is `build_script_changed`: `wrapper.c` changed,
-`user-units` gained `gnome-session-monitor.service`, and `etc`,
-`system-units` and the system closure name newer package versions (systemd
-260.5, kernel 6.18.59, pipewire, cacert, tzdata). Store-path normalization
-covers hashes, not names, so a version bump of a package these assembly
-scripts list changes their reviewed content. Until a Tiaris release reviews
-such changes, most channel commits will be blocked.
+The first real channel commit, 6f06d204 (2026-10-29), evaluated with the
+pin's Nix 2.34.7 and the Taskbar compiler export as the reference job:
+107 counterparts, among them changed `etc`, `system-units`, `user-units`,
+`udev-rules`, `fc-cache`, Firefox and the system closure (package version
+bumps and a new `gnome-session-monitor` user unit). It is blocked only by
+`tiaris-observer-shell-schemas`, the gsettings helper's schema input: it
+compiles at the commit, and it is not a top-level Tiaris package.
 
 ## Publishing a base
 
@@ -175,18 +203,19 @@ Supporting more than one commit therefore needs, in this order:
 2. **Admission per profile.** Done for detected commits: `build_target`
    admits a ready detected commit and `workstation_nixpkgs_commits` reports it
    (above). Installed Nests need no `config.toml` change.
-3. **Seed outputs per commit.** Done for detected commits: the Tiaris package
-   derivations of the commit are admitted to compile and their outputs are
-   signed with the Nest cache key like any built output.
+3. **Seed outputs per commit.** Done for detected commits: the top-level
+   Tiaris package derivations of the commit are admitted to compile and their
+   outputs are signed with the Nest cache key like any built output.
    `nixos-appliance/workstation-cache-seeds.nix` still carries the pin's.
    The Tiaris software cache (`https://cache.tiaris.com`, Manage
    `docs/software-cache.md`) carries the rest Nest would otherwise prepare:
    unfree apps, NVIDIA's driver and the directory sign-in stacks. Nest lists it
    after cache.nixos.org and authenticates with the token Manage sends; build
    it for a new commit before that base becomes the default.
-4. **Review each new commit.** A commit blocked with `build_script_changed`
-   names the scripts and builder files that changed. Review them against the
-   previous profile and record the new fingerprints in a Tiaris release.
+4. **Review each new commit.** Done for detected commits without a person:
+   counterparts of what the pin admitted are the review (above). A commit
+   blocked with `build_script_changed` names the content without a
+   counterpart; only a Tiaris release can admit that.
 5. **Publish with the release.** Add `tiaris-software-bases.json` to the
    release workflow next to `tiaris-nest-release-compatibility.json`: sign it in
    the signing step, include it in `SHA256SUMS`, the qualification bundle and

@@ -25,13 +25,15 @@ use super::{
     IBUS_LINK_FARM_TOOL_INPUTS, INITRD_GENERATOR_TOOL_INPUTS, LOGROTATE_CHECK_INPUTS,
     NIX_CONFIG_CHECK_INPUT, NIXOS_GENERATE_CONFIG_TOOL_INPUTS, NIXOS_SYSTEM_SETUP_HOOK,
     PERL_ENV_LINK_FARM_TOOL_INPUTS, REMARSHAL_GENERATOR_TOOL_INPUTS, SECURITY_WRAPPER_TOOL_INPUTS,
-    SYSTEM_PATH_POST_BUILD_TOOLS, TRUSTED_LINK_FARM_BUILDER, TRUSTED_LINK_FARM_PERL,
-    TRUSTED_SECURITY_WRAPPER_INCLUDE_DRV, TRUSTED_SECURITY_WRAPPER_INCLUDE_PATH,
+    STOCK_CONCAT_TEXT_COMMAND, STOCK_JSON_TO_TOML_COMMAND, STOCK_WRITE_TEXT_COMMAND,
+    SYSTEM_PATH_POST_BUILD_TOOLS, TRUSTED_DEFAULT_BUILDER_SHA256, TRUSTED_LINK_FARM_BUILDER,
+    TRUSTED_LINK_FARM_BUILDER_SHA256, TRUSTED_LINK_FARM_PERL, TRUSTED_SECURITY_WRAPPER_INCLUDE_DRV,
+    TRUSTED_SECURITY_WRAPPER_INCLUDE_PATH, TRUSTED_SECURITY_WRAPPER_SHA256,
     TRUSTED_STDENV_BASH_BUILDER, TRUSTED_STDENV_BASH_DRV, TRUSTED_STDENV_FULL_OUTPUT,
-    TRUSTED_STDENV_NO_CC_OUTPUT, TRUSTED_STDENV_STATIC_OUTPUT, TRUSTED_SUBSTITUTE_BUILDER,
-    UDEV_GENERATOR_TOOL_INPUTS, XKB_VALIDATION_CONFIG_DIR, XKB_VALIDATION_TOOL_INPUTS,
-    executable_pinned_script_sha256, normalize_derivation_store_path, normalized_script_sha256,
-    safe_nix_store_path,
+    TRUSTED_STDENV_NO_CC_OUTPUT, TRUSTED_STDENV_SOURCE_SHA256, TRUSTED_STDENV_STATIC_OUTPUT,
+    TRUSTED_SUBSTITUTE_BUILDER, TRUSTED_SUBSTITUTE_BUILDER_SHA256, UDEV_GENERATOR_TOOL_INPUTS,
+    XKB_VALIDATION_CONFIG_DIR, XKB_VALIDATION_TOOL_INPUTS, executable_pinned_script_sha256,
+    normalize_derivation_store_path, normalized_script_sha256, safe_nix_store_path,
 };
 
 /// The nixpkgs commit whose reviewed identities are compiled into Nest.
@@ -316,6 +318,71 @@ pub(crate) struct WorkstationBuildProfile {
     reviewed_labels: Vec<(String, String)>,
     /// Exact Tiaris package derivations this detected commit may compile.
     tiaris_derivations: BTreeSet<String>,
+    /// Counterpart fingerprint pairs: this commit's script → the pin script
+    /// it replaces. Empty for the built-in profile.
+    fingerprint_counterparts: BTreeMap<(String, String), (String, String)>,
+    /// Counterpart stock commands: this commit's bytes → the reviewed stock
+    /// command they replace.
+    stock_command_counterparts: BTreeMap<String, &'static str>,
+    /// Reviewed builder file hash at the pin → its counterpart's hash at this
+    /// commit, only for files a counterpart uses.
+    builder_file_counterparts: BTreeMap<&'static str, String>,
+}
+
+/// The reviewed builder files and their commit-independent hashes at the pin.
+pub(crate) const REVIEWED_BUILDER_FILES: [(&str, &str); 5] = [
+    ("source-stdenv.sh", TRUSTED_STDENV_SOURCE_SHA256),
+    ("default-builder.sh", TRUSTED_DEFAULT_BUILDER_SHA256),
+    ("substitute.sh", TRUSTED_SUBSTITUTE_BUILDER_SHA256),
+    ("wrapper.c", TRUSTED_SECURITY_WRAPPER_SHA256),
+    ("builder.pl", TRUSTED_LINK_FARM_BUILDER_SHA256),
+];
+
+/// The stock nixpkgs materializer commands compared byte for byte.
+pub(crate) const STOCK_COMMANDS: [&str; 3] = [
+    STOCK_WRITE_TEXT_COMMAND,
+    STOCK_CONCAT_TEXT_COMMAND,
+    STOCK_JSON_TO_TOML_COMMAND,
+];
+
+/// Reviewed content a detected commit derives from itself: for every
+/// derivation admitted at the pin in a job this Nest built there, the same
+/// derivation of the same job evaluated at the detected commit (its
+/// counterpart). Each entry pairs the counterpart's content with the pin
+/// content it replaces, so every existing check applies unchanged.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReviewedContent {
+    #[serde(default)]
+    pub(crate) fingerprints: Vec<FingerprintCounterpart>,
+    #[serde(default)]
+    pub(crate) stock_commands: Vec<StockCommandCounterpart>,
+    /// Builder file name → its sha256 at the detected commit.
+    #[serde(default)]
+    pub(crate) builder_files: BTreeMap<String, String>,
+}
+
+/// `[normalized, executable-pinned]` fingerprints of a counterpart script at
+/// the detected commit and of the pin script it replaces.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FingerprintCounterpart {
+    pub(crate) commit: [String; 2],
+    pub(crate) reviewed: [String; 2],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StockCommandCounterpart {
+    pub(crate) commit: String,
+    pub(crate) reviewed: String,
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// The store item of a store path: `<hash>-<name>` without `/nix/store/` and
@@ -344,6 +411,9 @@ impl WorkstationBuildProfile {
                 reviewed_items: BTreeMap::new(),
                 reviewed_labels: Vec::new(),
                 tiaris_derivations: BTreeSet::new(),
+                fingerprint_counterparts: BTreeMap::new(),
+                stock_command_counterparts: BTreeMap::new(),
+                builder_file_counterparts: BTreeMap::new(),
             }
         })
     }
@@ -438,7 +508,83 @@ impl WorkstationBuildProfile {
                 (label, reviewed_label),
             ],
             tiaris_derivations,
+            fingerprint_counterparts: BTreeMap::new(),
+            stock_command_counterparts: BTreeMap::new(),
+            builder_file_counterparts: BTreeMap::new(),
         })
+    }
+
+    /// The derived profile with the reviewed content its counterparts give
+    /// it. Every entry must be well formed and unambiguous: one commit
+    /// fingerprint pair or command maps to exactly one reviewed one, a
+    /// reviewed command is a stock command and a builder file is one of the
+    /// reviewed files.
+    pub(crate) fn with_reviewed_content(mut self, content: &ReviewedContent) -> Result<Self> {
+        if self.builtin {
+            bail!("the built-in profile has no counterparts");
+        }
+        for entry in &content.fingerprints {
+            if !entry
+                .commit
+                .iter()
+                .chain(&entry.reviewed)
+                .all(|value| is_sha256_hex(value))
+            {
+                bail!("counterpart fingerprints must be sha256 hex");
+            }
+            let key = (entry.commit[0].clone(), entry.commit[1].clone());
+            let value = (entry.reviewed[0].clone(), entry.reviewed[1].clone());
+            if self
+                .fingerprint_counterparts
+                .insert(key, value.clone())
+                .is_some_and(|previous| previous != value)
+            {
+                bail!("a counterpart fingerprint maps to two reviewed scripts");
+            }
+        }
+        for entry in &content.stock_commands {
+            let Some(reviewed) = STOCK_COMMANDS
+                .iter()
+                .find(|command| **command == entry.reviewed)
+            else {
+                bail!("a counterpart command does not replace a stock command");
+            };
+            if self
+                .stock_command_counterparts
+                .insert(entry.commit.clone(), reviewed)
+                .is_some_and(|previous| previous != *reviewed)
+            {
+                bail!("a counterpart command maps to two stock commands");
+            }
+        }
+        for (name, sha256) in &content.builder_files {
+            let Some((_, reviewed)) = REVIEWED_BUILDER_FILES.iter().find(|(file, _)| file == name)
+            else {
+                bail!("{name} is not a reviewed builder file");
+            };
+            if !is_sha256_hex(sha256) {
+                bail!("counterpart builder file hash must be sha256 hex");
+            }
+            self.builder_file_counterparts
+                .insert(reviewed, sha256.clone());
+        }
+        Ok(self)
+    }
+
+    /// This commit's hash for the reviewed builder file with the pin hash
+    /// `reviewed`, when a counterpart uses a changed copy of it.
+    pub(crate) fn builder_file_counterpart(&self, reviewed: &str) -> Option<&str> {
+        self.builder_file_counterparts
+            .get(reviewed)
+            .map(String::as_str)
+    }
+
+    /// The reviewed stock command `command` is, or replaces at this commit.
+    pub(crate) fn stock_command<'a>(&'a self, command: &'a str) -> &'a str {
+        self.stock_command_counterparts
+            .get(command)
+            .copied()
+            .unwrap_or(command)
     }
 
     /// The profile a build job's preflight uses: the ready detected commit's
@@ -541,17 +687,32 @@ impl WorkstationBuildProfile {
         Cow::Owned(rendered)
     }
 
-    /// Store-normalized fingerprint of the reviewed script this commit's
-    /// script renders.
-    pub(crate) fn normalized_sha256(&self, script: &str) -> String {
-        normalized_script_sha256(&self.reviewed_script(script))
+    /// `(store-normalized, executable-pinned)` fingerprints of the reviewed
+    /// script this commit's script renders, or of the pin script it is the
+    /// counterpart of. Both halves come from one script, so a counterpart
+    /// never mixes with another script's half.
+    pub(crate) fn fingerprints(&self, script: &str) -> (String, String) {
+        let rendered = self.reviewed_script(script);
+        let pair = (
+            normalized_script_sha256(&rendered),
+            executable_pinned_script_sha256(&rendered),
+        );
+        match self.fingerprint_counterparts.get(&pair) {
+            Some(reviewed) => reviewed.clone(),
+            None => pair,
+        }
     }
 
-    /// Executable-pinned fingerprint of the reviewed script this commit's
-    /// script renders: an executable from any provider other than this
-    /// commit's identity for the reviewed one changes it.
+    /// Store-normalized half of [`Self::fingerprints`].
+    pub(crate) fn normalized_sha256(&self, script: &str) -> String {
+        self.fingerprints(script).0
+    }
+
+    /// Executable-pinned half of [`Self::fingerprints`]: an executable from
+    /// any provider other than this commit's identity for the reviewed one
+    /// changes it.
     pub(crate) fn executable_sha256(&self, script: &str) -> String {
-        executable_pinned_script_sha256(&self.reviewed_script(script))
+        self.fingerprints(script).1
     }
 }
 

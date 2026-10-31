@@ -13,10 +13,12 @@
 //!    reviewed builder files.
 //! 3. The Tiaris packages (Manage's `tiaris-workstation-cache-seeds.nix`,
 //!    evaluated with this commit's nixpkgs and the Tiaris source shipped with
-//!    the Nest) are dry-run; the derivations they would compile become the only
-//!    real compiles the commit admits.
-//! 4. A source-disabled dry run of every built-in Blueprint must leave no
-//!    unadmitted derivation.
+//!    the Nest) are dry-run; only their top-level derivations may compile.
+//! 4. The Blueprints this Nest built at its pin are dry-run at the pin and,
+//!    with only nixpkgs replaced, at this commit. Each derivation admitted at
+//!    the pin gives its counterpart's content to the commit's profile
+//!    (`build/counterpart.rs`); then every one of those jobs must leave no
+//!    unadmitted derivation at this commit.
 //!
 //! The result is a detected commit, `ready` or `blocked` with a reason.
 //! Ready commits are admitted by `build_target`, selected by
@@ -41,7 +43,7 @@ use crate::{
     AppState,
     build::{
         self, BUILTIN_LAST_MODIFIED, BUILTIN_NIXOS_RELEASE, DerivedIdentity,
-        MAX_TIARIS_PACKAGE_DERIVATIONS, NixBuildCommand, WorkstationBuildProfile,
+        MAX_TIARIS_PACKAGE_DERIVATIONS, NixBuildCommand, ReviewedContent, WorkstationBuildProfile,
     },
     config::AppConfig,
     manage_source,
@@ -73,15 +75,6 @@ const IDENTITIES_NIX: &str = include_str!("software_updates/identities.nix");
 pub(crate) const REASON_BUILD_SCRIPT_CHANGED: &str = "build_script_changed";
 pub(crate) const REASON_SOURCE_BUILD_REQUIRED: &str = "source_build_required";
 pub(crate) const REASON_EVALUATION_FAILED: &str = "evaluation_failed";
-
-/// The reviewed builder files and their commit-independent hashes.
-const REVIEWED_BUILDER_FILES: [(&str, &str); 5] = [
-    ("source-stdenv.sh", build::TRUSTED_STDENV_SOURCE_SHA256),
-    ("default-builder.sh", build::TRUSTED_DEFAULT_BUILDER_SHA256),
-    ("substitute.sh", build::TRUSTED_SUBSTITUTE_BUILDER_SHA256),
-    ("wrapper.c", build::TRUSTED_SECURITY_WRAPPER_SHA256),
-    ("builder.pl", build::TRUSTED_LINK_FARM_BUILDER_SHA256),
-];
 
 fn check_now() -> &'static Notify {
     static CHECK_NOW: OnceLock<Notify> = OnceLock::new();
@@ -261,8 +254,16 @@ pub(crate) async fn ready_commit(db: &SqlitePool, commit: &str) -> Result<Option
     ready_commit_from_row(row).map(Some)
 }
 
+/// The derived profile of a ready commit as stored with its record.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredProfile {
+    identities: BTreeMap<String, DerivedIdentity>,
+    reviewed: ReviewedContent,
+}
+
 fn ready_commit_from_row(row: DetectedRow) -> Result<ReadyCommit> {
-    let identities: BTreeMap<String, DerivedIdentity> = serde_json::from_str(
+    let stored: StoredProfile = serde_json::from_str(
         row.profile
             .as_deref()
             .ok_or_else(|| anyhow!("ready detected commit has no build profile"))?,
@@ -276,8 +277,13 @@ fn ready_commit_from_row(row: DetectedRow) -> Result<ReadyCommit> {
     let last_modified = parse_timestamp(Some(&row.last_modified))
         .ok_or_else(|| anyhow!("detected commit lastModified is invalid"))?
         .timestamp();
-    let profile =
-        WorkstationBuildProfile::derived(&row.commit_rev, last_modified, &identities, tiaris)?;
+    let profile = WorkstationBuildProfile::derived(
+        &row.commit_rev,
+        last_modified,
+        &stored.identities,
+        tiaris,
+    )?
+    .with_reviewed_content(&stored.reviewed)?;
     Ok(ReadyCommit {
         commit: row.commit_rev,
         nar_hash: row.nar_hash,
@@ -575,6 +581,11 @@ struct DetectedOutcome {
     details: Vec<String>,
     identities: Option<BTreeMap<String, DerivedIdentity>>,
     tiaris_derivations: BTreeSet<String>,
+    /// Content derived from counterparts; stored only for ready commits.
+    reviewed: ReviewedContent,
+    counterparts: Option<build::Counterparts>,
+    /// Local work of the Tiaris packages besides their own derivations.
+    tiaris_dependencies: Vec<String>,
 }
 
 impl DetectedOutcome {
@@ -595,6 +606,9 @@ impl DetectedOutcome {
             details,
             identities: None,
             tiaris_derivations: BTreeSet::new(),
+            reviewed: ReviewedContent::default(),
+            counterparts: None,
+            tiaris_dependencies: Vec::new(),
         }
     }
 }
@@ -613,7 +627,12 @@ async fn store_detected(
         .identities
         .as_ref()
         .filter(|_| outcome.reason.is_none())
-        .map(serde_json::to_string)
+        .map(|identities| {
+            serde_json::to_string(&StoredProfile {
+                identities: identities.clone(),
+                reviewed: outcome.reviewed.clone(),
+            })
+        })
         .transpose()?;
     sqlx::query(
         "INSERT INTO detected_nixpkgs_commits (
@@ -727,8 +746,7 @@ async fn evaluate_commit_in(
         .chars()
         .take(64)
         .collect::<String>();
-    let mut changed = changed_builder_files(&evaluated.files);
-    let base_profile = match WorkstationBuildProfile::derived(
+    let identities_only = match WorkstationBuildProfile::derived(
         commit,
         metadata.last_modified,
         &evaluated.identities,
@@ -745,17 +763,32 @@ async fn evaluate_commit_in(
         }
     };
 
+    let commit_flake = work.join("flake");
+    let pin_flake = work.join("pin-flake");
+    create_private_dir(&commit_flake)?;
+    create_private_dir(&pin_flake)?;
     write_builtin_blueprint_flake(
-        work,
+        &commit_flake,
         &build::nixpkgs_flake_ref(commit, Some(&metadata.nar_hash))?,
         manage_source_url,
     )?;
-    let installable = |name: &str| format!("{}#packages.x86_64-linux.{name}", work.display());
+    write_builtin_blueprint_flake(
+        &pin_flake,
+        &build::nixpkgs_flake_ref(build::BUILTIN_NIXPKGS_COMMIT, None)?,
+        manage_source_url,
+    )?;
+    let installable = |flake: &Path, name: &str| {
+        NixBuildCommand::for_dry_run(
+            &config.build.nix_binary,
+            format!("{}#packages.x86_64-linux.{name}", flake.display()),
+        )
+    };
 
+    // Tiaris packages: only the top-level derivations themselves may compile.
     let tiaris = match build::unadmitted_local_derivations(
         config,
-        &NixBuildCommand::for_dry_run(&config.build.nix_binary, installable("tiaris-packages")),
-        &base_profile,
+        &installable(&commit_flake, "tiaris-packages"),
+        &identities_only,
     )
     .await
     {
@@ -769,11 +802,15 @@ async fn evaluate_commit_in(
             ));
         }
     };
-    let tiaris_derivations = tiaris
-        .paths
-        .into_iter()
-        .filter(|path| !path.ends_with("-tiaris-packages.drv"))
-        .collect::<BTreeSet<_>>();
+    let (tiaris_derivations, tiaris_dependencies) =
+        top_level_tiaris_packages(&tiaris, &evaluated.identities);
+    if !tiaris_dependencies.is_empty() {
+        info!(
+            %commit,
+            dependencies = ?tiaris_dependencies,
+            "Tiaris package inputs that are neither cached nor top-level must be admitted by the ordinary rules"
+        );
+    }
     if tiaris_derivations.len() > MAX_TIARIS_PACKAGE_DERIVATIONS {
         return Ok(DetectedOutcome::blocked(
             kernel,
@@ -784,16 +821,16 @@ async fn evaluate_commit_in(
                 .collect(),
         ));
     }
-    let profile = WorkstationBuildProfile::derived(
+    let base = WorkstationBuildProfile::derived(
         commit,
         metadata.last_modified,
         &evaluated.identities,
         tiaris_derivations.clone(),
     )?;
 
-    // The Blueprints this Nest built at the pin, or the built-in profiles
-    // when it has built none.
-    let blueprints = match build::retained_blueprint_commands(
+    // The reference set: the Blueprints this Nest built at the pin, or the
+    // built-in profiles when it has built none.
+    let jobs = match build::retained_blueprint_commands(
         config,
         db,
         work,
@@ -803,18 +840,17 @@ async fn evaluate_commit_in(
     )
     .await
     {
-        Ok(commands) if !commands.is_empty() => commands,
+        Ok(jobs) if !jobs.is_empty() => jobs,
         Ok(_) => BUILTIN_BLUEPRINT_PROFILES
             .iter()
-            .map(|profile| {
-                (
-                    profile.to_string(),
-                    NixBuildCommand::for_dry_run(&config.build.nix_binary, installable(profile)),
-                )
+            .map(|profile| build::ReferenceJob {
+                label: profile.to_string(),
+                pin: installable(&pin_flake, profile),
+                detected: installable(&commit_flake, profile),
             })
             .collect(),
         Err(error) => {
-            warn!(%commit, error = %error, "could not prepare this Nest's Blueprints");
+            warn!(%commit, error = %format!("{error:#}"), "could not prepare this Nest's Blueprints");
             return Ok(DetectedOutcome::blocked(
                 kernel,
                 REASON_EVALUATION_FAILED,
@@ -822,17 +858,66 @@ async fn evaluate_commit_in(
             ));
         }
     };
-    let mut compiles = Vec::new();
-    for (blueprint, command) in &blueprints {
-        let unadmitted = match build::unadmitted_local_derivations(config, command, &profile).await
-        {
-            Ok(unadmitted) => unadmitted,
+
+    // Counterparts of everything admitted at the pin.
+    let builtin = WorkstationBuildProfile::builtin();
+    let mut counterparts = build::Counterparts::default();
+    for job in &jobs {
+        let pair = async {
+            let pin = build::unadmitted_local_derivations(config, &job.pin, builtin).await?;
+            let detected =
+                build::unadmitted_local_derivations(config, &job.detected, &base).await?;
+            anyhow::Ok((pin, detected))
+        };
+        match pair.await {
+            Ok((pin, detected)) => {
+                build::add_counterparts(&base, &evaluated.files, &pin, &detected, &mut counterparts)
+            }
             Err(error) => {
-                warn!(%commit, blueprint, error = %error, "could not dry-run a Blueprint");
+                warn!(%commit, job = job.label, error = %format!("{error:#}"), "could not evaluate a reference job");
                 return Ok(DetectedOutcome::blocked(
                     kernel,
                     REASON_EVALUATION_FAILED,
-                    vec![blueprint.clone()],
+                    vec![job.label.clone()],
+                ));
+            }
+        }
+    }
+    let content = counterparts.content();
+    let profile = match base.clone().with_reviewed_content(&content) {
+        Ok(profile) => profile,
+        Err(error) => {
+            warn!(%commit, error = %error, "counterpart content is unusable");
+            return Ok(DetectedOutcome::blocked(
+                kernel,
+                REASON_EVALUATION_FAILED,
+                vec!["counterparts".to_string()],
+            ));
+        }
+    };
+    info!(
+        %commit,
+        paired = counterparts.paired,
+        changed = ?counterparts.changed,
+        unpaired = ?counterparts.unpaired,
+        builder_files = ?counterparts.builder_files,
+        "derived reviewed content from counterparts"
+    );
+
+    // Readiness: every reference job at the commit under the full profile.
+    let mut changed = BTreeSet::new();
+    let mut compiles = Vec::new();
+    for job in &jobs {
+        let unadmitted = match build::unadmitted_local_derivations(config, &job.detected, &profile)
+            .await
+        {
+            Ok(unadmitted) => unadmitted,
+            Err(error) => {
+                warn!(%commit, job = job.label, error = %format!("{error:#}"), "could not dry-run a Blueprint");
+                return Ok(DetectedOutcome::blocked(
+                    kernel,
+                    REASON_EVALUATION_FAILED,
+                    vec![job.label.clone()],
                 ));
             }
         };
@@ -844,20 +929,59 @@ async fn evaluate_commit_in(
                 .iter()
                 .map(|name| name.to_string()),
         );
-        compiles.extend(
-            others
-                .into_iter()
-                .filter(|name| !compiles.contains(name))
-                .collect::<Vec<_>>(),
-        );
+        for name in others {
+            if !compiles.contains(&name) {
+                compiles.push(name);
+            }
+        }
     }
-    Ok(decide(
+    let mut outcome = decide(
         kernel,
         changed,
         compiles,
         evaluated.identities,
         tiaris_derivations,
-    ))
+    );
+    if outcome.reason.is_none() {
+        outcome.reviewed = content;
+    }
+    outcome.counterparts = Some(counterparts);
+    outcome.tiaris_dependencies = tiaris_dependencies;
+    Ok(outcome)
+}
+
+/// The Tiaris packages' own derivations (the inputs of the `tiaris-packages`
+/// list that are not commit identities) among the local work, and the names
+/// of the other local work their dry run lists: inputs that must be cached
+/// or admitted by the ordinary rules.
+fn top_level_tiaris_packages(
+    dry_run: &build::UnadmittedDerivations,
+    identities: &BTreeMap<String, DerivedIdentity>,
+) -> (BTreeSet<String>, Vec<String>) {
+    let identity_drvs = identities
+        .values()
+        .filter_map(|identity| identity.drv.as_deref())
+        .collect::<BTreeSet<_>>();
+    let local = dry_run.would_build.iter().collect::<BTreeSet<_>>();
+    let list = dry_run
+        .would_build
+        .iter()
+        .find(|path| path.ends_with("-tiaris-packages.drv"));
+    let top_level = list
+        .and_then(|path| dry_run.derivations.get(path))
+        .and_then(build::derivation_input_drvs)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(path, _)| path)
+        .filter(|path| local.contains(path) && !identity_drvs.contains(path.as_str()))
+        .collect::<BTreeSet<_>>();
+    let dependencies = dry_run
+        .would_build
+        .iter()
+        .filter(|path| Some(*path) != list && !top_level.contains(*path))
+        .map(|path| derivation_display_name(path))
+        .collect();
+    (top_level, dependencies)
 }
 
 fn decide(
@@ -883,16 +1007,10 @@ fn decide(
         details: Vec::new(),
         identities: Some(identities),
         tiaris_derivations,
+        reviewed: ReviewedContent::default(),
+        counterparts: None,
+        tiaris_dependencies: Vec::new(),
     }
-}
-
-/// Reviewed builder files whose bytes at this commit differ.
-fn changed_builder_files(files: &BTreeMap<String, String>) -> BTreeSet<String> {
-    REVIEWED_BUILDER_FILES
-        .iter()
-        .filter(|(name, expected)| files.get(*name).map(String::as_str) != Some(*expected))
-        .map(|(name, _)| name.to_string())
-        .collect()
 }
 
 /// Split the derivations rejected on their own into changed reviewed scripts
