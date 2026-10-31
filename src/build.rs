@@ -529,12 +529,12 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
             }),
         _ => None,
     };
-    let target = match build_target_for_detected_commit(
+    let (target, admitted_commit) = match admit_build_target(
         &state.config,
         &spec,
         detected.as_ref().map(|ready| ready.commit.as_str()),
     ) {
-        Ok(target) => target.clone(),
+        Ok(admitted) => (admitted.target.clone(), admitted.nixpkgs_commit),
         Err(err) => {
             db::finish_build_job(
                 &state.db,
@@ -702,10 +702,36 @@ async fn execute_claimed_job(state: &AppState, job: BuildJob) -> Result<()> {
             "Checking binary cache coverage",
         )
         .await?;
-        let profile = WorkstationBuildProfile::for_build(
-            spec.nixpkgs_commit.as_deref(),
+        // The profile follows the commit `admit_build_target` accepted, never
+        // the job's own text. A commit without a reviewed profile cannot
+        // build source-free.
+        let Some(profile) = WorkstationBuildProfile::for_build(
+            admitted_commit.as_deref(),
             detected.as_ref().map(|ready| &ready.profile),
-        );
+        ) else {
+            db::finish_build_job(
+                &state.db,
+                job.id,
+                "failed",
+                "",
+                &format!(
+                    "Nest has no reviewed build profile for nixpkgs commit {}, so this source-disabled build was stopped",
+                    admitted_commit.as_deref().unwrap_or("(none)")
+                ),
+                "",
+                "",
+                0,
+                None,
+                Some(build_result_metadata(
+                    &state.config,
+                    &job,
+                    Some(&target),
+                    Some("source_build_blocked"),
+                )),
+            )
+            .await?;
+            return Ok(());
+        };
         match preflight_source_build_check_for_profile(&state.config, &command, profile).await {
             Ok(offenders) if !offenders.is_empty() => {
                 let mut metadata = build_result_metadata(
@@ -1899,13 +1925,30 @@ fn build_target<'a>(
     build_target_for_detected_commit(config, spec, None)
 }
 
-/// A Blueprint job is admitted at the target's release pin or at the ready
-/// detected commit `detected` (looked up from the job's own commit).
 fn build_target_for_detected_commit<'a>(
     config: &'a AppConfig,
     spec: &ValidatedBuildSpec,
     detected: Option<&str>,
 ) -> Result<&'a BuildTargetConfig> {
+    admit_build_target(config, spec, detected).map(|admitted| admitted.target)
+}
+
+/// The configured target a job builds and the nixpkgs commit it was admitted
+/// at: the commit the preflight selects its profile by.
+struct AdmittedTarget<'a> {
+    target: &'a BuildTargetConfig,
+    nixpkgs_commit: Option<String>,
+}
+
+/// A Blueprint job is admitted at the target's release pin or at the ready
+/// detected commit `detected` (looked up from the job's own commit). A job
+/// without a Blueprint builds the target's own flake: it is admitted at that
+/// flake's nixpkgs pin, and a `nixpkgs_commit` it names must be that pin.
+fn admit_build_target<'a>(
+    config: &'a AppConfig,
+    spec: &ValidatedBuildSpec,
+    detected: Option<&str>,
+) -> Result<AdmittedTarget<'a>> {
     let target = config
         .build
         .targets
@@ -1918,17 +1961,28 @@ fn build_target_for_detected_commit<'a>(
         .ok_or_else(|| {
             anyhow!("no configured build target matched artifact_type, target, and system")
         })?;
-    if spec.build_input.is_some() {
+    let target_pin = pinned_nixpkgs_revision(&target.flake).ok();
+    let commit = spec.nixpkgs_commit.as_deref();
+    let nixpkgs_commit = if spec.build_input.is_some() {
         let configured_revision = pinned_nixpkgs_revision(&target.flake)
             .context("validate configured Blueprint nixpkgs pin")?;
-        let commit = spec.nixpkgs_commit.as_deref();
-        if commit != Some(configured_revision) && (detected.is_none() || commit != detected) {
+        if commit == Some(configured_revision) || (detected.is_some() && commit == detected) {
+            commit.map(str::to_string)
+        } else {
             bail!(
                 "Blueprint nixpkgs_commit does not match this Nest target's reviewed source pin or a ready detected commit"
             );
         }
-    }
-    Ok(target)
+    } else {
+        if commit.is_some() && commit != target_pin {
+            bail!("nixpkgs_commit does not match this Nest target's nixpkgs pin");
+        }
+        target_pin.map(str::to_string)
+    };
+    Ok(AdmittedTarget {
+        target,
+        nixpkgs_commit,
+    })
 }
 
 fn build_target_names_compatible(configured: &str, requested: &str) -> bool {
@@ -12826,6 +12880,202 @@ esac
                 .clone()
                 .with_reviewed_content(&valid)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn a_detected_profile_rejects_the_pins_providers_where_its_own_are_expected() {
+        let (detected, items) = shifted_detected_profile(BTreeSet::new());
+        let mut exercised = 0;
+        for (name, derivations) in reviewed_fixture_graphs() {
+            let rendered = render_at_detected_commit(&derivations, &items, &[]);
+            let admitted = classify_with(&detected, &rendered);
+            for (path, drv) in &rendered {
+                if !admitted.contains(path) {
+                    continue;
+                }
+                let attrs = derivation_attributes(drv);
+                for key in ["buildCommand", "postBuild", "buildPhase", "checkPhase"] {
+                    let text = derivation_attr_text(&attrs, key).to_string();
+                    for (reviewed, derived) in &items {
+                        if reviewed == derived || !text.contains(derived.as_str()) {
+                            continue;
+                        }
+                        // The script names the pin's provider instead of the
+                        // commit's: as text it renders like the reviewed
+                        // script, so only the profile can tell them apart.
+                        let pinned = text.replace(derived.as_str(), reviewed);
+                        assert_ne!(
+                            detected.fingerprints(&pinned),
+                            detected.fingerprints(&text),
+                            "{name}: {path} {key}"
+                        );
+                        let mut swapped = drv.clone();
+                        set_derivation_text(&mut swapped, key, &pinned);
+                        let single = BTreeMap::from([(path.clone(), swapped)]);
+                        assert!(
+                            classify_with(&detected, &single).is_empty(),
+                            "{name}: {path} admitted the pin's {reviewed} in {key}"
+                        );
+                        exercised += 1;
+                    }
+                }
+            }
+        }
+        assert!(exercised > 0);
+    }
+
+    /// Mutations of a reviewed derivation. Each is applied at the pin and,
+    /// rendered with the detected commit's providers, at the commit.
+    fn reviewed_mutations(drv: &Value) -> Vec<(&'static str, Value)> {
+        let attrs = derivation_attributes(drv);
+        let mut mutations = vec![("unchanged", drv.clone())];
+        for key in ["buildCommand", "postBuild", "buildPhase", "installPhase"] {
+            let text = derivation_attr_text(&attrs, key);
+            if !text.is_empty() {
+                let mut appended = drv.clone();
+                set_derivation_text(
+                    &mut appended,
+                    key,
+                    &format!("{text}\ngcc source.c -o $out/x\n"),
+                );
+                mutations.push(("appended command", appended));
+                if let Some(index) = text.find("/nix/store/") {
+                    let mut foreign = drv.clone();
+                    let hash = &text[index + 11..index + 43];
+                    set_derivation_text(
+                        &mut foreign,
+                        key,
+                        &text.replacen(hash, &"0".repeat(32), 1),
+                    );
+                    mutations.push(("foreign store item", foreign));
+                }
+            }
+        }
+        let mut hooked = drv.clone();
+        set_derivation_text(&mut hooked, "preBuild", "gcc source.c -o $out/x");
+        mutations.push(("phase hook", hooked));
+        let mut injected = drv.clone();
+        set_derivation_text(&mut injected, "BASH_ENV", "/nix/store/attacker-hook");
+        mutations.push(("environment injection", injected));
+        let mut builder = drv.clone();
+        builder["builder"] =
+            json!("/nix/store/00000000000000000000000000000000-bash-5.3p9/bin/bash");
+        mutations.push(("foreign builder", builder));
+        if attrs.contains_key("stdenv") {
+            let mut stdenv = drv.clone();
+            set_derivation_text(
+                &mut stdenv,
+                "stdenv",
+                "/nix/store/00000000000000000000000000000000-stdenv-linux",
+            );
+            mutations.push(("foreign stdenv", stdenv));
+        }
+        let mut tool = drv.clone();
+        set_derivation_text(
+            &mut tool,
+            "nativeBuildInputs",
+            &format!(
+                "{} /nix/store/00000000000000000000000000000000-gcc-wrapper-15.2.0",
+                derivation_attr_text(&attrs, "nativeBuildInputs")
+            ),
+        );
+        mutations.push(("extra tool input", tool));
+        mutations
+    }
+
+    #[test]
+    fn a_detected_profile_decides_every_mutation_exactly_as_the_built_in_profile() {
+        // A loosened rule on the derived path (an unmapped identity matching,
+        // a counterpart admitting more, a rendering that hides a change)
+        // makes the detected commit admit a mutation the pin rejects.
+        let builtin = WorkstationBuildProfile::builtin();
+        let (detected, items) = shifted_detected_profile(BTreeSet::new());
+        let mut compared = 0;
+        let mut rejected = 0;
+        for (name, derivations) in reviewed_fixture_graphs() {
+            for (path, drv) in &derivations {
+                for (mutation, mutated) in reviewed_mutations(drv) {
+                    let pin = BTreeMap::from([(path.clone(), mutated)]);
+                    let commit = render_at_detected_commit(&pin, &items, &[]);
+                    let at_pin = classify_with(builtin, &pin).len();
+                    let at_commit = classify_with(&detected, &commit).len();
+                    assert_eq!(at_commit, at_pin, "{name}: {path}: {mutation}");
+                    compared += 1;
+                    rejected += usize::from(at_pin == 0);
+                }
+            }
+        }
+        assert!(
+            compared > 100 && rejected > compared / 2,
+            "{compared} {rejected}"
+        );
+    }
+
+    #[test]
+    fn the_preflight_profile_follows_the_admitted_commit_only() {
+        let pin = "74cc63f702f7d60a557e152a57b40fb1fd0f72ac";
+        let detected_commit = "6f06d204d8f2d8761d9da78778745974a3216381";
+        let (detected, _) = shifted_detected_profile(BTreeSet::new());
+        assert!(
+            WorkstationBuildProfile::for_build(Some(pin), Some(&detected))
+                .is_some_and(WorkstationBuildProfile::is_builtin)
+        );
+        assert!(std::ptr::eq(
+            WorkstationBuildProfile::for_build(Some(detected_commit), Some(&detected)).unwrap(),
+            &detected
+        ));
+        // Neither the pin nor the ready commit: no profile, no fallback.
+        let other = "1111111111111111111111111111111111111111";
+        assert!(WorkstationBuildProfile::for_build(Some(other), Some(&detected)).is_none());
+        assert!(WorkstationBuildProfile::for_build(Some(detected_commit), None).is_none());
+        assert!(WorkstationBuildProfile::for_build(None, Some(&detected)).is_none());
+
+        let mut config = AppConfig::default();
+        config.build.targets = vec![BuildTargetConfig {
+            artifact_type: "nixos_closure".to_string(),
+            target: "blueprint".to_string(),
+            system: "x86_64-linux".to_string(),
+            flake: format!("github:NixOS/nixpkgs/{pin}"),
+            attr: "packages.x86_64-linux.desktop-experience".to_string(),
+        }];
+        // A Blueprint job is admitted at the commit it names, if allowed.
+        let spec = blueprint_spec_for_commit(detected_commit);
+        let admitted = admit_build_target(&config, &spec, Some(detected_commit)).unwrap();
+        assert_eq!(admitted.nixpkgs_commit.as_deref(), Some(detected_commit));
+        // A job without a Blueprint builds the target's flake: it is admitted
+        // at that flake's pin, whatever its spec text says.
+        let mut plain = blueprint_spec_for_commit(pin);
+        plain.build_input = None;
+        assert_eq!(
+            admit_build_target(&config, &plain, None)
+                .unwrap()
+                .nixpkgs_commit
+                .as_deref(),
+            Some(pin)
+        );
+        plain.nixpkgs_commit = None;
+        assert_eq!(
+            admit_build_target(&config, &plain, None)
+                .unwrap()
+                .nixpkgs_commit
+                .as_deref(),
+            Some(pin)
+        );
+        for claimed in [detected_commit, other] {
+            plain.nixpkgs_commit = Some(claimed.to_string());
+            assert!(admit_build_target(&config, &plain, Some(detected_commit)).is_err());
+        }
+        // A target flake that is not a pinned nixpkgs gives no commit, and so
+        // no source-free profile.
+        config.build.targets[0].target = "custom".to_string();
+        config.build.targets[0].flake = "path:/srv/custom".to_string();
+        plain.target = "custom".to_string();
+        plain.nixpkgs_commit = None;
+        let admitted = admit_build_target(&config, &plain, None).unwrap();
+        assert_eq!(admitted.nixpkgs_commit, None);
+        assert!(
+            WorkstationBuildProfile::for_build(admitted.nixpkgs_commit.as_deref(), None).is_none()
         );
     }
 }

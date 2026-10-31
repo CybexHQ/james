@@ -107,9 +107,16 @@ commit, anchored on what the Nest already admitted at its release pin.
   - otherwise `ready`. The identities, counterpart content and Tiaris
     package derivations are stored with the record
     (`detected_nixpkgs_commits.profile`).
-- **Admission.** `build_target` admits a Blueprint job at the release pin or
-  at a ready detected commit (`target_not_allowed` otherwise); the preflight
-  selects the commit's profile by `spec.nixpkgs_commit`.
+- **Admission.** A Blueprint job is admitted at the release pin or at a
+  ready detected commit (`target_not_allowed` otherwise). A job without a
+  Blueprint is admitted at its target flake's nixpkgs pin, and a
+  `nixpkgs_commit` it names must be that pin. The preflight selects its
+  profile by the admitted commit, never by the job's text: the built-in
+  profile at the built-in commit, the persisted profile at a ready detected
+  commit, and none otherwise, which stops a source-disabled job with
+  `source_build_blocked`. A derived profile renders a built-in provider the
+  commit replaced to text no reviewed script contains, so a script cannot
+  use the pin's providers in place of the commit's.
 
 The first real channel commit, 6f06d204 (2026-10-29), evaluated with the
 pin's Nix 2.34.7 and the Taskbar compiler export as the reference job:

@@ -67,6 +67,10 @@ pub(crate) const MAX_TIARIS_PACKAGE_DERIVATIONS: usize = 512;
 const NIXOS_INIT: &str = "/nix/store/wy0mh9ah0alglg3ab5djg3jv6f0garyc-nixos-init-0.1.0";
 const NIXOS_INIT_DRV: &str = "/nix/store/2r230dqp2pg1jpcxp3va7wvbx812zaaq-nixos-init-0.1.0.drv";
 
+/// What a derived profile renders a built-in provider to when the detected
+/// commit has its own: not a store path, so no fingerprint half can match.
+const REPLACED_BUILTIN_PROVIDER: &str = "\0replaced-built-in-provider";
+
 /// Returned for an identity a profile does not carry. It is not a store path,
 /// so no derivation attribute, input or script can ever equal it.
 const UNMAPPED_IDENTITY: &str = "\0unmapped-commit-identity";
@@ -587,17 +591,19 @@ impl WorkstationBuildProfile {
             .unwrap_or(command)
     }
 
-    /// The profile a build job's preflight uses: the ready detected commit's
-    /// profile when the job builds at that commit, otherwise the built-in
-    /// profile of the release pin (`build_target` refuses any other commit).
+    /// The profile a build job's preflight uses for the commit it was
+    /// admitted at: the built-in profile at the built-in commit, the ready
+    /// detected commit's persisted profile at that commit, and none for any
+    /// other commit or no commit. There is no fallback.
     pub(crate) fn for_build<'a>(
-        nixpkgs_commit: Option<&str>,
+        admitted_commit: Option<&str>,
         detected: Option<&'a WorkstationBuildProfile>,
-    ) -> &'a Self {
-        match detected {
-            Some(profile) if nixpkgs_commit == Some(profile.nixpkgs_commit()) => profile,
-            _ => Self::builtin(),
+    ) -> Option<&'a Self> {
+        let commit = admitted_commit?;
+        if commit == BUILTIN_NIXPKGS_COMMIT {
+            return Some(Self::builtin());
         }
+        detected.filter(|profile| !profile.builtin && profile.nixpkgs_commit() == commit)
     }
 
     /// Whether `drv_path` is one of the Tiaris packages (workstation agent,
@@ -676,9 +682,21 @@ impl WorkstationBuildProfile {
             {
                 item_end += 1;
             }
-            if let Some(reviewed) = self.reviewed_items.get(&script[item_start..item_end]) {
+            let item = &script[item_start..item_end];
+            if let Some(reviewed) = self.reviewed_items.get(item) {
                 rendered.push_str(&script[copied..item_start]);
                 rendered.push_str(reviewed);
+                copied = item_end;
+            } else if self
+                .items
+                .get(item)
+                .is_some_and(|mapped| mapped.as_str() != item)
+            {
+                // A built-in provider this commit replaced. Rendering it
+                // unchanged would make it fingerprint like the commit's own
+                // provider; it renders to text no reviewed script contains.
+                rendered.push_str(&script[copied..item_start - PREFIX.len()]);
+                rendered.push_str(REPLACED_BUILTIN_PROVIDER);
                 copied = item_end;
             }
             index = item_end.max(item_start);
@@ -768,13 +786,11 @@ mod tests {
         assert_eq!(profile.nixpkgs_commit(), BUILTIN_NIXPKGS_COMMIT);
         assert!(profile.is_builtin());
         assert!(std::ptr::eq(
-            WorkstationBuildProfile::for_build(Some(BUILTIN_NIXPKGS_COMMIT), None),
+            WorkstationBuildProfile::for_build(Some(BUILTIN_NIXPKGS_COMMIT), None).unwrap(),
             profile
         ));
-        assert!(std::ptr::eq(
-            WorkstationBuildProfile::for_build(None, None),
-            profile
-        ));
+        assert!(WorkstationBuildProfile::for_build(None, None).is_none());
+        assert!(WorkstationBuildProfile::for_build(Some(&"1".repeat(40)), None).is_none());
 
         // Every path a preflight check asks the profile for is an identity,
         // and the built-in profile returns the compiled bytes unchanged.
