@@ -190,8 +190,20 @@ it (`src/software_updates/findings.rs`, Manage design section 4):
   named by the job's `software_update.release_blueprint_revision_id` (a
   field of the build job, next to `build_spec`). A candidate without it is
   `skipped` (`missing_release_hint`) and scanned once Manage names the
-  release; Nest never guesses a baseline. Installer-target jobs are neither
-  candidates nor releases.
+  release; Nest never guesses a baseline. Manage prepares Blueprints for
+  computers per hardware cohort (installer-target jobs), so these are
+  candidates and releases too: a candidate is compared with the release of
+  its own kind and, where one was built, its own hardware cohort (hardware
+  module and driver policy), otherwise of any cohort. One scan covers a
+  commit and revision.
+- **Closures.** Nest serves finished closures from its cache and drops a
+  job's out-link when it ends, so the nightly garbage collection removes the
+  closure and its derivations from the store. A release or candidate whose
+  closure or derivations are gone is built again from its own job, with the
+  same validation, admission, memory lease and source policy as its worker,
+  into the job's out-link, which is removed once the scan is done. While the
+  Nest has no memory for that build the scan waits; a failed build fails the
+  scan with the closure's reason.
 - **Scan.** `vulnix --json --closure` of the release and of the candidate:
   their runtime closures, matched by package name and version. vulnix runs at
   nice 19 and idle I/O priority with 8 GiB of address space and 40 minutes per
