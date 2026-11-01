@@ -697,10 +697,15 @@ class GuardTests(unittest.TestCase):
         client.request.return_value = {'session_token': 'fresh-private-session', 'organization': {'id': organization}}
         self.owner.client = lambda receipt: client
         self.owner.save = mock.Mock()
-        with mock.patch.object(resources, 'write') as write:
+        setup_token = 'tiaris_setup_' + 'C' * 43
+        with mock.patch.object(resources, 'write') as write, \
+                mock.patch.object(owner_module.database, 'setup_token', return_value=setup_token) as issue:
             self.owner.bootstrap(saved)
+        issue.assert_called_once_with(self.owner, saved)
         self.assertEqual(client.request.call_args.args[0], '/v1/auth/bootstrap')
         body = client.request.call_args.args[1]
+        self.assertEqual(body['setup_token'], setup_token)
+        self.assertNotIn(setup_token, json.dumps(saved))
         self.assertEqual(body['organization_type'], 'company')
         self.assertTrue(body['email'].endswith('@example.invalid'))
         self.assertGreaterEqual(len(body['password']), 48)
