@@ -217,6 +217,10 @@ async fn release_and_candidate(db: &TestDb) -> (i64, i64) {
     (release, candidate)
 }
 
+fn vulnix_advisories(stdout: &[u8]) -> Result<BTreeMap<String, Advisory>> {
+    Ok(advisories(parse_vulnix(stdout)?))
+}
+
 fn vulnix_entry(pname: &str, scores: &[(&str, Option<f64>)]) -> Value {
     json!({
         "name": format!("{pname}-1.0"),
@@ -270,8 +274,8 @@ fn write_executable(path: &Path, body: &str) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
 }
 
-/// A `nix` answering `path-info` and the package `eval` from files, and a
-/// `vulnix` printing the release or candidate scan by the scanned path.
+/// A `nix` answering `path-info` of each closure and the package `eval` from
+/// files, and a `vulnix` printing one scan of both closures.
 async fn fake(name: &str) -> Fake {
     let root = std::env::temp_dir().join(format!(
         "tiaris-nest-findings-{name}-{}",
@@ -279,7 +283,16 @@ async fn fake(name: &str) -> Fake {
     ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("drv")).unwrap();
-    for drv in ["system", "firefox-local", "glibc"] {
+    for drv in [
+        "system",
+        "firefox-local",
+        "glibc",
+        "zlib",
+        "openssl",
+        "system-candidate",
+        "firefox-new",
+        "glibc-new",
+    ] {
         std::fs::write(root.join("drv").join(format!("{drv}.drv")), "Derive()").unwrap();
     }
     let drv = |name: &str| {
@@ -290,10 +303,19 @@ async fn fake(name: &str) -> Fake {
     };
     // Firefox's recorded deriver (from the binary cache) is gone; a valid
     // local derivation declares its output, as after a local evaluation.
+    // Both closures share OpenSSL.
     let path_info = json!({
         "/nix/store/4444444444444444444444444444444a-system": {"deriver": drv("system")},
         "/nix/store/4444444444444444444444444444444b-firefox": {"deriver": drv("firefox-hydra")},
         "/nix/store/4444444444444444444444444444444c-glibc": {"deriver": drv("glibc")},
+        "/nix/store/4444444444444444444444444444444d-zlib": {"deriver": drv("zlib")},
+        "/nix/store/4444444444444444444444444444444f-openssl": {"deriver": drv("openssl")},
+    });
+    let candidate_path_info = json!({
+        "/nix/store/5555555555555555555555555555555a-system": {"deriver": drv("system-candidate")},
+        "/nix/store/5555555555555555555555555555555b-firefox": {"deriver": drv("firefox-new")},
+        "/nix/store/5555555555555555555555555555555c-glibc": {"deriver": drv("glibc-new")},
+        "/nix/store/4444444444444444444444444444444f-openssl": {"deriver": drv("openssl")},
     });
     std::fs::write(
         root.join("valid-derivers"),
@@ -309,6 +331,11 @@ async fn fake(name: &str) -> Fake {
     .unwrap();
     std::fs::write(root.join("path-info.json"), path_info.to_string()).unwrap();
     std::fs::write(
+        root.join("candidate-path-info.json"),
+        candidate_path_info.to_string(),
+    )
+    .unwrap();
+    std::fs::write(
         root.join("eval.json"),
         json!({
             "firefox": FIREFOX_OUT,
@@ -320,8 +347,21 @@ async fn fake(name: &str) -> Fake {
         .to_string(),
     )
     .unwrap();
-    std::fs::write(root.join("release.json"), release_scan().to_string()).unwrap();
-    std::fs::write(root.join("candidate.json"), candidate_scan().to_string()).unwrap();
+    // One run over both closures names each finding's derivation once; the
+    // candidate's Glibc is still affected by one of the release's advisories.
+    let mut scan = release_scan();
+    for entry in scan.as_array_mut().unwrap() {
+        let derivation = match entry["pname"].as_str().unwrap() {
+            "firefox" => drv("firefox-local"),
+            other => drv(other),
+        };
+        entry["derivation"] = json!(derivation);
+    }
+    let mut still_affected = vulnix_entry("glibc", &[("CVE-2026-0003", Some(4.0))]);
+    still_affected["version"] = json!("2.0");
+    still_affected["derivation"] = json!(drv("glibc-new"));
+    scan.as_array_mut().unwrap().push(still_affected);
+    std::fs::write(root.join("scan.json"), scan.to_string()).unwrap();
     write_executable(
         &root.join("nix"),
         &format!(
@@ -335,6 +375,7 @@ case " $* " in
   *" eval "*'"flaky"'*) [ -f "$root/fail-batch" ] && exit 1 ;;
 esac
 case " $* " in
+  *" path-info "*candidate*) [ -f "$root/fail-path-info" ] && exit 1; cat "$root/candidate-path-info.json" ;;
   *" path-info "*) [ -f "$root/fail-path-info" ] && exit 1; cat "$root/path-info.json" ;;
   *" derivation show "*) cat "$root/derivation-show.json" ;;
   *" eval "*) cat "$root/eval.json" ;;
@@ -363,15 +404,7 @@ exit 0
 root='{root}'
 printf '%s nice=%s\n' "$*" "$(cut -d' ' -f19 /proc/$$/stat)" >> "$root/vulnix-calls"
 [ -f "$root/fail-vulnix" ] && {{ echo 'Traceback: NVD download failed' >&2; exit 2; }}
-cache=''; previous=''
-for argument; do [ "$previous" = --cache-dir ] && cache="$argument"; previous="$argument"; done
-for last; do :; done
-case "$last" in *candidate*) [ -f "$root/touch-db-once" ] && {{ echo x >> "$cache/Data.fs"; rm "$root/touch-db-once"; }} ;; esac
-[ -f "$root/touch-db-always" ] && echo x >> "$cache/Data.fs"
-case "$last" in
-  *release*|*earlier*) cat "$root/release.json" ;;
-  *candidate*) cat "$root/candidate.json" ;;
-esac
+cat "$root/scan.json"
 exit 2
 "#,
             root = root.display()
@@ -537,10 +570,10 @@ async fn scans_a_built_candidate_once_and_reports_what_it_fixes() {
 
     let calls = std::fs::read_to_string(fake.root.join("vulnix-calls")).unwrap();
     let calls = calls.lines().collect::<Vec<_>>();
-    assert_eq!(calls.len(), 2);
+    // Both closures in one run, so both are judged by the same NVD data.
+    assert_eq!(calls.len(), 1);
     assert!(calls[0].starts_with("--json --closure --cache-dir "));
-    assert!(calls[0].contains(&format!(" {RELEASE_OUT} ")));
-    assert!(calls[1].contains(&format!(" {CANDIDATE_OUT} ")));
+    assert!(calls[0].contains(&format!(" {RELEASE_OUT} {CANDIDATE_OUT} ")));
     assert!(calls.iter().all(|call| call.ends_with("nice=19")));
     assert!(fake.scanner.vulnix_cache.is_dir());
     let eval = std::fs::read_to_string(fake.root.join("nix-calls")).unwrap();
@@ -549,7 +582,7 @@ async fn scans_a_built_candidate_once_and_reports_what_it_fixes() {
         .lines()
         .filter_map(|line| line.rsplit_once(" nice=").map(|(_, nice)| nice))
         .collect::<Vec<_>>();
-    assert_eq!(niceness, ["19"; 5], "{eval}");
+    assert_eq!(niceness, ["19"; 4], "{eval}");
     assert!(eval.contains(&format!("github:NixOS/nixpkgs/{COMMIT}?narHash=")));
     assert!(!eval.contains("bad\"ref"));
 
@@ -558,12 +591,19 @@ async fn scans_a_built_candidate_once_and_reports_what_it_fixes() {
     let finding = &findings[0];
     assert_eq!(finding.commit, COMMIT);
     assert_eq!(finding.blueprint_revision_id, CANDIDATE_REVISION);
-    assert_eq!(finding.advisories.len(), 5);
-    assert!(
+    // OpenSSL is shared and the candidate's Glibc still has CVE-2026-0003.
+    assert_eq!(
         finding
             .advisories
             .iter()
-            .all(|advisory| advisory.id != "CVE-2026-0006")
+            .map(|advisory| advisory.id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "CVE-2026-0001",
+            "CVE-2026-0002",
+            "CVE-2026-0005",
+            "CVE-2026-0004"
+        ]
     );
     assert_eq!(
         finding
@@ -582,7 +622,7 @@ async fn scans_a_built_candidate_once_and_reports_what_it_fixes() {
         wire["package_delivery"][0],
         json!({"ref": "firefox", "status": "public_cache"})
     );
-    assert_eq!(wire["advisories"][3].get("score"), None);
+    assert_eq!(wire["advisories"][2].get("score"), None);
 }
 
 #[tokio::test]
@@ -635,6 +675,32 @@ async fn a_failed_scan_reports_nothing_and_is_retried_daily_three_times() {
 }
 
 #[tokio::test]
+async fn a_scan_failed_before_the_nest_restarted_is_retried_at_once() {
+    // A Nest update may fix the cause, so it need not wait a day.
+    let db = pool().await;
+    let fake = fake("restarted").await;
+    release_and_candidate(&db).await;
+    std::fs::write(fake.root.join("fail-vulnix"), "").unwrap();
+    assert!(scan_once(&db, &fake, Utc::now()).await);
+    let mut stored = stored_scan(&db).await;
+    stored.scanned_at = "2020-01-01T00:00:00Z".into();
+    let name = ScanFile::name(&stored.commit_rev, &stored.blueprint_revision_id);
+    state_files::write(
+        &scans_dir(&db.data),
+        &name,
+        SCAN_SCHEMA,
+        MAX_SCAN_BYTES,
+        &stored,
+    )
+    .unwrap();
+    let hour_later = chrono::DateTime::parse_from_rfc3339("2020-01-01T01:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    assert!(scan_once(&db, &fake, hour_later).await);
+    assert_eq!(stored_scan(&db).await.attempts, 2);
+}
+
+#[tokio::test]
 async fn missing_release_closures_and_derivations_fail_soft() {
     let db = pool().await;
     let fake = fake("missing").await;
@@ -666,7 +732,7 @@ async fn missing_release_closures_and_derivations_fail_soft() {
     );
     assert_eq!(
         stored.detail,
-        "2 of 3 closure paths have their derivation in the store"
+        "4 of 5 closure paths have their derivation in the store"
     );
 
     let db = pool().await;
@@ -752,46 +818,49 @@ async fn a_candidate_without_its_release_is_skipped_until_manage_names_it() {
     );
 }
 
-#[tokio::test]
-async fn both_closures_are_judged_by_the_same_nvd_database() {
-    let db = pool().await;
-    let fake = fake("nvd").await;
-    release_and_candidate(&db).await;
-    // The candidate's run refreshed the database: the release is scanned
-    // again with what the candidate saw.
-    std::fs::write(fake.root.join("touch-db-once"), "").unwrap();
-    assert!(scan_once(&db, &fake, Utc::now()).await);
-    assert_eq!(stored_scan(&db).await.state, "succeeded");
-    let calls = std::fs::read_to_string(fake.root.join("vulnix-calls")).unwrap();
-    let scanned = calls
-        .lines()
-        .map(|line| {
-            if line.contains(RELEASE_OUT) {
-                "release"
-            } else {
-                "candidate"
-            }
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(scanned, ["release", "candidate", "release"]);
-    assert_eq!(
-        report(&db.pool, &db.data).await.unwrap()[0]
-            .advisories
-            .len(),
-        5
+#[test]
+fn findings_belong_to_the_closure_of_their_derivation() {
+    let entry = |pname: &str, id: &str, derivation: Option<&str>| {
+        let mut entry = vulnix_entry(pname, &[(id, Some(9.0))]);
+        entry["derivation"] = json!(derivation);
+        entry
+    };
+    let entries = parse_vulnix(
+        json!([
+            entry("old", "CVE-2026-0001", Some("/nix/store/a-old.drv")),
+            entry("shared", "CVE-2026-0002", Some("/nix/store/b-shared.drv")),
+            entry("new", "CVE-2026-0003", Some("c-new.drv")),
+            entry("unknown", "CVE-2026-0004", Some("/nix/store/d-unknown.drv")),
+            entry("unnamed", "CVE-2026-0005", None),
+        ])
+        .to_string()
+        .as_bytes(),
+    )
+    .unwrap();
+    let set = |paths: &[&str]| paths.iter().map(|path| path.to_string()).collect();
+    let (release, candidate) = attribute(
+        entries,
+        &set(&["/nix/store/a-old.drv", "/nix/store/b-shared.drv"]),
+        &set(&["/nix/store/b-shared.drv", "/nix/store/c-new.drv"]),
     );
-
-    // A database that keeps changing gives no finding.
-    let db = pool().await;
-    release_and_candidate(&db).await;
-    std::fs::write(fake.root.join("touch-db-always"), "").unwrap();
-    assert!(scan_once(&db, &fake, Utc::now()).await);
-    let stored = stored_scan(&db).await;
-    assert_eq!(stored.reason.as_deref(), Some(REASON_SCAN_FAILED));
-    assert!(
-        stored.detail.contains("NVD database changed"),
-        "{}",
-        stored.detail
+    let ids = |map: &BTreeMap<String, Advisory>| map.keys().cloned().collect::<Vec<_>>();
+    assert_eq!(ids(&release), ["CVE-2026-0001", "CVE-2026-0002"]);
+    // A finding of neither closure never shows as fixed.
+    assert_eq!(
+        ids(&candidate),
+        [
+            "CVE-2026-0002",
+            "CVE-2026-0003",
+            "CVE-2026-0004",
+            "CVE-2026-0005"
+        ]
+    );
+    assert_eq!(
+        fixed_advisories(&release, &candidate)
+            .iter()
+            .map(|advisory| advisory.id.as_str())
+            .collect::<Vec<_>>(),
+        ["CVE-2026-0001"]
     );
 }
 
@@ -1114,13 +1183,13 @@ async fn real_vulnix_scans_a_store_closure() {
         rebuild: None,
     };
     check_derivers(&scanner, &path).await.unwrap();
-    let advisories = run_vulnix(&scanner, &path).await.unwrap();
+    let found = advisories(run_vulnix(&scanner, &[&path]).await.unwrap());
     assert!(
-        advisories
+        found
             .values()
             .all(|advisory| valid_advisory_id(&advisory.id))
     );
-    eprintln!("{} advisories", advisories.len());
+    eprintln!("{} advisories", found.len());
 }
 
 #[tokio::test]

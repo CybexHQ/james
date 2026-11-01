@@ -16,10 +16,11 @@
 //!    the store of them: a closure or derivations no longer there are built
 //!    again from the job (`crate::build::rebuild_for_scan`) and kept only for
 //!    the scan;
-//! 2. scans the runtime closure of both with vulnix (`--closure`), at low CPU
-//!    and I/O priority under a memory and time limit, with its NVD database
-//!    cached in the Nest state directory; both scans must see the same
-//!    database;
+//! 2. scans the runtime closures of both in one vulnix run (`--closure`), so
+//!    both are judged by the same NVD data, at low CPU and I/O priority under
+//!    a memory and time limit, with its NVD database cached in the Nest state
+//!    directory; each finding belongs to the closure whose derivations
+//!    include the one it names;
 //! 3. keeps the advisories of the release the candidate no longer has, with
 //!    severity from the CVSS v3 base score;
 //! 4. looks up each App List package ref of the job at the commit:
@@ -30,7 +31,8 @@
 //!
 //! Each candidate (commit and Blueprint revision) is scanned once. A failed
 //! scan records its reason, produces no finding and never blocks a build; it
-//! is retried at most daily, three attempts in all. A lookup that decides no
+//! is retried at most daily, or at once after the Nest restarts (as after an
+//! update that may fix its cause), three attempts in all. A lookup that decides no
 //! package at all is such a failure. Scans wait while a build runs and stop,
 //! recording nothing, when one starts before a vulnix run. Findings reach Manage only in protocol-5 reports
 //! (`software_update_findings`).
@@ -94,7 +96,6 @@ pub(crate) const REASON_MISSING_RELEASE_HINT: &str = "missing_release_hint";
 pub(crate) const REASON_PACKAGE_STATUS_UNAVAILABLE: &str = "package_status_unavailable";
 /// One ref's evaluation when the batch evaluation of all refs fails.
 const PACKAGE_REF_EVAL_TIMEOUT: Duration = Duration::from_secs(120);
-const NVD_DATABASE_FILE: &str = "Data.fs";
 const HINTS_FILE: &str = "candidate-hints.json";
 const HINTS_SCHEMA: &str = "tiaris.nest.software-update-hints.v1";
 const MAX_HINTS: usize = 4096;
@@ -318,8 +319,10 @@ fn clean_text(value: &str, max_chars: usize) -> String {
         .join(" ")
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct VulnixEntry {
+    #[serde(default)]
+    derivation: Option<String>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -332,11 +335,41 @@ struct VulnixEntry {
     description: BTreeMap<String, String>,
 }
 
-/// Advisory id → advisory, from `vulnix --json`. An advisory reported for
+fn parse_vulnix(stdout: &[u8]) -> Result<Vec<VulnixEntry>> {
+    serde_json::from_slice(stdout).context("parse vulnix JSON")
+}
+
+/// The advisories of the release's and of the candidate's closure, from one
+/// vulnix run over both, by the derivation each finding names. A finding of
+/// a derivation in neither counts as the candidate's, so it never shows as
+/// fixed.
+fn attribute(
+    entries: Vec<VulnixEntry>,
+    release: &BTreeSet<String>,
+    candidate: &BTreeSet<String>,
+) -> (BTreeMap<String, Advisory>, BTreeMap<String, Advisory>) {
+    let (mut of_release, mut of_candidate) = (Vec::new(), Vec::new());
+    for entry in entries {
+        let derivation = entry.derivation.as_deref().map(absolute_store_path);
+        let in_release = derivation
+            .as_ref()
+            .is_some_and(|path| release.contains(path));
+        let in_candidate = derivation
+            .as_ref()
+            .is_some_and(|path| candidate.contains(path));
+        if in_release {
+            of_release.push(entry.clone());
+        }
+        if in_candidate || !in_release {
+            of_candidate.push(entry);
+        }
+    }
+    (advisories(of_release), advisories(of_candidate))
+}
+
+/// Advisory id → advisory of vulnix findings. An advisory reported for
 /// several packages keeps the first package by name.
-pub(crate) fn vulnix_advisories(stdout: &[u8]) -> Result<BTreeMap<String, Advisory>> {
-    let mut entries: Vec<VulnixEntry> =
-        serde_json::from_slice(stdout).context("parse vulnix JSON")?;
+fn advisories(mut entries: Vec<VulnixEntry>) -> BTreeMap<String, Advisory> {
     entries.sort_by(|left, right| {
         left.pname
             .as_deref()
@@ -389,7 +422,7 @@ pub(crate) fn vulnix_advisories(stdout: &[u8]) -> Result<BTreeMap<String, Adviso
             );
         }
     }
-    Ok(found)
+    found
 }
 
 /// The release's advisories the candidate no longer has, most severe first,
@@ -580,8 +613,15 @@ pub(crate) async fn record_hint(
     .await
 }
 
+/// When this Nest process started: a scan failed before it is retried at once.
+fn started_at() -> &'static str {
+    static STARTED: OnceLock<String> = OnceLock::new();
+    STARTED.get_or_init(|| timestamp(Utc::now()))
+}
+
 /// Start the scanner (only on Nests that check for updates).
 pub(crate) fn spawn(state: AppState) {
+    started_at();
     tokio::spawn(async move {
         sleep(STARTUP_DELAY).await;
         loop {
@@ -726,7 +766,11 @@ async fn next_candidate(
         let done = scan_of(data_dir, &job.commit, &job.blueprint_revision_id).is_some_and(|scan| {
             match scan.state.as_str() {
                 "succeeded" => true,
-                "failed" => scan.attempts >= MAX_ATTEMPTS || scan.scanned_at > retry_before,
+                "failed" => {
+                    scan.attempts >= MAX_ATTEMPTS
+                        || (scan.scanned_at > retry_before
+                            && scan.scanned_at.as_str() >= started_at())
+                }
                 // Skipped until the job names its release.
                 _ => !job
                     .managed_job_id
@@ -954,51 +998,28 @@ async fn scan(
             Err(failure) => return Ok(ScanOutcome::failed(release_job_id, failure)),
         }
     }
-    let (release_path, candidate_path) = (&closures[0], &closures[1]);
-    // Both closures must be judged by the same NVD data. vulnix refreshes its
-    // database at most every two hours, before it scans; if the candidate's
-    // run changed it, the release is scanned again with what the candidate
-    // saw.
-    let mut scanned = Vec::with_capacity(3);
-    let mut paths = vec![release_path, candidate_path];
-    let mut stamp = nvd_stamp(scanner);
-    while let Some(path) = paths.first().copied() {
-        if build_running(db).await? {
-            return Ok(ScanOutcome {
-                release_job_id,
-                result: ScanResult::Deferred,
-            });
-        }
-        match run_vulnix(scanner, path).await {
-            Ok(advisories) => scanned.push(advisories),
-            Err(error) => {
-                return Ok(ScanOutcome::failed(
-                    release_job_id,
-                    ScanFailure::new(REASON_SCAN_FAILED, format!("{error:#}")),
-                ));
-            }
-        }
-        paths.remove(0);
-        let current = nvd_stamp(scanner);
-        if scanned.len() >= 2 && current != stamp {
-            if scanned.len() == 3 {
-                return Ok(ScanOutcome::failed(
-                    release_job_id,
-                    ScanFailure::new(
-                        REASON_SCAN_FAILED,
-                        "the NVD database changed between the two scans twice",
-                    ),
-                ));
-            }
-            paths.push(release_path);
-        }
-        stamp = current;
+    let [
+        (release_path, release_derivations),
+        (candidate_path, candidate_derivations),
+    ] = <[_; 2]>::try_from(closures).expect("two closures");
+    if build_running(db).await? {
+        return Ok(ScanOutcome {
+            release_job_id,
+            result: ScanResult::Deferred,
+        });
     }
-    let release_scan = scanned
-        .last()
-        .filter(|_| scanned.len() == 3)
-        .unwrap_or(&scanned[0]);
-    let fixed = fixed_advisories(release_scan, &scanned[1]);
+    let entries = match run_vulnix(scanner, &[&release_path, &candidate_path]).await {
+        Ok(entries) => entries,
+        Err(error) => {
+            return Ok(ScanOutcome::failed(
+                release_job_id,
+                ScanFailure::new(REASON_SCAN_FAILED, format!("{error:#}")),
+            ));
+        }
+    };
+    let (release_advisories, candidate_advisories) =
+        attribute(entries, &release_derivations, &candidate_derivations);
+    let fixed = fixed_advisories(&release_advisories, &candidate_advisories);
     let delivery = match package_delivery(scanner, candidate).await {
         Ok(delivery) => delivery,
         Err(failure) => return Ok(ScanOutcome::failed(release_job_id, failure)),
@@ -1009,16 +1030,16 @@ async fn scan(
     })
 }
 
-/// The job's closure with nearly all its derivations in the store, built
-/// again when garbage collection took them; `None` while the Nest has no
-/// memory for that build.
+/// The job's closure and its derivations, nearly all of them in the store,
+/// built again when garbage collection took them; `None` while the Nest has
+/// no memory for that build.
 async fn closure_for_scan(
     scanner: &Scanner,
     job: &Job,
     rebuilt: &mut Vec<crate::build::RebuiltClosure>,
-) -> std::result::Result<Option<String>, ScanFailure> {
+) -> std::result::Result<Option<(String, BTreeSet<String>)>, ScanFailure> {
     let failure = match check_derivers(scanner, &job.output_path).await {
-        Ok(()) => return Ok(Some(job.output_path.clone())),
+        Ok(derivations) => return Ok(Some((job.output_path.clone(), derivations))),
         Err(failure) => failure,
     };
     let Some(state) = scanner.rebuild.as_ref() else {
@@ -1048,17 +1069,10 @@ async fn closure_for_scan(
             "a software update closure built again differs from the original; scanning the new one"
         );
     }
-    check_derivers(scanner, &closure.output_path).await?;
+    let derivations = check_derivers(scanner, &closure.output_path).await?;
     let path = closure.output_path.clone();
     rebuilt.push(closure);
-    Ok(Some(path))
-}
-
-/// Size and modification time of vulnix's database; vulnix rewrites it only
-/// when the NVD data changes (or it packs it).
-fn nvd_stamp(scanner: &Scanner) -> Option<(u64, std::time::SystemTime)> {
-    let metadata = std::fs::metadata(scanner.vulnix_cache.join(NVD_DATABASE_FILE)).ok()?;
-    Some((metadata.len(), metadata.modified().ok()?))
+    Ok(Some((path, derivations)))
 }
 
 fn valid_store_path(path: &str) -> bool {
@@ -1074,10 +1088,14 @@ fn valid_store_path(path: &str) -> bool {
     })
 }
 
-/// The closure must be in the store, and vulnix must find the derivation of
-/// nearly every path in it. Like vulnix, a path whose recorded deriver is
-/// gone counts when a valid derivation in the store declares it as output.
-async fn check_derivers(scanner: &Scanner, path: &str) -> std::result::Result<(), ScanFailure> {
+/// The derivations vulnix finds for the closure's paths, which must be in the
+/// store with nearly every path's derivation. Like vulnix, a path whose
+/// recorded deriver is gone counts when a valid derivation in the store
+/// declares it as output.
+async fn check_derivers(
+    scanner: &Scanner,
+    path: &str,
+) -> std::result::Result<BTreeSet<String>, ScanFailure> {
     if !valid_store_path(path) {
         return Err(ScanFailure::new(
             REASON_CLOSURE_UNAVAILABLE,
@@ -1098,21 +1116,34 @@ async fn check_derivers(scanner: &Scanner, path: &str) -> std::result::Result<()
         })
         .map(|(path, _)| path.clone())
         .collect::<Vec<_>>();
-    let recovered = valid_deriver_outputs(scanner, &missing)
+    let mut derivations = closure
+        .iter()
+        .filter_map(|(_, deriver)| deriver.clone())
+        .filter(|deriver| Path::new(deriver).exists())
+        .collect::<BTreeSet<_>>();
+    let missing_paths = missing.iter().collect::<BTreeSet<_>>();
+    let mut recovered = BTreeSet::new();
+    for (derivation, outputs) in valid_derivations(scanner, &missing)
         .await
-        .map_err(|error| ScanFailure::new(REASON_DERIVATIONS_UNAVAILABLE, format!("{error:#}")))?;
-    let present = total - missing.len()
-        + missing
-            .iter()
-            .filter(|path| recovered.contains(*path))
-            .count();
+        .map_err(|error| ScanFailure::new(REASON_DERIVATIONS_UNAVAILABLE, format!("{error:#}")))?
+    {
+        let declared = outputs
+            .into_iter()
+            .filter(|output| missing_paths.contains(output))
+            .collect::<Vec<_>>();
+        if !declared.is_empty() {
+            derivations.insert(derivation);
+            recovered.extend(declared);
+        }
+    }
+    let present = total - missing.len() + recovered.len();
     if total == 0 || present * 100 < total * MIN_DERIVER_COVERAGE_PERCENT {
         return Err(ScanFailure::new(
             REASON_DERIVATIONS_UNAVAILABLE,
             format!("{present} of {total} closure paths have their derivation in the store"),
         ));
     }
-    Ok(())
+    Ok(derivations)
 }
 
 /// Bounded `nix … --json`.
@@ -1170,9 +1201,12 @@ fn closure_derivers(value: &Value) -> Result<Vec<(String, Option<String>)>> {
     })
 }
 
-/// Outputs declared by the valid derivations of `paths`
+/// The valid derivations of `paths` with the outputs each declares
 /// (`nix-store --query --valid-derivers`, then `nix derivation show`).
-async fn valid_deriver_outputs(scanner: &Scanner, paths: &[String]) -> Result<BTreeSet<String>> {
+async fn valid_derivations(
+    scanner: &Scanner,
+    paths: &[String],
+) -> Result<BTreeMap<String, BTreeSet<String>>> {
     const CHUNK: usize = 1000;
     let nix_store = Path::new(&scanner.nix).with_file_name("nix-store");
     let nix_store = if scanner.nix.contains('/') {
@@ -1207,35 +1241,38 @@ async fn valid_deriver_outputs(scanner: &Scanner, paths: &[String]) -> Result<BT
         );
     }
     let derivers = derivers.into_iter().collect::<Vec<_>>();
-    let mut outputs = BTreeSet::new();
+    let mut declared = BTreeMap::new();
     for chunk in derivers.chunks(CHUNK) {
         let mut args = vec!["derivation", "show"];
         args.extend(chunk.iter().map(String::as_str));
         let shown = nix_json(scanner, &args).await?;
         let shown = shown.get("derivations").unwrap_or(&shown);
-        for derivation in shown.as_object().into_iter().flat_map(|map| map.values()) {
-            for output in derivation
-                .get("outputs")
-                .and_then(Value::as_object)
-                .into_iter()
-                .flat_map(|map| map.values())
-            {
-                if let Some(path) = output.get("path").and_then(Value::as_str) {
-                    outputs.insert(absolute_store_path(path));
-                }
-            }
+        for (path, derivation) in shown.as_object().into_iter().flatten() {
+            let outputs: &mut BTreeSet<String> =
+                declared.entry(absolute_store_path(path)).or_default();
+            outputs.extend(
+                derivation
+                    .get("outputs")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flat_map(|map| map.values())
+                    .filter_map(|output| output.get("path").and_then(Value::as_str))
+                    .map(absolute_store_path),
+            );
         }
     }
-    Ok(outputs)
+    Ok(declared)
 }
 
-/// `vulnix --json --closure` of one closure at idle priority.
-async fn run_vulnix(scanner: &Scanner, path: &str) -> Result<BTreeMap<String, Advisory>> {
+/// `vulnix --json --closure` of the closures at idle priority, in one run:
+/// vulnix refreshes its NVD data before it scans, so separate runs could
+/// judge them by different data.
+async fn run_vulnix(scanner: &Scanner, paths: &[&str]) -> Result<Vec<VulnixEntry>> {
     create_private_dir(&scanner.vulnix_cache)?;
     let mut command = scanner.command(&scanner.vulnix);
     command.args(["--json", "--closure", "--cache-dir"]);
     command.arg(&scanner.vulnix_cache);
-    command.arg(path);
+    command.args(paths);
     let output = run_bounded_command(
         command,
         VULNIX_TIMEOUT,
@@ -1255,7 +1292,7 @@ async fn run_vulnix(scanner: &Scanner, path: &str) -> Result<BTreeMap<String, Ad
             stderr.lines().last().unwrap_or_default()
         );
     }
-    vulnix_advisories(&output.stdout)
+    parse_vulnix(&output.stdout)
 }
 
 /// Lowest CPU and idle I/O priority, and a bound on address space. Runs in
