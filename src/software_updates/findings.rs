@@ -629,9 +629,11 @@ async fn prune(db: &SqlitePool, data_dir: &Path) -> Result<()> {
     .await
 }
 
-/// A built candidate: a Blueprint job at a ready detected commit (not a
-/// release pin) whose commit and revision have no scan yet, only a failed
-/// one due for a retry, or a skipped one whose job now names its release.
+/// A built candidate: a Blueprint job at a ready detected commit whose commit
+/// and revision have no scan yet, only a failed one due for a retry, or a
+/// skipped one whose job now names its release. A job at a workstation pin is
+/// one only once Manage names its release: Manage pins a detected commit too,
+/// so the Nest can build its candidates.
 #[derive(Clone, Debug)]
 struct Candidate {
     job: Job,
@@ -660,7 +662,11 @@ async fn next_candidate(
         let Some(job) = Job::from_row(&row) else {
             continue;
         };
-        if release_pins.contains(&job.commit) {
+        let named = job
+            .managed_job_id
+            .as_ref()
+            .is_some_and(|managed| hints.contains_key(managed));
+        if release_pins.contains(&job.commit) && !named {
             continue;
         }
         // A scan of these could never be stored; skip it instead of scanning

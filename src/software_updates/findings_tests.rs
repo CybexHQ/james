@@ -903,6 +903,35 @@ async fn only_blueprint_jobs_at_ready_detected_commits_are_candidates() {
 }
 
 #[tokio::test]
+async fn a_named_candidate_at_a_pinned_detected_commit_is_scanned() {
+    // Manage pins the detected commit so the Nest can build its candidates;
+    // the candidate it names a release for is still scanned.
+    let db = pool().await;
+    let pins = [PIN.to_string(), COMMIT.to_string()];
+    insert_detected(&db, COMMIT, true).await;
+    insert_job(
+        &db,
+        "ordinary",
+        spec(EARLIER_CANDIDATE, 3, COMMIT, &[]),
+        EARLIER_OUT,
+        "2026-10-30T05:00:00Z",
+    )
+    .await;
+    assert!(
+        next_candidate(&db.pool, &db.data, &pins, Utc::now())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let (_, candidate) = release_and_candidate(&db).await;
+    let found = next_candidate(&db.pool, &db.data, &pins, Utc::now())
+        .await
+        .unwrap()
+        .expect("the named candidate");
+    assert_eq!(found.job.id, candidate);
+}
+
+#[tokio::test]
 async fn the_report_shares_package_status_per_commit_and_drops_stale_scans() {
     let db = pool().await;
     let fake = fake("report").await;
