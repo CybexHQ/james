@@ -246,7 +246,8 @@ it (`src/software_updates/findings.rs`, Manage design section 4):
   (`software-updates/scans/<commit>.<revision>.json`, next to
   `software-updates/candidate-hints.json` with the releases Manage named);
   it produces no finding and never blocks a build. It is retried at most
-  daily, three attempts in all. A corrupt scan record is no scan: the
+  daily, or at once after the Nest restarts (as after an update that may fix
+  its cause), three attempts in all. A corrupt scan record is no scan: the
   candidate is scanned again. Scans of jobs Nest no longer holds are removed,
   and at most 1024 are kept.
 

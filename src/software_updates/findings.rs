@@ -31,7 +31,8 @@
 //!
 //! Each candidate (commit and Blueprint revision) is scanned once. A failed
 //! scan records its reason, produces no finding and never blocks a build; it
-//! is retried at most daily, three attempts in all. A lookup that decides no
+//! is retried at most daily, or at once after the Nest restarts (as after an
+//! update that may fix its cause), three attempts in all. A lookup that decides no
 //! package at all is such a failure. Scans wait while a build runs and stop,
 //! recording nothing, when one starts before a vulnix run. Findings reach Manage only in protocol-5 reports
 //! (`software_update_findings`).
@@ -612,8 +613,15 @@ pub(crate) async fn record_hint(
     .await
 }
 
+/// When this Nest process started: a scan failed before it is retried at once.
+fn started_at() -> &'static str {
+    static STARTED: OnceLock<String> = OnceLock::new();
+    STARTED.get_or_init(|| timestamp(Utc::now()))
+}
+
 /// Start the scanner (only on Nests that check for updates).
 pub(crate) fn spawn(state: AppState) {
+    started_at();
     tokio::spawn(async move {
         sleep(STARTUP_DELAY).await;
         loop {
@@ -758,7 +766,11 @@ async fn next_candidate(
         let done = scan_of(data_dir, &job.commit, &job.blueprint_revision_id).is_some_and(|scan| {
             match scan.state.as_str() {
                 "succeeded" => true,
-                "failed" => scan.attempts >= MAX_ATTEMPTS || scan.scanned_at > retry_before,
+                "failed" => {
+                    scan.attempts >= MAX_ATTEMPTS
+                        || (scan.scanned_at > retry_before
+                            && scan.scanned_at.as_str() >= started_at())
+                }
                 // Skipped until the job names its release.
                 _ => !job
                     .managed_job_id

@@ -675,6 +675,32 @@ async fn a_failed_scan_reports_nothing_and_is_retried_daily_three_times() {
 }
 
 #[tokio::test]
+async fn a_scan_failed_before_the_nest_restarted_is_retried_at_once() {
+    // A Nest update may fix the cause, so it need not wait a day.
+    let db = pool().await;
+    let fake = fake("restarted").await;
+    release_and_candidate(&db).await;
+    std::fs::write(fake.root.join("fail-vulnix"), "").unwrap();
+    assert!(scan_once(&db, &fake, Utc::now()).await);
+    let mut stored = stored_scan(&db).await;
+    stored.scanned_at = "2020-01-01T00:00:00Z".into();
+    let name = ScanFile::name(&stored.commit_rev, &stored.blueprint_revision_id);
+    state_files::write(
+        &scans_dir(&db.data),
+        &name,
+        SCAN_SCHEMA,
+        MAX_SCAN_BYTES,
+        &stored,
+    )
+    .unwrap();
+    let hour_later = chrono::DateTime::parse_from_rfc3339("2020-01-01T01:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    assert!(scan_once(&db, &fake, hour_later).await);
+    assert_eq!(stored_scan(&db).await.attempts, 2);
+}
+
+#[tokio::test]
 async fn missing_release_closures_and_derivations_fail_soft() {
     let db = pool().await;
     let fake = fake("missing").await;
