@@ -399,7 +399,9 @@ class Owner:
 
     def bootstrap(self, receipt):
         password = random.token_urlsafe(48)
+        setup_token = database.setup_token(self, receipt)
         value = self.client(receipt).request('/v1/auth/bootstrap', {
+            'setup_token': setup_token,
             'email': 'qualification-' + receipt['owner'] + '@example.invalid',
             'display_name': 'Disposable qualification operator', 'password': password,
             'organization_name': 'Disposable Nest qualification', 'organization_type': 'company',

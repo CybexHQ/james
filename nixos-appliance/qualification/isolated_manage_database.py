@@ -1,5 +1,6 @@
 """Explicit database setup for the exact owned disposable Manage fixture."""
 from pathlib import Path
+import re
 
 
 READY = '/var/lib/tiaris/database-provisioned'
@@ -10,6 +11,38 @@ fi
 TIARIS_MIGRATE_ONLY=0 TIARIS_DATABASE_VERIFY_ONLY=1 /opt/tiaris/bin/tiaris
 exec /opt/tiaris/bin/tiaris
 '''
+
+
+# Manage accepts its first administrator only with a locally issued, 30-minute
+# setup token. The operator mode exits before opening a listener; the token
+# lives only in the app's private tmpfs and is removed even on failure.
+SETUP_TOKEN_FILE = '/tmp/tiaris-setup-token'
+SETUP_TOKEN = f'''set -eu
+set -a
+. /run/fixture/environment
+set +a
+trap 'rm -f {SETUP_TOKEN_FILE}' EXIT
+rm -f {SETUP_TOKEN_FILE}
+TIARIS_MIGRATE_ONLY=0 TIARIS_DATABASE_VERIFY_ONLY=0 TIARIS_CREATE_SETUP_TOKEN={SETUP_TOKEN_FILE} /opt/tiaris/bin/tiaris >&2
+cat {SETUP_TOKEN_FILE}
+'''
+SETUP_TOKEN_SHAPE = re.compile(r'tiaris_setup_[A-Za-z0-9_-]{43}')
+
+
+def setup_token(owner, receipt):
+    """Issue the first-administrator proof inside the exact running app."""
+    docker = owner.docker(receipt)
+    spec = receipt['containers']['app']
+    docker.verify_container('app', spec['id'], spec['image'], spec['uid'],
+        receipt['context']['network_id'], spec['mounts'],
+        dns=receipt['peer_ipv4'], peer=spec['peer'])
+    # Same cleared environment as launch.sh: only the owned fixture file.
+    value = docker.call('container', 'exec', spec['id'], '/usr/bin/env', '-i',
+                        'PATH=/usr/bin:/bin', '/bin/sh', '-c', SETUP_TOKEN)
+    token = value.decode('ascii', 'replace').strip()
+    if not SETUP_TOKEN_SHAPE.fullmatch(token):
+        raise ValueError('fresh fixture Manage did not issue a valid setup token')
+    return token
 
 
 def initialize(owner, receipt, config, resources):

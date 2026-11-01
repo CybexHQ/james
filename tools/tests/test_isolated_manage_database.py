@@ -122,5 +122,69 @@ sys.exit(29 if os.environ.get('FAIL') == mode else 0)
                     self.assertEqual(events.read_text().splitlines(), expected)
 
 
+    def test_setup_token_is_issued_inside_verified_app_with_cleared_environment(self):
+        owner, receipt, *_ = self.setup_fixture()
+        token = 'tiaris_setup_' + 'A' * 43
+        docker = owner.docker.return_value
+        docker.call.side_effect = None
+        docker.call.return_value = (token + '\n').encode()
+        self.assertEqual(database.setup_token(owner, receipt), token)
+        docker.verify_container.assert_called_once_with('app', 'app-id', 'app-image', 10001,
+            'owned-network', [], dns='10.1.2.1', peer=None)
+        args = docker.call.call_args.args
+        self.assertEqual(args[:6], ('container', 'exec', 'app-id', '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin'))
+        self.assertEqual(args[6:8], ('/bin/sh', '-c'))
+        self.assertEqual(args[8], database.SETUP_TOKEN)
+
+    def test_setup_token_requires_verified_app_and_exact_token_shape(self):
+        owner, receipt, *_ = self.setup_fixture('ownership')
+        with self.assertRaises(ValueError):
+            database.setup_token(owner, receipt)
+        owner.docker.return_value.call.assert_not_called()
+        for output in (b'', b'not-a-token\n', b'tiaris_setup_short\n',
+                       ('tiaris_setup_' + 'A' * 43 + '\nextra\n').encode()):
+            with self.subTest(output=output):
+                owner, receipt, *_ = self.setup_fixture()
+                docker = owner.docker.return_value
+                docker.call.side_effect = None
+                docker.call.return_value = output
+                with self.assertRaisesRegex(ValueError, 'valid setup token'):
+                    database.setup_token(owner, receipt)
+
+    def test_setup_token_script_prints_only_the_token_and_always_removes_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            token_file = root / 'setup-token'
+            environment = root / 'environment'
+            environment.write_text('TIARIS_DATABASE_MIGRATIONS=operator\n')
+            binary = root / 'tiaris'
+            binary.write_text(f'''#!{sys.executable}
+import os, pathlib, sys
+assert os.environ['TIARIS_DATABASE_MIGRATIONS'] == 'operator'
+assert os.environ['TIARIS_MIGRATE_ONLY'] == '0' and os.environ['TIARIS_DATABASE_VERIFY_ONLY'] == '0'
+print('log line on stdout')
+if os.environ.get('FAIL'):
+    sys.exit(29)
+path = pathlib.Path(os.environ['TIARIS_CREATE_SETUP_TOKEN'])
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+os.write(fd, b'tiaris_setup_' + b'B' * 43 + b'\\n')
+os.close(fd)
+''')
+            binary.chmod(0o755)
+            script = database.SETUP_TOKEN.replace(
+                '/opt/tiaris/bin/tiaris', shlex.quote(str(binary))).replace(
+                database.SETUP_TOKEN_FILE, shlex.quote(str(token_file))).replace(
+                '/run/fixture/environment', shlex.quote(str(environment)))
+            for failure, status in (('', 0), ('1', 29)):
+                with self.subTest(failure=failure):
+                    token_file.write_text('stale\n')
+                    result = subprocess.run(['sh', '-c', script], check=False, capture_output=True,
+                                            env={**os.environ, 'FAIL': failure}, timeout=10)
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    expected = b'tiaris_setup_' + b'B' * 43 + b'\n' if not failure else b''
+                    self.assertEqual(result.stdout, expected)
+                    self.assertFalse(token_file.exists())
+
+
 if __name__ == '__main__':
     unittest.main()
