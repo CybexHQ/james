@@ -35,8 +35,10 @@ use crate::{
 
 mod counterpart;
 mod profile;
+mod scan_rebuild;
 
 pub(crate) use counterpart::{Counterparts, add_counterparts};
+pub(crate) use scan_rebuild::{RebuiltClosure, rebuild_for_scan};
 
 #[cfg(test)]
 pub(crate) use profile::COMMIT_IDENTITIES;

@@ -3,12 +3,19 @@
 //!
 //! Manage prepares an update-only candidate of each released Blueprint as
 //! soon as Nest reports a ready detected commit, and Nest builds it through
-//! the ordinary build-job path. Once the candidate's closure is built, Nest:
+//! the ordinary build-job path, as a generic Blueprint closure or, as Manage
+//! prepares Blueprints for computers, one per hardware cohort. Once the
+//! candidate's closure is built, Nest:
 //!
 //! 1. finds the closure of the release the candidate was prepared from,
 //!    named by `software_update.release_blueprint_revision_id` on the build
-//!    job; a candidate without it is skipped (`missing_release_hint`) until
-//!    Manage names it, so a finding never compares against a guessed release;
+//!    job, of the same kind and, when it has one, hardware cohort; a
+//!    candidate without it is skipped (`missing_release_hint`) until Manage
+//!    names it, so a finding never compares against a guessed release. Nest
+//!    serves finished closures from its cache, so garbage collection empties
+//!    the store of them: a closure or derivations no longer there are built
+//!    again from the job (`crate::build::rebuild_for_scan`) and kept only for
+//!    the scan;
 //! 2. scans the runtime closure of both with vulnix (`--closure`), at low CPU
 //!    and I/O priority under a memory and time limit, with its NVD database
 //!    cached in the Nest state directory; both scans must see the same
@@ -412,7 +419,7 @@ pub(crate) fn fixed_advisories(
 }
 
 /// Where the scanner finds its tools and caches.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct Scanner {
     nix: String,
     vulnix: String,
@@ -422,6 +429,9 @@ pub(crate) struct Scanner {
     /// file Manage's access keeps current.
     software_cache: Option<(String, String)>,
     memory_limit_bytes: u64,
+    /// The Nest, to build a job again whose closure left the store; `None`
+    /// fails such a scan instead.
+    rebuild: Option<AppState>,
 }
 
 impl Scanner {
@@ -449,6 +459,7 @@ impl Scanner {
             public_cache: PUBLIC_CACHE.to_string(),
             software_cache: crate::software_cache::current_access(&config.paths.data_dir),
             memory_limit_bytes: VULNIX_MEMORY_LIMIT_BYTES,
+            rebuild: None,
         }
     }
 }
@@ -474,6 +485,23 @@ struct SpecFields {
     nixpkgs_commit: Option<String>,
     #[serde(default)]
     software_package_refs: Vec<String>,
+    #[serde(default)]
+    build_input: Option<BuildInputFields>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuildInputFields {
+    #[serde(default)]
+    installer_target: Option<InstallerTargetFields>,
+}
+
+/// The hardware cohort of an installer-target job.
+#[derive(Debug, Deserialize)]
+struct InstallerTargetFields {
+    #[serde(default)]
+    hardware_module_sha256: Option<String>,
+    #[serde(default)]
+    hardware_driver_policy: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -485,6 +513,8 @@ struct Job {
     commit: String,
     package_refs: Vec<String>,
     output_path: String,
+    /// Hardware module and driver policy of an installer-target job.
+    cohort: Option<(Option<String>, Option<String>)>,
 }
 
 impl Job {
@@ -498,16 +528,21 @@ impl Job {
             commit: spec.nixpkgs_commit?,
             package_refs: spec.software_package_refs,
             output_path: row.output_path.clone(),
+            cohort: spec
+                .build_input
+                .and_then(|input| input.installer_target)
+                .map(|target| (target.hardware_module_sha256, target.hardware_driver_policy)),
         })
     }
 }
 
-/// Generic Blueprint closures: installer-target jobs carry a workstation's
-/// hardware and are not what the release or the update installs as such.
+/// Blueprint closures, generic or of one hardware cohort: Manage prepares
+/// Blueprints for computers per cohort, and a release and its update are
+/// compared within one kind (`target`).
 const BLUEPRINT_JOB_FILTER: &str = "status = 'succeeded' AND output_path != ''
      AND json_valid(build_spec)
-     AND json_extract(build_spec, '$.build_input.kind') = 'blueprint_nixos_module'
-     AND COALESCE(json_type(build_spec, '$.build_input.installer_target'), 'null') = 'null'
+     AND json_extract(build_spec, '$.build_input.kind')
+         IN ('blueprint_nixos_module', 'installer_target_nixos_module')
      AND json_type(build_spec, '$.blueprint_id') = 'text'
      AND json_type(build_spec, '$.blueprint_revision_id') = 'text'
      AND json_type(build_spec, '$.nixpkgs_commit') = 'text'";
@@ -578,7 +613,10 @@ async fn scan_pending(state: &AppState) -> Result<usize> {
         else {
             return Ok(scanned);
         };
-        let scanner = Scanner::from_config(&state.config);
+        let scanner = Scanner {
+            rebuild: Some(state.clone()),
+            ..Scanner::from_config(&state.config)
+        };
         if !scan_and_record(&state.db, data_dir, &scanner, &candidate).await? {
             // A build started: scan again once it is done.
             return Ok(scanned);
@@ -677,6 +715,12 @@ async fn next_candidate(
                 .as_deref()
                 .is_some_and(|id| !valid_id(id))
         {
+            if named {
+                warn!(
+                    job_id = job.id,
+                    "software update candidate has ids a scan cannot be stored under; not scanned"
+                );
+            }
             continue;
         }
         let done = scan_of(data_dir, &job.commit, &job.blueprint_revision_id).is_some_and(|scan| {
@@ -694,6 +738,13 @@ async fn next_candidate(
             continue;
         }
         let Some(nar_hash) = super::current_ready_nar_hash(data_dir, &job.commit).await? else {
+            if named {
+                info!(
+                    job_id = job.id,
+                    commit = %job.commit,
+                    "software update candidate waits for its commit to be ready on this Nest"
+                );
+            }
             continue;
         };
         return Ok(Some(Candidate {
@@ -714,7 +765,8 @@ fn release_hint(data_dir: &Path, candidate: &Candidate) -> Option<String> {
 }
 
 /// The built closure of `release`, the revision the candidate was prepared
-/// from, at another commit.
+/// from, at another commit, of the candidate's hardware cohort when there is
+/// one; otherwise of any cohort, as the software is the same.
 async fn release_job(db: &SqlitePool, candidate: &Candidate, release: &str) -> Result<Option<Job>> {
     let rows = sqlx::query_as::<_, JobRow>(&format!(
         "SELECT {JOB_COLUMNS} FROM nest_build_jobs
@@ -733,7 +785,12 @@ async fn release_job(db: &SqlitePool, candidate: &Candidate, release: &str) -> R
     .bind(&candidate.job.commit)
     .fetch_all(db)
     .await?;
-    Ok(rows.iter().find_map(Job::from_row))
+    let jobs = rows.iter().filter_map(Job::from_row).collect::<Vec<_>>();
+    Ok(jobs
+        .iter()
+        .find(|job| job.cohort == candidate.job.cohort)
+        .or(jobs.first())
+        .cloned())
 }
 
 #[derive(Debug)]
@@ -882,17 +939,28 @@ async fn scan(
         ));
     };
     let release_job_id = Some(release.id);
-    for path in [&release.output_path, &candidate.job.output_path] {
-        if let Err(failure) = check_derivers(scanner, path).await {
-            return Ok(ScanOutcome::failed(release_job_id, failure));
+    // Closures built again stay in the store until the scan is done.
+    let mut rebuilt = Vec::new();
+    let mut closures = Vec::with_capacity(2);
+    for job in [&release, &candidate.job] {
+        match closure_for_scan(scanner, job, &mut rebuilt).await {
+            Ok(Some(path)) => closures.push(path),
+            Ok(None) => {
+                return Ok(ScanOutcome {
+                    release_job_id,
+                    result: ScanResult::Deferred,
+                });
+            }
+            Err(failure) => return Ok(ScanOutcome::failed(release_job_id, failure)),
         }
     }
+    let (release_path, candidate_path) = (&closures[0], &closures[1]);
     // Both closures must be judged by the same NVD data. vulnix refreshes its
     // database at most every two hours, before it scans; if the candidate's
     // run changed it, the release is scanned again with what the candidate
     // saw.
     let mut scanned = Vec::with_capacity(3);
-    let mut paths = vec![&release.output_path, &candidate.job.output_path];
+    let mut paths = vec![release_path, candidate_path];
     let mut stamp = nvd_stamp(scanner);
     while let Some(path) = paths.first().copied() {
         if build_running(db).await? {
@@ -922,7 +990,7 @@ async fn scan(
                     ),
                 ));
             }
-            paths.push(&release.output_path);
+            paths.push(release_path);
         }
         stamp = current;
     }
@@ -939,6 +1007,51 @@ async fn scan(
         release_job_id,
         result: ScanResult::Succeeded(fixed, delivery),
     })
+}
+
+/// The job's closure with nearly all its derivations in the store, built
+/// again when garbage collection took them; `None` while the Nest has no
+/// memory for that build.
+async fn closure_for_scan(
+    scanner: &Scanner,
+    job: &Job,
+    rebuilt: &mut Vec<crate::build::RebuiltClosure>,
+) -> std::result::Result<Option<String>, ScanFailure> {
+    let failure = match check_derivers(scanner, &job.output_path).await {
+        Ok(()) => return Ok(Some(job.output_path.clone())),
+        Err(failure) => failure,
+    };
+    let Some(state) = scanner.rebuild.as_ref() else {
+        return Err(failure);
+    };
+    info!(
+        job_id = job.id,
+        reason = failure.reason,
+        detail = %failure.detail,
+        "building a software update closure again to scan it"
+    );
+    let closure = match crate::build::rebuild_for_scan(state, job.id).await {
+        Ok(Some(closure)) => closure,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            return Err(ScanFailure::new(
+                failure.reason,
+                format!("{}; building it again failed: {error:#}", failure.detail),
+            ));
+        }
+    };
+    if closure.output_path != job.output_path {
+        warn!(
+            job_id = job.id,
+            built = %job.output_path,
+            rebuilt = %closure.output_path,
+            "a software update closure built again differs from the original; scanning the new one"
+        );
+    }
+    check_derivers(scanner, &closure.output_path).await?;
+    let path = closure.output_path.clone();
+    rebuilt.push(closure);
+    Ok(Some(path))
 }
 
 /// Size and modification time of vulnix's database; vulnix rewrites it only

@@ -386,6 +386,7 @@ exit 2
         public_cache: public,
         software_cache: Some((software, TOKEN.to_string())),
         memory_limit_bytes: VULNIX_MEMORY_LIMIT_BYTES,
+        rebuild: None,
     };
     Fake { root, scanner }
 }
@@ -871,16 +872,9 @@ async fn only_blueprint_jobs_at_ready_detected_commits_are_candidates() {
         "2026-10-20T05:00:00Z",
     )
     .await;
-    let mut installer = spec(EARLIER_CANDIDATE, 3, OLDER_COMMIT, &[]);
-    installer["build_input"]["installer_target"] = json!({"schema": "x"});
-    insert_job(
-        &db,
-        "installer",
-        installer,
-        EARLIER_OUT,
-        "2026-10-21T05:00:00Z",
-    )
-    .await;
+    let mut other = spec(EARLIER_CANDIDATE, 3, OLDER_COMMIT, &[]);
+    other["build_input"]["kind"] = json!("desktop_experience_nixos_module");
+    insert_job(&db, "other", other, EARLIER_OUT, "2026-10-21T05:00:00Z").await;
     assert!(
         next_candidate(&db.pool, &db.data, &[PIN.to_string()], Utc::now())
             .await
@@ -900,6 +894,73 @@ async fn only_blueprint_jobs_at_ready_detected_commits_are_candidates() {
             .unwrap()
             .is_none()
     );
+}
+
+/// An installer-target job of one hardware cohort.
+fn cohort_spec(revision_id: &str, revision: i64, commit: &str, hardware: &str) -> Value {
+    let mut spec = spec(revision_id, revision, commit, &[]);
+    spec["build_input"] = json!({
+        "kind": "installer_target_nixos_module",
+        "installer_target": {
+            "schema": "tiaris.installer-target.build.v3",
+            "hardware_module_sha256": hardware,
+            "hardware_driver_policy": "auto",
+        },
+    });
+    spec
+}
+
+#[tokio::test]
+async fn installer_target_candidates_are_scanned_against_their_cohorts_release() {
+    // Manage prepares Blueprints for computers per hardware cohort, so these
+    // are most updates' only builds.
+    let db = pool().await;
+    insert_detected(&db, COMMIT, true).await;
+    let ours = insert_job(
+        &db,
+        "release-a",
+        cohort_spec(RELEASE_REVISION, 2, PIN, "aa"),
+        RELEASE_OUT,
+        "2026-10-20T05:00:00Z",
+    )
+    .await;
+    let other = insert_job(
+        &db,
+        "release-b",
+        cohort_spec(RELEASE_REVISION, 2, PIN, "bb"),
+        EARLIER_OUT,
+        "2026-10-21T05:00:00Z",
+    )
+    .await;
+    let candidate = insert_job(
+        &db,
+        "candidate-a",
+        cohort_spec(CANDIDATE_REVISION, 4, COMMIT, "aa"),
+        CANDIDATE_OUT,
+        "2026-10-31T05:00:00Z",
+    )
+    .await;
+    name_release(&db, "candidate-a", RELEASE_REVISION).await;
+    let found = next_candidate(&db.pool, &db.data, &[PIN.to_string()], Utc::now())
+        .await
+        .unwrap()
+        .expect("the installer-target candidate");
+    assert_eq!(found.job.id, candidate);
+    let release = release_job(&db.pool, &found, RELEASE_REVISION)
+        .await
+        .unwrap();
+    assert_eq!(release.map(|job| job.id), Some(ours));
+
+    // Without a release of its cohort, any cohort's release is compared.
+    sqlx::query("DELETE FROM nest_build_jobs WHERE id = ?")
+        .bind(ours)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let release = release_job(&db.pool, &found, RELEASE_REVISION)
+        .await
+        .unwrap();
+    assert_eq!(release.map(|job| job.id), Some(other));
 }
 
 #[tokio::test]
@@ -1050,6 +1111,7 @@ async fn real_vulnix_scans_a_store_closure() {
         public_cache: PUBLIC_CACHE.to_string(),
         software_cache: None,
         memory_limit_bytes: VULNIX_MEMORY_LIMIT_BYTES,
+        rebuild: None,
     };
     check_derivers(&scanner, &path).await.unwrap();
     let advisories = run_vulnix(&scanner, &path).await.unwrap();
