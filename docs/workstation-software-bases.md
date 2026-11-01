@@ -204,22 +204,23 @@ it (`src/software_updates/findings.rs`, Manage design section 4):
   into the job's out-link, which is removed once the scan is done. While the
   Nest has no memory for that build the scan waits; a failed build fails the
   scan with the closure's reason.
-- **Scan.** `vulnix --json --closure` of the release and of the candidate:
-  their runtime closures, matched by package name and version. vulnix runs at
-  nice 19 and idle I/O priority with 8 GiB of address space and 40 minutes per
-  run; its NVD database is cached in `<data_dir>/vulnix`
-  (`/var/lib/tiaris-nest/state/agent/vulnix`, about 400 MB; the first download
+- **Scan.** One `vulnix --json --closure` run over the release and the
+  candidate: their runtime closures, matched by package name and version.
+  vulnix refreshes its NVD database (at most every two hours) before it
+  scans and commits to it on every run, so separate runs could judge the two
+  by different data; one run cannot. Each finding names its derivation and
+  belongs to the closure whose derivations include it (a recorded deriver in
+  the store, or a valid derivation declaring the path); a finding of neither
+  counts as the candidate's, so it never shows as fixed. vulnix runs at
+  nice 19 and idle I/O priority with 8 GiB of address space and 40 minutes;
+  its NVD database is cached in `<data_dir>/vulnix`
+  (`/var/lib/tiaris-nest/state/agent/vulnix`, about 200 MB; the first download
   took 50 seconds and 2.5 GiB resident on The Beast). vulnix silently skips
   closure paths whose derivation is not in the store, so a closure in which
-  fewer than 90% of paths have one (recorded deriver or a valid derivation
-  declaring the path, as vulnix looks them up) fails instead of reporting
-  too few fixes. Both closures must be judged by the same NVD data: vulnix
-  refreshes its database (at most every two hours) before it scans, so when
-  the candidate's run changed it, the release is scanned again, and a
-  database that changes again fails the scan. `nix path-info`, `nix-store`,
-  `nix derivation show` and `nix eval` run at the same priority and memory
-  limit. Scans wait while a build runs; a build that starts before a vulnix
-  run defers the scan without recording it.
+  fewer than 90% of paths have one fails instead of reporting too few fixes.
+  `nix path-info`, `nix-store`, `nix derivation show` and `nix eval` run at
+  the same priority and memory limit. Scans wait while a build runs; a build
+  that starts before the vulnix run defers the scan without recording it.
 - **Findings.** The release's advisories the candidate no longer has, most
   severe first, at most 500, with `severity` from the CVSS v3 base score
   (critical ≥ 9.0, important ≥ 7.0, moderate ≥ 4.0, otherwise low; an
