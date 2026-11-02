@@ -434,7 +434,7 @@ start_proxmox_like_qemu() {
     -drive "if=pflash,format=raw,unit=0,readonly=on,file=$code" \
     -drive "if=pflash,format=raw,unit=1,file=$work_dir/OVMF_VARS.fd" \
     -drive "if=none,id=system,format=raw,file=$disk,cache=none" \
-    -device virtio-scsi-pci,id=scsi0 -device "scsi-hd,drive=system,serial=$appliance_serial" \
+    -device virtio-scsi-pci,id=scsi0,bus=pci.0,addr=0x5 -device "scsi-hd,drive=system,serial=$appliance_serial" \
     -drive "if=none,id=installer,media=cdrom,readonly=on,format=raw,file=$personalized" \
     -device ide-cd,drive=installer \
     -netdev "tap,id=net0,ifname=$tap_name,script=no,downscript=no" -device "virtio-net-pci,netdev=net0,id=nic0,mac=$appliance_mac,bus=pci.0,addr=0x3" \
