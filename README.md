@@ -68,6 +68,11 @@ of each App List package at that commit, in `software_update_findings`.
 
 ## Development
 
+On Linux, the Rust tests require Python 3.11+ and the OpenSSL command-line tools
+(1.1.1 or newer). The native provisioning TLS regression runs with fresh loopback
+fixtures and removes its certificates and listeners afterward. Its private child
+test remains ignored; the parent launches it with isolated trust settings.
+
 ```sh
 cargo fmt --all --check
 cargo test --locked
