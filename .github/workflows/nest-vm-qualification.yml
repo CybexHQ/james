@@ -7,13 +7,20 @@
 # download, public closure, workstation lifecycle) harness runnable against an
 # exact immutable release so the owner's nightly can call it. Its result is
 # evidence only: it never publishes, promotes or changes a release.
+#
+# Run it AT the release tag. The protected `production-release-qualification`
+# environment admits only v* tag refs, and GitHub evaluates the workflow's own
+# ref, not the checked-out source:
+#   gh workflow run nest-vm-qualification.yml --repo CybexHQ/james --ref vX.Y.Z -f tag=vX.Y.Z
+# A workflow_call caller must itself run at that tag ref. Tags cut before this
+# workflow existed (v0.2.78 and earlier) do not contain it.
 name: Nest VM qualification
 run-name: "Nest VM qualification ${{ inputs.tag || 'latest' }}"
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Exact published production tag vX.Y.Z (empty selects the GitHub Latest release)
+        description: Exact published production tag vX.Y.Z; must equal the ref this workflow runs at (empty uses that tag)
         required: false
         type: string
         default: ''
@@ -30,7 +37,7 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: Exact published production tag vX.Y.Z (empty selects the GitHub Latest release)
+        description: Exact published production tag vX.Y.Z; must equal the ref this workflow runs at (empty uses that tag)
         required: false
         type: string
         default: ''
@@ -77,7 +84,7 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           python3 -B tools/vm-qualification-target.py \
-            --repository "$GITHUB_REPOSITORY" --tag "$TAG" --github-output "$GITHUB_OUTPUT"
+            --repository "$GITHUB_REPOSITORY" --tag "$TAG" --ref "$GITHUB_REF" --github-output "$GITHUB_OUTPUT"
 
   release_qualify:
     name: Boot, install, adopt, and reboot exact candidate

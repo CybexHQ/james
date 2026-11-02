@@ -36,14 +36,25 @@ def marker(lines, name):
     return values[0]
 
 
-def resolve(repository, tag, api):
+def resolve(repository, tag, api, ref):
+    """`ref` is the workflow's own `GITHUB_REF`; it must be the release tag.
+
+    The protected `production-release-qualification` environment admits only
+    `v*` tag refs, and that ref (not the checked-out source) is what GitHub
+    evaluates. Refuse any other ref before a VM job waits on a rejected
+    deployment.
+    """
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
         raise ValueError('Invalid repository')
-    if tag and not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag):
-        raise ValueError('VM qualification needs an exact production tag vX.Y.Z')
-    release = api(f'repos/{repository}/releases/tags/{tag}' if tag else f'repos/{repository}/releases/latest')
-    tag = release.get('tag_name', '')
+    dispatched = ref.removeprefix('refs/tags/') if ref.startswith('refs/tags/') else ''
+    tag = tag or dispatched
     if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag):
+        raise ValueError('VM qualification needs an exact production tag vX.Y.Z')
+    if dispatched != tag:
+        raise ValueError(f'Run this workflow at the release tag: gh workflow run nest-vm-qualification.yml '
+                         f'--repo {repository} --ref {tag} -f tag={tag}')
+    release = api(f'repos/{repository}/releases/tags/{tag}')
+    if release.get('tag_name') != tag:
         raise ValueError('The selected release has no exact production tag')
     if release.get('draft') is not False or release.get('immutable') is not True:
         raise ValueError('Only an immutable published release can be VM-qualified')
@@ -85,10 +96,11 @@ def resolve(repository, tag, api):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repository', required=True)
-    parser.add_argument('--tag', default='', help='Exact tag; empty selects the GitHub Latest release')
+    parser.add_argument('--tag', default='', help='Exact tag; empty selects the tag this workflow runs at')
+    parser.add_argument('--ref', required=True, help='The workflow run ref (GITHUB_REF); must be refs/tags/TAG')
     parser.add_argument('--github-output', type=Path)
     args = parser.parse_args()
-    value = resolve(args.repository, args.tag, gh_api)
+    value = resolve(args.repository, args.tag, gh_api, args.ref)
     lines = ''.join(f'{key}={item}\n' for key, item in value.items())
     if args.github_output:
         with args.github_output.open('a') as stream:

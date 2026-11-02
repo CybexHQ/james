@@ -139,8 +139,18 @@ have; published assets no longer include VM qualification receipts.
 
 The VM harness is unchanged and runs on demand from
 `.github/workflows/nest-vm-qualification.yml` (`workflow_dispatch` and
-`workflow_call`, inputs `tag`, `warm`, `cold`; an empty tag selects the GitHub Latest
-release). `tools/vm-qualification-target.py` binds the run to one immutable release,
+`workflow_call`, inputs `tag`, `warm`, `cold`). It must run at the release tag,
+because the protected `production-release-qualification` environment admits only
+`v*` tag refs and GitHub checks the run's own ref:
+
+```sh
+tag=$(gh release view --repo CybexHQ/james --json tagName --jq .tagName)   # GitHub Latest
+gh workflow run nest-vm-qualification.yml --repo CybexHQ/james --ref "$tag" -f tag="$tag"
+```
+
+Any other ref fails in the first job with that command. A `workflow_call` caller must
+itself run at the tag ref. The workflow exists only in tags cut after it merged; v0.2.78
+and earlier cannot be VM-qualified through it. `tools/vm-qualification-target.py` binds the run to one immutable release,
 its exact `release.yml` push run and its build-once candidate receipt; both VM jobs
 download the published bytes and verify them against that receipt before booting.
 Warm qualification resolves the release's published predecessor, so it applies to

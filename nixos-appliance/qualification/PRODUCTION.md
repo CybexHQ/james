@@ -127,8 +127,10 @@ upgrade/rollback, managed workstation reboots, and exact compliance remain gates
 Production evidence includes `tiaris.nest.isolated-qualification.v1`, the artifact
 origin, exact Tiaris revision, owned fixture identity, and proof that the live
 production service was not the target. Appliance and workstation receipts must
-bind the same fixture. The producer, promoter, and Tiaris coordinator use the
-job name `Verify published NixOS release in an isolated fixture`.
+bind the same fixture. The on-demand `nest-vm-qualification.yml` keeps the job name
+`Verify published NixOS release in an isolated fixture`. Under release policy fast-v1
+the release workflow, promoter and Tiaris coordinator use the public-closure job
+`Verify published closure through the candidate downloader` instead.
 
 ## Recovery
 

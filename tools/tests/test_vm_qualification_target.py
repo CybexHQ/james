@@ -40,19 +40,32 @@ def fixture():
 
 
 class VmQualificationTargetTests(unittest.TestCase):
-    def resolve(self, data, tag=''):
-        return target.resolve('CybexHQ/james', tag, lambda path: data[path])
+    def resolve(self, data, tag='', ref='refs/tags/v0.2.80'):
+        return target.resolve('CybexHQ/james', tag, lambda path: data[path], ref)
 
-    def test_latest_and_exact_tag_resolve_the_same_release_run_and_receipt(self):
+    def test_workflow_must_run_at_the_exact_release_tag(self):
+        # The protected qualification environment admits only v* tag refs.
+        for tag, ref in (('v0.2.80', 'refs/heads/main'), ('', 'refs/heads/main'), ('v0.2.80', 'refs/tags/v0.2.79'),
+                         ('v0.2.80', ''), ('', 'refs/tags/v0.2.80-dev.1'), ('v0.2.80', 'refs/tags/v0.2.80x')):
+            with self.subTest(tag=tag, ref=ref), self.assertRaises(ValueError) as raised:
+                self.resolve(fixture(), tag, ref)
+            if tag == 'v0.2.80' and ref.startswith('refs/'):
+                self.assertIn('--ref v0.2.80 -f tag=v0.2.80', str(raised.exception))
+
+    def test_dispatched_tag_and_exact_tag_resolve_the_same_release_run_and_receipt(self):
         expected = {'tag': 'v0.2.80', 'version': '0.2.80', 'source': SOURCE, 'run': '42',
                     'candidate_id': '66', 'candidate_digest': 'f' * 64,
                     'workstation_bundle_name': BUNDLE, 'has_predecessor': 'true'}
         self.assertEqual(self.resolve(fixture()), expected)
         self.assertEqual(self.resolve(fixture(), 'v0.2.80'), expected)
+        latest_only = fixture()
+        del latest_only['repos/CybexHQ/james/releases/tags/v0.2.80']
+        with self.assertRaises(KeyError):
+            self.resolve(latest_only)
 
     def test_owner_waived_legacy_release_remains_qualifiable(self):
         data = fixture()
-        release = data['repos/CybexHQ/james/releases/latest']
+        release = data['repos/CybexHQ/james/releases/tags/v0.2.80']
         release['body'] = '\n'.join(release['body'].splitlines()[:3] + [
             'Tiaris-Cold-Qualification: required', '', 'Cold qualification waived by owner (John).'])
         release['assets'] = release['assets'][:3]
@@ -60,10 +73,10 @@ class VmQualificationTargetTests(unittest.TestCase):
 
     def test_mutable_moved_or_foreign_releases_are_rejected(self):
         changes = [
-            ('repos/CybexHQ/james/releases/latest', 'immutable', False),
-            ('repos/CybexHQ/james/releases/latest', 'draft', True),
-            ('repos/CybexHQ/james/releases/latest', 'target_commitish', '8' * 40),
-            ('repos/CybexHQ/james/releases/latest', 'tag_name', 'v0.2.80-dev.1'),
+            ('repos/CybexHQ/james/releases/tags/v0.2.80', 'immutable', False),
+            ('repos/CybexHQ/james/releases/tags/v0.2.80', 'draft', True),
+            ('repos/CybexHQ/james/releases/tags/v0.2.80', 'target_commitish', '8' * 40),
+            ('repos/CybexHQ/james/releases/tags/v0.2.80', 'tag_name', 'v0.2.81'),
             ('repos/CybexHQ/james/commits/v0.2.80', 'sha', '8' * 40),
             ('repos/CybexHQ/james/actions/runs/42', 'path', '.github/workflows/nest-vm-qualification.yml'),
             ('repos/CybexHQ/james/actions/runs/42', 'event', 'workflow_dispatch'),
@@ -81,24 +94,24 @@ class VmQualificationTargetTests(unittest.TestCase):
                     self.resolve(data)
 
     def test_release_notes_and_assets_must_identify_one_candidate(self):
-        lines = fixture()['repos/CybexHQ/james/releases/latest']['body'].splitlines()
+        lines = fixture()['repos/CybexHQ/james/releases/tags/v0.2.80']['body'].splitlines()
         for body in ('\n'.join(lines[1:]), '\n'.join(lines + lines[:1]),
                      '\n'.join([lines[0].replace('/42', '/x')] + lines[1:]),
                      '\n'.join(lines[:2] + ['Tiaris-Candidate-Artifact-SHA256: short'] + lines[3:])):
             with self.subTest(body=body):
                 data = fixture()
-                data['repos/CybexHQ/james/releases/latest']['body'] = body
+                data['repos/CybexHQ/james/releases/tags/v0.2.80']['body'] = body
                 with self.assertRaises(ValueError):
                     self.resolve(data)
         for assets in ([], [{'name': BUNDLE}, {'name': BUNDLE.replace('7da7628834d9', '000000000000')}],
                        [{'name': BUNDLE}, {'name': BUNDLE}]):
             with self.subTest(assets=assets):
                 data = fixture()
-                data['repos/CybexHQ/james/releases/latest']['assets'] = assets
+                data['repos/CybexHQ/james/releases/tags/v0.2.80']['assets'] = assets
                 with self.assertRaises(ValueError):
                     self.resolve(data)
         with self.assertRaises(ValueError):
-            self.resolve(fixture(), 'latest')
+            self.resolve(fixture(), 'latest', 'refs/tags/latest')
 
     def test_github_output_lines_match_workflow_outputs(self):
         workflow = (ROOT / '.github/workflows/nest-vm-qualification.yml').read_text()
@@ -110,7 +123,7 @@ class VmQualificationTargetTests(unittest.TestCase):
             output = Path(temporary) / 'output'
             with mock.patch.object(target, 'gh_api', side_effect=lambda path: fixture()[path]), \
                     mock.patch.object(sys, 'argv', ['target', '--repository', 'CybexHQ/james',
-                                                    '--github-output', str(output)]), \
+                                                    '--ref', 'refs/tags/v0.2.80', '--github-output', str(output)]), \
                     mock.patch('builtins.print'):
                 target.main()
             self.assertEqual(dict(line.split('=', 1) for line in output.read_text().splitlines()),
