@@ -326,6 +326,7 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
     let result = prepare_with_status(&options, &status).await;
     if result.is_err() {
         status.process_failed();
+        storage::release_state_mounts(&options.state_mount);
     }
     result
 }
@@ -754,7 +755,7 @@ async fn resume_prepare(
         if package_delivery != packages::PackageDelivery::SystemClosure {
             return storage::boot_installed_appliance();
         }
-        return nixos_install::boot_completed(&durable, &options.state_mount);
+        return nixos_install::boot_completed(&durable, &options.state_mount, false).await;
     }
     inventory::preflight_network(&signed_plan, &inventory, &verified.envelope.manage_origin)
         .await?;
@@ -920,6 +921,27 @@ mod tests {
         assert!(!failure.public_message.contains("arping"));
         assert!(!failure.public_message.contains("secret"));
         assert!(failure.source.to_string().contains("arping"));
+    }
+
+    #[test]
+    fn failed_bootstrap_releases_state_for_its_read_only_retry() {
+        // Tiaris production #20: systemd restarts a failed bootstrap, and the
+        // restarted process refuses a STATE mount that is still writable.
+        let source = include_str!("mod.rs");
+        let prepare = source
+            .split_once("pub async fn prepare(")
+            .expect("prepare entry point")
+            .1
+            .split_once("async fn prepare_with_status")
+            .expect("prepare body boundary")
+            .0;
+        let failed = prepare
+            .find("status.process_failed();")
+            .expect("failure projection");
+        let released = prepare
+            .find("storage::release_state_mounts(&options.state_mount);")
+            .expect("a failed bootstrap releases STATE before it exits");
+        assert!(failed < released);
     }
 
     #[test]

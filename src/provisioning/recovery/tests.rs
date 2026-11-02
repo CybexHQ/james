@@ -77,6 +77,12 @@ fn expired_retained_media_boots_completed_identity_without_network_or_closure() 
         updated_at: chrono::Utc::now(),
     };
     assert!(durable_plan(&durable, &verified, &inventory).is_ok());
+    // One reported restart without a verified UEFI BootNext (production #20).
+    durable.next_event_sequence = 10;
+    assert!(durable_plan(&durable, &verified, &inventory).is_ok());
+    durable.next_event_sequence = 11;
+    assert!(durable_plan(&durable, &verified, &inventory).is_err());
+    durable.next_event_sequence = 9;
     assert!(protocol::require_current_envelope(&verified).is_err()); // no new install
     durable.installation_complete = false;
     durable.next_event_sequence = 6;

@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 usage() {
-  echo "usage: $0 --template ISO --manifest JSON --manage-origin URL --token-file FILE --output FILE [--published-predecessor-inputs JSON] [--retain-fixture DIRECTORY] [--require-candidate-runtime | --prepublication-candidate] [--induce-preflight-retry]" >&2
+  echo "usage: $0 --template ISO --manifest JSON --manage-origin URL --token-file FILE --output FILE [--published-predecessor-inputs JSON] [--retain-fixture DIRECTORY] [--require-candidate-runtime | --prepublication-candidate] [--induce-preflight-retry] [--proxmox-reinstall-over FIXTURE_DIRECTORY]" >&2
   exit 2
 }
 
@@ -19,6 +19,7 @@ fixture_dir=""
 require_candidate_runtime=false
 prepublication_candidate=false
 induce_preflight_retry=false
+proxmox_reinstall_over=""
 while (($#)); do
   case "$1" in
     --template) template="${2:-}"; shift 2 ;;
@@ -31,6 +32,7 @@ while (($#)); do
     --require-candidate-runtime) require_candidate_runtime=true; shift ;;
     --prepublication-candidate) prepublication_candidate=true; shift ;;
     --induce-preflight-retry) induce_preflight_retry=true; shift ;;
+    --proxmox-reinstall-over) proxmox_reinstall_over="${2:-}"; shift 2 ;;
     --output) output="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
@@ -43,6 +45,18 @@ fi
 test -f "$template" && test -f "$manifest" && test -f "$token_file" && test -n "$output"
 if [[ -n "$fixture_dir" ]]; then
   [[ "$fixture_dir" = /* ]] && test ! -e "$fixture_dir" && test ! -L "$fixture_dir"
+fi
+if [[ -n "$proxmox_reinstall_over" ]]; then
+  # Reinstall over an older Nest the way a Proxmox VM does it: the disk and
+  # persistent UEFI variables of a retained fixture (--retain-fixture), booted
+  # on i440FX with OVMF without SMM or Secure Boot. The fixture is copied, not
+  # consumed. The update wrapper boots q35, so this run retains no fixture.
+  if [[ -n "$fixture_dir" ]]; then
+    echo 'error: a Proxmox-like reinstall run cannot retain an update fixture' >&2
+    exit 1
+  fi
+  test "$(jq -er '.schema' "$proxmox_reinstall_over/fixture.json")" = tiaris.nest.qualification-fixture.v1
+  test -f "$proxmox_reinstall_over/appliance.raw" && test -f "$proxmox_reinstall_over/OVMF_VARS.fd"
 fi
 python3 -B "$repository_root/nixos-appliance/qualification/development-scope.py" verify \
   --state-dir "${TIARIS_NEST_QUALIFICATION_STATE:?set the owned development fixture directory}" \
@@ -375,16 +389,28 @@ unset media_secret
 rm -f "$create_response"
 
 disk="$work_dir/appliance.raw"
-truncate -s 160G "$disk"
+if [[ -n "$proxmox_reinstall_over" ]]; then
+  cp --sparse=always -- "$proxmox_reinstall_over/appliance.raw" "$disk"
+else
+  truncate -s 160G "$disk"
+fi
 preapproval_digest="$(python3 -B "$repository_root/nixos-appliance/qualification/disk-fingerprint.py" "$disk")"
 vars_template="${TIARIS_NEST_OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
 code="${TIARIS_NEST_OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.secboot.fd}"
+if [[ -n "$proxmox_reinstall_over" ]]; then
+  vars_template="$proxmox_reinstall_over/OVMF_VARS.fd"
+  code="${TIARIS_NEST_OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
+fi
 test -f "$vars_template" && test -f "$code"
 cp -- "$vars_template" "$work_dir/OVMF_VARS.fd"
 
 start_qemu() {
   tap_name="$(python3 -B "$repository_root/nixos-appliance/qualification/development-scope.py" tap-create \
     --state-dir "$TIARIS_NEST_QUALIFICATION_STATE" --manage-origin "$manage_origin" --bridge "$bridge" --role appliance)"
+  if [[ -n "$proxmox_reinstall_over" ]]; then
+    start_proxmox_like_qemu
+    return
+  fi
   qemu-system-x86_64 \
     -enable-kvm -machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on -cpu host -smp 4 -m "$memory_mib" -uuid "$appliance_uuid" \
     -drive "if=pflash,format=raw,unit=0,readonly=on,file=$code" \
@@ -395,6 +421,24 @@ start_qemu() {
     -device ide-cd,drive=installer \
     -netdev "tap,id=net0,ifname=$tap_name,script=no,downscript=no" -device "virtio-net-pci,netdev=net0,id=nic0,mac=$appliance_mac,bus=pcie.0,addr=0x3" \
     -device i6300esb,bus=pcie.0,addr=0x4 -watchdog-action reset \
+    -boot "once=d,menu=off" -display none -serial "file:$work_dir/serial.log" \
+    -qmp "unix:$work_dir/qmp.sock,server=on,wait=off" &
+  qemu_pid=$!
+}
+
+# Proxmox's default VM (i440FX + PIIX, virtio-scsi, IDE CD-ROM) with the same
+# NIC and watchdog slots as the q35 guest.
+start_proxmox_like_qemu() {
+  qemu-system-x86_64 \
+    -enable-kvm -machine pc -cpu host -smp 4 -m "$memory_mib" -uuid "$appliance_uuid" \
+    -drive "if=pflash,format=raw,unit=0,readonly=on,file=$code" \
+    -drive "if=pflash,format=raw,unit=1,file=$work_dir/OVMF_VARS.fd" \
+    -drive "if=none,id=system,format=raw,file=$disk,cache=none" \
+    -device virtio-scsi-pci,id=scsi0,bus=pci.0,addr=0x5 -device "scsi-hd,drive=system,serial=$appliance_serial" \
+    -drive "if=none,id=installer,media=cdrom,readonly=on,format=raw,file=$personalized" \
+    -device ide-cd,drive=installer \
+    -netdev "tap,id=net0,ifname=$tap_name,script=no,downscript=no" -device "virtio-net-pci,netdev=net0,id=nic0,mac=$appliance_mac,bus=pci.0,addr=0x3" \
+    -device i6300esb,bus=pci.0,addr=0x4 -watchdog-action reset \
     -boot "once=d,menu=off" -display none -serial "file:$work_dir/serial.log" \
     -qmp "unix:$work_dir/qmp.sock,server=on,wait=off" &
   qemu_pid=$!
