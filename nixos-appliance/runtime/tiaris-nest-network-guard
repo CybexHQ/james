@@ -15,8 +15,23 @@ origin="$(jq -er '.manage_origin' "$control_dir/provisioning-state.json")"
 required_origin="$(/usr/lib/tiaris-nest/tiaris-nest-bootstrap required-manage-origin)"
 test "$origin" = "$required_origin"
 
-if timeout 30 curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
-  --output /dev/null "$origin/healthz"; then
+# Activation makes networkd reconfigure the link even for an unchanged profile:
+# the DHCP lease, route and resolver are briefly dropped and re-acquired, so a
+# single immediate request can fail during that reset. Retry until the bounded
+# deadline, which keeps the budget the single request previously had.
+management_reachable() {
+  local deadline=$((SECONDS + $1)) remaining
+  while remaining=$((deadline - SECONDS)); ((remaining > 0)); do
+    if timeout "$remaining" curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+      --connect-timeout 10 --output /dev/null "$origin/healthz"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+if management_reachable 30; then
   # A failed live-change rollback deliberately preserves these root-owned
   # recovery artifacts. Once boot has reactivated the approved profile and
   # reached Management, their evidence is no longer needed.
@@ -45,8 +60,7 @@ chown root:root "$marker"
 sync -f "$marker"
 mv -f "$marker" "$control_dir/network-fallback-active"
 sync -f "$control_dir"
-timeout 60 curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
-  --output /dev/null "$origin/healthz"
+management_reachable 60
 # DHCP is now the verified active recovery profile. Retain its authenticated
 # selector, but clear any failed live-change transaction so a later signed
 # correction with a different digest is not rejected as a conflicting resume.
