@@ -119,6 +119,29 @@ shutil.copyfile(*paths)
         self.assertFalse((result.control / 'netplan-pending.sha256').exists())
         self.assertFalse((result.control / 'netplan-before-change.yaml').exists())
 
+    def test_failed_static_and_dhcp_profiles_preserve_recovery_evidence(self):
+        result = self.guard(dhcp4=False, approved_failures=-1, fallback_failures=-1,
+                            replacements={'management_reachable 30': 'management_reachable 2',
+                                          'management_reachable 60': 'management_reachable 2'})
+        self.assertNotEqual(result.process.returncode, 0)
+        self.assertEqual(result.log.count('activated'), 2)
+        self.assertIn('curl 1', result.log)
+        self.assertIn('curl 2', result.log)
+        self.assertLess(result.elapsed, 10)
+        self.assertEqual(json.loads((result.netplan / '90-tiaris-nest.yaml').read_text()), fixture_plan(True))
+        marker = json.loads((result.control / 'network-fallback-active').read_text())
+        self.assertEqual(marker['schema'], 'tiaris.nest.network-fallback.v1')
+        for name in ('netplan-pending.sha256', 'netplan-before-change.yaml'):
+            self.assertEqual((result.control / name).read_text(), 'stale recovery evidence')
+
+    def test_successful_static_retry_does_not_replace_the_approved_profile_with_dhcp(self):
+        result = self.guard(dhcp4=False, approved_failures=1)
+        self.assertEqual(result.process.returncode, 0, result.process.stderr)
+        self.assertEqual(result.log, ['activated', 'curl 1', 'curl 1'])
+        self.assertEqual(json.loads((result.netplan / '90-tiaris-nest.yaml').read_text()), fixture_plan(False))
+        for name in ('network-fallback-active', 'netplan-pending.sha256', 'netplan-before-change.yaml'):
+            self.assertFalse((result.control / name).exists())
+
     def test_retry_windows_preserve_previous_request_budgets(self):
         script = (ROOT / 'runtime/tiaris-nest-network-guard').read_text()
         self.assertEqual(re.findall(r'management_reachable (\d+)', script), ['30', '60'])
@@ -145,6 +168,20 @@ def unit_list(block, key):
 
 class RecoverySshUnitGraph(unittest.TestCase):
     module = (ROOT / 'module.nix').read_text()
+
+    @unittest.skipUnless(shutil.which('nix-instantiate'), 'requires Nix for real module evaluation')
+    def test_evaluated_service_graph_preserves_recovery_ssh(self):
+        result = subprocess.run(
+            ['nix-instantiate', '--eval', '--read-write-mode', '--strict', '--json', '--expr',
+             'import ./nixos-appliance/tests/network-recovery-evaluation.nix {}'],
+            cwd=ROOT.parent, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        checks = json.loads(result.stdout)
+        self.assertEqual(set(checks), {
+            'retryStartsRecoverySsh', 'sshFailureDoesNotFailFirstBoot', 'firstBootDoesNotWaitForSsh',
+            'sshRequiresMaterializedTrust', 'sshRequiresFirewall', 'firewallFollowsFirstBoot',
+            'nestRetriesFirstBoot', 'networkRuntimeCanRetryWithoutNest', 'networkRetryTimerRemainsEnabled'})
+        self.assertTrue(all(value is True for value in checks.values()), checks)
 
     def test_sshd_keeps_requiring_materialized_trust_and_firewall(self):
         sshd = unit_block(self.module, 'sshd')

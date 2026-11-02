@@ -27,7 +27,9 @@ jobs:
         shell: bash
         run: |
           mapfile -t appliance_helpers < <(rg -l '^#!.*(bash|/sh)$' nixos-appliance/runtime | sort)
-          bash -n release/beast/*.sh nixos-appliance/*.sh "${appliance_helpers[@]}"
+          for helper in release/beast/*.sh nixos-appliance/*.sh "${appliance_helpers[@]}"; do
+            bash -n "$helper"
+          done
 
       - name: Shellcheck
         shell: bash

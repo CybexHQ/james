@@ -239,7 +239,7 @@ class AcceptanceTests(unittest.TestCase):
         'Tiaris-VM-Qualification: nightly', 'Tiaris-Public-Closure: required'])
 
     def promote(self, *, verify_only=False, body=None, jobs=None, closure=None, manifest=None,
-                prerelease=True, predecessor=None, expect_edit=True):
+                prerelease=True, predecessor=None, expect_edit=True, api_changes=None):
         """Run the real promotion CLI with only remote transport replaced.
 
         ZIP/provenance, public-closure acceptance, notes and inventory checks run
@@ -267,7 +267,7 @@ class AcceptanceTests(unittest.TestCase):
         promoted = {}
 
         def api(_repository, path):
-            return {'actions/runs/42': {'head_sha': self.source, 'head_branch': tag,
+            value = {'actions/runs/42': {'head_sha': self.source, 'head_branch': tag,
                         'event': 'push', 'path': '.github/workflows/release.yml'},
                 'commits/' + tag: {'sha': self.source},
                 'actions/runs/42/jobs?per_page=100': {'jobs': [{'name': promotion.CLOSURE_JOB,
@@ -276,6 +276,7 @@ class AcceptanceTests(unittest.TestCase):
                     workflow_run={'id': 42, 'head_sha': self.source},
                     name='tiaris-nest-public-closure-42', digest='sha256:' + action_digest),
                 'releases/tags/' + tag: promoted or staged, 'releases/latest': promoted}[path]
+            return value | (api_changes or {}).get(path, {})
 
         def edit(arguments, **_kwargs):
             self.assertTrue(expect_edit)
@@ -324,6 +325,38 @@ class AcceptanceTests(unittest.TestCase):
                      [{'name': 'Verify published NixOS release in an isolated fixture', 'conclusion': 'success'}]):
             with self.subTest(jobs=jobs), self.assertRaisesRegex(ValueError, 'Public closure qualification job'):
                 self.promote(jobs=jobs, expect_edit=False)
+
+    def test_fast_policy_uses_closure_success_independently_of_vm_job_conclusions(self):
+        for conclusion in ('failure', 'cancelled', 'skipped', None):
+            jobs = [{'name': name, 'conclusion': conclusion} for name in (
+                'Boot, install, adopt, and reboot exact candidate',
+                'Verify published NixOS release in an isolated fixture')]
+            jobs.append({'name': promotion.CLOSURE_JOB, 'conclusion': 'success'})
+            with self.subTest(conclusion=conclusion):
+                _, _, mutation, _ = self.promote(jobs=jobs, verify_only=True, expect_edit=False)
+                mutation.assert_not_called()
+
+    def test_foreign_workflow_or_public_closure_artifact_never_promotes(self):
+        changes = (
+            ('actions/runs/42', 'event', 'workflow_dispatch'),
+            ('actions/runs/42', 'path', '.github/workflows/nest-vm-qualification.yml'),
+            ('actions/runs/42', 'head_sha', 'c' * 40),
+            ('actions/runs/42', 'head_branch', 'main'),
+            ('commits/v' + self.manifest['version'], 'sha', 'c' * 40),
+            ('actions/artifacts/77', 'expired', True),
+            ('actions/artifacts/77', 'name', 'tiaris-nest-public-closure-43'),
+            ('actions/artifacts/77', 'digest', 'sha256:' + '0' * 64),
+            ('actions/artifacts/77', 'workflow_run', {'id': 43, 'head_sha': self.source}),
+            ('actions/artifacts/77', 'workflow_run', {'id': 42, 'head_sha': 'c' * 40}),
+            ('actions/artifacts/77', 'size_in_bytes', 2 * 1024 * 1024 + 1),
+        )
+        for path, field, value in changes:
+            reason = ('Acceptance must belong to the exact unchanged tagged workflow'
+                      if path.startswith(('actions/runs/', 'commits/')) else
+                      'Public closure artifact is not bounded public evidence' if field == 'size_in_bytes' else
+                      'Public closure artifact provenance or digest changed')
+            with self.subTest(path=path, field=field), self.assertRaisesRegex(ValueError, reason):
+                self.promote(api_changes={path: {field: value}}, expect_edit=False)
 
     def test_promotion_requires_the_explicit_policy_and_pending_markers(self):
         lines = self.POLICY_BODY.splitlines()

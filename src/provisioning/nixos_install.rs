@@ -1066,6 +1066,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resumed_install_still_stops_when_its_failure_report_is_lost() {
+        let (result, reports, reboots) = first_boot_handoff(
+            false,
+            Err(anyhow!("BootNext is read-only")),
+            Err(anyhow!("Tiaris is unreachable")),
+        )
+        .await;
+        assert!(result.unwrap_err().to_string().contains("UEFI boot entry"));
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].0, "failed");
+        assert_eq!(reboots, 0);
+    }
+
+    #[tokio::test]
+    async fn first_boot_fallback_propagates_a_failed_restart_without_retrying() {
+        let reboots = std::cell::Cell::new(0);
+        let result = hand_off_first_boot(
+            true,
+            || Err(anyhow!("BootNext is unavailable")),
+            |status, _| {
+                assert_eq!(status, "started");
+                std::future::ready(Err(anyhow!("handoff report failed")))
+            },
+            || {
+                reboots.set(reboots.get() + 1);
+                Err(anyhow!("systemctl reboot failed"))
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap_err().to_string(), "systemctl reboot failed");
+        assert_eq!(reboots.get(), 1);
+    }
+
+    #[tokio::test]
     async fn verified_boot_next_restarts_without_a_report() {
         for restart_unverified in [true, false] {
             let (result, reports, reboots) =

@@ -71,6 +71,30 @@ class VmQualificationTargetTests(unittest.TestCase):
         release['assets'] = release['assets'][:3]
         self.assertEqual(self.resolve(data)['has_predecessor'], 'false')
 
+    def test_fresh_coordinated_prerelease_can_be_qualified_before_promotion(self):
+        data = fixture()
+        release = data['repos/CybexHQ/james/releases/tags/v0.2.80']
+        release['prerelease'] = True
+        release['body'] = release['body'].replace('Tiaris-Public-Closure: passed',
+                                                'Tiaris-Public-Closure: required')
+        data['repos/CybexHQ/james/actions/runs/42'].update(status='completed', conclusion='success')
+        # GitHub Latest still points at production; selection must use the tag.
+        del data['repos/CybexHQ/james/releases/latest']
+        before = copy.deepcopy(data)
+        self.assertEqual(self.resolve(data)['tag'], 'v0.2.80')
+        self.assertEqual(data, before)
+
+    def test_invalid_refs_and_repositories_fail_before_reading_github(self):
+        for repository, tag, ref in (
+                ('CybexHQ/james/extra', 'v0.2.80', 'refs/tags/v0.2.80'),
+                ('CybexHQ/james', 'v0.2.80', 'refs/heads/main'),
+                ('CybexHQ/james', 'v0.2.80', 'refs/tags/v0.2.79'),
+                ('CybexHQ/james', 'v0.2.80-dev.1', 'refs/tags/v0.2.80-dev.1')):
+            api = mock.Mock(side_effect=AssertionError('remote access before ref validation'))
+            with self.subTest(repository=repository, tag=tag, ref=ref), self.assertRaises(ValueError):
+                target.resolve(repository, tag, api, ref)
+            api.assert_not_called()
+
     def test_mutable_moved_or_foreign_releases_are_rejected(self):
         changes = [
             ('repos/CybexHQ/james/releases/tags/v0.2.80', 'immutable', False),
@@ -80,6 +104,7 @@ class VmQualificationTargetTests(unittest.TestCase):
             ('repos/CybexHQ/james/commits/v0.2.80', 'sha', '8' * 40),
             ('repos/CybexHQ/james/actions/runs/42', 'path', '.github/workflows/nest-vm-qualification.yml'),
             ('repos/CybexHQ/james/actions/runs/42', 'event', 'workflow_dispatch'),
+            ('repos/CybexHQ/james/actions/runs/42', 'head_branch', 'main'),
             ('repos/CybexHQ/james/actions/runs/42', 'head_sha', '8' * 40),
             ('repos/CybexHQ/james/actions/artifacts/66', 'expired', True),
             ('repos/CybexHQ/james/actions/artifacts/66', 'name', 'tiaris-nest-release-candidate-43'),
