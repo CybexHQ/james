@@ -326,6 +326,7 @@ pub async fn prepare(options: PrepareOptions) -> Result<()> {
     let result = prepare_with_status(&options, &status).await;
     if result.is_err() {
         status.process_failed();
+        storage::release_state_mounts(&options.state_mount);
     }
     result
 }

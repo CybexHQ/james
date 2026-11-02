@@ -17,6 +17,11 @@ pub(super) fn durable_plan(
         || durable.next_event_sequence < 3
         || durable.next_event_sequence
             > if durable.installation_complete
+                && durable.plan.schema == protocol::INSTALL_PLAN_SCHEMA_V3
+            {
+                // One recorded restart without a verified UEFI BootNext.
+                10
+            } else if durable.installation_complete
                 || durable.plan.schema == protocol::INSTALL_PLAN_SCHEMA_V3
             {
                 9

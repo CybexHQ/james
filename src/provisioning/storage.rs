@@ -153,6 +153,38 @@ fn unmount_probe(state_mount: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A failed bootstrap must not leave STATE writable: systemd restarts it, and
+/// the restarted run accepts STATE only as its own read-only recovery probe.
+/// The NixOS target tree goes first because it holds a bind mount of STATE.
+/// Best effort: a mount that cannot be released is logged.
+pub(crate) fn release_state_mounts(state_mount: &Path) {
+    release_mounts(
+        &[Path::new(super::nixos_install::TARGET), state_mount],
+        state_mount_is_mounted,
+        |path| {
+            let status = StdCommand::new("umount").arg("-R").arg(path).status()?;
+            if !status.success() {
+                bail!("umount exited with {status}")
+            }
+            Ok(())
+        },
+    )
+}
+
+fn release_mounts(
+    paths: &[&Path],
+    mounted: impl Fn(&Path) -> Result<bool>,
+    mut unmount: impl FnMut(&Path) -> Result<()>,
+) {
+    for path in paths {
+        let released =
+            mounted(path).and_then(|is_mounted| if is_mounted { unmount(path) } else { Ok(()) });
+        if let Err(error) = released {
+            tracing::warn!(path = %path.display(), error = %format!("{error:#}"), "could not release a setup mount after a failed run");
+        }
+    }
+}
+
 fn existing_state_device() -> Result<Option<PathBuf>> {
     let output = StdCommand::new("blkid")
         .args(["-t", "PARTLABEL=TIARIS_STATE", "-o", "device"])
@@ -1622,6 +1654,26 @@ mod tests {
         assert_eq!(active, ["rw", "nodev", "nosuid"]);
         assert!(!active.contains(&"ro"));
         assert!(!active.contains(&"noload"));
+    }
+
+    #[test]
+    fn failed_run_releases_the_target_tree_before_state_and_continues_after_errors() {
+        let target = Path::new("/mnt");
+        let absent = Path::new("/not-mounted");
+        let state = Path::new("/run/tiaris-state");
+        let mut released = Vec::new();
+        release_mounts(
+            &[target, absent, state],
+            |path| Ok(path != absent),
+            |path| {
+                released.push(path.to_path_buf());
+                if path == target {
+                    bail!("target is busy")
+                }
+                Ok(())
+            },
+        );
+        assert_eq!(released, [target, state]);
     }
 
     #[test]

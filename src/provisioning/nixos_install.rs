@@ -23,7 +23,7 @@ use std::{
 const GIB: u64 = 1024 * 1024 * 1024;
 const STAGING: &str = "/run/tiaris-appliance-closure";
 const ARCHIVE: &str = "/run/tiaris-appliance-closure/closure.tar.zst";
-const TARGET: &str = "/mnt";
+pub(super) const TARGET: &str = "/mnt";
 
 fn release(plan: &SignedInstallPlan) -> Result<&NixosRelease> {
     let release = plan
@@ -621,28 +621,92 @@ pub(super) async fn boot_completed(
     hand_off_first_boot(
         restart_unverified,
         || select_installed_boot_next(state),
-        |status, message| report_first_boot_handoff(state, state_mount, status, message),
+        |status, message| {
+            report_first_boot_handoff(state, state_mount, restart_unverified, status, message)
+        },
         reboot_installed,
     )
     .await
 }
 
+/// Provisioning event stage that carries a failed UEFI boot-entry selection.
+const FIRST_BOOT_HANDOFF_STAGE: &str = "first_boot_handoff";
+
+/// Select the installed entry for the next boot, then reboot.
+///
+/// When the entry cannot be selected, the run that completed the installation
+/// restarts anyway, once: firmware boot order may still reach the installed
+/// disk. A later run of a completed installation means the firmware returned
+/// to the setup media, so it reports the reason and stops instead of looping.
+/// The reason is sent to Tiaris either way; a failed report never blocks the
+/// restart. Only a stop is reported as `failed`, because a failed session can
+/// no longer become ready when the installed Nest checks in.
 async fn hand_off_first_boot<Report: std::future::Future<Output = Result<()>>>(
-    _restart_unverified: bool,
+    restart_unverified: bool,
     select_boot_next: impl FnOnce() -> Result<()>,
-    _report: impl FnOnce(&'static str, String) -> Report,
+    report: impl FnOnce(&'static str, String) -> Report,
     reboot: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
-    select_boot_next()?;
+    if let Err(error) = select_boot_next() {
+        let reason = format!("{error:#}");
+        let (status, message) = if restart_unverified {
+            tracing::warn!(%reason, "installed UEFI boot entry could not be selected; restarting once without it");
+            (
+                "started",
+                format!("Restarting without a verified UEFI boot entry: {reason}"),
+            )
+        } else {
+            tracing::warn!(%reason, "installed UEFI boot entry could not be selected; not restarting again without it");
+            (
+                "failed",
+                format!("Nest could not select its installed UEFI boot entry: {reason}"),
+            )
+        };
+        if let Err(report_error) = report(status, bounded_event_message(message)).await {
+            tracing::warn!(error = %format!("{report_error:#}"), "could not report the first boot handoff to Tiaris");
+        }
+        if !restart_unverified {
+            return Err(error.context("installed UEFI boot entry could not be selected"));
+        }
+    }
     reboot()
 }
 
+fn bounded_event_message(mut message: String) -> String {
+    let mut end = message.len().min(512);
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message.truncate(end);
+    message
+}
+
+/// Send the handoff event. Only the run that completed the installation has
+/// STATE writable; it records the sequence so a later run reports next to it.
 async fn report_first_boot_handoff(
-    _state: &DurableProvisioningState,
-    _state_mount: &Path,
-    _status: &'static str,
-    _message: String,
+    state: &DurableProvisioningState,
+    state_mount: &Path,
+    record: bool,
+    status: &'static str,
+    message: String,
 ) -> Result<()> {
+    let client = super::protocol::ProvisioningClient::new(&state.manage_origin, state.session_id)?;
+    client
+        .send_event(
+            &state.signing_key()?,
+            &state.plan,
+            state.next_event_sequence,
+            FIRST_BOOT_HANDOFF_STAGE,
+            status,
+            None,
+            &message,
+        )
+        .await?;
+    if record {
+        let mut recorded = state.clone();
+        recorded.next_event_sequence += 1;
+        storage::save_durable_state(state_mount, &recorded)?;
+    }
     Ok(())
 }
 
