@@ -139,7 +139,11 @@ in {
       unitConfig.RequiresMountsFor = [ "/var/lib/tiaris-nest/control" ];
     };
     systemd.services.tiaris-nest-first-boot = (rootService "first-boot") // {
-      wantedBy = [ "multi-user.target" ]; after = [ "network-online.target" "sshd-keygen.service" "systemd-tmpfiles-setup.service" ]; wants = [ "network-online.target" ];
+      wantedBy = [ "multi-user.target" ]; after = [ "network-online.target" "sshd-keygen.service" "systemd-tmpfiles-setup.service" ];
+      # sshd Requires= this unit, so a failed attempt fails sshd's start job for
+      # the boot. The network-runtime timer retries this unit through Nest; pull
+      # sshd into that transaction so recovery SSH starts once this succeeds.
+      wants = [ "network-online.target" "sshd.service" ];
       requires = [ "sshd-keygen.service" ];
       before = [ "tiaris-nest.service" "nginx.service" "tftpd-hpa.service" ];
       unitConfig.RequiresMountsFor = [ "/var/lib/tiaris-nest/state" "/var/lib/tiaris-nest/control" "/var/lib/tiaris-nest/status" "/nix" ];
