@@ -1,4 +1,5 @@
 """Real PXE, installation and Blueprint/reboot checks on an owned empty disk."""
+import copy
 import datetime
 import hashlib
 import json
@@ -115,6 +116,44 @@ def managed_reboot(api, prefix, before, wait_for, device):
         return True
 
     return wait_for('Managed workstation reboot', device, returned, 900)
+
+
+def live_switched(device, descriptor, blueprint, previous=None, verified_after=None):
+    """Compliant on the applied generation, which was activated without a reboot."""
+    generation = (device.get('facts_json') or {}).get('blueprint_generation') or {}
+    booted = generation.get('booted_system')
+    if not isinstance(booted, str) or booted == generation.get('current_system'):
+        return False
+    switched = copy.deepcopy(device)
+    switched['facts_json']['blueprint_generation']['booted_system'] = generation.get('current_system')
+    try:
+        require_workstation(switched, descriptor, blueprint, previous, verified_after)
+        return True
+    except (KeyError, ValueError):
+        return False
+
+
+def converge_workstation(wait_for, read, reboot, descriptor, blueprint, previous=None, verified_after=None,
+                         after_apply=False):
+    reboot_requested = False
+    def accepted(value):
+        nonlocal reboot_requested
+        require_operation_progress(value)
+        if not reboot_requested and (value.get('configuration_status') == 'pending_reboot' or (
+                after_apply and live_switched(value, descriptor, blueprint, previous, verified_after))):
+            # A new boot can arrive before its read-only attestation.
+            # Wait for that report instead of repeatedly rebooting it.
+            # A compliant live switch is never pending_reboot; reboot it once so
+            # the booted generation can be proved equal to the applied one.
+            reboot_requested = True
+            reboot(value)
+            return False
+        try:
+            require_workstation(value, descriptor, blueprint, previous, verified_after)
+            return True
+        except (KeyError, ValueError):
+            return False
+    return wait_for('Compliant ' + blueprint['slug'], read, accepted, 3600)
 
 
 class Workstation:
@@ -255,23 +294,9 @@ def run(api, state, nest, manifest, catalog, output):
         def reboot(before):
             return managed_reboot(api, prefix, before, wait_for, device)
 
-        def converge(blueprint, previous=None, verified_after=None):
-            reboot_requested = False
-            def accepted(value):
-                nonlocal reboot_requested
-                require_operation_progress(value)
-                if value.get('configuration_status') == 'pending_reboot' and not reboot_requested:
-                    # A new boot can arrive before its read-only attestation.
-                    # Wait for that report instead of repeatedly rebooting it.
-                    reboot_requested = True
-                    reboot(value)
-                    return False
-                try:
-                    require_workstation(value, descriptor, blueprint, previous, verified_after)
-                    return True
-                except (KeyError, ValueError):
-                    return False
-            return wait_for('Compliant ' + blueprint['slug'], device, accepted, 3600)
+        def converge(blueprint, previous=None, verified_after=None, after_apply=False):
+            return converge_workstation(wait_for, device, reboot, descriptor, blueprint,
+                                        previous, verified_after, after_apply)
 
         installed = converge(first)
         for blueprint in (first, blueprints['dock_workstation'],
@@ -280,7 +305,7 @@ def run(api, state, nest, manifest, catalog, output):
             if blueprint != first:
                 api(prefix + '/operations/apply-blueprint', {'request_id': str(uuid.uuid4()),
                     'blueprint_id': blueprint['id'], 'blueprint_revision_id': blueprint['current_revision_id']})
-                converge(blueprint, installed)
+                converge(blueprint, installed, after_apply=True)
             before = device()
             requested = now()
             reboot(before)
