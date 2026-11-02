@@ -111,16 +111,68 @@ The file stays on `main` because two readers still use it there:
   `workstation_netboot.runtime_version` and `workstation_netboot.manage_source_revision`.
   Use those, or the file at the release's tag or branch, never the copy on `main`.
 
+## Release policy fast-v1 (owner, 2026-11-02)
+
+Production Nest releases must take roughly 10–30 minutes from tag to promotion.
+The required path (`release.yml`) is:
+
+| Job | Typical duration |
+| --- | --- |
+| Installer and release contracts, Rust production release gate, pinned workstation netboot (parallel) | 1–2 min |
+| Build and sign release candidate once (reproducible build, signing, self-verification, sealed receipt) | about 11 min |
+| Attest and stage immutable candidate (exact-byte verification, attestation, immutable publication, per-asset `gh release verify-asset`, predecessor recheck) | about 4–5 min |
+| Verify published closure through the candidate downloader (no VM) | about 2–3 min |
+| Promote (automatic for non-coordinated tags; `approve-coordinated-release.yml` for coordinated tags) | under 1 min |
+
+Under the previous policy the warm VM job ("Boot, install, adopt, and reboot exact
+candidate", 44–50 min measured) sat between build and publication, and the cold VM
+job ("Verify published NixOS release in an isolated fixture", 25–80 min) between
+publication and promotion; v0.2.73 took 89 min end to end, v0.2.78 failed after
+2 h 34 min on a harness deadlock.
+
+Warm and cold VM qualification are **not** on the release path. A release is
+published and promoted without VM proof by policy, and says so: its notes carry
+`Tiaris-VM-Qualification: nightly`. Publication adds `Tiaris-Public-Closure: required`;
+promotion replaces only that line with `Tiaris-Public-Closure: passed` and the exact
+public-closure artifact ID and SHA-256. No release claims VM evidence it does not
+have; published assets no longer include VM qualification receipts.
+
+The VM harness is unchanged and runs on demand from
+`.github/workflows/nest-vm-qualification.yml` (`workflow_dispatch` and
+`workflow_call`, inputs `tag`, `warm`, `cold`). It must run at the release tag,
+because the protected `production-release-qualification` environment admits only
+`v*` tag refs and GitHub checks the run's own ref:
+
+```sh
+tag=$(gh release view --repo CybexHQ/james --json tagName --jq .tagName)   # GitHub Latest
+gh workflow run nest-vm-qualification.yml --repo CybexHQ/james --ref "$tag" -f tag="$tag"
+```
+
+Any other ref fails in the first job with that command. A `workflow_call` caller must
+itself run at the tag ref. The workflow exists only in tags cut after it merged; v0.2.78
+and earlier cannot be VM-qualified through it. `tools/vm-qualification-target.py` binds the run to one immutable release,
+its exact `release.yml` push run and its build-once candidate receipt; both VM jobs
+download the published bytes and verify them against that receipt before booting.
+Warm qualification resolves the release's published predecessor, so it applies to
+the newest release (an older tag fails closed once a later release is published).
+Its result is evidence for the owner's nightly only; it never publishes, promotes or
+edits a release. The nightly schedule itself is outside this repository.
+
+Signatures, attestation, immutability, published-byte verification, production-origin
+admission, predecessor lineage rechecks and the protected environments are unchanged.
+
 ## Qualification and publication
+
+The sections below describe the VM qualification harness. Under release policy
+fast-v1 it runs only through `nest-vm-qualification.yml`.
 
 Published ancestry and the upgrade fixture are separate identities. Keep
 `tiaris-nest-build-predecessor.json` as published ancestry. A historical old-key
 publication requires an exact current-key signed authorization; no general trust
 in that old key or historical recovery URL is introduced.
 
-Every V3 release, including the first, requires real fresh installation, a
-strictly lower-version signed NixOS predecessor, real update, and automatic
-rollback. Supply both `TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR` and
+Warm VM qualification exercises real fresh installation, a strictly lower-version
+signed NixOS predecessor, real update, and automatic rollback. Supply both `TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR` and
 `TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256` when the latest
 publication is Ubuntu. Never relabel Ubuntu or fake a same-version update.
 The qualified predecessor receipt binds the separately retained predecessor
@@ -166,10 +218,10 @@ root/password rejection, source-free Standard/Dock/Dock-fixture preparation, rea
 installation and managed workstation reboot/compliance remain required. Private
 serial logs and secrets are never publication evidence.
 
-The release workflow keeps its build, qualify, publish, cold-qualify and promote
-stages. It attests the exact bounded receipts and immutable artifacts, and cold
-acceptance verifies published bytes plus workstation delivery. Coordinated tags
-remain unpromoted until separate explicit approval. `promote-production-release.py
+The release workflow keeps its build, publish, public-closure and promote stages;
+warm and cold VM stages moved to `nest-vm-qualification.yml`. It attests the
+immutable artifacts. Coordinated tags remain unpromoted until separate explicit
+approval. `promote-production-release.py
 --verify-only` performs no publication change. Feature-branch engineering does not
 authorize tagging, publication, production promotion or reinstalling a live appliance.
 Production-origin qualification remains blocked until a separately reviewed

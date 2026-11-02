@@ -173,7 +173,7 @@ class PublicationRecoveryTests(unittest.TestCase):
         if after_inspection:
             after_inspection(self.data)
             self.save()
-        guarded = ['Attest exact release assets', 'Attest exact NixOS update and rollback qualification',
+        guarded = ['Attest exact release assets',
                    'Remove only a stale draft for this exact tag', 'Create draft and attach exact assets']
         for name in guarded:
             self.assertIn("if: steps.publication-recovery.outputs.immutable_release_id == ''", step(name))
@@ -195,8 +195,22 @@ class PublicationRecoveryTests(unittest.TestCase):
         self.assertEqual(len([c for c in self.data['commands'] if c[:2] == ['release', 'verify-asset']]), len(ASSETS))
         self.assertIn('--expected-identity', self.data['predecessor_arguments'])
 
+    def test_publication_carries_no_vm_qualification_evidence(self):
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        publish = workflow.split('  release_publish:\n', 1)[1].split('\n  release_public_closure:\n', 1)[0]
+        self.assertIn('needs: [release_build]\n', publish)
+        for absent in ('release_qualify', 'qualification/tiaris-nest-', 'tiaris-nest-qualified-',
+                       'tiaris-nest-nixos-', 'Tiaris-Cold-Qualification'):
+            self.assertFalse(absent in publish, absent)
+        self.assertEqual(publish.count('"Tiaris-VM-Qualification: nightly"'), 2)
+        with patch.dict(os.environ, self.environment):
+            names = {path.name for path in publication.asset_paths({'TIARIS_NEST_RELEASE_VERSION': '0.2.2'})}
+        self.assertEqual(names, set(ASSETS))
+
     def test_metadata_mismatch_refuses_immutable_reuse_without_mutation(self):
-        for field, value in [('body', BODY.replace('/42', '/43')),
+        legacy = BODY.replace('Tiaris-VM-Qualification: nightly\nTiaris-Public-Closure: required',
+                              'Tiaris-Cold-Qualification: required')
+        for field, value in [('body', legacy), ('body', BODY.replace('/42', '/43')),
                 ('body', BODY.replace('ID: 100', 'ID: 101')),
                 ('body', BODY.replace('a' * 64, 'b' * 64)),
                 ('body', BODY.rsplit('\n', 1)[0]), ('name', 'Other release'),

@@ -11,6 +11,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / '.github/workflows/release.yml'
+# Release policy fast-v1: warm and cold qualification are on demand.
+VM_WORKFLOW = ROOT / '.github/workflows/nest-vm-qualification.yml'
 
 
 def job(body, name, following=None):
@@ -48,8 +50,9 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.body = WORKFLOW.read_text()
-        cls.warm = job(cls.body, 'release_qualify', 'release_publish')
-        cls.cold = job(cls.body, 'release_cold_qualify', 'release_promote')
+        cls.vm = VM_WORKFLOW.read_text()
+        cls.warm = job(cls.vm, 'release_qualify', 'release_cold_qualify')
+        cls.cold = job(cls.vm, 'release_cold_qualify')
 
     def test_cache_is_only_the_explicit_authenticated_warm_branch(self):
         branch = re.search(
@@ -171,7 +174,7 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
         self.assertNotIn('.log', diagnostic)
 
     def test_cold_still_downloads_published_bytes_without_warm_cache(self):
-        self.assertIn('needs: [release_build, release_publish]', self.cold)
+        self.assertIn('needs: release_candidate', self.cold)
         self.assertIn('tools/local-candidate.py published', self.cold)
         self.assertIn('tiaris-nest-published-manifest.json', self.cold)
         self.assertIn('cargo run --release --locked --bin tiaris-nest-qualify-public-closure', self.cold)
@@ -202,12 +205,17 @@ class ReleaseSpeedWorkflowTests(unittest.TestCase):
             self.assertNotIn('timing', acceptance)
 
     def test_protected_chain_and_cold_name_remain_fail_closed(self):
-        self.assertIn('needs: [release_build, release_qualify]', job(self.body, 'release_publish', 'release_cold_qualify'))
+        # Release policy fast-v1: publication follows the signed build; promotion
+        # follows the public closure check. VM jobs keep their protected lane.
+        self.assertIn('needs: [release_build]\n', job(self.body, 'release_publish', 'release_public_closure'))
         self.assertIn('name: Verify published NixOS release in an isolated fixture', self.cold)
         self.assertIn('environment: production-release-qualification', self.cold)
+        self.assertIn('environment: production-release-qualification', self.warm)
         promotion = job(self.body, 'release_promote')
-        self.assertIn('needs: [release_build, release_cold_qualify]', promotion)
+        self.assertIn('needs: [release_build, release_public_closure]', promotion)
         self.assertIn('environment: production-release', promotion)
+        self.assertNotIn('release_qualify', self.body)
+        self.assertNotIn('release_cold_qualify', self.body)
 
 
 if __name__ == '__main__':

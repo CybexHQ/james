@@ -56,10 +56,8 @@ def asset_paths(values):
         f'tiaris-nest-appliance-template-{version}-x86_64-linux.iso',
         f'tiaris-nest-appliance-closure-{version}-x86_64-linux.tar.zst',
         bundle, 'tiaris-nest-release.json', 'tiaris-nest-release-compatibility.json', 'SHA256SUMS')]
-    files += [Path('qualification') / name for name in (
-        'tiaris-nest-nixos-qualification.json', 'tiaris-nest-nixos-update-qualification.json',
-        'tiaris-nest-nixos-rollback-qualification.json', 'tiaris-nest-qualified-predecessor.json',
-        'tiaris-nest-qualified-predecessor-release.json')]
+    # Release policy fast-v1 publishes no VM qualification evidence; the
+    # on-demand nest-vm-qualification.yml workflow keeps its own artifacts.
     predecessor = os.environ['TIARIS_NEST_HAS_PREDECESSOR']
     if predecessor not in {'true', 'false'}:
         raise ValueError('Publication predecessor identity is invalid')
@@ -88,7 +86,8 @@ def inspect(expected_immutable_id=None):
         f'Tiaris-Release-Workflow: {values["GITHUB_SERVER_URL"]}/{repository}/actions/runs/{values["GITHUB_RUN_ID"]}',
         f'Tiaris-Candidate-Artifact-ID: {values["TIARIS_NEST_RELEASE_ARTIFACT_ID"]}',
         f'Tiaris-Candidate-Artifact-SHA256: {values["TIARIS_NEST_RELEASE_ARTIFACT_DIGEST"]}',
-        'Tiaris-Cold-Qualification: required'))
+        'Tiaris-VM-Qualification: nightly',
+        'Tiaris-Public-Closure: required'))
     if (type(release.get('id')) is not int or release['id'] <= 0
             or release.get('name') != f'Tiaris Nest {tag}'
             or release.get('body') != expected_body

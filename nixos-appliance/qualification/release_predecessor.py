@@ -45,11 +45,18 @@ def checked_json(path, limit=1024 * 1024):
     return release._load_bounded_json(path, 'predecessor input', maximum_bytes=limit)
 
 
+# A prerelease carrying one of these markers is staged but not yet promoted
+# (cold-qualified under the old policy, approved under fast-v1). It is never
+# ancestry. A stable release is ancestry whatever its notes say: the owner-waived
+# v0.2.78 was promoted with its cold marker still `required`.
+PENDING_MARKERS = ('Tiaris-Cold-Qualification: required', 'Cybex-Cold-Qualification: required',
+                   'Tiaris-Public-Closure: required')
+
+
 def latest(releases, candidate_tag):
     candidates = []
     for value in releases:
-        if value.get('prerelease') and any(marker in (value.get('body') or '') for marker in
-                ('Tiaris-Cold-Qualification: required', 'Cybex-Cold-Qualification: required')):
+        if value.get('prerelease') and any(marker in (value.get('body') or '') for marker in PENDING_MARKERS):
             continue
         names = [a['name'] for a in value['assets']]
         pairs = ((MANIFEST, COMPATIBILITY), (transition.MANIFEST, transition.COMPATIBILITY))

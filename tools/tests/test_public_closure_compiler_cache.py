@@ -54,7 +54,9 @@ class PublicClosureCompilerCacheTests(unittest.TestCase):
         (binary / 'cargo').write_text(FAKE_CARGO)
         (binary / 'cargo').chmod(0o755)
         body = WORKFLOW.read_text()
-        self.cold = body.split('  release_cold_qualify:\n', 1)[1].split('  release_promote:\n', 1)[0]
+        # Release policy fast-v1: the public closure is checked in its own
+        # release job without a VM fixture.
+        self.cold = body.split('  release_public_closure:\n', 1)[1].split('  release_promote:\n', 1)[0]
         self.qualify = step_script(self.cold, QUALIFIER)
         self.cleanup = step_script(self.cold, 'Remove disposable workspace payloads')
         self.environment = {**os.environ,
@@ -76,11 +78,15 @@ class PublicClosureCompilerCacheTests(unittest.TestCase):
         environment = self.cold.split('    env:\n', 1)[1].split('    steps:\n', 1)[0]
         targets = re.findall(r'^      CARGO_TARGET_DIR: (.+)$', environment, re.MULTILINE)
         self.assertEqual(targets, ['/home/john/.local/state/tiaris-nest-ci-target/public-closure'])
-        self.assertIn('environment: production-release-qualification', self.cold)
-        self.assertIn('group: nest-nixos-production-qualification', self.cold)
+        self.assertIn('environment: production-release\n', self.cold)
+        self.assertNotIn('production-release-qualification', self.cold)
+        self.assertNotIn('run-production-qualification.py', self.cold)
         self.assertNotIn('CARGO_TARGET_DIR=', self.qualify)
-        self.assertIn('tools/local-candidate.py published', self.cold)
+        self.assertIn('releases/download/$GITHUB_REF_NAME/tiaris-nest-release.json', self.cold)
+        self.assertIn('.files["tiaris-nest-release.json"].sha256', self.cold)
         self.assertIn('release_acceptance.py', self.cold)
+        self.assertIn('--phase public-closure', self.cold)
+        self.assertIn('name: tiaris-nest-public-closure-${{ github.run_id }}', self.cold)
 
     def test_two_attempts_reuse_compiler_output_and_execute_new_qualification_each_time(self):
         first = self.run_step(self.qualify)

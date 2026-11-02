@@ -205,7 +205,8 @@ def validate_rollback_gate(evidence):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--phase', choices=['prepublication', 'cold', 'update', 'rollback'], required=True)
+    parser.add_argument('--phase', choices=['prepublication', 'cold', 'update', 'rollback', 'public-closure'],
+                        required=True)
     parser.add_argument('--manifest', type=Path, required=True)
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--workstation', type=Path)
@@ -216,6 +217,14 @@ def main():
     body = args.manifest.read_bytes()
     manifest = json.loads(body)
     evidence = json.loads(args.evidence.read_bytes())
+    if args.phase == 'public-closure':
+        # Release policy fast-v1: the published closure through the candidate
+        # downloader is the only post-publication acceptance on the release path.
+        if args.predecessor_manifest is not None or args.workstation is not None or args.public_closure is not None:
+            raise ValueError('Public closure acceptance takes only its own evidence')
+        validate_public_closure(manifest, hashlib.sha256(body).hexdigest(), evidence, args.source)
+        print('Exact public-closure acceptance verified')
+        return
     if args.phase in {'update', 'rollback'}:
         if args.predecessor_manifest is None or args.workstation is not None or args.public_closure is not None:
             raise ValueError('Update acceptance requires its exact predecessor manifest')

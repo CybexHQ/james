@@ -7,8 +7,11 @@ remain readable for publication ancestry; they are never upgrade fixtures or new
 production candidates. Existing Ubuntu installations require human reinstallation.
 
 The protected release workflow builds and signs immutable production-bound
-artifacts, qualifies them, stages an immutable prerelease, independently downloads
-its published bytes, and repeats cold appliance and workstation acceptance.
+artifacts, stages an immutable prerelease and verifies its published closure.
+Under release policy fast-v1 (2026-11-02) the warm and cold qualification described
+here are not release gates: they run on demand from
+`.github/workflows/nest-vm-qualification.yml` against an exact published release,
+and releases record `Tiaris-VM-Qualification: nightly`. See `RELEASES.md`.
 Coordinated releases require a separate exact-candidate promotion action.
 `release/coordinated.json` uses `tiaris.coordinated-release.v2` and
 `appliance_family: nixos`; it has no Ubuntu snapshot input.
@@ -124,16 +127,18 @@ upgrade/rollback, managed workstation reboots, and exact compliance remain gates
 Production evidence includes `tiaris.nest.isolated-qualification.v1`, the artifact
 origin, exact Tiaris revision, owned fixture identity, and proof that the live
 production service was not the target. Appliance and workstation receipts must
-bind the same fixture. The producer, promoter, and Tiaris coordinator use the
-job name `Verify published NixOS release in an isolated fixture`.
+bind the same fixture. The on-demand `nest-vm-qualification.yml` keeps the job name
+`Verify published NixOS release in an isolated fixture`. Under release policy fast-v1
+the release workflow, promoter and Tiaris coordinator use the public-closure job
+`Verify published closure through the candidate downloader` instead.
 
 ## Recovery
 
 Publication retries preserve an already immutable prerelease only when its exact
 source, workflow owner, candidate artifact, metadata and complete asset digests
 match the locally verified candidate. That path skips attestation and all release
-mutations, rechecks the current signed predecessor, and still requires independent
-published cold qualification. Partial owned drafts keep their guarded recreation
+mutations, rechecks the current signed predecessor, and still requires the public-closure
+check before promotion. Partial owned drafts keep their guarded recreation
 path. After publishing, verification waits up to five minutes only for GitHub's exact
 missing-attestation response; invalid attestations and other failures stop at once.
 A failed workflow at an older immutable tag still runs its original code: do not
@@ -146,7 +151,7 @@ responses and mutating compare-and-swap PUTs never retry. A second timeout fails
 qualification. This bounds a host-control stall without treating it as appliance
 acceptance or claiming its underlying cause was repaired.
 
-The protected cold job retains compiler output at
+The public-closure release job and the on-demand cold job share compiler output at
 `~/.local/state/tiaris-nest-ci-target/public-closure`, owned by the release runner.
 This is one reusable Cargo target, not qualification evidence. Each attempt still
 downloads published payloads independently, executes the exact-source public-closure
@@ -208,7 +213,7 @@ prepare all three current profiles without source builds, and report all require
 cache replicas before update acceptance can be written. Candidate fresh and cold
 installation independently retain the complete current-profile delivery checks.
 Rollback still proves automatic restoration of the exact healthy predecessor.
-Independent cold appliance and workstation qualification remains mandatory after staging.
+Independent cold appliance and workstation qualification runs on demand after publication.
 
 The signed appliance closure carries the exact workstation agent, both observer
 wrappers for Taskbar and Dock (including their schema dependencies), and

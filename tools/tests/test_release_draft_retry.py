@@ -16,8 +16,11 @@ ASSETS = [
     'tiaris-nest-appliance-template-0.2.2-x86_64-linux.iso',
     'tiaris-nest-appliance-closure-0.2.2-x86_64-linux.tar.zst',
     BUNDLE, 'tiaris-nest-release.json', 'tiaris-nest-release-compatibility.json',
-    'SHA256SUMS', 'tiaris-nest-nixos-qualification.json',
-    'tiaris-nest-build-predecessor.json', 'tiaris-nest-nixos-update-qualification.json',
+    'SHA256SUMS', 'tiaris-nest-build-predecessor.json',
+]
+# Release policy fast-v1 publishes no VM qualification evidence.
+LEGACY_VM_ASSETS = [
+    'tiaris-nest-nixos-qualification.json', 'tiaris-nest-nixos-update-qualification.json',
     'tiaris-nest-nixos-rollback-qualification.json',
     'tiaris-nest-qualified-predecessor.json', 'tiaris-nest-qualified-predecessor-release.json',
 ]
@@ -25,8 +28,10 @@ BODY = '\n'.join([
     'Tiaris-Release-Workflow: https://github.com/CybexHQ/james/actions/runs/42',
     'Tiaris-Candidate-Artifact-ID: 100',
     'Tiaris-Candidate-Artifact-SHA256: ' + 'a' * 64,
-    'Tiaris-Cold-Qualification: required',
+    'Tiaris-VM-Qualification: nightly',
+    'Tiaris-Public-Closure: required',
 ])
+LEGACY_BODY = '\n'.join(BODY.splitlines()[:3] + ['Tiaris-Cold-Qualification: required'])
 FAKE_GH = """#!/usr/bin/env python3
 import json, os, pathlib, sys
 data = json.loads(pathlib.Path(os.environ['TEST_API']).read_text())
@@ -93,11 +98,24 @@ class DraftRetryTests(unittest.TestCase):
             arguments = capture.read_bytes().decode().rstrip('\0').split('\0')
             self.assertEqual(arguments[arguments.index('--notes') + 1], BODY)
 
-    def test_missing_cold_qualification_marker_prevents_deletion(self):
-        self.data['release']['body'] = BODY.rsplit('\n', 1)[0]
-        result, deleted = self.cleanup(self.data)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(deleted)
+    def test_missing_or_legacy_policy_markers_prevent_deletion(self):
+        lines = BODY.splitlines()
+        for body in ('\n'.join(lines[:-1]), '\n'.join(lines[:3] + lines[4:]), LEGACY_BODY):
+            with self.subTest(body=body):
+                data = copy.deepcopy(self.data)
+                data['release']['body'] = body
+                result, deleted = self.cleanup(data)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(deleted)
+
+    def test_vm_qualification_assets_are_not_part_of_an_owned_draft(self):
+        for name in LEGACY_VM_ASSETS:
+            with self.subTest(name=name):
+                data = copy.deepcopy(self.data)
+                data['assets'] = data['assets'] + [{'name': name}]
+                result, deleted = self.cleanup(data)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(deleted)
 
     def test_owned_complete_or_partial_draft_can_be_retried(self):
         for assets in (self.data['assets'], self.data['assets'][-1:], []):

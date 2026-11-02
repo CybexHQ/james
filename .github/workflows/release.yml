@@ -568,255 +568,13 @@ jobs:
           rm -rf -- "$RUNNER_TEMP/tiaris-nest-predecessor" "$RUNNER_TEMP/tiaris-nest-qualification-predecessor" "$RUNNER_TEMP/tiaris-nest-retained-manage-source"
 
 
-  release_qualify:
-    name: Boot, install, adopt, and reboot exact candidate
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: release_build
-    runs-on: [self-hosted, linux, x64, cybex-james-lab]
-    environment: production-release-qualification
-    concurrency:
-      group: nest-nixos-production-qualification
-      cancel-in-progress: false
-    outputs:
-      artifact_id: ${{ steps.upload-qualification.outputs.artifact-id }}
-      artifact_digest: ${{ steps.upload-qualification.outputs.artifact-digest }}
-    permissions:
-      contents: read
-      actions: read
-    env:
-      TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN }}
-      TIARIS_NEST_QUALIFICATION_SUBNET: ${{ vars.CYBEX_JAMES_QUALIFICATION_SUBNET }}
-      TIARIS_NEST_QUALIFICATION_CONFIG: ${{ vars.CYBEX_JAMES_QUALIFICATION_CONFIG }}
-      TIARIS_NEST_QUALIFICATION_STATE_ROOT: ${{ vars.CYBEX_JAMES_QUALIFICATION_STATE_ROOT }}
-      TIARIS_NEST_RELEASE_VERSION: ${{ needs.release_build.outputs.version }}
-      TIARIS_NEST_RELEASE_ARTIFACT_ID: ${{ needs.release_build.outputs.artifact_id }}
-      TIARIS_NEST_WORKSTATION_BUNDLE_NAME: ${{ needs.release_build.outputs.workstation_bundle_name }}
-      TIARIS_NEST_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
-      TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
-      TIARIS_NEST_HAS_PREDECESSOR: ${{ needs.release_build.outputs.has_predecessor }}
-      TIARIS_NEST_PUBLISHED_PREDECESSOR_IDENTITY_B64: ${{ needs.release_build.outputs.predecessor_identity_b64 }}
-      TIARIS_NEST_PUBLISHED_PREDECESSOR_IDENTITY_SHA256: ${{ needs.release_build.outputs.predecessor_identity_sha256 }}
-      TIARIS_NEST_PUBLISHED_PREDECESSOR_RELEASE: ${{ needs.release_build.outputs.predecessor_release }}
-      TIARIS_NEST_PUBLISHED_PREDECESSOR_SNAPSHOT: ${{ needs.release_build.outputs.predecessor_snapshot }}
-      TIARIS_NEST_PUBLISHED_PREDECESSOR_UPDATE_CONTRACT: ${{ needs.release_build.outputs.predecessor_update_contract }}
-      TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR: ${{ vars.CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_DIR }}
-      TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256: ${{ vars.CYBEX_JAMES_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256 }}
-      TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT: ${{ vars.CYBEX_JAMES_QUALIFICATION_PREDECESSOR_CACHE_ROOT }}
-    steps:
-      - name: Checkout exact qualification source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Require isolated NixOS production qualification
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          for name in CONFIG SUBNET STATE_ROOT; do
-            input="TIARIS_NEST_QUALIFICATION_$name"
-            : "${!input:?configure the protected production qualification environment}"
-          done
-          test "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" = https://manage.cybex.net
-          test "$TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN" = "$TIARIS_NEST_BUILD_MANAGE_ORIGIN"
-          [[ "$TIARIS_NEST_QUALIFICATION_CONFIG" = /* ]]
-          [[ "$TIARIS_NEST_QUALIFICATION_STATE_ROOT" = /* ]]
-          # The runner validates pinned fixture images, dedicated credentials and
-          # private TLS transport before creating any appliance or workstation.
-          sudo -n python3 -B -c 'import sys,json; sys.path.insert(0,"nixos-appliance/qualification"); import isolated_manage_config as c; c.validate(json.loads(c.read_file(sys.argv[1])))' \
-            "$TIARIS_NEST_QUALIFICATION_CONFIG"
-
-      - name: Download build-once candidate by immutable artifact ID
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 tools/local-candidate.py download-receipt \
-            --artifact-id "${{ needs.release_build.outputs.artifact_id }}" \
-            --artifact-digest "${{ needs.release_build.outputs.artifact_digest }}" \
-            --receipt candidate-receipt/candidate.json
-
-      - name: Verify receipt and restore exact local candidate
-        run: python3 tools/local-candidate.py restore --receipt candidate-receipt/candidate.json
-
-      - name: Verify exact signed candidate before boot
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          version="$TIARIS_NEST_RELEASE_VERSION"
-          (cd dist && sha256sum --check --strict SHA256SUMS)
-          tree="$RUNNER_TEMP/workstation-netboot-qualification"
-          install -d -m 0700 "$tree"
-          tar --use-compress-program=unzstd \
-            -xf "dist/$TIARIS_NEST_WORKSTATION_BUNDLE_NAME" -C "$tree"
-          python3 -B tools/nest-release.py verify \
-            --manifest dist/tiaris-nest-release.json \
-            --artifact dist/tiaris-nest-x86_64-linux \
-            --installer-iso-template "dist/tiaris-nest-appliance-template-$version-x86_64-linux.iso" \
-            --expected-manage-origin "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" \
-            --appliance-system-closure "dist/tiaris-nest-appliance-closure-$version-x86_64-linux.tar.zst" \
-            --workstation-netboot-bundle "dist/$TIARIS_NEST_WORKSTATION_BUNDLE_NAME" \
-            --workstation-netboot-tree "$tree" \
-            --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
-          artifact_base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/$GITHUB_REF_NAME"
-          python3 -B tools/nest-release.py verify-compatibility \
-            --asset dist/tiaris-nest-release-compatibility.json \
-            --manifest dist/tiaris-nest-release.json \
-            --manifest-url "$artifact_base/tiaris-nest-release.json" \
-            --compatibility protocol/compatibility.json \
-            --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
-
-      - name: Resolve exact predecessor media for disposable fixtures
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -Eeuo pipefail
-          arguments=()
-          explicit_fixture=false
-          snapshot_parent="$RUNNER_TEMP/tiaris-nest-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          predecessor="$snapshot_parent/predecessor"
-          install -d -m 0700 "$snapshot_parent"
-          if [ "$TIARIS_NEST_HAS_PREDECESSOR" = true ]; then
-            arguments+=(--expected-identity dist/tiaris-nest-build-predecessor.json)
-          fi
-          # The published ancestry and the upgrade fixture are distinct. The
-          # first V3 release needs a separately signed NixOS predecessor; an
-          # Ubuntu appliance is never upgraded or relabeled as that fixture.
-          if [ -n "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR" ] \
-            || [ -n "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256" ]; then
-            : "${TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR:?missing qualification predecessor directory}"
-            [[ "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
-            arguments+=(
-              --qualification-predecessor-dir "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR"
-              --qualification-predecessor-manifest-sha256 "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256"
-            )
-            explicit_fixture=true
-          fi
-          if [ "$TIARIS_NEST_HAS_PREDECESSOR" = true ] \
-            && [ "$explicit_fixture" = true ] \
-            && [ -n "$TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT" ]; then
-            timing_parent="$RUNNER_TEMP/tiaris-nest-release-speed-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-            install -d -m 0700 "$timing_parent"
-            python3 -B release/beast/release_speed.py cache \
-              --mode github-warm \
-              --cache-root "$TIARIS_NEST_QUALIFICATION_PREDECESSOR_CACHE_ROOT" \
-              --directory "$predecessor" \
-              --predecessor-dir "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR" \
-              --predecessor-manifest-sha256 "$TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_MANIFEST_SHA256" \
-              --expected-identity dist/tiaris-nest-build-predecessor.json \
-              --authorization release/recovery-adoption.json \
-              --repository "$GITHUB_REPOSITORY" \
-              --candidate-version "$TIARIS_NEST_RELEASE_VERSION" \
-              --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
-              --timing-dir "$timing_parent/predecessor-cache"
-          else
-            python3 -B nixos-appliance/qualification/release_predecessor.py \
-              --repository "$GITHUB_REPOSITORY" \
-              --candidate-version "$TIARIS_NEST_RELEASE_VERSION" \
-              --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
-              --directory "$predecessor" \
-              --output "$predecessor/identity.json" \
-              --download-media "${arguments[@]}"
-          fi
-          test "$(jq -er '.appliance_release_v1.schema' "$predecessor/tiaris-nest-release.json")" = tiaris.nest.appliance-release.v3
-
-      - name: Upload bounded predecessor-cache timing
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: tiaris-nest-predecessor-cache-timing-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/tiaris-nest-release-speed-${{ github.run_id }}-${{ github.run_attempt }}/predecessor-cache/timing.json
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: Qualify fresh installation, real upgrade and automatic rollback
-        shell: bash
-        timeout-minutes: 240
-        run: |
-          set -Eeuo pipefail
-          source tools/ci-host-reservation.sh
-          reserve_ci_host_capacity "Nest qualification $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" 32 12
-          fixture_directory="$TIARIS_NEST_QUALIFICATION_STATE_ROOT/config-warm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          sudo -n python3 -B nixos-appliance/qualification/prepare-fixture-config.py \
-            --template "$TIARIS_NEST_QUALIFICATION_CONFIG" \
-            --candidate-dir "$GITHUB_WORKSPACE/dist" \
-            --predecessor-dir "$RUNNER_TEMP/tiaris-nest-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/predecessor" \
-            --directory "$fixture_directory"
-          sudo -n python3 -B nixos-appliance/qualification/run-production-qualification.py \
-            --run "release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-            --manage-origin "$TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN" \
-            --isolated-manage-config "$fixture_directory/config.json" \
-            --subnet "$TIARIS_NEST_QUALIFICATION_SUBNET" \
-            --state-root "$TIARIS_NEST_QUALIFICATION_STATE_ROOT" \
-            --candidate-dir "$GITHUB_WORKSPACE/dist" \
-            --predecessor-dir "$RUNNER_TEMP/tiaris-nest-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/predecessor" \
-            --evidence-dir "$RUNNER_TEMP/tiaris-nest-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-            --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
-
-      - name: Retain bounded rollback failure diagnostic
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: tiaris-nest-rollback-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-nixos-rollback-failure.json
-          if-no-files-found: ignore
-          compression-level: 0
-          retention-days: 30
-
-      - name: Retain qualification failure diagnostics
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: tiaris-nest-qualification-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/release-${{ github.run_id }}-${{ github.run_attempt }}-*/tiaris-nest-*-diagnostics.json
-          if-no-files-found: ignore
-          retention-days: 30
-
-      - name: Retain bounded warm qualification timings
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: tiaris-nest-warm-phase-timing-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-qualification-timing.json
-          if-no-files-found: ignore
-          retention-days: 30
-
-      - name: Upload bounded qualification evidence
-        id: upload-qualification
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: tiaris-nest-qualified-${{ github.run_id }}
-          path: |
-            ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-nixos-qualification.json
-            ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-nixos-update-qualification.json
-            ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-qualified-predecessor.json
-            ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-qualified-predecessor-release.json
-            ${{ runner.temp }}/tiaris-nest-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-nixos-rollback-qualification.json
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 90
-
-      - name: Remove completed private fixture configuration
-        if: success()
-        run: |
-          sudo -n python3 -B nixos-appliance/qualification/cleanup-fixture-config.py \
-            --directory "$TIARIS_NEST_QUALIFICATION_STATE_ROOT/config-warm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-
-      - name: Remove disposable workspace payloads
-        if: always()
-        run: |
-          rm -rf -- "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE/candidate-receipt" "$GITHUB_WORKSPACE/manage-source"
-          rm -rf -- "$RUNNER_TEMP/tiaris-nest-unsigned-closure" "$RUNNER_TEMP/tiaris-nest-template" "$RUNNER_TEMP/tiaris-workstation-netboot-tree"
-          rm -rf -- "$RUNNER_TEMP/tiaris-nest-predecessor" "$RUNNER_TEMP/tiaris-nest-qualification-predecessor" "$RUNNER_TEMP/tiaris-nest-retained-manage-source"
-          rm -rf -- "$RUNNER_TEMP/tiaris-nest-predecessor-snapshot-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          rm -rf -- "$RUNNER_TEMP/tiaris-nest-release-speed-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-
-
+  # Release policy fast-v1: production releases need no warm or cold VM
+  # qualification. The VM jobs run on demand from nest-vm-qualification.yml
+  # (for the owner's nightly) and never gate publication or promotion.
   release_publish:
     name: Attest and stage immutable candidate
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [release_build, release_qualify]
+    needs: [release_build]
     runs-on: [self-hosted, linux, x64, cybex-james-lab]
     environment: production-release
     concurrency:
@@ -836,8 +594,6 @@ jobs:
       TIARIS_NEST_RELEASE_ARTIFACT: ${{ needs.release_build.outputs.artifact_name }}
       TIARIS_NEST_RELEASE_ARTIFACT_ID: ${{ needs.release_build.outputs.artifact_id }}
       TIARIS_NEST_RELEASE_ARTIFACT_DIGEST: ${{ needs.release_build.outputs.artifact_digest }}
-      TIARIS_NEST_QUALIFICATION_ARTIFACT_ID: ${{ needs.release_qualify.outputs.artifact_id }}
-      TIARIS_NEST_QUALIFICATION_ARTIFACT_DIGEST: ${{ needs.release_qualify.outputs.artifact_digest }}
       TIARIS_NEST_WORKSTATION_BUNDLE_NAME: ${{ needs.release_build.outputs.workstation_bundle_name }}
       TIARIS_NEST_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
       TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
@@ -848,7 +604,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           if [ "${TIARIS_NEST_BUILD_MANAGE_ORIGIN:-}" != https://manage.cybex.net ]; then
-            echo '::error::Development qualification artifacts cannot be published or promoted as production releases. Production-origin isolated qualification remains required.'
+            echo '::error::Development-origin artifacts cannot be published or promoted as production releases.'
             exit 1
           fi
 
@@ -898,11 +654,6 @@ jobs:
             "$TIARIS_NEST_RELEASE_ARTIFACT" \
             "$TIARIS_NEST_RELEASE_ARTIFACT_DIGEST" \
             "$RUNNER_TEMP/tiaris-nest-candidate-artifact.json"
-          validate_artifact \
-            "$TIARIS_NEST_QUALIFICATION_ARTIFACT_ID" \
-            "tiaris-nest-qualified-$GITHUB_RUN_ID" \
-            "$TIARIS_NEST_QUALIFICATION_ARTIFACT_DIGEST" \
-            "$RUNNER_TEMP/tiaris-nest-qualification-artifact.json"
 
       - name: Download original release candidate independently by artifact ID
         env:
@@ -915,13 +666,6 @@ jobs:
 
       - name: Verify receipt and restore exact local candidate
         run: python3 tools/local-candidate.py restore --receipt candidate-receipt/candidate.json
-
-      - name: Download exact-candidate qualification evidence by artifact ID
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          artifact-ids: ${{ env.TIARIS_NEST_QUALIFICATION_ARTIFACT_ID }}
-          path: qualification
-          merge-multiple: true
 
       - name: Independently verify exact publish bytes
         shell: bash
@@ -983,27 +727,6 @@ jobs:
             --manifest-url "$artifact_base/tiaris-nest-release.json" \
             --compatibility protocol/compatibility.json \
             --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY"
-          evidence=qualification/tiaris-nest-nixos-qualification.json
-          update_evidence=qualification/tiaris-nest-nixos-update-qualification.json
-          rollback=qualification/tiaris-nest-nixos-rollback-qualification.json
-          predecessor_identity=qualification/tiaris-nest-qualified-predecessor.json
-          predecessor_manifest=qualification/tiaris-nest-qualified-predecessor-release.json
-          for file in "$evidence" "$update_evidence" "$rollback" "$predecessor_identity" "$predecessor_manifest"; do
-            test -f "$file" && test ! -L "$file"
-          done
-          test "$(jq -er '.manifest_sha256' "$predecessor_identity")" = \
-            "$(sha256sum "$predecessor_manifest" | awk '{print $1}')"
-          python3 -B nixos-appliance/qualification/release_acceptance.py \
-            --phase prepublication --manifest dist/tiaris-nest-release.json \
-            --evidence "$evidence" --source "$GITHUB_SHA"
-          python3 -B nixos-appliance/qualification/release_acceptance.py \
-            --phase update --manifest dist/tiaris-nest-release.json \
-            --evidence "$update_evidence" --source "$GITHUB_SHA" \
-            --predecessor-manifest "$predecessor_manifest"
-          python3 -B nixos-appliance/qualification/release_acceptance.py \
-            --phase rollback --manifest dist/tiaris-nest-release.json \
-            --evidence "$rollback" --source "$GITHUB_SHA" \
-            --predecessor-manifest "$predecessor_manifest"
           install -m 0700 dist/tiaris-nest-x86_64-linux "$RUNNER_TEMP/tiaris-nest-release-verify"
           test "$("$RUNNER_TEMP/tiaris-nest-release-verify" --version)" = "tiaris-nest $version"
           rm -f -- "$RUNNER_TEMP/tiaris-nest-release-verify"
@@ -1041,17 +764,6 @@ jobs:
             dist/tiaris-nest-release.json
             dist/tiaris-nest-release-compatibility.json
             dist/SHA256SUMS
-            qualification/tiaris-nest-nixos-qualification.json
-
-      - name: Attest exact NixOS update and rollback qualification
-        if: steps.publication-recovery.outputs.immutable_release_id == ''
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
-        with:
-          subject-path: |
-            qualification/tiaris-nest-nixos-update-qualification.json
-            qualification/tiaris-nest-qualified-predecessor.json
-            qualification/tiaris-nest-qualified-predecessor-release.json
-            qualification/tiaris-nest-nixos-rollback-qualification.json
 
       - name: Remove only a stale draft for this exact tag
         if: steps.publication-recovery.outputs.immutable_release_id == ''
@@ -1070,11 +782,12 @@ jobs:
           owner_run_marker="Tiaris-Release-Workflow: $owner_run"
           owner_artifact_marker="Tiaris-Candidate-Artifact-ID: $TIARIS_NEST_RELEASE_ARTIFACT_ID"
           owner_digest_marker="Tiaris-Candidate-Artifact-SHA256: $TIARIS_NEST_RELEASE_ARTIFACT_DIGEST"
-          expected_body="$(printf '%s\n%s\n%s\n%s' \
+          expected_body="$(printf '%s\n%s\n%s\n%s\n%s' \
             "$owner_run_marker" \
             "$owner_artifact_marker" \
             "$owner_digest_marker" \
-            "Tiaris-Cold-Qualification: required")"
+            "Tiaris-VM-Qualification: nightly" \
+            "Tiaris-Public-Closure: required")"
           existing="$RUNNER_TEMP/tiaris-nest-existing-release.json"
           existing_pages="$RUNNER_TEMP/tiaris-nest-existing-releases.json"
           gh api --paginate --slurp \
@@ -1111,21 +824,15 @@ jobs:
               --arg manifest "tiaris-nest-release.json" \
               --arg compatibility "tiaris-nest-release-compatibility.json" \
               --arg checksums "SHA256SUMS" \
-              --arg qualification "tiaris-nest-nixos-qualification.json" \
-              --arg update_qualification "tiaris-nest-nixos-update-qualification.json" \
-              --arg rollback_qualification "tiaris-nest-nixos-rollback-qualification.json" \
               --arg predecessor_identity "tiaris-nest-build-predecessor.json" \
-              --arg qualified_predecessor "tiaris-nest-qualified-predecessor.json" \
-              --arg qualified_manifest "tiaris-nest-qualified-predecessor-release.json" \
               'type == "array"
-               and length <= 13
+               and length <= 8
                and ((map(.name) | length) == (map(.name) | unique | length))
                and all(.[].name;
                  . == $binary or . == $manifest
                  or . == $compatibility
                  or . == $template or . == $closure or . == $netboot or . == $checksums
-                 or . == $qualification or . == $update_qualification or . == $rollback_qualification
-                 or . == $predecessor_identity or . == $qualified_predecessor or . == $qualified_manifest)' \
+                 or . == $predecessor_identity)' \
               "$stale_assets" >/dev/null
             gh api --method DELETE \
               -H 'Accept: application/vnd.github+json' \
@@ -1141,11 +848,15 @@ jobs:
         run: |
           set -euo pipefail
           owner_run="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          release_markers="$(printf '%s\n%s\n%s\n%s' \
+          # Policy fast-v1: no VM qualification evidence is published. The
+          # notes say so explicitly; promotion replaces only the public-closure
+          # marker once that check has passed.
+          release_markers="$(printf '%s\n%s\n%s\n%s\n%s' \
             "Tiaris-Release-Workflow: $owner_run" \
             "Tiaris-Candidate-Artifact-ID: $TIARIS_NEST_RELEASE_ARTIFACT_ID" \
             "Tiaris-Candidate-Artifact-SHA256: $TIARIS_NEST_RELEASE_ARTIFACT_DIGEST" \
-            "Tiaris-Cold-Qualification: required")"
+            "Tiaris-VM-Qualification: nightly" \
+            "Tiaris-Public-Closure: required")"
           gh release create "$GITHUB_REF_NAME" \
             --draft --prerelease --latest=false --verify-tag --target "$GITHUB_SHA" \
             --notes "$release_markers" \
@@ -1158,11 +869,6 @@ jobs:
             dist/tiaris-nest-release.json
             dist/tiaris-nest-release-compatibility.json
             dist/SHA256SUMS
-            qualification/tiaris-nest-nixos-qualification.json
-            qualification/tiaris-nest-nixos-update-qualification.json
-            qualification/tiaris-nest-nixos-rollback-qualification.json
-            qualification/tiaris-nest-qualified-predecessor.json
-            qualification/tiaris-nest-qualified-predecessor-release.json
           )
           if [ "$TIARIS_NEST_HAS_PREDECESSOR" = true ]; then
             release_assets+=(dist/tiaris-nest-build-predecessor.json)
@@ -1200,11 +906,6 @@ jobs:
             dist/tiaris-nest-release.json
             dist/tiaris-nest-release-compatibility.json
             dist/SHA256SUMS
-            qualification/tiaris-nest-nixos-qualification.json
-            qualification/tiaris-nest-nixos-update-qualification.json
-            qualification/tiaris-nest-nixos-rollback-qualification.json
-            qualification/tiaris-nest-qualified-predecessor.json
-            qualification/tiaris-nest-qualified-predecessor-release.json
           )
           if [ "$TIARIS_NEST_HAS_PREDECESSOR" = true ]; then
             release_asset_paths+=(dist/tiaris-nest-build-predecessor.json)
@@ -1298,29 +999,22 @@ jobs:
           rm -rf -- "$RUNNER_TEMP/tiaris-nest-predecessor" "$RUNNER_TEMP/tiaris-nest-qualification-predecessor" "$RUNNER_TEMP/tiaris-nest-retained-manage-source"
 
 
-  release_cold_qualify:
-    name: Verify published NixOS release in an isolated fixture
+  release_public_closure:
+    name: Verify published closure through the candidate downloader
     needs: [release_build, release_publish]
     runs-on: [self-hosted, linux, x64, cybex-james-lab]
-    environment: production-release-qualification
-    concurrency:
-      group: nest-nixos-production-qualification
-      cancel-in-progress: false
+    environment: production-release
     permissions:
       contents: read
       actions: read
     outputs:
-      artifact_id: ${{ steps.cold-evidence.outputs.artifact-id }}
-      artifact_digest: ${{ steps.cold-evidence.outputs.artifact-digest }}
+      artifact_id: ${{ steps.public-closure-evidence.outputs.artifact-id }}
+      artifact_digest: ${{ steps.public-closure-evidence.outputs.artifact-digest }}
     env:
-      # Reuse compiler outputs only. Every attempt still downloads public payloads,
-      # executes the exact-source qualifier and writes new private acceptance proof.
+      # Reuse compiler outputs only. Every attempt still downloads the public
+      # closure, executes the exact-source qualifier and writes new evidence.
       CARGO_TARGET_DIR: /home/john/.local/state/tiaris-nest-ci-target/public-closure
       TIARIS_NEST_BUILD_MANAGE_ORIGIN: ${{ needs.release_build.outputs.manage_origin }}
-      TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN: ${{ vars.CYBEX_JAMES_QUALIFICATION_MANAGE_ORIGIN }}
-      TIARIS_NEST_QUALIFICATION_SUBNET: ${{ vars.CYBEX_JAMES_QUALIFICATION_SUBNET }}
-      TIARIS_NEST_QUALIFICATION_CONFIG: ${{ vars.CYBEX_JAMES_QUALIFICATION_CONFIG }}
-      TIARIS_NEST_QUALIFICATION_STATE_ROOT: ${{ vars.CYBEX_JAMES_QUALIFICATION_STATE_ROOT }}
     steps:
       - name: Checkout exact published source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -1333,23 +1027,6 @@ jobs:
         with:
           toolchain: 1.85.0
 
-      - name: Require isolated NixOS production qualification
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          for name in CONFIG SUBNET STATE_ROOT; do
-            input="TIARIS_NEST_QUALIFICATION_$name"
-            : "${!input:?configure the protected production qualification environment}"
-          done
-          test "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" = https://manage.cybex.net
-          test "$TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN" = "$TIARIS_NEST_BUILD_MANAGE_ORIGIN"
-          [[ "$TIARIS_NEST_QUALIFICATION_CONFIG" = /* ]]
-          [[ "$TIARIS_NEST_QUALIFICATION_STATE_ROOT" = /* ]]
-          # The runner validates pinned fixture images, dedicated credentials and
-          # private TLS transport before creating any appliance or workstation.
-          sudo -n python3 -B -c 'import sys,json; sys.path.insert(0,"nixos-appliance/qualification"); import isolated_manage_config as c; c.validate(json.loads(c.read_file(sys.argv[1])))' \
-            "$TIARIS_NEST_QUALIFICATION_CONFIG"
-
       - name: Download the bounded candidate receipt
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1359,10 +1036,19 @@ jobs:
             --artifact-digest "${{ needs.release_build.outputs.artifact_digest }}" \
             --receipt candidate-receipt/candidate.json
 
-      - name: Download published payloads independently of the local candidate store
+      - name: Download the exact published signed manifest
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 tools/local-candidate.py published --receipt candidate-receipt/candidate.json
+        run: |
+          set -Eeuo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq '.immutable')" = true
+          install -d -m 0700 dist
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/tiaris-nest-release.json" \
+            --output dist/tiaris-nest-release.json
+          test "$(sha256sum dist/tiaris-nest-release.json | cut -d ' ' -f 1)" = \
+            "$(jq -er '.files["tiaris-nest-release.json"].sha256' candidate-receipt/candidate.json)"
 
       - name: Qualify signed public closure through the candidate downloader
         shell: bash
@@ -1383,94 +1069,33 @@ jobs:
             --source "$GITHUB_SHA" --tag "$GITHUB_REF_NAME" \
             --output "$public_dir/tiaris-nest-public-closure-qualification.json"
 
-      - name: Require exact published bytes and cold runtime convergence
+      - name: Accept exact public closure qualification
         shell: bash
-        timeout-minutes: 240
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
         run: |
           set -Eeuo pipefail
-          source tools/ci-host-reservation.sh
-          reserve_ci_host_capacity "Nest cold qualification $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" 32 12
-          (cd dist && sha256sum --check --strict SHA256SUMS)
-          published="$RUNNER_TEMP/tiaris-nest-published-manifest.json"
-          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-            "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/tiaris-nest-release.json" \
-            --output "$published"
-          cmp dist/tiaris-nest-release.json "$published"
-          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq '.immutable')" = true
-          fixture_directory="$TIARIS_NEST_QUALIFICATION_STATE_ROOT/config-cold-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          sudo -n python3 -B nixos-appliance/qualification/prepare-fixture-config.py \
-            --template "$TIARIS_NEST_QUALIFICATION_CONFIG" \
-            --candidate-dir "$GITHUB_WORKSPACE/dist" \
-            --directory "$fixture_directory"
-          sudo -n python3 -B nixos-appliance/qualification/run-production-qualification.py \
-            --run "published-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-            --manage-origin "$TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN" \
-            --isolated-manage-config "$fixture_directory/config.json" \
-            --subnet "$TIARIS_NEST_QUALIFICATION_SUBNET" \
-            --state-root "$TIARIS_NEST_QUALIFICATION_STATE_ROOT" \
-            --candidate-dir "$GITHUB_WORKSPACE/dist" \
-            --evidence-dir "$RUNNER_TEMP/tiaris-nest-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-            --trusted-public-key "$TRUSTED_KEY" --published-cold
-          mv -- "$RUNNER_TEMP/tiaris-nest-public-closure-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tiaris-nest-public-closure-qualification.json" \
-            "$RUNNER_TEMP/tiaris-nest-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tiaris-nest-public-closure-qualification.json"
           python3 -B nixos-appliance/qualification/release_acceptance.py \
-            --phase cold --manifest dist/tiaris-nest-release.json --source "$GITHUB_SHA" \
-            --evidence "$RUNNER_TEMP/tiaris-nest-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tiaris-nest-published-cold-qualification.json" \
-            --public-closure "$RUNNER_TEMP/tiaris-nest-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tiaris-nest-public-closure-qualification.json" \
-            --workstation "$RUNNER_TEMP/tiaris-nest-cold-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tiaris-nest-published-workstation-qualification.json"
+            --phase public-closure --manifest dist/tiaris-nest-release.json --source "$GITHUB_SHA" \
+            --evidence "$RUNNER_TEMP/tiaris-nest-public-closure-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/tiaris-nest-public-closure-qualification.json"
 
-      - name: Retain cold qualification failure diagnostics
-        if: always()
+      - name: Retain public closure qualification evidence
+        id: public-closure-evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: tiaris-nest-cold-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/tiaris-nest-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/published-${{ github.run_id }}-${{ github.run_attempt }}-*/tiaris-nest-*-diagnostics.json
-          if-no-files-found: ignore
-          retention-days: 30
-
-      - name: Retain bounded cold qualification timings
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: tiaris-nest-cold-phase-timing-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/tiaris-nest-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-qualification-timing.json
-          if-no-files-found: ignore
-          retention-days: 30
-
-      - name: Retain published cold-install qualification evidence
-        id: cold-evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: tiaris-nest-published-cold-${{ github.run_id }}
-          path: |
-            ${{ runner.temp }}/tiaris-nest-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-published-cold-qualification.json
-            ${{ runner.temp }}/tiaris-nest-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-published-workstation-qualification.json
-            ${{ runner.temp }}/tiaris-nest-cold-evidence-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-public-closure-qualification.json
+          name: tiaris-nest-public-closure-${{ github.run_id }}
+          path: ${{ runner.temp }}/tiaris-nest-public-closure-${{ github.run_id }}-${{ github.run_attempt }}/tiaris-nest-public-closure-qualification.json
           if-no-files-found: error
           retention-days: 90
-
-      - name: Remove completed private fixture configuration
-        if: success()
-        run: |
-          sudo -n python3 -B nixos-appliance/qualification/cleanup-fixture-config.py \
-            --directory "$TIARIS_NEST_QUALIFICATION_STATE_ROOT/config-cold-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 
       - name: Remove disposable workspace payloads
         if: always()
         run: |
-          rm -rf -- "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE/candidate-receipt" "$GITHUB_WORKSPACE/manage-source"
+          rm -rf -- "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE/candidate-receipt"
           rm -rf -- "$RUNNER_TEMP/tiaris-nest-public-closure-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          rm -rf -- "$RUNNER_TEMP/tiaris-nest-unsigned-closure" "$RUNNER_TEMP/tiaris-nest-template" "$RUNNER_TEMP/tiaris-workstation-netboot-tree"
-          rm -rf -- "$RUNNER_TEMP/tiaris-nest-predecessor" "$RUNNER_TEMP/tiaris-nest-qualification-predecessor" "$RUNNER_TEMP/tiaris-nest-retained-manage-source"
-
 
   release_promote:
     if: needs.release_build.outputs.coordinated != 'true'
-    name: Promote cold-qualified immutable release
-    needs: [release_build, release_cold_qualify]
+    name: Promote published immutable release
+    needs: [release_build, release_public_closure]
     runs-on: [self-hosted, linux, x64, cybex-james-lab]
     environment: production-release
     concurrency:
@@ -1487,7 +1112,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           if [ "${TIARIS_NEST_BUILD_MANAGE_ORIGIN:-}" != https://manage.cybex.net ]; then
-            echo '::error::Development qualification artifacts cannot be published or promoted as production releases. Production-origin isolated qualification remains required.'
+            echo '::error::Development-origin artifacts cannot be published or promoted as production releases.'
             exit 1
           fi
 
@@ -1497,12 +1122,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Authenticate cold acceptance and promote unchanged assets
+      - name: Authenticate public closure and promote unchanged assets
         env:
           GH_TOKEN: ${{ github.token }}
           TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
-          COLD_ID: ${{ needs.release_cold_qualify.outputs.artifact_id }}
-          COLD_DIGEST: ${{ needs.release_cold_qualify.outputs.artifact_digest }}
+          CLOSURE_ID: ${{ needs.release_public_closure.outputs.artifact_id }}
+          CLOSURE_DIGEST: ${{ needs.release_public_closure.outputs.artifact_digest }}
           CANDIDATE_ID: ${{ needs.release_build.outputs.artifact_id }}
           CANDIDATE_DIGEST: ${{ needs.release_build.outputs.artifact_digest }}
         run: |
@@ -1510,6 +1135,6 @@ jobs:
           python3 -B nixos-appliance/qualification/promote-production-release.py \
             --repository "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" \
             --source "$GITHUB_SHA" --run "$GITHUB_RUN_ID" \
-            --artifact-id "$COLD_ID" --artifact-digest "$COLD_DIGEST" \
+            --artifact-id "$CLOSURE_ID" --artifact-digest "$CLOSURE_DIGEST" \
             --candidate-id "$CANDIDATE_ID" --candidate-digest "$CANDIDATE_DIGEST" \
             --trusted-public-key "$TRUSTED_KEY"
