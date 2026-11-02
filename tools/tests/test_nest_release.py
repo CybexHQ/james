@@ -534,6 +534,31 @@ class NestReleaseToolTests(unittest.TestCase):
         self.assertEqual(verified.returncode, 0, verified.stderr.decode())
         self.assertIn(descriptor["template_sha256"].encode(), verified.stdout)
 
+    def test_nixos_verification_inspection_carries_the_signed_envelope_validity(
+        self,
+    ) -> None:
+        api = runpy.run_path(str(TOOL))
+        version = "0.2.74-dev.1"
+        url = (
+            "https://releases.example.test/v0.2.74/"
+            f"tiaris-nest-appliance-template-{version}-x86_64-linux.iso"
+        )
+        inputs = (
+            self.template,
+            url,
+            self.personalization_offset,
+            [self.provisioning_key],
+            "system-closure-v1",
+            self.manage_origin,
+            None,
+        )
+        legacy = api["_inspect_installer_iso_template"](inputs, version)
+        self.assertNotIn("envelope_max_validity_hours", legacy)
+        extended = api["_inspect_installer_iso_template"](
+            inputs, version, envelope_max_validity_hours=744
+        )
+        self.assertEqual(extended, {**legacy, "envelope_max_validity_hours": 744})
+
     def test_only_nixos_templates_may_declare_a_longer_envelope_validity(self) -> None:
         output = self.directory / "validity-release.json"
         metadata = json.loads(self.template_metadata.read_text(encoding="utf-8"))

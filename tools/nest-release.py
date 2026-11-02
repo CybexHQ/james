@@ -821,6 +821,7 @@ def _inspect_installer_iso_template(
     inputs: tuple[Path, str, int, list[str], str | None, str, Path | None],
     version: str,
     *, base_os_version: str | None = None,
+    envelope_max_validity_hours: int | None = None,
 ) -> dict[str, Any]:
     (
         path,
@@ -856,7 +857,9 @@ def _inspect_installer_iso_template(
         # The current shared pin supplies this identity; verification below also
         # binds the signed descriptor and companion system closure release.
         os_version = base_os_version or "26.05"
-        envelope_validity = None
+        # Verification has no build metadata: the signed descriptor supplies
+        # this bounded, signature-covered value, as it does the OS version.
+        envelope_validity = envelope_max_validity_hours
     else:
         os_version = INSTALLER_ISO_TEMPLATE_BASE_OS_VERSION
     descriptor = {
@@ -3423,7 +3426,10 @@ def _verify_nixos_command(arguments, manifest):
         installer_iso_template_metadata=None,
     )
     iso_inputs = _installer_iso_template_inputs(iso_args, version, require_build_metadata=False)
-    inspected = _inspect_installer_iso_template(iso_inputs, version, base_os_version=template["base_os_version"])
+    inspected = _inspect_installer_iso_template(
+        iso_inputs, version, base_os_version=template["base_os_version"],
+        envelope_max_validity_hours=template.get(appliance_v3.TEMPLATE_ENVELOPE_VALIDITY),
+    )
     if inspected != {key: value for key, value in template.items() if key != "signature"}:
         _fail("NixOS ISO bytes differ from their signed descriptor")
     release = manifest["appliance_release_v1"]
@@ -3615,7 +3621,11 @@ def _verify_command(arguments: argparse.Namespace) -> None:
         )
         if inputs is None:
             _fail("installer ISO template verification inputs are missing")
-        inspected = _inspect_installer_iso_template(inputs, version)
+        inspected = _inspect_installer_iso_template(
+            inputs,
+            version,
+            envelope_max_validity_hours=descriptor.get(appliance_v3.TEMPLATE_ENVELOPE_VALIDITY),
+        )
         if descriptor != inspected:
             _fail("installer ISO template descriptor does not match the supplied ISO")
         template_signature = _canonical_base64(
