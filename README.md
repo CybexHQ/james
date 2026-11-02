@@ -38,6 +38,11 @@ issue organization-scoped workstation boot grants immediately. There is no
 install-code, pairing-code, generic ISO, or Proxmox/LXC path. Use x86-64 UEFI with
 Secure Boot turned off, four cores, at least 16 GiB RAM and a 160 GiB fixed disk.
 
+The bootstrap accepts an envelope signed for up to 31 days
+(`tiaris-nest-bootstrap envelope-max-validity-hours`). The signed ISO template
+declares that limit as `envelope_max_validity_hours`, so Tiaris signs one ISO
+for the whole 30-day setup. Bootstraps from earlier releases accept 24 hours.
+
 If provisioning is unavailable in Tiaris, installation is unavailable. No
 fallback installer is supported.
 

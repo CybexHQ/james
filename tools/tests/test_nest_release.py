@@ -534,6 +534,17 @@ class NestReleaseToolTests(unittest.TestCase):
         self.assertEqual(verified.returncode, 0, verified.stderr.decode())
         self.assertIn(descriptor["template_sha256"].encode(), verified.stdout)
 
+    def test_only_nixos_templates_may_declare_a_longer_envelope_validity(self) -> None:
+        output = self.directory / "validity-release.json"
+        metadata = json.loads(self.template_metadata.read_text(encoding="utf-8"))
+        metadata["envelope_max_validity_hours"] = 744
+        self.template_metadata.write_text(json.dumps(metadata), encoding="utf-8")
+
+        rejected = self.run_tool(*self.manifest_arguments(output))
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"envelope validity does not match", rejected.stderr)
+        self.assertFalse(output.exists())
+
     def test_manage_origin_is_explicit_signed_and_never_inferred_from_artifact_urls(
         self,
     ) -> None:

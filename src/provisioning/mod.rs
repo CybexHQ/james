@@ -32,7 +32,7 @@ pub use network_runtime::{
     NetworkRuntimeOptions, NetworkRuntimeOutcome, network_fallback_active,
     reconcile_network_runtime,
 };
-pub use protocol::{ProvisioningEnvelope, SignedInstallPlan};
+pub use protocol::{MAX_ENVELOPE_VALIDITY_HOURS, ProvisioningEnvelope, SignedInstallPlan};
 use setup_status::{InstallStep, SetupStatusReporter};
 pub use setup_status::{SETUP_STATUS_PATH, SETUP_STATUS_SCHEMA};
 

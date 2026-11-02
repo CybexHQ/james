@@ -18,6 +18,10 @@ use std::{fs, path::Path, time::Duration};
 use uuid::Uuid;
 
 const ENVELOPE_SIZE: usize = 8192;
+/// Longest signed validity a setup ISO accepts. The ISO template descriptor
+/// declares this value so Management signs longer windows only for media that
+/// accept them; older bootstraps reject anything above 24 hours.
+pub const MAX_ENVELOPE_VALIDITY_HOURS: i64 = 744;
 const ENVELOPE_SCHEMA: &str = "tiaris.nest.provisioning-envelope.v1";
 const ENVELOPE_SIGNATURE_DOMAIN: &str = "TIARIS-NEST-PROVISIONING-ENVELOPE-V1";
 const KEY_DERIVATION_DOMAIN: &[u8] = b"TIARIS-NEST-PROVISIONING-KEY-V1\0";
@@ -290,7 +294,8 @@ fn validate_envelope_fields(
     let now = Utc::now();
     if envelope.issued_at > now + chrono::Duration::minutes(5)
         || envelope.expires_at <= envelope.issued_at
-        || envelope.expires_at - envelope.issued_at > chrono::Duration::hours(24)
+        || envelope.expires_at - envelope.issued_at
+            > chrono::Duration::hours(MAX_ENVELOPE_VALIDITY_HOURS)
     {
         bail!("provisioning envelope has invalid validity")
     }
@@ -1240,6 +1245,20 @@ pub(crate) mod tests {
                 "{invalid}"
             );
         }
+    }
+
+    #[test]
+    fn setup_media_may_stay_valid_for_a_month_but_no_longer() {
+        let (_plan, mut envelope, _inventory, _key) =
+            signed_plan_fixture(INSTALL_PLAN_SCHEMA_V2, INSTALL_PLAN_SIGNATURE_DOMAIN_V2);
+        let origin = envelope.manage_origin.clone();
+        envelope.expires_at = envelope.issued_at + chrono::Duration::days(30);
+        assert!(validate_envelope_fields(&envelope, &origin).is_ok());
+        envelope.expires_at =
+            envelope.issued_at + chrono::Duration::hours(MAX_ENVELOPE_VALIDITY_HOURS);
+        assert!(validate_envelope_fields(&envelope, &origin).is_ok());
+        envelope.expires_at += chrono::Duration::seconds(1);
+        assert!(validate_envelope_fields(&envelope, &origin).is_err());
     }
 
     #[test]

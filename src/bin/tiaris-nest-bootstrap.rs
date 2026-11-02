@@ -2,10 +2,10 @@ use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tiaris_nest::provisioning::{
-    FinalizeOptions, NetworkRuntimeOptions, PrepareOptions, REQUIRED_MANAGE_ORIGIN,
-    SETUP_STATUS_PATH, commit_network_change, finalize_target, prepare, reconcile_network_runtime,
-    report_install_stage, validate_installed_state, validate_legacy_state_promotion,
-    verify_committed_network_change,
+    FinalizeOptions, MAX_ENVELOPE_VALIDITY_HOURS, NetworkRuntimeOptions, PrepareOptions,
+    REQUIRED_MANAGE_ORIGIN, SETUP_STATUS_PATH, commit_network_change, finalize_target, prepare,
+    reconcile_network_runtime, report_install_stage, validate_installed_state,
+    validate_legacy_state_promotion, verify_committed_network_change,
 };
 
 #[derive(Debug, Parser)]
@@ -23,6 +23,8 @@ struct Cli {
 enum Command {
     /// Print the immutable Management origin compiled into this bootstrap.
     RequiredManageOrigin,
+    /// Print the longest setup-ISO validity, in hours, this bootstrap accepts.
+    EnvelopeMaxValidityHours,
     /// Claim this provisioned ISO, wait for approval, and prepare Autoinstall.
     Prepare {
         #[arg(long, default_value = "/cdrom/TIARIS_PROVISIONING.BIN")]
@@ -114,6 +116,10 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::RequiredManageOrigin => {
             println!("{REQUIRED_MANAGE_ORIGIN}");
+            Ok(())
+        }
+        Command::EnvelopeMaxValidityHours => {
+            println!("{MAX_ENVELOPE_VALIDITY_HOURS}");
             Ok(())
         }
         Command::Prepare {

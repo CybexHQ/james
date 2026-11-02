@@ -759,7 +759,12 @@ def _validate_installer_iso_template_metadata(
         "placeholder_sha256",
         "provisioning_public_keys",
     }
-    optional_fields = {"package_delivery", "ubuntu_snapshot_id", "nixpkgs_revision"}
+    optional_fields = {
+        "package_delivery",
+        "ubuntu_snapshot_id",
+        "nixpkgs_revision",
+        appliance_v3.TEMPLATE_ENVELOPE_VALIDITY,
+    }
     if not required_fields <= set(metadata) or not set(metadata) <= (
         required_fields | optional_fields
     ):
@@ -792,6 +797,9 @@ def _validate_installer_iso_template_metadata(
     }
     if any(metadata[field] != descriptor[field] for field in comparable_fields):
         _fail("installer ISO template build metadata does not match the supplied ISO")
+    validity_field = appliance_v3.TEMPLATE_ENVELOPE_VALIDITY
+    if metadata.get(validity_field) != descriptor.get(validity_field):
+        _fail("installer ISO template build metadata envelope validity does not match")
     metadata_delivery = metadata.get("package_delivery")
     if metadata_delivery != descriptor.get("package_delivery"):
         _fail("installer ISO template build metadata package delivery does not match")
@@ -843,10 +851,12 @@ def _inspect_installer_iso_template(
     if nixos and metadata_path is not None:
         metadata, _ = _load_bounded_json(metadata_path, "NixOS ISO metadata", maximum_bytes=64 * 1024)
         os_version = metadata.get("base_os_version")
+        envelope_validity = metadata.get(appliance_v3.TEMPLATE_ENVELOPE_VALIDITY)
     elif nixos:
         # The current shared pin supplies this identity; verification below also
         # binds the signed descriptor and companion system closure release.
         os_version = base_os_version or "26.05"
+        envelope_validity = None
     else:
         os_version = INSTALLER_ISO_TEMPLATE_BASE_OS_VERSION
     descriptor = {
@@ -865,6 +875,8 @@ def _inspect_installer_iso_template(
     }
     if package_delivery is not None:
         descriptor["package_delivery"] = package_delivery
+    if nixos and envelope_validity is not None:
+        descriptor[appliance_v3.TEMPLATE_ENVELOPE_VALIDITY] = envelope_validity
     if metadata_path is not None:
         _validate_installer_iso_template_metadata(metadata_path, descriptor)
     if nixos:
@@ -2513,6 +2525,10 @@ def _release_manifest_artifact_identities(
     template_value = value[template_key]
     if isinstance(template_value, dict) and "package_delivery" in template_value:
         template_fields.add("package_delivery")
+    if nixos and isinstance(template_value, dict) and (
+        appliance_v3.TEMPLATE_ENVELOPE_VALIDITY in template_value
+    ):
+        template_fields.add(appliance_v3.TEMPLATE_ENVELOPE_VALIDITY)
     template = _require_exact_object_keys(
         template_value, template_fields, "installer ISO template descriptor"
     )

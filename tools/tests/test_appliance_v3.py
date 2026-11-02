@@ -74,6 +74,18 @@ class ApplianceV3Tests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 V3.validate_template({**FIXTURE["installer_iso_template"], key: value})
 
+    def test_envelope_validity_is_optional_bounded_and_signed_last(self):
+        unsigned = {key: value for key, value in FIXTURE["installer_iso_template"].items()
+                    if key != "signature"}
+        legacy = V3.template_message(unsigned)
+        extended = V3.template_message({**unsigned, "envelope_max_validity_hours": 744})
+        self.assertEqual(extended, legacy + b"744\n")
+        V3.validate_template({**FIXTURE["installer_iso_template"], "envelope_max_validity_hours": 24})
+        for value in (23, 745, True, "744", 744.0, None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                V3.validate_template({**FIXTURE["installer_iso_template"],
+                                      "envelope_max_validity_hours": value})
+
     def test_duplicate_json_members_are_rejected(self):
         with self.assertRaises(ValueError):
             json.loads('{"schema":"one","schema":"two"}', object_pairs_hook=V3.unique_object)

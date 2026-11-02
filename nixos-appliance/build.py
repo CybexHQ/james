@@ -149,7 +149,8 @@ def build(args):
             if len(candidates) != 1:
                 raise ValueError('Nix ISO output must contain one image')
             iso = candidates[0]
-            offset = inspect_template(iso, nix('package'), args, work)
+            package = nix('package')
+            offset = inspect_template(iso, package, args, work)
             if iso.stat().st_size >= 2 * 1024 ** 3:
                 raise ValueError('installer exceeds the GitHub per-asset publication limit')
             pin_revision = run('nix-instantiate', '--eval', '--strict', '--json', '--expr',
@@ -160,7 +161,10 @@ def build(args):
                             size_bytes=iso.stat().st_size, template_sha256=sha256(iso),
                             personalization_offset=offset, personalization_size=8192,
                             placeholder_sha256=hashlib.sha256(bytes(8192)).hexdigest(),
-                            nixpkgs_revision=json.loads(pin_revision), provisioning_public_keys=keys)
+                            nixpkgs_revision=json.loads(pin_revision), provisioning_public_keys=keys,
+                            envelope_max_validity_hours=int(run(
+                                package / 'bin/tiaris-nest-bootstrap',
+                                'envelope-max-validity-hours')))
             name = 'tiaris-nest-appliance-template-' + version + '-x86_64-linux'
             metadata_file = work / 'template.json'
             metadata_file.write_text(json.dumps(metadata, sort_keys=True, separators=(',', ':')) + '\n')

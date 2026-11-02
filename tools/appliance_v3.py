@@ -37,6 +37,10 @@ TEMPLATE_ORDER = (
     "template_sha256", "personalization_offset", "personalization_size",
     "placeholder_sha256", "provisioning_public_keys", "package_delivery", "manage_origin",
 )
+# Optional, signed after manage_origin when present: the longest setup-ISO
+# validity the bootstrap accepts. Older templates omit it and accept 24 hours.
+TEMPLATE_ENVELOPE_VALIDITY = "envelope_max_validity_hours"
+ENVELOPE_VALIDITY_HOURS = (24, 744)
 
 
 class ContractError(ValueError):
@@ -166,7 +170,12 @@ def descriptor_message(value):
 
 
 def validate_template(value, version=None, *, signed=True):
-    exact(value, set(TEMPLATE_ORDER) | ({"signature"} if signed else set()), "NixOS ISO template")
+    optional = {TEMPLATE_ENVELOPE_VALIDITY} & set(value)
+    exact(value, set(TEMPLATE_ORDER) | optional | ({"signature"} if signed else set()),
+          "NixOS ISO template")
+    if optional:
+        integer(value[TEMPLATE_ENVELOPE_VALIDITY], *ENVELOPE_VALIDITY_HOURS,
+                "NixOS ISO envelope validity")
     if (not isinstance(value["version"], str) or VERSION.fullmatch(value["version"]) is None
             or version is not None and value["version"] != version
             or value["architecture"] != "x86_64-linux" or value["base_os"] != "nixos"
@@ -205,4 +214,6 @@ def template_message(value):
     for field in TEMPLATE_ORDER:
         item = unsigned[field]
         lines.append(",".join(item) if field == "provisioning_public_keys" else str(item))
+    if TEMPLATE_ENVELOPE_VALIDITY in unsigned:
+        lines.append(str(unsigned[TEMPLATE_ENVELOPE_VALIDITY]))
     return ("\n".join(lines) + "\n").encode()
