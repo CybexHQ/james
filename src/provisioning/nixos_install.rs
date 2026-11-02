@@ -444,7 +444,7 @@ pub(super) async fn install(
     File::open(&prepared.state_mount)?.sync_all()?;
     File::open(target)?.sync_all()?;
     status.rebooting();
-    boot_completed(&state, &prepared.state_mount)
+    boot_completed(&state, &prepared.state_mount, true).await
 }
 
 fn prepare_owned_directory(
@@ -609,11 +609,44 @@ pub(super) fn chown(path: &Path, uid: u32, gid: u32) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn boot_completed(state: &DurableProvisioningState, _state_mount: &Path) -> Result<()> {
+pub(super) async fn boot_completed(
+    state: &DurableProvisioningState,
+    state_mount: &Path,
+    restart_unverified: bool,
+) -> Result<()> {
     ensure!(
         state.installation_complete && state.identity_active,
         "installation is incomplete"
     );
+    hand_off_first_boot(
+        restart_unverified,
+        || select_installed_boot_next(state),
+        |status, message| report_first_boot_handoff(state, state_mount, status, message),
+        reboot_installed,
+    )
+    .await
+}
+
+async fn hand_off_first_boot<Report: std::future::Future<Output = Result<()>>>(
+    _restart_unverified: bool,
+    select_boot_next: impl FnOnce() -> Result<()>,
+    _report: impl FnOnce(&'static str, String) -> Report,
+    reboot: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    select_boot_next()?;
+    reboot()
+}
+
+async fn report_first_boot_handoff(
+    _state: &DurableProvisioningState,
+    _state_mount: &Path,
+    _status: &'static str,
+    _message: String,
+) -> Result<()> {
+    Ok(())
+}
+
+fn select_installed_boot_next(state: &DurableProvisioningState) -> Result<()> {
     let esp = storage::partition_path(Path::new(&state.plan.target_disk.path), 2)?;
     let output = Command::new("blkid")
         .args(["-s", "PARTUUID", "-o", "value"])
@@ -666,6 +699,10 @@ pub(super) fn boot_completed(state: &DurableProvisioningState, _state_mount: &Pa
                 .any(|l| l.eq_ignore_ascii_case(&format!("BootNext: {number}"))),
         "installed BootNext verification failed"
     );
+    Ok(())
+}
+
+fn reboot_installed() -> Result<()> {
     ensure!(
         Command::new("sync").status()?.success(),
         "sync installation failed"
@@ -863,5 +900,105 @@ mod tests {
             fs::read_to_string(&before).unwrap()
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Tiaris production #20: a Proxmox VM whose persistent UEFI variables
+    /// still held the earlier Nest's entries could not select the installed
+    /// entry, so setup stopped at First boot instead of restarting.
+    async fn first_boot_handoff(
+        restart_unverified: bool,
+        selected: Result<()>,
+        reported: Result<()>,
+    ) -> (Result<()>, Vec<(&'static str, String)>, usize) {
+        let reports = std::cell::RefCell::new(Vec::new());
+        let reboots = std::cell::Cell::new(0);
+        let result = hand_off_first_boot(
+            restart_unverified,
+            || selected,
+            |status, message| {
+                reports.borrow_mut().push((status, message));
+                std::future::ready(reported)
+            },
+            || {
+                reboots.set(reboots.get() + 1);
+                Ok(())
+            },
+        )
+        .await;
+        (result, reports.into_inner(), reboots.get())
+    }
+
+    #[tokio::test]
+    async fn completed_install_restarts_once_when_its_uefi_entry_cannot_be_selected() {
+        let (result, reports, reboots) = first_boot_handoff(
+            true,
+            Err(anyhow!(
+                "installed UEFI systemd-boot entry is missing or ambiguous"
+            )),
+            Ok(()),
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(reboots, 1);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].0, "started");
+        assert!(
+            reports[0]
+                .1
+                .contains("installed UEFI systemd-boot entry is missing or ambiguous"),
+            "{reports:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unreported_handoff_reason_does_not_prevent_the_restart() {
+        let (result, reports, reboots) = first_boot_handoff(
+            true,
+            Err(anyhow!("set exact installed BootNext failed")),
+            Err(anyhow!("Tiaris is unreachable")),
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reboots, 1);
+    }
+
+    #[tokio::test]
+    async fn resumed_install_reports_why_and_never_restarts_again_without_boot_next() {
+        let (result, reports, reboots) = first_boot_handoff(
+            false,
+            Err(anyhow!("installed BootNext verification failed")),
+            Ok(()),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(reboots, 0);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].0, "failed");
+        assert!(
+            reports[0]
+                .1
+                .contains("installed BootNext verification failed"),
+            "{reports:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verified_boot_next_restarts_without_a_report() {
+        for restart_unverified in [true, false] {
+            let (result, reports, reboots) =
+                first_boot_handoff(restart_unverified, Ok(()), Ok(())).await;
+            assert!(result.is_ok(), "{result:?}");
+            assert!(reports.is_empty());
+            assert_eq!(reboots, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn handoff_report_fits_a_provisioning_event() {
+        let (_, reports, _) = first_boot_handoff(true, Err(anyhow!("é".repeat(600))), Ok(())).await;
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].1.len() <= 512);
+        assert!(reports[0].1.ends_with('é'));
     }
 }
