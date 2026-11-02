@@ -691,23 +691,41 @@ async fn report_first_boot_handoff(
     message: String,
 ) -> Result<()> {
     let client = super::protocol::ProvisioningClient::new(&state.manage_origin, state.session_id)?;
-    client
-        .send_event(
-            &state.signing_key()?,
+    let key = state.signing_key()?;
+    send_handoff_event(state.next_event_sequence, !record, |sequence| {
+        client.send_event(
+            &key,
             &state.plan,
-            state.next_event_sequence,
+            sequence,
             FIRST_BOOT_HANDOFF_STAGE,
             status,
             None,
             &message,
         )
-        .await?;
+    })
+    .await?;
     if record {
         let mut recorded = state.clone();
         recorded.next_event_sequence += 1;
         storage::save_durable_state(state_mount, &recorded)?;
     }
     Ok(())
+}
+
+/// A run that cannot record its event first uses the recorded next sequence.
+/// The completing run's handoff event may hold that sequence unrecorded when
+/// its response was lost, so the event then goes directly after it.
+async fn send_handoff_event<Sent: std::future::Future<Output = Result<()>>>(
+    next_sequence: i64,
+    after_unrecorded: bool,
+    mut send: impl FnMut(i64) -> Sent,
+) -> Result<()> {
+    match send(next_sequence).await {
+        Err(error) if after_unrecorded => send(next_sequence + 1)
+            .await
+            .map_err(|next| error.context(format!("{next:#}"))),
+        result => result,
+    }
 }
 
 fn select_installed_boot_next(state: &DurableProvisioningState) -> Result<()> {
@@ -1064,5 +1082,39 @@ mod tests {
         assert_eq!(reports.len(), 1);
         assert!(reports[0].1.len() <= 512);
         assert!(reports[0].1.ends_with('é'));
+    }
+
+    async fn handoff_event_sequences(
+        after_unrecorded: bool,
+        accepted: i64,
+    ) -> (Result<()>, Vec<i64>) {
+        let sent = std::cell::RefCell::new(Vec::new());
+        let result = send_handoff_event(9, after_unrecorded, |sequence| {
+            sent.borrow_mut().push(sequence);
+            std::future::ready(if sequence == accepted {
+                Ok(())
+            } else {
+                Err(anyhow!("event_id was already used for different evidence"))
+            })
+        })
+        .await;
+        (result, sent.into_inner())
+    }
+
+    #[tokio::test]
+    async fn resumed_report_follows_a_handoff_event_whose_response_was_lost() {
+        let (result, sent) = handoff_event_sequences(true, 10).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(sent, [9, 10]);
+        let (result, sent) = handoff_event_sequences(true, 9).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(sent, [9]);
+    }
+
+    #[tokio::test]
+    async fn recorded_handoff_event_uses_only_the_recorded_sequence() {
+        let (result, sent) = handoff_event_sequences(false, 10).await;
+        assert!(result.is_err());
+        assert_eq!(sent, [9]);
     }
 }
