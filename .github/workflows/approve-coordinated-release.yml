@@ -12,6 +12,9 @@ on:
       run:
         required: true
         type: string
+      # Release policy fast-v1: the public-closure evidence artifact of the
+      # exact release run. No warm or cold VM proof is required for promotion;
+      # the release notes record `Tiaris-VM-Qualification: nightly`.
       artifact-id:
         required: true
         type: string
@@ -40,20 +43,20 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Promote only the approved, unchanged, cold-qualified artifacts
+      - name: Promote only the approved, unchanged, public-closure-qualified artifacts
         env:
           GH_TOKEN: ${{ github.token }}
           TRUSTED_KEY: ${{ vars.CYBEX_JAMES_UPDATE_TRUSTED_PUBLIC_KEY }}
           TAG: ${{ inputs.tag }}
           SOURCE: ${{ inputs.source }}
           RUN: ${{ inputs.run }}
-          COLD_ID: ${{ inputs.artifact-id }}
-          COLD_DIGEST: ${{ inputs.artifact-digest }}
+          CLOSURE_ID: ${{ inputs.artifact-id }}
+          CLOSURE_DIGEST: ${{ inputs.artifact-digest }}
           CANDIDATE_ID: ${{ inputs.candidate-id }}
           CANDIDATE_DIGEST: ${{ inputs.candidate-digest }}
         run: |
           python3 -B nixos-appliance/qualification/promote-production-release.py \
             --repository "$GITHUB_REPOSITORY" --tag "$TAG" --source "$SOURCE" --run "$RUN" \
-            --artifact-id "$COLD_ID" --artifact-digest "$COLD_DIGEST" \
+            --artifact-id "$CLOSURE_ID" --artifact-digest "$CLOSURE_DIGEST" \
             --candidate-id "$CANDIDATE_ID" --candidate-digest "$CANDIDATE_DIGEST" \
             --trusted-public-key "$TRUSTED_KEY"

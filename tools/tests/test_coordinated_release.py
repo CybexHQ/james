@@ -13,8 +13,14 @@ module = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'coordinated-r
 ROOT = Path(__file__).resolve().parents[2]
 
 
+VM_JOBS = ('release_qualify', 'release_cold_qualify')
+
+
 def workflow_job(name):
-    return (ROOT / '.github/workflows/release.yml').read_text().split('  ' + name + ':\n', 1)[1].split('\n  release_', 1)[0]
+    # Release policy fast-v1: warm and cold VM qualification run on demand from
+    # their own workflow; release.yml keeps build, publication and promotion.
+    workflow = 'nest-vm-qualification.yml' if name in VM_JOBS else 'release.yml'
+    return (ROOT / '.github/workflows' / workflow).read_text().split('  ' + name + ':\n', 1)[1].split('\n  release_', 1)[0]
 
 
 def step_script(job, name):
@@ -156,6 +162,31 @@ class ProductionQualificationWorkflowTests(unittest.TestCase):
         approval = (ROOT / '.github/workflows/approve-coordinated-release.yml').read_text()
         self.assertIn('nixos-appliance/qualification/promote-production-release.py', approval)
         self.assertNotIn('ubuntu-appliance/qualification/', approval)
+
+    def test_release_path_has_no_vm_job_and_vm_jobs_stay_runnable_on_demand(self):
+        release = (ROOT / '.github/workflows/release.yml').read_text()
+        on_demand = (ROOT / '.github/workflows/nest-vm-qualification.yml').read_text()
+        for absent in ('production-release-qualification', 'run-production-qualification.py',
+                       'release_qualify', 'release_cold_qualify'):
+            self.assertNotIn(absent, release)
+        self.assertIn('    needs: [release_build]\n', workflow_job('release_publish'))
+        closure = workflow_job('release_public_closure')
+        self.assertIn('    name: Verify published closure through the candidate downloader\n', closure)
+        self.assertIn('    needs: [release_build, release_publish]\n', closure)
+        self.assertIn('    needs: [release_build, release_public_closure]\n', workflow_job('release_promote'))
+        triggers = on_demand.split('\non:\n', 1)[1].split('\npermissions:\n', 1)[0]
+        self.assertEqual(re.findall(r'^  ([a-z_]+):$', triggers, re.MULTILINE), ['workflow_dispatch', 'workflow_call'])
+        self.assertEqual(re.findall(r'^      ([a-z]+):$', triggers, re.MULTILINE), ['tag', 'warm', 'cold'] * 2)
+        for job, name, flag in (('release_qualify', 'Boot, install, adopt, and reboot exact candidate', 'inputs.warm'),
+                                ('release_cold_qualify', 'Verify published NixOS release in an isolated fixture',
+                                 'inputs.cold')):
+            body = workflow_job(job)
+            self.assertIn(f'    name: {name}\n', body)
+            self.assertIn(f'    if: {flag}\n    needs: release_candidate\n', body)
+            for absent in ('GITHUB_SHA', 'GITHUB_REF_NAME', 'release_build', 'local-candidate.py restore'):
+                self.assertNotIn(absent, body)
+            self.assertIn('tools/local-candidate.py published', body)
+            self.assertIn('ref: ${{ needs.release_candidate.outputs.tag }}', body)
 
 
 class CoordinatedReleaseTests(unittest.TestCase):

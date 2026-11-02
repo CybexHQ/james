@@ -7,7 +7,9 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / 'tools' / 'ci-host-reservation.sh'
-WORKFLOW = (ROOT / '.github' / 'workflows' / 'release.yml').read_text()
+# Release policy fast-v1: the VM jobs run on demand from nest-vm-qualification.yml.
+WORKFLOW = ((ROOT / '.github' / 'workflows' / 'release.yml').read_text()
+            + (ROOT / '.github' / 'workflows' / 'nest-vm-qualification.yml').read_text())
 
 # Prints one admission line, then holds until stdin closes, like ci-platform.
 FAKE = """#!/usr/bin/env python3

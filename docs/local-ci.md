@@ -18,8 +18,9 @@ Version-tag release orchestration remains in GitHub because signed proofs bind
 run/attempt/artifact identities, protected environment approval, immutable Releases
 and attestations. All jobs execute on the existing local `cybex-james-lab` runner;
 no hosted compute remains. Ordinary PR/main code never reaches that signing runner.
-Warm and cold release qualification, signing, publication and explicit promotion
-remain required. This migration does not publish a new appliance or runtime.
+Signing, publication, public-closure verification and explicit promotion remain
+required. Under release policy fast-v1 (2026-11-02) warm and cold VM qualification
+run on demand from `nest-vm-qualification.yml`; see [RELEASES.md](../RELEASES.md). This migration does not publish a new appliance or runtime.
 
 Digital Brain no longer drives coordinated releases. The local `tiaris-release`
 command in development prepares, reviews and explicitly approves immutable

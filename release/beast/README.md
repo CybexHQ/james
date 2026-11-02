@@ -53,15 +53,18 @@ continue to identify that exact GitHub artifact, now containing the receipt.
 
 Consumers authenticate the receipt ZIP against GitHub's digest and workflow
 metadata, then verify every local file before copying it. Existing signature,
-source, predecessor, installation, upgrade, rollback and immutable-publication
-gates remain mandatory. Production qualification uses a fresh, confined Tiaris fixture with pinned TLS
+source, predecessor and immutable-publication gates remain mandatory. Under
+release policy fast-v1 (2026-11-02) installation, upgrade and rollback VM
+qualification run on demand from `nest-vm-qualification.yml`, not on the release
+path; see [RELEASES.md](../../RELEASES.md). Production qualification uses a fresh, confined Tiaris fixture with pinned TLS
 transport and newly owned Incus bridges, TAPs and disposable QEMU disks. See
 [the production contract](../../nixos-appliance/qualification/PRODUCTION.md). It
 never adopts an existing VM or reads a production database. An ownership receipt
 binds each run to its exact artifact origin, bridge and subnet. Cleanup
 verifies that receipt before removing owned resources.
-Cold qualification never reads the candidate store: it downloads each published
-payload from GitHub and verifies the complete receipt inventory before booting.
+On-demand warm and cold qualification never read the candidate store: they download
+each published payload from GitHub and verify the complete receipt inventory before
+booting.
 
 ## Warm predecessor transport cache
 
@@ -146,8 +149,8 @@ tagged workflows retain their original Actions-artifact behavior.
 Local candidates and their Actions receipts have a 30-day retention period.
 The next release prunes expired, recognized local candidates under the store
 lock. Qualified public evidence retains its existing 90-day policy. Promotion
-does not depend on local retention once the immutable prerelease and cold
-evidence exist. Preserve failed run receipts/logs when investigating; no failed
+does not depend on local retention once the immutable prerelease and its
+public-closure evidence exist. Preserve failed run receipts/logs when investigating; no failed
 qualification is treated as publication approval.
 
 Host prerequisites are Docker access, Python 3.11+, Git, `gh`, `jq`, OpenSSL,

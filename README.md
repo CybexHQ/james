@@ -285,8 +285,10 @@ Release candidates build in a disposable Docker container on The Beast, using
 dedicated local Cargo and Nix caches. Builders export unsigned Nix caches;
 private signing keys remain outside the builder and Nix store. Signed files stay on the server
 through appliance qualification; GitHub Actions retains a small hash receipt.
-Publication uploads the verified files once, and cold qualification downloads
-the published payload independently. See [the local release environment](release/beast/README.md)
+Publication uploads the verified files once, and the public-closure check
+downloads the published closure through the candidate downloader. On-demand VM
+qualification (`nest-vm-qualification.yml`) downloads the published payload
+independently. See [the local release environment](release/beast/README.md)
 for isolation, retention and recovery details.
 
 Qualification retries use evidence directories unique to the workflow run and attempt.
@@ -296,9 +298,10 @@ acceptance evidence is never overwritten or reused by a retry.
 The Tiaris release controller on The Beast (`tiaris-release`, implemented in CybexHQ/development
 `deploy/manage/beast_release_workflow.py`) creates a candidate tag with `release/coordinated.json` and
 an immutable workstation source pin to `CybexHQ/development`. The normal release workflow still signs,
-builds once, publishes an immutable prerelease and cold-qualifies Nest/workstations. These tags skip
+builds once, publishes an immutable prerelease and verifies its public closure; under release policy
+fast-v1 VM qualification is on demand (`Tiaris-VM-Qualification: nightly`). These tags skip
 automatic stable promotion. `approve-coordinated-release.yml` promotes only explicitly approved
-tag/source/run and artifact identities, reusing the canonical predecessor/qualification verifier and
+tag/source/run and artifact identities, reusing the canonical predecessor/public-closure verifier and
 publication lock. `promote-production-release.py --verify-only` checks the same evidence without
 changing publication.
 

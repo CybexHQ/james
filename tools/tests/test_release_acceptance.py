@@ -185,8 +185,9 @@ class AcceptanceTests(unittest.TestCase):
         body = archive()
         digest = 'sha256:' + hashlib.sha256(body).hexdigest()
         metadata = dict(expired=False, workflow_run={'id': 123, 'head_sha': self.source},
-                        name='tiaris-nest-published-cold-123', digest=digest)
+                        name='tiaris-nest-public-closure-123', digest=digest)
         self.assertEqual(set(promotion.artifact_evidence(body, metadata, digest, 123, self.source)), promotion.FILES)
+        # A cold VM archive is not the public-closure evidence promotion requires.
         missing = io.BytesIO()
         with zipfile.ZipFile(missing, 'w') as package:
             package.writestr('tiaris-nest-published-cold-qualification.json', '{}')
@@ -197,6 +198,8 @@ class AcceptanceTests(unittest.TestCase):
             promotion.artifact_evidence(missing_body, metadata | {'digest': missing_digest},
                                         missing_digest, 123, self.source)
         for change in [{'expired': True}, {'digest': 'sha256:' + '0' * 64},
+                       {'name': 'tiaris-nest-published-cold-123'},
+                       {'workflow_run': {'id': 123, 'head_sha': 'c' * 40}},
                        {'workflow_run': {'id': 124, 'head_sha': self.source}}]:
             with self.subTest(change=change), self.assertRaises(ValueError):
                 promotion.artifact_evidence(body, metadata | change, digest, 123, self.source)
@@ -223,7 +226,7 @@ class AcceptanceTests(unittest.TestCase):
         # upload-artifact@v4 returns bare hex; the REST API prefixes sha256:.
         action_digest = hashlib.sha256(body).hexdigest()
         metadata = dict(expired=False, workflow_run={'id': 123, 'head_sha': self.source},
-                        name='tiaris-nest-published-cold-123', digest='sha256:' + action_digest)
+                        name='tiaris-nest-public-closure-123', digest='sha256:' + action_digest)
         self.assertEqual(set(promotion.artifact_evidence(
             body, metadata, action_digest, 123, self.source)), promotion.FILES)
         for value in ('sha1:' + action_digest, 'sha256:sha256:' + action_digest,
@@ -231,73 +234,133 @@ class AcceptanceTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 promotion.artifact_evidence(body, metadata, value, 123, self.source)
 
-    def test_promotion_cli_accepts_action_outputs_and_preserves_asset_inventory(self):
-        manifest_body = json.dumps(self.manifest).encode()
-        cold = self.cold | {'qualified_manifest_sha256': hashlib.sha256(manifest_body).hexdigest()}
+    POLICY_BODY = '\n'.join(['Tiaris-Release-Workflow: https://github.com/CybexHQ/james/actions/runs/42',
+        'Tiaris-Candidate-Artifact-ID: 66', 'Tiaris-Candidate-Artifact-SHA256: ' + 'f' * 64,
+        'Tiaris-VM-Qualification: nightly', 'Tiaris-Public-Closure: required'])
+
+    def promote(self, *, verify_only=False, body=None, jobs=None, closure=None, manifest=None,
+                prerelease=True, predecessor=None, expect_edit=True):
+        """Run the real promotion CLI with only remote transport replaced.
+
+        ZIP/provenance, public-closure acceptance, notes and inventory checks run
+        for real; signature and lineage admission are tested independently.
+        """
+        manifest = manifest or self.manifest
+        manifest_body = json.dumps(manifest).encode()
         output = io.BytesIO()
         with zipfile.ZipFile(output, 'w') as package:
-            package.writestr('tiaris-nest-published-cold-qualification.json', json.dumps(cold))
-            package.writestr('tiaris-nest-published-workstation-qualification.json', json.dumps(self.workstation))
             package.writestr('tiaris-nest-public-closure-qualification.json', json.dumps(
-                self.public_closure | {'manifest_sha256': hashlib.sha256(manifest_body).hexdigest()}))
+                closure or self.public_closure | {'manifest_sha256': hashlib.sha256(manifest_body).hexdigest()}))
         archive = output.getvalue()
         action_digest = hashlib.sha256(archive).hexdigest()
-        candidate_digest = 'f' * 64
-        tag = 'v' + self.manifest['version']
+        tag = 'v' + manifest['version']
         base = f'https://github.com/CybexHQ/james/releases/download/{tag}/'
         identity = {'release_id': '0.2.1-dev.29'}
         bodies = {'tiaris-nest-release.json': manifest_body,
                   'tiaris-nest-release-compatibility.json': b'{}\n',
                   'tiaris-nest-build-predecessor.json': json.dumps(identity).encode()}
-        staged = dict(id=900, immutable=True, draft=False, prerelease=True, target_commitish=self.source,
-            body='\n'.join(['Tiaris-Release-Workflow: https://github.com/CybexHQ/james/actions/runs/42',
-                'Tiaris-Candidate-Artifact-ID: 66', 'Tiaris-Candidate-Artifact-SHA256: ' + candidate_digest,
-                'Tiaris-Cold-Qualification: required']),
-            assets=[dict(id=i, name=name, browser_download_url=base + name, size=len(body),
-                         digest='sha256:' + hashlib.sha256(body).hexdigest())
-                    for i, (name, body) in enumerate(bodies.items(), 1)])
+        staged = dict(id=900, immutable=True, draft=False, prerelease=prerelease, target_commitish=self.source,
+            body=self.POLICY_BODY if body is None else body(action_digest) if callable(body) else body,
+            assets=[dict(id=i, name=name, browser_download_url=base + name, size=len(value),
+                         digest='sha256:' + hashlib.sha256(value).hexdigest())
+                    for i, (name, value) in enumerate(bodies.items(), 1)])
         promoted = {}
 
         def api(_repository, path):
             return {'actions/runs/42': {'head_sha': self.source, 'head_branch': tag,
                         'event': 'push', 'path': '.github/workflows/release.yml'},
                 'commits/' + tag: {'sha': self.source},
-                'actions/runs/42/jobs?per_page=100': {'jobs': [{'name':
-                    'Verify published NixOS release in an isolated fixture', 'conclusion': 'success'}]},
+                'actions/runs/42/jobs?per_page=100': {'jobs': [{'name': promotion.CLOSURE_JOB,
+                    'conclusion': 'success'}] if jobs is None else jobs},
                 'actions/artifacts/77': dict(expired=False, size_in_bytes=len(archive),
                     workflow_run={'id': 42, 'head_sha': self.source},
-                    name='tiaris-nest-published-cold-42', digest='sha256:' + action_digest),
+                    name='tiaris-nest-public-closure-42', digest='sha256:' + action_digest),
                 'releases/tags/' + tag: promoted or staged, 'releases/latest': promoted}[path]
 
         def edit(arguments, **_kwargs):
+            self.assertTrue(expect_edit)
             self.assertEqual(arguments[:4], ['gh', 'release', 'edit', tag])
             self.assertIn('--prerelease=false', arguments)
             self.assertIn('--latest', arguments)
             notes = Path(arguments[arguments.index('--notes-file') + 1]).read_text()
-            self.assertIn('Tiaris-Cold-Artifact-SHA256: sha256:' + action_digest, notes)
-            self.assertNotIn('Tiaris-Cold-Qualification: required', notes)
             promoted.update(staged | {'prerelease': False, 'body': notes})
 
         arguments = ['promote', '--repository', 'CybexHQ/james', '--tag', tag, '--source', self.source,
             '--run', '42', '--artifact-id', '77', '--artifact-digest', action_digest,
-            '--candidate-id', '66', '--candidate-digest', candidate_digest, '--trusted-public-key', 'fixture']
-        # Exercise real CLI, ZIP/provenance, acceptance, notes and inventory checks.
-        # Only remote transport and independently tested signature/lineage admission
-        # are replaced; the immutable candidate/evidence identities remain coupled.
+            '--candidate-id', '66', '--candidate-digest', 'f' * 64, '--trusted-public-key', 'fixture']
+        if verify_only:
+            arguments.append('--verify-only')
         with mock.patch.object(sys, 'argv', arguments), \
                 mock.patch.object(promotion.predecessor, 'github', side_effect=api), \
                 mock.patch.object(promotion.subprocess, 'check_output', return_value=archive), \
                 mock.patch.object(promotion.subprocess, 'run', side_effect=edit) as mutation, \
                 mock.patch.object(promotion.predecessor, 'fetch', side_effect=lambda url, path, *_a, **_k:
                     path.write_bytes(bodies[url.rsplit('/', 1)[-1]])), \
-                mock.patch.object(promotion.predecessor, 'verify_pair', return_value=self.manifest), \
-                mock.patch.object(promotion.predecessor, 'resolve', return_value=identity):
-            with mock.patch.object(sys, 'argv', arguments + ['--verify-only']):
-                promotion.main()
-                mutation.assert_not_called()
-                self.assertEqual(promoted, {})
+                mock.patch.object(promotion.predecessor, 'verify_pair', return_value=manifest), \
+                mock.patch.object(promotion.predecessor, 'resolve',
+                                  return_value=identity if predecessor is None else predecessor):
             promotion.main()
+        return staged, promoted, mutation, action_digest
+
+    def test_promotion_cli_accepts_action_outputs_and_preserves_asset_inventory(self):
+        staged, promoted, mutation, _ = self.promote(verify_only=True, expect_edit=False)
+        mutation.assert_not_called()
+        self.assertEqual(promoted, {})
+        staged, promoted, mutation, digest = self.promote()
+        mutation.assert_called_once()
         self.assertEqual(promoted['assets'], staged['assets'])
+        notes = promoted['body'].splitlines()
+        self.assertIn('Tiaris-VM-Qualification: nightly', notes)
+        self.assertIn('Tiaris-Public-Closure: passed', notes)
+        self.assertIn('Tiaris-Public-Closure-Artifact-ID: 77', notes)
+        self.assertIn('Tiaris-Public-Closure-Artifact-SHA256: sha256:' + digest, notes)
+        self.assertNotIn('Tiaris-Public-Closure: required', notes)
+        # Policy releases never claim VM evidence that was not checked.
+        self.assertFalse(any(line.startswith('Tiaris-Cold-') for line in notes))
+
+    def test_promotion_requires_a_passed_public_closure_job(self):
+        for jobs in ([], [{'name': promotion.CLOSURE_JOB, 'conclusion': 'failure'}],
+                     [{'name': promotion.CLOSURE_JOB, 'conclusion': 'success'}] * 2,
+                     [{'name': 'Verify published NixOS release in an isolated fixture', 'conclusion': 'success'}]):
+            with self.subTest(jobs=jobs), self.assertRaisesRegex(ValueError, 'Public closure qualification job'):
+                self.promote(jobs=jobs, expect_edit=False)
+
+    def test_promotion_requires_the_explicit_policy_and_pending_markers(self):
+        lines = self.POLICY_BODY.splitlines()
+        legacy = '\n'.join(lines[:3] + ['Tiaris-Cold-Qualification: required'])
+        for body in (legacy, '\n'.join(lines[:3] + lines[4:])):
+            with self.subTest(body=body), self.assertRaisesRegex(ValueError, 'release policy'):
+                self.promote(body=body, expect_edit=False)
+        with self.assertRaisesRegex(ValueError, 'pending public-closure marker'):
+            self.promote(body='\n'.join(lines[:4]), expect_edit=False)
+        for marker in lines[:3]:
+            with self.subTest(marker=marker), self.assertRaises(ValueError):
+                self.promote(body='\n'.join(line for line in lines if line != marker), expect_edit=False)
+
+    def test_promotion_rejects_mismatched_closure_origin_or_lineage(self):
+        for field, value in (('manifest_sha256', '0' * 64), ('closure_sha256', '0' * 64),
+                             ('source_revision', 'c' * 40), ('ok', False)):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'Public closure transport'):
+                manifest_body = json.dumps(self.manifest).encode()
+                self.promote(closure=self.public_closure | {
+                    'manifest_sha256': hashlib.sha256(manifest_body).hexdigest(), field: value}, expect_edit=False)
+        development = copy.deepcopy(self.manifest)
+        development['installer_iso_template_v3']['manage_origin'] = 'https://dev.tiaris.com'
+        with self.assertRaisesRegex(ValueError, 'Development-origin'):
+            self.promote(manifest=development, expect_edit=False)
+        with self.assertRaisesRegex(ValueError, 'Predecessor changed'):
+            self.promote(predecessor={'release_id': '0.2.2'}, expect_edit=False)
+
+    def test_stable_release_is_idempotent_only_with_its_exact_acceptance(self):
+        lines = self.POLICY_BODY.splitlines()
+        with self.assertRaisesRegex(ValueError, 'lacks this exact acceptance'):
+            self.promote(prerelease=False, expect_edit=False)
+        passed = lambda digest: '\n'.join(lines[:4] + [
+            'Tiaris-Public-Closure: passed', 'Tiaris-Public-Closure-Artifact-ID: 77',
+            'Tiaris-Public-Closure-Artifact-SHA256: sha256:' + digest])
+        _, promoted, mutation, _ = self.promote(prerelease=False, body=passed, expect_edit=False)
+        mutation.assert_not_called()
+        self.assertEqual(promoted, {})
 
 
 if __name__ == '__main__':

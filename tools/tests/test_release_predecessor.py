@@ -78,6 +78,59 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             P.latest([previous], "v0.2.2")
 
+    def test_owner_waived_stable_release_and_pending_policy_prereleases(self):
+        def item(i, tag, **fields):
+            return {"id": i, "tag_name": tag, "draft": False, "published_at": f"2026-11-0{i}T00:00:00Z",
+                    "assets": [{"name": P.MANIFEST}, {"name": P.COMPATIBILITY}], **fields}
+        older = item(1, "v0.2.73", prerelease=False, body="Tiaris-Cold-Qualification: passed")
+        # The exact shape of production's v0.2.78 on 2026-11-02: promoted to
+        # stable and GitHub Latest by the owner with its cold marker still
+        # `required` plus a waiver note. A stable release is ancestry.
+        waived = item(2, "v0.2.78", prerelease=False, body="\n".join([
+            "Tiaris-Release-Workflow: https://github.com/CybexHQ/james/actions/runs/41474948660",
+            "Tiaris-Candidate-Artifact-ID: 13157802896",
+            "Tiaris-Candidate-Artifact-SHA256: " + "7" * 64,
+            "Tiaris-Cold-Qualification: required", "", "",
+            "Cold qualification waived by owner (John) on 2026-11-02 19:27: qualification-harness deadlock "
+            "(fixed in james#61), not a product defect. Warm qualification passed."]))
+        self.assertEqual(P.latest([older, waived], "v0.2.79"), waived)
+        # Release policy fast-v1: a staged prerelease awaiting approval is not
+        # ancestry; once promoted it is, without any VM qualification marker.
+        pending = item(3, "v0.2.80", prerelease=True, body="\n".join([
+            "Tiaris-Release-Workflow: https://github.com/CybexHQ/james/actions/runs/1",
+            "Tiaris-VM-Qualification: nightly", "Tiaris-Public-Closure: required"]))
+        self.assertEqual(P.latest([older, waived, pending], "v0.2.81"), waived)
+        promoted = pending | {"prerelease": False, "body": pending["body"].replace(
+            "Tiaris-Public-Closure: required", "Tiaris-Public-Closure: passed")}
+        self.assertEqual(P.latest([older, waived, promoted], "v0.2.81"), promoted)
+        # The candidate's own staged release is never its predecessor.
+        self.assertEqual(P.latest([older, waived, promoted], "v0.2.80"), waived)
+        # The cancelled v0.2.79 never published a release; a draft is ignored.
+        draft = item(4, "v0.2.79", draft=True, prerelease=True, body="Tiaris-Cold-Qualification: required")
+        self.assertEqual(P.latest([older, waived, draft], "v0.2.80"), waived)
+
+    def test_resolve_admits_the_waived_release_as_authenticated_predecessor(self):
+        release = {"id": 7, "tag_name": "v0.2.78", "draft": False, "prerelease": False,
+                   "published_at": "2026-11-02T16:54:23Z", "target_commitish": "7" * 40,
+                   "body": "Tiaris-Cold-Qualification: required\n\nCold qualification waived by owner.",
+                   "assets": [{"name": name, "size": 10, "digest": "sha256:" + "a" * 64,
+                               "browser_download_url": "https://github.com/CybexHQ/james/releases/download/v0.2.78/" + name}
+                              for name in (P.MANIFEST, P.COMPATIBILITY)]}
+        manifest = {"version": "0.2.78", "appliance_release_v1": {"schema": "tiaris.nest.appliance-release.v3",
+                    "source_revision": "7" * 40, "manage_source_revision": "8" * 40,
+                    "system_closure": {"sha256": "9" * 64}, "system_toplevel": "/nix/store/x"}}
+        def github(_repository, path):
+            return [release] if path.startswith("releases") else {"sha": "7" * 40}
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(P, "github", side_effect=github), \
+                mock.patch.object(P, "fetch", side_effect=lambda url, path, *_a: path.write_bytes(b"{}")), \
+                mock.patch.object(P, "verify_pair", return_value=manifest):
+            value = P.resolve("CybexHQ/james", "0.2.79", self.key, Path(temporary))
+            self.assertEqual((value["release_id"], value["tag_name"], value["github_release_id"]),
+                             ("0.2.78", "v0.2.78", 7))
+            with self.assertRaisesRegex(ValueError, "strictly advance"):
+                P.resolve("CybexHQ/james", "0.2.78-dev.1", self.key, Path(temporary))
+
     def test_upgrade_fixture_stages_and_authenticates_workstation_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
