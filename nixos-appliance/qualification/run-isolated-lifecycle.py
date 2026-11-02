@@ -30,6 +30,7 @@ def main():
     parser.add_argument("--require-candidate-runtime", action="store_true")
     parser.add_argument("--prepublication-candidate", action="store_true")
     parser.add_argument("--induce-preflight-retry", action="store_true")
+    parser.add_argument("--proxmox-reinstall-over", type=Path)
     args = parser.parse_args()
     state = private_state(args.state_dir)
     isolation = SCOPE['read_scope'](state)
@@ -52,6 +53,8 @@ def main():
         command += ["--require-candidate-runtime"]
     if args.prepublication_candidate:
         command += ["--prepublication-candidate"]
+    if args.proxmox_reinstall_over:
+        command += ["--proxmox-reinstall-over", str(args.proxmox_reinstall_over)]
     environment = {**os.environ, "TIARIS_NEST_QUALIFICATION_BRIDGE": isolation["bridge"],
                    "TIARIS_NEST_QUALIFICATION_MANAGEMENT_CIDR": isolation["subnet"].split("/")[0] + "/32",
                    "TIARIS_NEST_QUALIFICATION_STATE": str(state), "TIARIS_NEST_HAS_PREDECESSOR": "true"}
