@@ -86,6 +86,18 @@ class ApplianceV3Tests(unittest.TestCase):
                 V3.validate_template({**FIXTURE["installer_iso_template"],
                                       "envelope_max_validity_hours": value})
 
+    def test_thirty_and_thirty_one_day_limits_cannot_reuse_a_legacy_signature(self):
+        original = FIXTURE["installer_iso_template"]
+        public = API["ED25519_PUBLIC_DER_PREFIX"] + base64.b64decode(FIXTURE["public_key"])
+        for hours in (30 * 24, 31 * 24):
+            with self.subTest(hours=hours):
+                extended = {**original, "envelope_max_validity_hours": hours}
+                V3.validate_template(extended)
+                self.assertTrue(V3.template_message(extended).endswith(f"{hours}\n".encode()))
+                with self.assertRaises(API["ReleaseError"]):
+                    API["_self_verify"](public, base64.b64decode(original["signature"]),
+                                        V3.template_message(extended))
+
     def test_duplicate_json_members_are_rejected(self):
         with self.assertRaises(ValueError):
             json.loads('{"schema":"one","schema":"two"}', object_pairs_hook=V3.unique_object)

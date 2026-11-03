@@ -1262,6 +1262,107 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn setup_media_validity_boundaries_do_not_round_up_or_reject_thirty_days() {
+        use chrono::Duration;
+        let (_, mut envelope, _, _) =
+            signed_plan_fixture(INSTALL_PLAN_SCHEMA_V2, INSTALL_PLAN_SIGNATURE_DOMAIN_V2);
+        let origin = envelope.manage_origin.clone();
+        for (validity, accepted) in [
+            (Duration::zero(), false),
+            (-Duration::nanoseconds(1), false),
+            (Duration::days(30) - Duration::nanoseconds(1), true),
+            (Duration::days(30), true),
+            (Duration::days(30) + Duration::nanoseconds(1), true),
+            (Duration::days(31) - Duration::nanoseconds(1), true),
+            (Duration::days(31), true),
+            (Duration::days(31) + Duration::nanoseconds(1), false),
+        ] {
+            envelope.expires_at = envelope.issued_at + validity;
+            assert_eq!(
+                validate_envelope_fields(&envelope, &origin).is_ok(),
+                accepted,
+                "validity={validity}"
+            );
+        }
+    }
+
+    #[test]
+    fn setup_media_clock_skew_does_not_extend_the_signed_validity_or_expiry() {
+        use chrono::Duration;
+        let (_, mut envelope, _, signing) =
+            signed_plan_fixture(INSTALL_PLAN_SCHEMA_V2, INSTALL_PLAN_SIGNATURE_DOMAIN_V2);
+        let origin = envelope.manage_origin.clone();
+        let now = Utc::now();
+        envelope.issued_at = now + Duration::minutes(5);
+        envelope.expires_at = envelope.issued_at + Duration::days(31);
+        assert!(validate_envelope_fields(&envelope, &origin).is_ok());
+        envelope.expires_at += Duration::nanoseconds(1);
+        assert!(validate_envelope_fields(&envelope, &origin).is_err());
+        envelope.issued_at = now + Duration::minutes(6);
+        envelope.expires_at = envelope.issued_at + Duration::days(30);
+        assert!(validate_envelope_fields(&envelope, &origin).is_err());
+
+        // The issuance allowance is not a grace period after expiry.
+        envelope.issued_at = now - Duration::days(31);
+        envelope.expires_at = now;
+        assert!(validate_envelope_fields(&envelope, &origin).is_ok());
+        let mut verified = VerifiedEnvelope {
+            envelope,
+            signing_key: signing.verifying_key(),
+        };
+        assert!(require_current_envelope(&verified).is_err());
+        verified.envelope.issued_at = now - Duration::days(30);
+        verified.envelope.expires_at = Utc::now() + Duration::minutes(1);
+        assert!(validate_envelope_fields(&verified.envelope, &origin).is_ok());
+        assert!(require_current_envelope(&verified).is_ok());
+    }
+
+    #[test]
+    fn month_long_envelopes_still_require_the_exact_signed_timestamps() {
+        use ed25519_dalek::Signer;
+        let (_, mut envelope, _, signing) =
+            signed_plan_fixture(INSTALL_PLAN_SCHEMA_V2, INSTALL_PLAN_SIGNATURE_DOMAIN_V2);
+        let directory = std::env::temp_dir().join(format!("nest-month-media-{}", Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("envelope.bin");
+        for days in [30, 31] {
+            envelope.expires_at = envelope.issued_at + chrono::Duration::days(days);
+            let mut unsigned = serde_json::to_value(&envelope).unwrap();
+            unsigned.as_object_mut().unwrap().remove("signature");
+            unsigned.as_object_mut().unwrap().remove("zero_padding");
+            let mut payload = ENVELOPE_SIGNATURE_DOMAIN.as_bytes().to_vec();
+            payload.push(b'\n');
+            payload.extend(serde_json::to_vec(&canonical_json(unsigned)).unwrap());
+            envelope.signature = URL_SAFE_NO_PAD.encode(signing.sign(&payload).to_bytes());
+            let mut body = serde_json::to_vec(&envelope).unwrap();
+            body.resize(ENVELOPE_SIZE, 0);
+            fs::write(&path, body).unwrap();
+            let verified = load_and_verify_envelope(
+                &path,
+                &[signing.verifying_key()],
+                &envelope.manage_origin,
+            )
+            .unwrap();
+            require_current_envelope(&verified).unwrap();
+
+            let mut tampered = envelope.clone();
+            tampered.expires_at -= chrono::Duration::seconds(1);
+            let mut body = serde_json::to_vec(&tampered).unwrap();
+            body.resize(ENVELOPE_SIZE, 0);
+            fs::write(&path, body).unwrap();
+            let error = load_and_verify_envelope(
+                &path,
+                &[signing.verifying_key()],
+                &envelope.manage_origin,
+            )
+            .err()
+            .unwrap();
+            assert!(error.to_string().contains("signature is not trusted"));
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn event_ids_are_stable_and_sequence_bound() {
         let session = Uuid::from_bytes([1_u8; 16]);
         let plan = Uuid::from_bytes([2_u8; 16]);
