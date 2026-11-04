@@ -58,6 +58,8 @@ private_key_path = "/var/lib/tiaris-nest/cache/cache-priv-key.pem"
 public_key_path = "/var/lib/tiaris-nest/cache/cache-pub-key.pem"
 max_bytes = 68719476736
 retain_recent_builds = 50
+# Workstation cache seeds shipped with the appliance; published into root_dir.
+seed_manifest_path = "/usr/share/tiaris-nest/workstation-cache-seeds.json"
 
 [update]
 # Ed25519 key used to verify signed workstation-netboot release bundles.

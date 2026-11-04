@@ -4,10 +4,18 @@
   services.qemuGuest.enable = true;
   virtualisation.incus.agent.enable = true;
   systemd.services.incus-agent.unitConfig.ConditionPathExists = "/dev/virtio-ports/org.linuxcontainers.incus";
-  services.tiaris-nest = { enable = true; inherit appliance; };
-  # Keep the exact workstation agent as a cache seed without starting its
-  # service on Nest. The signed system closure exports only reachable paths.
-  system.extraDependencies = [ appliance.workstationAgent ] ++ appliance.workstationCacheSeeds.packages;
+  services.tiaris-nest = {
+    enable = true;
+    inherit appliance;
+    # Keep the exact workstation agent (every output) and the Blueprint custom
+    # outputs as cache seeds without starting the agent service on Nest. The
+    # signed system closure exports only reachable paths; the module keeps
+    # these in the closure and lists them for the daemon to publish into its
+    # binary cache.
+    workstationCacheSeeds =
+      map (output: lib.getOutput output appliance.workstationAgent) (appliance.workstationAgent.outputs or [ "out" ])
+      ++ appliance.workstationCacheSeeds.packages;
+  };
   networking.hostName = "tiaris-nest";
   system.stateVersion = "26.05";
   boot.loader.systemd-boot.enable = true;

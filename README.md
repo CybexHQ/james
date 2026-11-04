@@ -66,6 +66,25 @@ Blueprint at such a commit, it scans the release and candidate closures with
 vulnix and reports the advisories the candidate fixes, with the cache status
 of each App List package at that commit, in `software_update_findings`.
 
+## Workstation cache seeds
+
+Workstations use the Nest cache (`/cache`) before cache.nixos.org. The outputs
+cache.nixos.org cannot serve (every output of the exact workstation agent and
+the Blueprint custom outputs selected by Manage's
+`deploy/nixos/tiaris-workstation-cache-seeds.nix`) ship in the signed appliance
+closure and are listed in `/usr/share/tiaris-nest/workstation-cache-seeds.json`
+(`cache.seed_manifest_path`). Nest publishes them into its own cache, signed
+with its cache key, without a build job (`src/cache/seeds.rs`): when the daemon
+starts, 10 minutes after a failure, hourly while a seed cannot be
+authenticated, when the manifest changes and once a day. Only seeds that are
+valid in the local store and signed by the appliance release key are copied; a
+seed whose verified closure is already cached is left alone, and a closure that
+fails verification is quarantined like a failed build export. Seeds are not
+artifacts: they are not reported to Tiaris and retention never evicts them,
+though they count towards the cache size. The cache sweep keeps the closures
+the current manifest lists, so the seeds of an earlier release are swept like
+any other unreferenced member.
+
 ## Development
 
 ```sh

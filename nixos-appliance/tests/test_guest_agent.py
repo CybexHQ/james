@@ -23,6 +23,8 @@ class InstalledGuestAgent(unittest.TestCase):
         self.assertTrue(checks["installedIncusAgentEnabled"])
         self.assertTrue(checks["incusUsesPackagedLoaderAndUdev"])
         self.assertTrue(checks["incusExecSurvivesGenerationSwitch"])
+        self.assertTrue(checks["workstationCacheSeedManifestListsClosureSeeds"])
+        self.assertTrue(checks["workstationCacheSeedManifestIsInstalled"])
         self.assertTrue(all(checks.values()), checks)
 
 

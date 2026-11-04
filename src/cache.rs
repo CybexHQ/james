@@ -1,3 +1,5 @@
+pub mod seeds;
+
 use std::{
     collections::{BTreeSet, HashSet, VecDeque},
     ffi::CString,
@@ -359,17 +361,7 @@ pub async fn export_output(
         fs::create_dir_all(&cache_dir)
             .with_context(|| format!("create cache directory {}", cache_dir.display()))?;
         prepare_quarantine_root(&cache_dir, &quarantine_dir)?;
-        // zstd NARs decompress several times faster than xz on the
-        // workstation side and export faster here; on a LAN cache the
-        // decompressor, not the wire, is the bottleneck. The serving allowlist
-        // already accepts `.nar.zst`, and earlier xz members stay valid because
-        // every narinfo names its own NAR URL.
-        let destination = format!(
-            "file://{}?secret-key={}&compression={}",
-            cache_dir.display(),
-            private_key_path.display(),
-            CACHE_EXPORT_NAR_COMPRESSION
-        );
+        let destination = export_destination(&cache_dir, &private_key_path);
         copy_store_path_to_cache_controlled(
             &nix_binary,
             &destination,
@@ -844,6 +836,22 @@ fn write_replica_narinfo(cache_dir: &Path, narinfo_filename: &str, content: &str
         .with_context(|| format!("set permissions on {}", staged.display()))?;
     fs::rename(&staged, &path).with_context(|| format!("publish {}", path.display()))?;
     Ok(())
+}
+
+/// The `nix copy` destination of every export: this cache root, signed with
+/// the Nest cache key.
+///
+/// zstd NARs decompress several times faster than xz on the workstation side
+/// and export faster here; on a LAN cache the decompressor, not the wire, is
+/// the bottleneck. The serving allowlist already accepts `.nar.zst`, and
+/// earlier xz members stay valid because every narinfo names its own NAR URL.
+fn export_destination(cache_dir: &Path, private_key_path: &Path) -> String {
+    format!(
+        "file://{}?secret-key={}&compression={}",
+        cache_dir.display(),
+        private_key_path.display(),
+        CACHE_EXPORT_NAR_COMPRESSION
+    )
 }
 
 #[cfg(test)]
@@ -2314,18 +2322,27 @@ async fn sweep_unreachable_locked(
     retained: Vec<RetainedArtifactFiles>,
 ) -> Result<u64> {
     let cache_root = config.cache.root_dir.clone();
-    task::spawn_blocking(move || sweep_unreachable_blocking(&cache_root, &retained))
-        .await
-        .context("join cache sweep task")?
+    let seed_manifest = config.cache.seed_manifest_path.clone();
+    task::spawn_blocking(move || {
+        // Published workstation cache seeds have no inventory row. Keep the
+        // closures of the seeds the current appliance lists; seeds of an
+        // earlier release are no longer listed and are swept like any other
+        // unreferenced member.
+        let seed_roots = seeds::sweep_roots(&seed_manifest);
+        sweep_unreachable_blocking(&cache_root, &retained, &seed_roots)
+    })
+    .await
+    .context("join cache sweep task")?
 }
 
 /// Mark-and-sweep over the binary cache directory: walk the narinfo reference
-/// graph from every retained artifact's store path, then delete root-level
-/// `*.narinfo` files and direct `nar/` members that are no longer reachable.
-/// Returns the number of bytes freed.
+/// graph from every retained artifact's store path and every extra root store
+/// path, then delete root-level `*.narinfo` files and direct `nar/` members
+/// that are no longer reachable. Returns the number of bytes freed.
 fn sweep_unreachable_blocking(
     cache_root: &Path,
     retained: &[RetainedArtifactFiles],
+    extra_roots: &[String],
 ) -> Result<u64> {
     let _usage_change = crate::cache_usage::Mutation::new(cache_root);
     let mut live_files: HashSet<PathBuf> = HashSet::new();
@@ -2342,6 +2359,7 @@ fn sweep_unreachable_blocking(
             queue.push(hash);
         }
     }
+    queue.extend(extra_roots.iter().filter_map(|root| store_path_hash(root)));
     while let Some(hash) = queue.pop() {
         if !live_narinfo_hashes.insert(hash.clone()) {
             continue;
@@ -2903,7 +2921,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    fn test_temp_dir(label: &str) -> PathBuf {
+    pub(super) fn test_temp_dir(label: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -2916,7 +2934,7 @@ mod tests {
         path
     }
 
-    fn test_store_path(hash_character: char, name: &str) -> String {
+    pub(super) fn test_store_path(hash_character: char, name: &str) -> String {
         format!(
             "/nix/store/{}-{name}",
             hash_character.to_string().repeat(32)
@@ -2927,14 +2945,14 @@ mod tests {
         SigningKey::from_bytes(&[0x42; 32])
     }
 
-    fn test_public_key() -> String {
+    pub(super) fn test_public_key() -> String {
         format!(
             "test-cache:{}",
             BASE64_STANDARD.encode(test_signing_key().verifying_key().as_bytes())
         )
     }
 
-    fn write_manifest_cache_member(
+    pub(super) fn write_manifest_cache_member(
         cache_root: &Path,
         store_path: &str,
         nar_bytes: &[u8],

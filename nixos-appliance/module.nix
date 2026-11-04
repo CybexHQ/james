@@ -19,13 +19,38 @@ let
     description = "Tiaris Nest ${name}";
     serviceConfig = { Type = "oneshot"; ExecStart = command name; UMask = "0077"; };
   } // baseUnit;
+  # The manifest's store paths carry their string context, so the file itself
+  # references every seed and cannot ship without them.
+  seedManifest = pkgs.writeText "tiaris-nest-workstation-cache-seeds.json" (builtins.toJSON cfg.workstationCacheSeedManifest);
 in {
   options.services.tiaris-nest = {
     enable = lib.mkEnableOption "managed NixOS Nest appliance";
     appliance = lib.mkOption { type = lib.types.attrs; description = "Organization-neutral package, source identity and public trust inputs"; };
+    workstationCacheSeeds = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [ ];
+      description = ''
+        Workstation outputs that cache.nixos.org cannot substitute. They are
+        carried in the signed system closure, listed in
+        /usr/share/tiaris-nest/workstation-cache-seeds.json, and published by
+        tiaris-nest into its own binary cache (src/cache/seeds.rs).
+      '';
+    };
+    workstationCacheSeedManifest = lib.mkOption {
+      type = lib.types.attrs;
+      internal = true;
+      readOnly = true;
+      description = "Contents of /usr/share/tiaris-nest/workstation-cache-seeds.json.";
+    };
   };
   config = lib.mkIf cfg.enable {
-    system.extraDependencies = [ a.sourceArchiveFile ];
+    # One list feeds both the closure and the shipped manifest, so the daemon
+    # publishes exactly the seeds this generation carries.
+    system.extraDependencies = [ a.sourceArchiveFile ] ++ cfg.workstationCacheSeeds;
+    services.tiaris-nest.workstationCacheSeedManifest = {
+      schema = "tiaris.nest.workstation-cache-seeds.v1";
+      store_paths = lib.unique (lib.sort builtins.lessThan (map toString cfg.workstationCacheSeeds));
+    };
     users.groups.tiaris-nest.gid = 985;
     users.groups.nix-users = {};
     users.groups.tftp = {};
@@ -129,6 +154,7 @@ in {
         install -m0444 ${immutableMetadata} /usr/share/tiaris-nest/appliance-release.json
         install -m0444 ${immutableMetadata} /usr/share/tiaris-nest/system-identity.json
         install -m0444 ${a.migrations}/sqlite-migrations.json /usr/share/tiaris-nest/sqlite-migrations.json
+        install -m0444 ${seedManifest} /usr/share/tiaris-nest/workstation-cache-seeds.json
         ${pkgs.python3}/bin/python3 ${./runtime/source-copy.py} ${a.sourceArchive} /usr/share/tiaris-nest/manage-source
       '';
     };
