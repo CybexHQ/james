@@ -340,6 +340,37 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_checkpoint_is_retried_and_the_next_success_survives_restart() {
+        let dir = TestDir::new("retry-checkpoint");
+        let counters = counters();
+        counters.record_served(10);
+        counters.persisted_snapshot(dir.path()).1.unwrap();
+        let original = std::fs::read(dir.path().join(super::RECORD)).unwrap();
+        // Refuse atomic replacement without removing the previous contents.
+        // This is deterministic even when tests run as root.
+        std::fs::rename(dir.path(), dir.path().with_extension("saved")).unwrap();
+        std::fs::write(dir.path(), b"not a directory").unwrap();
+        counters.record_served(20);
+        counters.record_missing();
+        let (_, failed) = counters.persisted_snapshot(dir.path());
+        assert!(failed.is_err());
+        std::fs::remove_file(dir.path()).unwrap();
+        std::fs::rename(dir.path().with_extension("saved"), dir.path()).unwrap();
+        assert_eq!(
+            std::fs::read(dir.path().join(super::RECORD)).unwrap(),
+            original
+        );
+        // A failed write must not mark these totals as persisted: a later
+        // report retries even when there was no additional traffic.
+        let (retry, written) = counters.persisted_snapshot(dir.path());
+        written.unwrap();
+        assert_eq!(retry.served_bytes_total, 30);
+        assert_eq!(retry.served_requests_total, 2);
+        assert_eq!(retry.missing_requests_total, 1);
+        assert_eq!(CacheEgressCounters::restore(dir.path()).snapshot(), retry);
+    }
+
+    #[test]
     fn a_missing_corrupt_or_future_record_starts_a_new_epoch() {
         let dir = TestDir::new("epoch");
         let now = Utc.with_ymd_and_hms(2026, 11, 4, 9, 0, 0).unwrap();

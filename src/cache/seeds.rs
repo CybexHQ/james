@@ -613,6 +613,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn damaged_seed_dependency_is_republished_without_inventory_rows() {
+        let fixture = Fixture::new("seed-repair-dependency");
+        let agent = test_store_path('a', "tiaris-agent");
+        let dependency = test_store_path('b', "seed-dependency");
+        let (_, dependency_nar) =
+            write_manifest_cache_member(&fixture.staging, &dependency, b"dependency", &[]);
+        write_manifest_cache_member(
+            &fixture.staging,
+            &agent,
+            b"agent",
+            std::slice::from_ref(&dependency),
+        );
+        fixture.write_manifest(&[&agent]);
+        fixture.write_path_info(&[(&agent, &release_key())]);
+        assert_eq!(publish(&fixture.config).await.unwrap().published, 1);
+
+        // The root is intact, but a dependency's bytes were damaged after
+        // publication. A subsequent pass must inspect the whole closure.
+        let cached_nar = fixture
+            .config
+            .cache
+            .root_dir
+            .join(dependency_nar.strip_prefix(&fixture.staging).unwrap());
+        fs::write(cached_nar, b"damaged").unwrap();
+        assert!(!fixture.published(&agent));
+        let repaired = publish(&fixture.config).await.unwrap();
+        assert_eq!(repaired.published, 1);
+        assert_eq!(repaired.already_published, 0);
+        assert!(fixture.published(&agent));
+        assert_eq!(fixture.copies(), vec![agent.clone(), agent]);
+    }
+
+    #[tokio::test]
+    async fn seed_signature_binds_metadata_and_cannot_be_replayed_for_another_path() {
+        let fixture = Fixture::new("seed-signature-replay");
+        let agent = test_store_path('a', "tiaris-agent");
+        let other = test_store_path('b', "other-agent");
+        fixture.write_manifest(&[&agent, &other]);
+        fixture.write_path_info(&[(&agent, &release_key())]);
+        let record = fixture.root.join("path-info.json");
+        let authentic: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+        for field in ["narHash", "narSize", "references", "signatures"] {
+            let mut tampered = authentic.clone();
+            tampered[&other] = authentic[&agent].clone();
+            tampered[&agent][field] = match field {
+                "narHash" => json!(format!("sha256-{}", BASE64_STANDARD.encode([8; 32]))),
+                "narSize" => json!(43),
+                "references" => json!([other]),
+                _ => json!([]),
+            };
+            fs::write(&record, serde_json::to_vec(&tampered).unwrap()).unwrap();
+            let outcome = publish(&fixture.config).await.unwrap();
+            assert_eq!(outcome.unauthenticated, 2, "accepted changed {field}");
+            assert_eq!(outcome.published, 0);
+            assert!(fixture.copies().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_path_info_list_and_partial_failure_keep_authentic_seeds() {
+        let fixture = Fixture::new("seed-partial-path-info");
+        let agent = test_store_path('a', "tiaris-agent");
+        let absent = test_store_path('b', "absent-agent");
+        fixture.write_manifest(&[&agent, &absent]);
+        fixture.write_path_info(&[(&agent, &release_key())]);
+        let record = fixture.root.join("path-info.json");
+        let authentic: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+        let mut row = authentic[&agent].clone();
+        row["path"] = json!(agent);
+        fs::write(
+            &record,
+            json!([row, {"path": absent, "valid": false}]).to_string(),
+        )
+        .unwrap();
+        write_manifest_cache_member(&fixture.staging, &agent, b"agent", &[]);
+        // Nix can return valid partial JSON together with an unsuccessful
+        // exit status when one requested path is absent.
+        let nix = PathBuf::from(&fixture.config.build.nix_binary);
+        let script = fs::read_to_string(&nix).unwrap();
+        fs::write(
+            &nix,
+            script.replace("path-info.json' ;;", "path-info.json'; exit 1 ;;"),
+        )
+        .unwrap();
+        let outcome = publish(&fixture.config).await.unwrap();
+        assert_eq!(outcome.published, 1);
+        assert_eq!(outcome.unauthenticated, 1);
+        assert_eq!(fixture.copies(), vec![agent]);
+    }
+
+    #[tokio::test]
     async fn a_seed_that_fails_verification_is_quarantined_and_reported() {
         let fixture = Fixture::new("seed-quarantine");
         let agent = test_store_path('a', "tiaris-agent-0.1.0");

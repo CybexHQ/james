@@ -117,9 +117,16 @@ cargo test --locked
 cargo build --release --locked
 python3 -B -m unittest discover -s tools/tests -v
 cargo test --locked python_packer_archive_verifies_and_extracts_in_rust -- --ignored
+cargo test --locked --test cache_seeds_nix -- --ignored
 python3 -B -m unittest discover -s nixos-appliance/tests -p 'test_*.py'
-bash -n nixos-appliance/build-closure.sh nixos-appliance/build-template.sh
+bash -n nixos-appliance/build-closure.sh
+bash -n nixos-appliance/build-template.sh
 ```
+
+The real cache tests use private local Nix stores and temporary keys; they run
+automatically in disposable CI and need no VM qualification. Set `TIARIS_TEST_NIX`
+to select a Nix binary. Optional non-mutating development API checks run with
+`TIARIS_NEST_LIVE_ORIGIN=https://dev.tiaris.com` on the Python appliance suite.
 
 The installed service uses `/etc/tiaris-nest/config.toml` and the V2-activated
 identity at `/var/lib/tiaris-nest/state/manage-state.json`. It reports
