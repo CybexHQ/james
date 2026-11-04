@@ -137,12 +137,12 @@ pub struct CacheStatusReport {
     pub total_size_bytes: u64,
     pub artifact_count: usize,
     pub error: String,
-    /// `/cache/*` egress since process start (see `cache_egress`). Wire names
+    /// `/cache/*` egress of the persisted counter epoch (see `cache_egress`). Wire names
     /// are fixed by Tiaris's `NestAgentCacheReport`.
     pub served_bytes_total: u64,
     pub served_requests_total: u64,
     pub missing_requests_total: u64,
-    /// RFC 3339 start of the counter epoch.
+    /// RFC 3339 start of the counter epoch; kept across restarts.
     pub counters_since: String,
 }
 

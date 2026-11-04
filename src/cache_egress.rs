@@ -2,20 +2,44 @@
 //!
 //! Tiaris receives these totals inside the `cache` object of every Nest
 //! report so workstation closure-transfer telemetry can be reconciled against
-//! what this appliance actually served. Counters live in memory only and
-//! restart from zero with the process; `counters_since` tells Tiaris which
-//! epoch a total belongs to.
+//! what this appliance actually served. The totals survive restarts: every
+//! report first writes them to the state record `cache-egress.json` (data
+//! directory, see `state_files`), and the process resumes from that record,
+//! keeping its `counters_since` epoch. Tiaris therefore never sees a total
+//! go backwards; what was served after the last report and before a crash
+//! is lost. A new epoch starts only without a usable record.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    path::Path,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
+use anyhow::Result;
 use axum::{
     http::{StatusCode, header},
     response::Response,
 };
 use chrono::{DateTime, SecondsFormat, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::error::AppError;
+use crate::{error::AppError, state_files};
+
+/// State record of the persisted totals, in the data directory.
+const RECORD: &str = "cache-egress.json";
+const RECORD_SCHEMA: &str = "tiaris.nest.cache-egress";
+const RECORD_MAX_BYTES: u64 = 4096;
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedTotals {
+    served_bytes_total: u64,
+    served_requests_total: u64,
+    missing_requests_total: u64,
+    counters_since: DateTime<Utc>,
+}
 
 #[derive(Debug)]
 pub struct CacheEgressCounters {
@@ -23,6 +47,9 @@ pub struct CacheEgressCounters {
     served_requests: AtomicU64,
     missing_requests: AtomicU64,
     counters_since: DateTime<Utc>,
+    /// The totals last written to the record, so an idle Nest does not
+    /// rewrite it on every report.
+    persisted: Mutex<Option<CacheEgressSnapshot>>,
 }
 
 /// Point-in-time copy of the counters. Field names are the wire names Tiaris
@@ -65,7 +92,62 @@ impl CacheEgressCounters {
             served_requests: AtomicU64::new(0),
             missing_requests: AtomicU64::new(0),
             counters_since,
+            persisted: Mutex::new(None),
         }
+    }
+
+    /// The totals persisted in `data_dir`, or a new epoch starting now when
+    /// there is no usable record (absent, corrupt, or dated in the future).
+    pub fn restore(data_dir: &Path) -> Self {
+        Self::restore_at(data_dir, Utc::now())
+    }
+
+    fn restore_at(data_dir: &Path, now: DateTime<Utc>) -> Self {
+        let Some(totals) =
+            state_files::read::<PersistedTotals>(data_dir, RECORD, RECORD_SCHEMA, RECORD_MAX_BYTES)
+                .filter(|totals| totals.counters_since <= now + chrono::Duration::days(1))
+        else {
+            return Self::starting_at(now);
+        };
+        let counters = Self::starting_at(totals.counters_since);
+        counters
+            .served_bytes
+            .store(totals.served_bytes_total, Ordering::Relaxed);
+        counters
+            .served_requests
+            .store(totals.served_requests_total, Ordering::Relaxed);
+        counters
+            .missing_requests
+            .store(totals.missing_requests_total, Ordering::Relaxed);
+        *counters.persisted.lock().expect("egress persistence state") = Some(counters.snapshot());
+        counters
+    }
+
+    /// A snapshot that is already persisted in `data_dir`: report only what
+    /// a restart resumes from. A failed write is returned; the caller logs
+    /// it and reports the in-memory totals anyway.
+    pub fn persisted_snapshot(&self, data_dir: &Path) -> (CacheEgressSnapshot, Result<()>) {
+        let snapshot = self.snapshot();
+        let mut persisted = self.persisted.lock().expect("egress persistence state");
+        if persisted.as_ref() == Some(&snapshot) {
+            return (snapshot, Ok(()));
+        }
+        let written = state_files::write(
+            data_dir,
+            RECORD,
+            RECORD_SCHEMA,
+            RECORD_MAX_BYTES,
+            &PersistedTotals {
+                served_bytes_total: snapshot.served_bytes_total,
+                served_requests_total: snapshot.served_requests_total,
+                missing_requests_total: snapshot.missing_requests_total,
+                counters_since: self.counters_since,
+            },
+        );
+        if written.is_ok() {
+            *persisted = Some(snapshot.clone());
+        }
+        (snapshot, written)
     }
 
     pub fn record_served(&self, bytes: u64) {
@@ -197,6 +279,85 @@ mod tests {
         let snapshot = counters.snapshot();
         assert_eq!(snapshot.served_bytes_total, u64::MAX);
         assert_eq!(snapshot.served_requests_total, 3);
+    }
+
+    struct TestDir(std::path::PathBuf);
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "tiaris-nest-cache-egress-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            Self(dir)
+        }
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn totals_and_their_epoch_survive_a_restart() {
+        let dir = TestDir::new("restart");
+        let first = counters();
+        first.record_served(1_000);
+        first.record_missing();
+        let (reported, written) = first.persisted_snapshot(dir.path());
+        written.unwrap();
+        // Served after the last report and before the restart: lost. The
+        // restarted totals are exactly what Tiaris last saw, never less.
+        first.record_served(5);
+
+        let restarted = CacheEgressCounters::restore(dir.path());
+        assert_eq!(restarted.snapshot(), reported);
+        restarted.record_served(24);
+        let (next, written) = restarted.persisted_snapshot(dir.path());
+        written.unwrap();
+        assert_eq!(next.served_bytes_total, 1_024);
+        assert_eq!(next.served_requests_total, 2);
+        assert_eq!(next.missing_requests_total, 1);
+        assert_eq!(next.counters_since, "2026-09-03T12:34:56Z");
+    }
+
+    #[test]
+    fn an_unchanged_snapshot_is_not_rewritten() {
+        let dir = TestDir::new("unchanged");
+        let counters = counters();
+        counters.record_served(7);
+        counters.persisted_snapshot(dir.path()).1.unwrap();
+        let record = dir.path().join(super::RECORD);
+        std::fs::remove_file(&record).unwrap();
+        counters.persisted_snapshot(dir.path()).1.unwrap();
+        assert!(!record.exists(), "an idle Nest does not rewrite the record");
+        counters.record_missing();
+        counters.persisted_snapshot(dir.path()).1.unwrap();
+        assert!(record.exists());
+    }
+
+    #[test]
+    fn a_missing_corrupt_or_future_record_starts_a_new_epoch() {
+        let dir = TestDir::new("epoch");
+        let now = Utc.with_ymd_and_hms(2026, 11, 4, 9, 0, 0).unwrap();
+        let fresh = CacheEgressCounters::restore_at(dir.path(), now);
+        assert_eq!(fresh.snapshot().counters_since, "2026-11-04T09:00:00Z");
+        assert_eq!(fresh.snapshot().served_bytes_total, 0);
+
+        std::fs::create_dir_all(dir.path()).unwrap();
+        std::fs::write(dir.path().join(super::RECORD), b"{not json").unwrap();
+        let corrupt = CacheEgressCounters::restore_at(dir.path(), now);
+        assert_eq!(corrupt.snapshot().served_requests_total, 0);
+
+        let future = CacheEgressCounters::starting_at(now + chrono::Duration::days(30));
+        future.record_served(9);
+        future.persisted_snapshot(dir.path()).1.unwrap();
+        let restored = CacheEgressCounters::restore_at(dir.path(), now);
+        assert_eq!(restored.snapshot().served_bytes_total, 0);
+        assert_eq!(restored.snapshot().counters_since, "2026-11-04T09:00:00Z");
     }
 
     #[test]

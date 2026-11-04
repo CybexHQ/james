@@ -1377,8 +1377,17 @@ async fn report_nest_state(
         cache_listing_complete && cache_inventory_valid && cache_scrub_valid;
     let local_cache_build_state_valid =
         build_listing_valid && cache_scrub_valid && cache_listing_valid && cache_inventory_valid;
+    let (cache_egress, persisted) = state
+        .cache_egress
+        .persisted_snapshot(&state.config.paths.data_dir);
+    if let Err(error) = persisted {
+        warn!(
+            error = %format!("{error:#}"),
+            "could not persist cache egress totals; they restart from the last record"
+        );
+    }
     let cache = cache_status_for_local_state(
-        crate::cache::status_report(&state.config, &state.db, state.cache_egress.snapshot()).await,
+        crate::cache::status_report(&state.config, &state.db, cache_egress).await,
         local_cache_build_state_valid,
     );
     let workstation_netboot = match crate::netboot::report(state).await {
