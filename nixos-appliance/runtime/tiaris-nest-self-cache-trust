@@ -1,0 +1,3 @@
+#!/usr/bin/env python3
+from self_cache_trust import apply
+apply()

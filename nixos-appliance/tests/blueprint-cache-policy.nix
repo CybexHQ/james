@@ -1,6 +1,6 @@
-# Evaluate both real modules: Blueprint dependencies may use the signed public
-# cache and the Tiaris software cache, while recovery media and appliance
-# imports retain release-only trust.
+# Evaluate both real modules: Blueprint dependencies may use the Nest's own
+# signed export, the signed public cache and the Tiaris software cache, while
+# recovery media and appliance imports retain release-only trust.
 { nixpkgs, pkgs }:
 let
   configurations = import ./console-config.nix { inherit nixpkgs; };
@@ -10,7 +10,7 @@ let
   softwareCacheKey = "cache.tiaris.com-1:xIrpkpeFBAzhhUQojSWqkpAWTwGoW4HtUEtHAcd4taY=";
   releaseKey = "tiaris-nest-appliance-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 in
-assert installed.substituters == [ "https://cache.nixos.org" "https://cache.tiaris.com" ];
+assert installed.substituters == [ "file:///var/cache/tiaris-nest/www/cache?priority=10" "https://cache.nixos.org" "https://cache.tiaris.com" ];
 assert builtins.elem cacheKey installed.trusted-public-keys;
 assert builtins.elem softwareCacheKey installed.trusted-public-keys;
 assert installed.netrc-file == "/var/lib/tiaris-nest/state/agent/software-cache.netrc";

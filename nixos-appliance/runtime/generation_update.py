@@ -1,4 +1,5 @@
 """Crash-recoverable NixOS profile update; protected STATE owns every decision."""
+import base64
 import datetime
 import hashlib
 import json
@@ -92,6 +93,67 @@ def verify_observed_versions(expected):
     for field, value in observed_system_versions().items():
         if value != expected[field]:
             raise ValueError('booted ' + field + ' version differs from signed system')
+
+
+NIX32 = '0123456789abcdfghijklmnpqrsvwxyz'
+
+
+def nar_hash_bytes(value):
+    """A NAR SHA-256 in SRI, hex or Nix base32 form, as its 32 raw bytes."""
+    if value.startswith('sha256-'):
+        raw = base64.b64decode(value[len('sha256-'):], validate=True)
+    elif value.startswith('sha256:') and re.fullmatch(r'[0-9a-f]{64}', value[len('sha256:'):]):
+        raw = bytes.fromhex(value[len('sha256:'):])
+    elif value.startswith('sha256:') and len(value) == len('sha256:') + 52:
+        decoded = bytearray(32)
+        for n, char in enumerate(reversed(value[len('sha256:'):])):
+            digit = NIX32.index(char)
+            i, j = divmod(n * 5, 8)
+            decoded[i] |= (digit << j) & 0xff
+            if i < 31:
+                decoded[i + 1] |= digit >> (8 - j)
+            elif digit >> (8 - j):
+                raise ValueError('invalid Nix base32 NAR hash')
+        raw = bytes(decoded)
+    else:
+        raise ValueError('unsupported NAR hash')
+    if len(raw) != 32:
+        raise ValueError('NAR hash is not SHA-256')
+    return raw
+
+
+def release_nar_hashes(cache):
+    """StorePath -> NarHash of every narinfo in the root-verified release cache."""
+    hashes = {}
+    for path in cache.glob('*.narinfo'):
+        fields = {}
+        for line in read(path, maximum=1024 * 1024).decode().splitlines():
+            key, separator, value = line.partition(': ')
+            if separator:
+                fields[key] = value
+        hashes[fields['StorePath']] = nar_hash_bytes(fields['NarHash'])
+    return hashes
+
+
+def verify_store_closure(cache, toplevel):
+    """Only the release key decides what the appliance activates. `nix copy`
+    skips a closure member that is already valid in the store, whoever put
+    it there: Nix's daemon also trusts the Nest's own cache key (its
+    self-substituter), which the tiaris-nest service user holds. Refuse the
+    candidate unless every installed member's content is the release's."""
+    expected = release_nar_hashes(cache)
+    listed = json.loads(run('nix', '--extra-experimental-features', 'nix-command', 'path-info',
+                            '--json', '--recursive', '--offline', toplevel, timeout=600))
+    rows = listed.items() if isinstance(listed, dict) else ((row.get('path'), row) for row in listed)
+    members = set()
+    for path, info in rows:
+        if isinstance(path, str) and not path.startswith('/'):
+            path = '/nix/store/' + path
+        if path not in expected or not info or nar_hash_bytes(info['narHash']) != expected[path]:
+            raise ValueError('installed closure member differs from the signed release: ' + str(path))
+        members.add(path)
+    if toplevel not in members:
+        raise ValueError('installed closure does not contain the signed release toplevel')
 
 
 def safe_attempt(value):
@@ -310,11 +372,18 @@ def stage():
             emit_status(receipt, 'preparing', 'importing_closure')
             run('nix', '--extra-experimental-features', 'nix-command', 'copy', '--from', 'file://' + str(cache),
                 '--option', 'substituters', '', '--option', 'require-sigs', 'true', verified['system_toplevel'], timeout=4 * 3600)
-            if verified['database_backup'] != str(cache.parent / 'database-compatibility.sqlite'):
-                raise ValueError('unexpected database compatibility backup')
-            run(verified['system_toplevel'] + '/sw/bin/tiaris-nest', 'verify-appliance-database',
-                '--database', verified['database_backup'], timeout=60)
+            # Root the closure first so garbage collection cannot swap a
+            # checked member, then check it before running anything from it.
             pin(verified['system_toplevel'], 'pending-' + attempt)
+            try:
+                verify_store_closure(cache, verified['system_toplevel'])
+                if verified['database_backup'] != str(cache.parent / 'database-compatibility.sqlite'):
+                    raise ValueError('unexpected database compatibility backup')
+                run(verified['system_toplevel'] + '/sw/bin/tiaris-nest', 'verify-appliance-database',
+                    '--database', verified['database_backup'], timeout=60)
+            except Exception:
+                (ROOTS / ('pending-' + attempt)).unlink(missing_ok=True)
+                raise
             source = current()
             receipt.update(schema='tiaris.nest.system-prepare-intent.v3', source_generation=source['system_generation'],
                 source_toplevel=source['system_toplevel'], source_loader_entry=source['loader_entry'], source_installed=load(INSTALLED), source_known_good=load(KNOWN))
