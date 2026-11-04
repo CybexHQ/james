@@ -51,8 +51,9 @@ pub struct AppState {
     pub db: SqlitePool,
     pub netboot_multicast: netboot_multicast::NetbootMulticast,
     runtime: Arc<RwLock<RuntimeSettings>>,
-    /// `/cache/*` egress totals since process start; shared by every clone of
-    /// the state so the report task sees what the file route counted.
+    /// `/cache/*` egress totals of the persisted epoch (`cache_egress`);
+    /// shared by every clone of the state so the report task sees what the
+    /// file route counted.
     pub cache_egress: Arc<CacheEgressCounters>,
     pub(crate) build_admission: Arc<resources::Admission>,
 }
@@ -60,12 +61,13 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: AppConfig, db: SqlitePool) -> Self {
         let runtime = RuntimeSettings::from_config(&config);
+        let cache_egress = Arc::new(CacheEgressCounters::restore(&config.paths.data_dir));
         Self {
             config: Arc::new(config),
             db,
             netboot_multicast: netboot_multicast::NetbootMulticast::new(),
             runtime: Arc::new(RwLock::new(runtime)),
-            cache_egress: Arc::new(CacheEgressCounters::new()),
+            cache_egress,
             build_admission: Arc::new(resources::Admission::default()),
         }
     }
