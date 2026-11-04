@@ -85,6 +85,30 @@ though they count towards the cache size. The cache sweep keeps the closures
 the current manifest lists, so the seeds of an earlier release are swept like
 any other unreferenced member.
 
+## Self-substitution
+
+Nest's Nix daemon substitutes from Nest's own signed export first
+(`file:///var/cache/tiaris-nest/www/cache?priority=10`, then cache.nixos.org
+and the Tiaris software cache), so a build after the daily `nix-store --gc`
+takes what Nest already exported from its own disk instead of the internet.
+The daemon trusts the Nest cache key only through
+`/etc/tiaris-nest/nix-self-cache.conf`, which the root unit
+`tiaris-nest-self-cache-trust` writes from the Nest's public key whenever it
+changes: one validated `extra-trusted-public-keys` line and nothing else
+(`nixos-appliance/runtime/self_cache_trust.py`). Before the key exists, or if
+it is invalid, the include is empty and the export is simply not used.
+tmpfiles creates the export layout (`cache/`, `nar/`, `realisations/`) as the
+Nest, because Nix's daemon would otherwise create a missing layout as root.
+
+Trusting that key lets the `tiaris-nest` service user, which holds the
+private key, place arbitrary store paths in the root store (sign and import
+them, or ask the daemon to substitute them). Workstations already trust every
+path that key signs, so nothing changes for them. Appliance updates stay on
+the release-key-only path: the importer copies with no substituters, roots the
+closure, and refuses the candidate unless every installed member's NAR hash is
+the signed release's (`generation_update.verify_store_closure`), before it
+runs anything from the new system.
+
 ## Development
 
 ```sh

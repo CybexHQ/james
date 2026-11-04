@@ -7,6 +7,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -17,6 +19,7 @@ RUNTIME = Path(__file__).resolve().parents[1] / 'runtime'
 sys.path.insert(0, str(RUNTIME))
 import appliance_state as state
 import generation_update as update
+import self_cache_trust as trust
 
 
 def script(name):
@@ -317,6 +320,152 @@ class BootAnchors(unittest.TestCase):
         with patch.object(update, 'observed_system_versions', return_value={**expected, 'kernel': '6.18.37'}):
             with self.assertRaisesRegex(ValueError, 'kernel version differs'):
                 update.verify_observed_versions(expected)
+
+
+EMPTY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+TOPLEVEL = '/nix/store/0c7c9lr2kqyskkqm1ppa0w1bx8hlh8sm-nixos-system-nest'
+GLIBC = '/nix/store/1c7c9lr2kqyskkqm1ppa0w1bx8hlh8sm-glibc-2.42'
+
+
+class ReleaseOnlyClosure(unittest.TestCase):
+    """Appliance updates keep release-key-only trust although Nix's daemon also
+    trusts the Nest's own cache key for its self-substituter."""
+
+    def release_cache(self, directory, hashes):
+        cache = Path(directory) / 'cache'
+        cache.mkdir()
+        for path, nar_hash in hashes.items():
+            narinfo = cache / (Path(path).name.split('-', 1)[0] + '.narinfo')
+            narinfo.write_text(f'StorePath: {path}\nURL: nar/x.nar\nNarHash: {nar_hash}\nNarSize: 1\n')
+            narinfo.chmod(0o600)
+        return cache
+
+    def test_nar_hashes_compare_in_every_encoding(self):
+        raw = bytes.fromhex(EMPTY_SHA256)
+        self.assertEqual(update.nar_hash_bytes('sha256:' + EMPTY_SHA256), raw)
+        self.assertEqual(update.nar_hash_bytes('sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73'), raw)
+        self.assertEqual(update.nar_hash_bytes('sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='), raw)
+        for invalid in ('md5:' + EMPTY_SHA256[:32], 'sha256:' + 'e' * 52, 'sha256-AAAA'):
+            with self.assertRaises(ValueError):
+                update.nar_hash_bytes(invalid)
+
+    def test_every_installed_member_must_be_the_release_content(self):
+        good = 'sha256:' + EMPTY_SHA256
+        other = 'sha256-' + '1' * 43 + '='
+        with tempfile.TemporaryDirectory() as directory:
+            cache = self.release_cache(directory, {TOPLEVEL: good, GLIBC: 'sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73'})
+            listing = {TOPLEVEL: {'narHash': 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='},
+                       GLIBC: {'narHash': 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='}}
+            reads = lambda path, **kw: Path(path).read_bytes()
+            with patch.object(update, 'read', reads), patch.object(update, 'run', return_value=json.dumps(listing)) as run:
+                update.verify_store_closure(cache, TOPLEVEL)
+                self.assertIn('path-info', run.call_args.args)
+            # A member planted before the import (same store path, other
+            # content, e.g. signed with the Nest's own cache key) is refused.
+            planted = {**listing, GLIBC: {'narHash': other}}
+            with patch.object(update, 'read', reads), patch.object(update, 'run', return_value=json.dumps(planted)):
+                with self.assertRaisesRegex(ValueError, 'differs from the signed release'):
+                    update.verify_store_closure(cache, TOPLEVEL)
+            # A member the release does not name, and the legacy list format.
+            extra = [{'path': TOPLEVEL, 'narHash': good}, {'path': '/nix/store/2c7c9lr2kqyskkqm1ppa0w1bx8hlh8sm-extra', 'narHash': good}]
+            with patch.object(update, 'read', reads), patch.object(update, 'run', return_value=json.dumps(extra)):
+                with self.assertRaisesRegex(ValueError, 'differs from the signed release'):
+                    update.verify_store_closure(cache, TOPLEVEL)
+            with patch.object(update, 'read', reads), patch.object(update, 'run', return_value=json.dumps({GLIBC: listing[GLIBC]})):
+                with self.assertRaisesRegex(ValueError, 'toplevel'):
+                    update.verify_store_closure(cache, TOPLEVEL)
+
+    def test_import_checks_the_closure_before_running_it(self):
+        source = (RUNTIME / 'generation_update.py').read_text()
+        stage = source[source.index('def stage():'):source.index('def contact_ready(')]
+        imported = stage.index("'copy', '--from'")
+        rooted = stage.index("pin(verified['system_toplevel'], 'pending-' + attempt)")
+        checked = stage.index("verify_store_closure(cache, verified['system_toplevel'])")
+        executed = stage.index("'/sw/bin/tiaris-nest', 'verify-appliance-database'")
+        self.assertLess(imported, rooted)
+        self.assertLess(rooted, checked)
+        self.assertLess(checked, executed)
+        self.assertIn("'--option', 'substituters', ''", stage[imported - 200:imported + 200])
+
+
+class SelfCacheTrust(unittest.TestCase):
+    KEY = 'tiaris-nest-cache:' + 'A' * 42 + 'E='
+
+    @unittest.skipUnless(shutil.which('nix-instantiate'), 'requires Nix for real module evaluation')
+    def test_evaluated_module_substitutes_from_its_own_export_first(self):
+        result = subprocess.run(
+            ['nix-instantiate', '--eval', '--read-write-mode', '--strict', '--json', '--expr',
+             'import ./nixos-appliance/tests/self-cache-evaluation.nix {}'],
+            cwd=RUNTIME.parents[1], capture_output=True, text=True, timeout=300)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        checks = json.loads(result.stdout)
+        self.assertEqual(set(checks), {
+            'selfCacheFirst', 'includeIsOptional', 'ownKeyNotInStaticTrust', 'trustRunsAsRoot',
+            'trustFollowsKeyChanges', 'exportLayoutOwnedByNest', 'recoveryMediaUnchanged'})
+        self.assertTrue(all(value is True for value in checks.values()), checks)
+
+    def paths(self, directory):
+        agent = Path(directory) / 'agent-cache-public.pem'
+        legacy = Path(directory) / 'legacy-cache-public.pem'
+        include = Path(directory) / 'nix-self-cache.conf'
+        return agent, legacy, include
+
+    def test_writes_only_one_validated_trust_line_and_restarts_on_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent, legacy, include = self.paths(directory)
+            restarts = []
+            options = dict(include=include, paths=(agent, legacy), owner=os.getuid(), restart=lambda: restarts.append(1))
+            # No key yet: an empty include, so the self-substituter is unused.
+            self.assertTrue(trust.apply(**options))
+            self.assertEqual(include.read_text(), '')
+            agent.write_text(self.KEY + '\n')
+            agent.chmod(0o600)
+            self.assertTrue(trust.apply(**options))
+            self.assertEqual(include.read_text(), 'extra-trusted-public-keys = ' + self.KEY + '\n')
+            self.assertEqual(include.stat().st_mode & 0o777, 0o644)
+            self.assertFalse(trust.apply(**options))
+            self.assertEqual(len(restarts), 2)
+
+    def test_the_service_user_cannot_add_other_nix_options(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent, legacy, include = self.paths(directory)
+            options = dict(include=include, paths=(agent, legacy), owner=os.getuid(), restart=lambda: None)
+            agent.write_text(self.KEY + '\n')
+            agent.chmod(0o600)
+            trust.apply(**options)
+            for hostile in (self.KEY + '\ntrusted-users = tiaris-nest\n',
+                            'other-key:' + 'A' * 42 + 'E=',
+                            'tiaris-nest-cache:' + 'A' * 40 + '==',
+                            self.KEY + ' post-build-hook = /tmp/x'):
+                agent.write_text(hostile)
+                with self.assertRaises(ValueError):
+                    trust.apply(**options)
+                self.assertEqual(include.read_text(), '', hostile)
+            # A link, a group-writable file or a file of another owner is not read.
+            agent.unlink()
+            target = Path(directory) / 'elsewhere'
+            target.write_text(self.KEY)
+            target.chmod(0o600)
+            agent.symlink_to(target)
+            with self.assertRaises(ValueError):
+                trust.apply(**options)
+            agent.unlink()
+            agent.write_text(self.KEY)
+            agent.chmod(0o620)
+            with self.assertRaises(ValueError):
+                trust.apply(**options)
+            agent.chmod(0o600)
+            with self.assertRaises(ValueError):
+                trust.apply(**{**options, 'owner': os.getuid() + 1})
+            self.assertEqual(include.read_text(), '')
+
+    def test_legacy_bridge_key_is_used_when_the_agent_key_is_absent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent, legacy, include = self.paths(directory)
+            legacy.write_text(self.KEY)
+            legacy.chmod(0o600)
+            trust.apply(include=include, paths=(agent, legacy), owner=os.getuid(), restart=lambda: None)
+            self.assertIn(self.KEY, include.read_text())
 
 
 if __name__ == '__main__':

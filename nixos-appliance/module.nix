@@ -79,7 +79,16 @@ in {
       # (unfree apps, NVIDIA, directory sign-in); Manage supplies its access
       # token, which src/software_cache.rs writes to the netrc file. Without it
       # the cache answers 401, which Nix treats as "not here".
-      substituters = lib.mkForce [ "https://cache.nixos.org" "https://cache.tiaris.com" ];
+      # The Nest's own signed export comes first: a build after the daily
+      # garbage collection takes what the Nest already exported from its own
+      # disk, not from the internet. Its key is trusted through the include
+      # below (tiaris-nest-self-cache-trust); without it, or for a path the
+      # export lacks, Nix moves on to the next substituter.
+      substituters = lib.mkForce [
+        "file:///var/cache/tiaris-nest/www/cache?priority=10"
+        "https://cache.nixos.org"
+        "https://cache.tiaris.com"
+      ];
       trusted-public-keys = lib.mkForce [
         "tiaris-nest-appliance-1:${a.releasePublicKey}"
         "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
@@ -90,6 +99,14 @@ in {
       experimental-features = [ "nix-command" "flakes" ]; # existing Blueprint jobs use governed flakes
       auto-optimise-store = false; # source exposure explicitly preserves nlink=1
     };
+    # Root-written, one validated `extra-trusted-public-keys` line naming this
+    # Nest's own cache key (runtime/self_cache_trust.py); absent until the
+    # Nest has generated its key. Appliance updates never depend on it: they
+    # import with no substituters and check every closure member against the
+    # signed release (generation_update.verify_store_closure).
+    nix.extraOptions = ''
+      !include /etc/tiaris-nest/nix-self-cache.conf
+    '';
     nix.gc.automatic = false;
     # Include daemon-side builders in diagnostics. No throttling/OOM limits:
     # smaller budgets require the performance qualification gate first.
@@ -129,6 +146,11 @@ in {
       "d /var/cache/tiaris-nest/appliance-updates/private 0700 root root -"
       "d /var/cache/tiaris-nest/www 0755 tiaris-nest tiaris-nest -"
       "d /var/cache/tiaris-nest/www/assets 0755 tiaris-nest tiaris-nest -"
+      # Nix's daemon creates a missing file:// substituter layout as root;
+      # the Nest owns its export, so create the layout as the Nest first.
+      "d /var/cache/tiaris-nest/www/cache 0755 tiaris-nest tiaris-nest -"
+      "d /var/cache/tiaris-nest/www/cache/nar 0755 tiaris-nest tiaris-nest -"
+      "d /var/cache/tiaris-nest/www/cache/realisations 0755 tiaris-nest tiaris-nest -"
       "d /run/lock/tiaris-nest 0750 root tiaris-nest -"
       "f /run/lock/tiaris-nest/maintenance.lock 0660 root tiaris-nest -"
       "d /etc/tiaris-nest 0755 root root -"
@@ -214,6 +236,13 @@ in {
       serviceConfig = { Type = "oneshot"; ExecStart = command "generation-commit"; TimeoutStartSec = "5min"; };
     };
     systemd.services.tiaris-nest-gc = (rootService "gc");
+    systemd.services.tiaris-nest-self-cache-trust = (rootService "self-cache-trust") // {
+      wantedBy = [ "multi-user.target" ]; after = [ "tiaris-nest-first-boot.service" "tiaris-nest.service" ];
+    };
+    systemd.paths.tiaris-nest-self-cache-trust = {
+      wantedBy = [ "multi-user.target" ];
+      pathConfig.PathChanged = [ "/var/lib/tiaris-nest/state/agent/cache-public.pem" "/var/lib/tiaris-nest/state/cache-public.pem" ];
+    };
     systemd.timers.tiaris-nest-gc = { wantedBy = [ "timers.target" ]; timerConfig = { OnCalendar = "daily"; Persistent = true; }; };
     # Mask both login paths. A dedicated unit avoids getty@.service.d's
     # template ExecStart override replacing our console command with agetty.
