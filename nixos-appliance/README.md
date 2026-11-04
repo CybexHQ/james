@@ -43,6 +43,11 @@ publication consume the same bytes; rebuilding invalidates qualification. Only
 public keys and organization-neutral assets are embedded. Node identities,
 customer configuration and private workstation cache keys are created at runtime.
 
+Activation installs `/usr/share/tiaris-nest/workstation-cache-seeds.json`, the
+sorted store paths of `services.tiaris-nest.workstationCacheSeeds`. The same list
+is the system's `extraDependencies`, so the closure carries every seed the daemon
+publishes into the Nest cache.
+
 The exact Tiaris source archive and digest metadata are embedded as immutable
 store paths and exposed at `/usr/share/tiaris-nest/manage-source/<revision>.tar`
 and `.json`. Activation verifies signed identity and makes atomic fsynced

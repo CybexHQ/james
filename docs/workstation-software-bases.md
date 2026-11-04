@@ -353,7 +353,9 @@ Supporting more than one commit therefore needs, in this order:
 3. **Seed outputs per commit.** Done for detected commits: the top-level
    Tiaris package derivations of the commit are admitted to compile and their
    outputs are signed with the Nest cache key like any built output.
-   `nixos-appliance/workstation-cache-seeds.nix` still carries the pin's.
+   `nixos-appliance/workstation-cache-seeds.nix` still carries the pin's,
+   which Nest publishes into its own cache without a build job (README,
+   "Workstation cache seeds").
    The Tiaris software cache (`https://cache.tiaris.com`, Manage
    `docs/software-cache.md`) carries the rest Nest would otherwise prepare:
    unfree apps, NVIDIA's driver and the directory sign-in stacks. Nest lists it

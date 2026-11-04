@@ -168,6 +168,9 @@ pub struct CacheConfig {
     pub public_key_path: PathBuf,
     pub max_bytes: u64,
     pub retain_recent_builds: usize,
+    /// Root-owned list of the workstation cache seeds the appliance closure
+    /// carries; `cache::seeds` publishes them into this cache.
+    pub seed_manifest_path: PathBuf,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -279,6 +282,11 @@ impl AppConfig {
             "cache.root_dir",
             &self.cache.root_dir,
             "/var/cache/tiaris-nest/www/cache",
+        )?;
+        require_appliance_path(
+            "cache.seed_manifest_path",
+            &self.cache.seed_manifest_path,
+            crate::cache::seeds::MANIFEST_PATH,
         )?;
         if !matches!(
             self.build.nix_binary.as_str(),
@@ -411,6 +419,10 @@ impl AppConfig {
             normalize_absolute_config_path("cache.private_key_path", &self.cache.private_key_path)?;
         self.cache.public_key_path =
             normalize_absolute_config_path("cache.public_key_path", &self.cache.public_key_path)?;
+        self.cache.seed_manifest_path = normalize_absolute_config_path(
+            "cache.seed_manifest_path",
+            &self.cache.seed_manifest_path,
+        )?;
         self.cache.signing_key_name =
             normalize_cache_key_name("cache.signing_key_name", &self.cache.signing_key_name)?;
         self.cache.max_bytes = self
@@ -980,6 +992,7 @@ impl Default for CacheConfig {
             public_key_path: PathBuf::from("/var/lib/tiaris-nest/cache/cache-pub-key.pem"),
             max_bytes: 64 * 1024 * 1024 * 1024,
             retain_recent_builds: 50,
+            seed_manifest_path: PathBuf::from(crate::cache::seeds::MANIFEST_PATH),
         }
     }
 }

@@ -243,6 +243,9 @@ async fn run_server(
         .await
         .with_context(|| format!("failed to bind {listen_addr}"))?;
     tiaris_nest::build::spawn(state.clone());
+    // Publish the shipped workstation cache seeds without waiting for a build
+    // job; failures are logged and retried in the background.
+    tiaris_nest::cache::seeds::spawn(state.clone());
     tiaris_nest::software_updates::spawn(state.clone());
     tiaris_nest::netboot::spawn_maintenance(state.clone());
     if state.config.manage.enabled {

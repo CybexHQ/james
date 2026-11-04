@@ -3,7 +3,11 @@
 { nixpkgs ? builtins.fetchTarball (let pin = import ../../release/nixpkgs.nix; in { inherit (pin) url sha256; }) }:
 let
   fixtures = import ./console-config.nix { inherit nixpkgs; };
-  appliance = fixtures.appliance // { workstationAgent = fixtures.appliance.package; };
+  pkgs = import nixpkgs { system = "x86_64-linux"; };
+  lib = pkgs.lib;
+  # Like the real agent (separateDebugInfo), the fixture has two outputs.
+  workstationAgent = pkgs.runCommand "workstation-agent-cache-seed-fixture" { outputs = [ "out" "debug" ]; } "mkdir -p $out $debug";
+  appliance = fixtures.appliance // { inherit workstationAgent; };
   installed = (import (nixpkgs + "/nixos/lib/eval-config.nix") {
     system = "x86_64-linux";
     specialArgs = { inherit appliance; };
@@ -12,12 +16,16 @@ let
   agent = installed.systemd.services.qemu-guest-agent;
   incus = installed.systemd.services.incus-agent;
   incusLoader = installed.virtualisation.incus.package.agent_loader;
+  seedManifest = installed.services.tiaris-nest.workstationCacheSeedManifest;
+  expectedSeedPaths = lib.sort builtins.lessThan (map toString
+    ([ workstationAgent.out workstationAgent.debug ] ++ appliance.workstationCacheSeeds.packages));
+  extraDependencyPaths = map toString installed.system.extraDependencies;
   checks = {
     installedGuestAgentEnabled = installed.services.qemuGuest.enable;
     guestAgentRunsPackagedBinary = agent.serviceConfig.ExecStart
       == "${installed.services.qemuGuest.package}/bin/qemu-ga --statedir /run/qemu-ga";
     guestAgentActivatedOnlyByVirtioChannel = agent.wantedBy == []
-      && (import nixpkgs { system = "x86_64-linux"; }).lib.hasInfix
+      && lib.hasInfix
         ''SUBSYSTEM=="virtio-ports", ATTR{name}=="org.qemu.guest_agent.0", TAG+="systemd", ENV{SYSTEMD_WANTS}="qemu-guest-agent.service"''
         installed.services.udev.extraRules;
     guestAgentStateIsEphemeral = agent.serviceConfig.RuntimeDirectory == "qemu-ga";
@@ -46,10 +54,18 @@ let
       && builtins.all (user: user == "root") installed.nix.settings.trusted-users
       && builtins.elem "tiaris-nest-appliance-1:${appliance.releasePublicKey}" installed.nix.settings.trusted-public-keys;
     stateVersionPreserved = installed.system.stateVersion == "26.05";
-    workstationAgentRemainsCacheSeed = builtins.elem appliance.workstationAgent installed.system.extraDependencies;
+    workstationAgentRemainsCacheSeed = builtins.elem appliance.workstationAgent installed.system.extraDependencies
+      && builtins.elem workstationAgent.debug installed.system.extraDependencies;
     workstationCustomOutputsRemainCacheSeeds = builtins.all
       (package: builtins.elem package installed.system.extraDependencies)
       appliance.workstationCacheSeeds.packages;
+    # The daemon publishes exactly the seeds the closure carries.
+    workstationCacheSeedManifestListsClosureSeeds = seedManifest.schema == "tiaris.nest.workstation-cache-seeds.v1"
+      && seedManifest.store_paths == expectedSeedPaths
+      && builtins.all (path: builtins.elem path extraDependencyPaths) seedManifest.store_paths;
+    workstationCacheSeedManifestIsInstalled = lib.hasInfix
+      "/usr/share/tiaris-nest/workstation-cache-seeds.json"
+      installed.system.activationScripts.tiaris-nest-public-assets.text;
   };
 in
 assert installed.services.qemuGuest.enable;
