@@ -17,6 +17,13 @@ class SignedSeedCacheTests(unittest.TestCase):
     def run_command(self, *args):
         return subprocess.run(args, check=True, text=True, capture_output=True, timeout=600).stdout
 
+    def test_seed_publication_replaces_damaged_cached_nars(self):
+        result = subprocess.run(
+            ['cargo', 'test', '--locked', '--test', 'cache_seeds_nix', '--', '--ignored', '--nocapture'],
+            text=True, capture_output=True, timeout=600,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_only_signed_daemon_outputs_satisfy_isolated_preflight(self):
         pin = json.loads(self.run_command(
             'nix-instantiate', '--eval', '--strict', '--json', 'release/nixpkgs.nix'))

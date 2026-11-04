@@ -1031,6 +1031,15 @@ pub async fn record_cached_artifact(
     result
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("{reason}")]
+struct InvalidCachedNar {
+    reason: &'static str,
+    /// Only Nix's content-addressed compressed filename grants authority to
+    /// remove a payload. FileHash and URL themselves are not signed fields.
+    filename: Option<String>,
+}
+
 fn build_or_quarantine_closure_manifest(
     cache_root: &Path,
     quarantine_root: &Path,
@@ -1064,6 +1073,25 @@ fn build_or_quarantine_closure_manifest(
             let quarantined =
                 quarantine_narinfo_records(cache_root, quarantine_root, &quarantine_candidates)
                     .context("quarantine invalid closure NARInfo records")?;
+            // Nix's file cache reuses an existing compressed NAR even after
+            // its narinfo has been withdrawn. Drop independently verified
+            // corrupt bytes after unpublishing the metadata, so a subsequent
+            // export can actually repair the closure. Never follow a link in
+            // the nar directory or remove a payload based on metadata alone.
+            if let Some(filename) = error
+                .downcast_ref::<InvalidCachedNar>()
+                .and_then(|invalid| invalid.filename.as_deref())
+            {
+                let _usage_change = crate::cache_usage::Mutation::new(cache_root);
+                let nar_dir = open_nar_directory(cache_root)?;
+                let filename = CString::new(filename).context("invalid cached NAR filename")?;
+                if unsafe { libc::unlinkat(nar_dir.as_raw_fd(), filename.as_ptr(), 0) } < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() != io::ErrorKind::NotFound {
+                        return Err(error).context("remove corrupt cached NAR for re-export");
+                    }
+                }
+            }
             bail!(
                 "closure manifest validation failed; quarantined {quarantined} NARInfo record(s): {error}"
             )
@@ -1150,11 +1178,23 @@ fn build_closure_manifest(
 
         let (nar_path, actual_file_size, actual_file_hash) =
             hash_safe_cache_member(cache_root, &narinfo.url)?;
-        if actual_file_size != file_size {
-            bail!("compressed NAR size did not match NARInfo FileSize");
-        }
-        if actual_file_hash != expected_file_hash {
-            bail!("compressed NAR SHA-256 did not match NARInfo FileHash");
+        if actual_file_size != file_size || actual_file_hash != expected_file_hash {
+            let filename = validate_nar_url(&narinfo.url)?;
+            // The payload's name must independently agree with FileHash.
+            // A damaged FileHash/URL must not remove a valid shared NAR.
+            let content_named = actual_file_hash != expected_file_hash
+                && filename.split_once(".nar").is_some_and(|(hash, _)| {
+                    decode_nix_base32_sha256(hash).is_ok_and(|hash| hash == expected_file_hash)
+                });
+            return Err(InvalidCachedNar {
+                reason: if actual_file_size != file_size {
+                    "compressed NAR size did not match NARInfo FileSize"
+                } else {
+                    "compressed NAR SHA-256 did not match NARInfo FileHash"
+                },
+                filename: content_named.then(|| filename.to_string()),
+            }
+            .into());
         }
         total_file_size_bytes = total_file_size_bytes
             .checked_add(file_size)
@@ -1352,6 +1392,22 @@ fn validate_nar_url(relative: &str) -> Result<&str> {
 }
 
 fn open_nar_member_at(cache_root: &Path, filename: &str) -> Result<fs::File> {
+    let nar_dir = open_nar_directory(cache_root)?;
+    let filename = CString::new(filename).context("NAR filename contained NUL")?;
+    let nar_fd = unsafe {
+        libc::openat(
+            nar_dir.as_raw_fd(),
+            filename.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if nar_fd < 0 {
+        return Err(io::Error::last_os_error()).context("open cache NAR member");
+    }
+    Ok(unsafe { fs::File::from_raw_fd(nar_fd) })
+}
+
+fn open_nar_directory(cache_root: &Path) -> Result<fs::File> {
     let cache_dir = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW)
@@ -1367,18 +1423,6 @@ fn open_nar_member_at(cache_root: &Path, filename: &str) -> Result<fs::File> {
     };
     if nar_fd < 0 {
         return Err(io::Error::last_os_error()).context("open cache nar directory");
-    }
-    let nar_dir = unsafe { fs::File::from_raw_fd(nar_fd) };
-    let filename = CString::new(filename).context("NAR filename contained NUL")?;
-    let nar_fd = unsafe {
-        libc::openat(
-            nar_dir.as_raw_fd(),
-            filename.as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-        )
-    };
-    if nar_fd < 0 {
-        return Err(io::Error::last_os_error()).context("open cache NAR member");
     }
     Ok(unsafe { fs::File::from_raw_fd(nar_fd) })
 }
@@ -3499,6 +3543,65 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quarantine_removes_corrupt_content_named_nars_but_preserves_valid_payloads() {
+        for condition in [
+            "bad-size",
+            "bad-hash",
+            "metadata-hash",
+            "metadata-size",
+            "signature",
+        ] {
+            let root = test_temp_dir(condition);
+            let cache = root.join("cache");
+            let quarantine = root.join("quarantine");
+            let seed = test_store_path('a', "seed");
+            let (narinfo, original_nar) = write_manifest_cache_member(&cache, &seed, b"good", &[]);
+            let original_url = format!("nar/{}.nar", "a".repeat(32));
+            let expected_hash: [u8; 32] = Sha256::digest(b"good").into();
+            let content_url = format!("nar/{}.nar.zst", encode_nix_base32_sha256(&expected_hash));
+            let nar = cache.join(&content_url);
+            fs::rename(original_nar, &nar).unwrap();
+            let mut raw = fs::read_to_string(&narinfo)
+                .unwrap()
+                .replace(&original_url, &content_url);
+            match condition {
+                "bad-size" => fs::write(&nar, b"truncated").unwrap(),
+                "bad-hash" => fs::write(&nar, b"evil").unwrap(),
+                "metadata-hash" => {
+                    raw = raw.replace(
+                        &format!("FileHash: sha256:{}", hex::encode(expected_hash)),
+                        &format!("FileHash: sha256:{}", "0".repeat(64)),
+                    )
+                }
+                "metadata-size" => raw = raw.replace("FileSize: 4", "FileSize: 5"),
+                "signature" => raw = raw.replace("Sig: test-cache:", "Sig: another-key:"),
+                _ => unreachable!(),
+            }
+            fs::write(&narinfo, raw).unwrap();
+            let shared = cache.join("nar/valid-shared.nar.zst");
+            fs::write(&shared, b"unrelated").unwrap();
+            assert!(
+                build_or_quarantine_closure_manifest(
+                    &cache,
+                    &quarantine,
+                    &seed,
+                    None,
+                    &test_public_key()
+                )
+                .is_err()
+            );
+            assert!(!narinfo.exists());
+            assert_eq!(
+                nar.exists(),
+                !matches!(condition, "bad-size" | "bad-hash"),
+                "{condition}"
+            );
+            assert_eq!(fs::read(shared).unwrap(), b"unrelated");
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

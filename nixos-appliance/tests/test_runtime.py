@@ -1,4 +1,5 @@
 """Safety boundaries and durable recovery, without modifying the host runtime."""
+import base64
 import copy
 import datetime
 import hashlib
@@ -387,6 +388,28 @@ class ReleaseOnlyClosure(unittest.TestCase):
         self.assertLess(checked, executed)
         self.assertIn("'--option', 'substituters', ''", stage[imported - 200:imported + 200])
 
+    def test_matching_legacy_list_and_basename_keyed_closures_are_accepted(self):
+        good = 'sha256:' + EMPTY_SHA256
+        with tempfile.TemporaryDirectory() as directory:
+            cache = self.release_cache(directory, {TOPLEVEL: good, GLIBC: good})
+            listings = [
+                [{'path': TOPLEVEL, 'narHash': good}, {'path': GLIBC, 'narHash': good}],
+                {Path(TOPLEVEL).name: {'narHash': good}, Path(GLIBC).name: {'narHash': good}},
+            ]
+            for listing in listings:
+                with self.subTest(listing=listing), patch.object(update, 'read', lambda path, **kw: path.read_bytes()), \
+                        patch.object(update, 'run', return_value=json.dumps(listing)):
+                    update.verify_store_closure(cache, TOPLEVEL)
+
+    def test_nix32_hash_decoder_matches_independent_encoder_and_rejects_overflow(self):
+        for raw in (bytes(32), bytes([255]) * 32, bytes(range(32)), hashlib.sha256(b'nightly').digest()):
+            number = int.from_bytes(raw, 'little')
+            encoded = ''.join(update.NIX32[(number >> shift) & 31] for shift in range(255, -1, -5))
+            self.assertEqual(update.nar_hash_bytes('sha256:' + encoded), raw)
+        for invalid in ('sha256:' + 'z' * 52, 'sha256:' + '0' * 51 + 'e', 'sha256-' + base64.b64encode(bytes(31)).decode()):
+            with self.assertRaises(ValueError):
+                update.nar_hash_bytes(invalid)
+
 
 class SelfCacheTrust(unittest.TestCase):
     KEY = 'tiaris-nest-cache:' + 'A' * 42 + 'E='
@@ -466,6 +489,39 @@ class SelfCacheTrust(unittest.TestCase):
             legacy.chmod(0o600)
             trust.apply(include=include, paths=(agent, legacy), owner=os.getuid(), restart=lambda: None)
             self.assertIn(self.KEY, include.read_text())
+
+    def test_key_rotation_and_removal_revoke_previous_self_cache_trust(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent, legacy, include = self.paths(directory)
+            restarts = []
+            options = dict(include=include, paths=(agent, legacy), owner=os.getuid(),
+                           restart=lambda: restarts.append(1))
+            agent.write_text(self.KEY)
+            agent.chmod(0o600)
+            trust.apply(**options)
+            rotated = 'tiaris-nest-cache:' + base64.b64encode(bytes(range(32))).decode()
+            agent.write_text(rotated)
+            self.assertTrue(trust.apply(**options))
+            self.assertEqual(include.read_text(), 'extra-trusted-public-keys = ' + rotated + '\n')
+            self.assertNotIn(self.KEY, include.read_text())
+            agent.unlink()
+            self.assertTrue(trust.apply(**options))
+            self.assertEqual(include.read_text(), '')
+            self.assertEqual(len(restarts), 3)
+
+    def test_invalid_primary_key_cannot_fall_back_to_valid_legacy_trust(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent, legacy, include = self.paths(directory)
+            for path in (agent, legacy):
+                path.write_text(self.KEY)
+                path.chmod(0o600)
+            options = dict(include=include, paths=(agent, legacy), owner=os.getuid(), restart=lambda: None)
+            trust.apply(**options)
+            for invalid in (b'\xff\n', b'tiaris-nest-cache:invalid', b'A' * 513):
+                agent.write_bytes(invalid)
+                with self.assertRaises(ValueError):
+                    trust.apply(**options)
+                self.assertEqual(include.read_text(), '')
 
 
 if __name__ == '__main__':
