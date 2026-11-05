@@ -74,10 +74,17 @@ def require_workstation(device, descriptor, blueprint, previous=None, verified_a
 
 
 def require_operation_progress(device):
+    preparation = device.get('installer_target_preparation_state')
+    if preparation in ('failed', 'cancelled'):
+        code = device.get('installer_target_preparation_failure_code') or 'unknown'
+        summary = device.get('installer_target_preparation_failure_summary') or 'No failure summary'
+        raise ValueError(f'Private workstation installer preparation is {preparation}: {code}: {summary}')
     operation = device.get('active_operation') or {}
-    if operation.get('status') == 'blocked':
-        raise ValueError('Private workstation operation is blocked: '
-                         + str(operation.get('reason_code') or operation.get('wait_code') or 'unknown'))
+    status = operation.get('status')
+    if status in ('blocked', 'failed', 'cancelled', 'superseded'):
+        code = operation.get('reason_code') or operation.get('wait_code') or 'unknown'
+        summary = operation.get('summary') or 'No failure summary'
+        raise ValueError(f'Private workstation operation is {status}: {code}: {summary}')
 
 
 def managed_reboot(api, prefix, before, wait_for, device):
@@ -240,6 +247,8 @@ def run(api, state, nest, manifest, catalog, output):
                 workstation.alive()
                 require_runtime(api(runtime_path), descriptor)
                 value = read()
+                if isinstance(value, dict):
+                    require_operation_progress(value)
                 if accept(value):
                     print(label + ' passed', flush=True)
                     return value

@@ -162,15 +162,13 @@ def main():
         args.evidence_dir.mkdir(parents=True, mode=0o700)
     except FileExistsError:
         raise ValueError('Qualification evidence directory already exists; use a new run/attempt directory') from None
-    try:
-        qualify(args)
-    finally:
-        # A failed/canceled sudo invocation must not strand a root-owned 0700
-        # directory in RUNNER_TEMP. Private files stay private; directory ownership
-        # lets the runner remove them without publishing partial acceptance evidence.
-        if 'SUDO_UID' in os.environ and 'SUDO_GID' in os.environ:
-            os.chown(args.evidence_dir, int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID']),
-                     follow_symlinks=False)
+    # Grant the upload runner access before starting children. Cancellation can
+    # kill this process during slow teardown, so a finally block is too late.
+    # The directory is new and private; partial files retain their own modes.
+    if 'SUDO_UID' in os.environ and 'SUDO_GID' in os.environ:
+        os.chown(args.evidence_dir, int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID']),
+                 follow_symlinks=False)
+    qualify(args)
 
 
 def qualify(args):

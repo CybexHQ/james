@@ -69,6 +69,30 @@ class ConvergeTests(unittest.TestCase):
             result = None
         return reboots, result
 
+    def test_terminal_install_preparation_fails_on_first_observation(self):
+        for state in ('failed', 'cancelled'):
+            with self.subTest(state=state):
+                value = {'installer_target_preparation_state': state,
+                         'installer_target_preparation_failure_code': 'build_failed',
+                         'installer_target_preparation_failure_summary':
+                             "Nest could not prepare this computer's exact installation."}
+                with self.assertRaisesRegex(ValueError, "build_failed.*Nest could not prepare"):
+                    self.scenario(value, polls=1, after_apply=False)
+
+    def test_terminal_operation_fails_with_reason_and_summary(self):
+        for state in ('blocked', 'failed', 'cancelled', 'superseded'):
+            with self.subTest(state=state), self.assertRaisesRegex(
+                    ValueError, 'installation_failed.*Installation stopped'):
+                self.scenario({'active_operation': {'status': state,
+                    'reason_code': 'installation_failed', 'summary': 'Installation stopped'}}, polls=1)
+
+    def test_completed_preparation_and_operation_allow_compliance(self):
+        reboots, result = self.scenario(REBOOTED | {
+            'installer_target_preparation_state': 'completed',
+            'active_operation': {'status': 'completed'}})
+        self.assertEqual(reboots, [])
+        self.assertIsNotNone(result)
+
     def test_live_switch_after_apply_gets_one_managed_reboot_then_requires_booted_current(self):
         # Reproduces the v0.2.78 deadlock: compliant, booted != current, never pending_reboot.
         reboots, result = self.scenario(LIVE_SWITCH, REBOOTED)
