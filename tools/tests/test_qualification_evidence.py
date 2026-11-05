@@ -87,6 +87,20 @@ class QualificationEvidenceTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o700)
                 self.assertEqual(stat.S_IMODE((evidence / 'tiaris-nest-partial.json').stat().st_mode), 0o600)
 
+    def test_runner_owns_evidence_before_qualification_can_be_killed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evidence = root / 'evidence'
+            def observe(*_args):
+                # SIGKILL never executes finally: access must already be granted.
+                self.assertTrue(runner.os.chown.called,
+                                'evidence stays root-owned until cleanup finishes')
+                raise KeyboardInterrupt('cancelled')
+            with patch.object(runner, 'qualify', side_effect=observe):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.invoke(evidence, root)
+            self.assertEqual(len(self.chown_calls), 1)
+
     def test_success_also_returns_directory_ownership(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
