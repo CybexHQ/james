@@ -1806,7 +1806,21 @@ pub async fn finish_build_job(
     .bind(id)
     .execute(pool)
     .await?;
-    get_build_job(pool, id).await
+    let job = get_build_job(pool, id).await?;
+    if job.status == "failed" {
+        let error_kind = job
+            .cache_metadata
+            .get("error_kind")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        tracing::warn!(
+            job_id = job.id,
+            error_kind = %bounded_error_text(error_kind),
+            error = %job.error,
+            "Nest build job failed"
+        );
+    }
+    Ok(job)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3942,6 +3956,72 @@ mod tests {
         assert_eq!(updated.output_size_bytes, 42);
         assert_eq!(updated.exit_code, Some(0));
         assert!(updated.completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn terminal_build_failure_logs_the_persisted_reason_without_secrets() {
+        use std::sync::{Arc, Mutex};
+        use tracing::instrument::WithSubscriber;
+
+        #[derive(Clone)]
+        struct Log(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Log {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let log = Log(Arc::new(Mutex::new(Vec::new())));
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        let pool = test_pool().await;
+        let job = create_build_job(
+            &pool,
+            CreateBuildJobRequest {
+                requested_artifact_type: "nixos_closure".into(),
+                build_spec: None,
+                target: Some("desktop_experience".into()),
+                system: Some("x86_64-linux".into()),
+                input_revision: "failed-installation".into(),
+                input_config_hash: "a".repeat(64),
+                cache_metadata: None,
+            },
+        )
+        .await
+        .unwrap();
+        claim_next_build_job(&pool).await.unwrap().unwrap();
+        let finished = finish_build_job(
+            &pool,
+            job.id,
+            "failed",
+            "",
+            "Blocked: cage-0.3.0 would compile from source; token=private-test-token",
+            "",
+            "",
+            0,
+            None,
+            Some(json!({"error_kind": "source_build_blocked"})),
+        )
+        .with_subscriber(subscriber)
+        .await
+        .unwrap();
+        assert_eq!(finished.status, "failed");
+        let output = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("Nest build job failed"), "{output}");
+        assert!(output.contains(&format!("job_id={}", job.id)), "{output}");
+        assert!(output.contains("source_build_blocked"), "{output}");
+        assert!(
+            output.contains("cage-0.3.0 would compile from source"),
+            "{output}"
+        );
+        assert!(!output.contains("private-test-token"), "{output}");
     }
 
     #[tokio::test]

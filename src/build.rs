@@ -372,7 +372,7 @@ async fn worker_loop(state: AppState, worker_index: usize) {
                     .scope(cancellation, execute_claimed_job(&state, job))
                     .await
                 {
-                    warn!(error = %safe_error(&err), worker_index, "Nest build job execution failed");
+                    warn!(error = %safe_error(&err), job_id, worker_index, "Nest build job execution failed");
                     recover_failed_job_execution(&state, job_id, worker_index).await;
                 }
                 cleanup_job_dirs(&state.config, job_id).await;
