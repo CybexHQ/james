@@ -1,6 +1,5 @@
 {
   "repository": "CybexHQ/development",
-  "revision": "dfb1d0dea99ef2910e45ca824e366c3ada1c508a",
-  "runtime_version": "1.0.89",
-  "informational": "Last pin merged to main, not a release pin. A release pins this file at its vX.Y.Z tag or release/dev-nest-* branch; see RELEASES.md."
+  "revision": "dcc90c8257730ee313647560b253fe395f51372b",
+  "runtime_version": "1.0.131"
 }
