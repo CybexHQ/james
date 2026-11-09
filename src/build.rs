@@ -2720,6 +2720,23 @@ fn isolated_store_source_sha256(root: &Path, logical_path: &str) -> Option<Strin
         .map(|bytes| hex::encode(Sha256::digest(bytes)))
 }
 
+/// `--store` arguments for the disposable source-policy store. Nix starts
+/// automatic garbage collection on any store whose file system has less free
+/// space than `min-free`; the isolated store lives in the build work directory
+/// (a tmpfs on many hosts), and collection there deletes the freshly evaluated
+/// derivations and pinned sources the classifier must hash, so every trivial
+/// materializer would look like source compilation. Nothing in this store is
+/// worth keeping: it is removed after the check.
+fn isolated_store_args(store_root: &Path) -> [String; 5] {
+    [
+        "--store".to_string(),
+        format!("local?root={}", store_root.display()),
+        "--option".to_string(),
+        "min-free".to_string(),
+        "0".to_string(),
+    ]
+}
+
 /// Substitute exactly the buildEnv helper into an isolated store, with local
 /// and remote builds disabled and signatures required.
 async fn fetch_link_farm_builder(
@@ -2728,11 +2745,9 @@ async fn fetch_link_farm_builder(
     builder: &str,
     limits: PreflightLimits,
 ) -> Result<bool> {
-    let store_url = format!("local?root={}", store_root.display());
     let mut fetch = crate::nix_command::tokio_command(program);
+    fetch.args(isolated_store_args(store_root));
     fetch.args([
-        "--store",
-        &store_url,
         "build",
         "--no-link",
         "--max-jobs",
@@ -2787,8 +2802,7 @@ async fn dry_run_graph_in_store(
     store_root: &Path,
     limits: PreflightLimits,
 ) -> Result<DryRunGraph> {
-    let store_url = format!("local?root={}", store_root.display());
-    let mut args = vec!["--store".to_string(), store_url.clone()];
+    let mut args = isolated_store_args(store_root).to_vec();
     // `nix build --dry-run` may execute import-from-derivation dependencies
     // while evaluating the installable, before it prints the derivations that
     // would be built. Disable IFD at the command-line precedence layer so an
@@ -2852,8 +2866,7 @@ async fn dry_run_graph_in_store(
     for chunk in would_build.chunks(PREFLIGHT_DERIVATION_SHOW_CHUNK) {
         let mut derivation_show = crate::nix_command::tokio_command(&command.program);
         derivation_show
-            .arg("--store")
-            .arg(&store_url)
+            .args(isolated_store_args(store_root))
             .arg("derivation")
             .arg("show")
             .args(chunk)
@@ -11403,6 +11416,70 @@ esac
         assert!(args.contains("--max-jobs\n0\n--option\nbuilders\n\n"));
         assert!(args.contains("--option\nrequire-sigs\ntrue\n"));
         assert!(args.ends_with(&format!("{}\n", TRUSTED_LINK_FARM_BUILDER.path)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn source_policy_never_garbage_collects_its_isolated_store() {
+        // A host `min-free` larger than the work directory's free space made
+        // every isolated-store command collect the store it had just filled
+        // (dragon-ci, November 2026): the classifier then found no pinned
+        // sources and rejected every trivial materializer.
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("tiaris-no-auto-gc-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).unwrap();
+        let fake = root.join("nix");
+        let log = root.join("invocations");
+        let script = r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> '@LOG@'
+case " $* " in
+  *" derivation show "*)
+    printf '%s\n' '{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-path.drv":{"inputDrvs":{"@BUILDER_DRV@":["out"]},"inputSrcs":[]}}'
+    ;;
+  *" --dry-run "*)
+    printf '%s\n' 'this derivation will be built:' '  /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-path.drv'
+    ;;
+esac
+"#
+        .replace("@BUILDER_DRV@", TRUSTED_LINK_FARM_BUILDER.drv_path)
+        .replace("@LOG@", log.to_str().unwrap());
+        std::fs::write(&fake, script).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = AppConfig::default();
+        config.build.work_dir = root.join("work");
+        let command = NixBuildCommand {
+            program: fake.display().to_string(),
+            args: Vec::new(),
+            env: Vec::new(),
+            out_link: root.join("result"),
+            installable: ".#test".into(),
+        };
+        let _ = preflight_source_build_check(&config, &command).await;
+        let invocations = std::fs::read_to_string(&log).unwrap();
+        let isolated = invocations
+            .lines()
+            .filter(|line| line.contains("--store local?root="))
+            .collect::<Vec<_>>();
+        for step in [
+            " --dry-run",
+            " derivation show ",
+            TRUSTED_LINK_FARM_BUILDER.path,
+        ] {
+            assert!(
+                isolated.iter().any(|line| line.contains(step)),
+                "no isolated-store invocation for {step:?}: {invocations}"
+            );
+        }
+        for line in isolated {
+            assert!(
+                line.contains("--option min-free 0"),
+                "isolated-store command may garbage collect: {line}"
+            );
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
