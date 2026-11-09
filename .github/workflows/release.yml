@@ -77,7 +77,16 @@ jobs:
           cargo audit --version
           cargo tree -i sqlx-mysql 2>&1 | tee /tmp/sqlx-mysql-tree.txt
           grep -q "nothing to print" /tmp/sqlx-mysql-tree.txt
-          cargo audit --ignore RUSTSEC-2023-0071
+          # RUSTSEC-2026-0459: bundled SQLite before 3.54 can expose stale memory
+          # when a process opens a crafted database plus -wal file. The Nest opens
+          # only its own root-owned database, and no released sqlx accepts the
+          # patched libsqlite3-sys (>= 0.39). Accepted 2026-11-09; review by
+          # 2027-02-01 (the shared CI adapter applies the same expiry).
+          if [ "$(date -u +%F)" \> 2027-02-01 ]; then
+            echo "The RUSTSEC-2026-0459 audit exception expired; review it" >&2
+            exit 1
+          fi
+          cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0459
 
   nix:
     name: Pinned workstation netboot
