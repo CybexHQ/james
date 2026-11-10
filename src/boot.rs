@@ -23,7 +23,9 @@ pub enum MenuContext {
     KnownComputer,
     /// Its serial number differs from the computer registered for this MAC,
     /// so it boots through another computer's network adapter: show the menu
-    /// with a notice, without probing the local disk first.
+    /// with a notice, without probing the local disk first. A menu that would
+    /// wait indefinitely boots the local disk after 15 seconds instead, so an
+    /// installed laptop on a shared adapter still starts unattended.
     AdapterOfAnotherComputer,
 }
 
@@ -41,6 +43,7 @@ const IPXE_MENU_TIMEOUT_COPY: &str =
 const IPXE_MENU_FOOTER: &str = "tiaris-nest - pxe - x86_64 - uefi";
 const IPXE_MENU_SHARED_ADAPTER_NOTICE: &str =
     "This network adapter is registered to another computer";
+const SHARED_ADAPTER_MENU_TIMEOUT_MS: u32 = 15_000;
 
 pub fn choose_profile<'a>(
     device: Option<&Device>,
@@ -111,6 +114,11 @@ pub fn render_menu(
     timeout_ms: u32,
     context: MenuContext,
 ) -> String {
+    let timeout_ms = if context == MenuContext::AdapterOfAnotherComputer && timeout_ms == 0 {
+        SHARED_ADAPTER_MENU_TIMEOUT_MS
+    } else {
+        timeout_ms
+    };
     let menu_profiles = menu_profiles(profiles);
     let mut script = String::with_capacity(2048 + (menu_profiles.len() * 256));
     script.push_str("#!ipxe\n");
@@ -759,7 +767,22 @@ mod tests {
         assert!(script.contains(
             "/boot/select/2?mac=aa%3Abb%3Acc%3Add%3Aee%3Aff&serial=5CG%201234%2FB || goto failed"
         ));
-        assert!(script.contains("choose --default local selected || goto local"));
+        assert!(script.contains("set menu-timeout 15000\n"));
+        assert!(
+            script.contains(
+                "choose --timeout ${menu-timeout} --default local selected || goto local"
+            )
+        );
+
+        let configured = render_menu(
+            "http://boot.local:8080",
+            &profiles,
+            Some("aa:bb:cc:dd:ee:ff"),
+            None,
+            5000,
+            MenuContext::AdapterOfAnotherComputer,
+        );
+        assert!(configured.contains("set menu-timeout 5000\n"));
     }
 
     #[test]

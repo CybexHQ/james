@@ -330,11 +330,14 @@ async fn build_boot_script(
         } else {
             boot_logic::MenuContext::Unrecognized
         };
+        // Menu links carry only a usable serial; otherwise iPXE re-sends its
+        // own, so a truncated or placeholder value never reaches selection.
+        let link_serial = reported_serial.as_deref().and_then(usable_serial);
         Ok(boot_logic::render_menu(
             &runtime.public_base_url,
             &profiles,
             mac.as_deref(),
-            serial.as_deref(),
+            link_serial.as_deref(),
             runtime.menu_timeout_ms,
             context,
         ))
