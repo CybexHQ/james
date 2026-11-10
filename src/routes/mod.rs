@@ -157,6 +157,7 @@ mod tests {
     };
 
     use axum::{
+        Router,
         body::{Body, to_bytes},
         extract::ConnectInfo,
         http::{HeaderMap, HeaderValue, Request, StatusCode},
@@ -426,6 +427,147 @@ mod tests {
         assert!(!body.contains("sanboot --drive 0"));
         assert!(body.contains("item profile_"));
         assert!(body.contains("Default Enrollment"));
+    }
+
+    async fn boot_body(app: Router, uri: &str) -> (StatusCode, String) {
+        let response = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    async fn default_enrollment_and_laptop(state: &AppState, serial: &str) -> i64 {
+        db::create_profile(
+            &state.db,
+            CreateBootProfileRequest {
+                name: "Default Enrollment".to_string(),
+                description: None,
+                profile_type: BootProfileType::NestInstaller,
+                enabled: Some(true),
+                is_default: Some(true),
+                one_time: Some(false),
+                raw_script: None,
+            },
+        )
+        .await
+        .unwrap();
+        let custom = db::create_profile(
+            &state.db,
+            CreateBootProfileRequest {
+                name: "Assigned Script".to_string(),
+                description: None,
+                profile_type: BootProfileType::CustomIpxe,
+                enabled: Some(true),
+                is_default: Some(false),
+                one_time: Some(false),
+                raw_script: Some("#!ipxe\necho assigned to laptop A\n".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+        db::create_device(
+            &state.db,
+            CreateDeviceRequest {
+                mac: "aa:bb:cc:dd:ee:ff".to_string(),
+                hostname: None,
+                serial_number: Some(serial.to_string()),
+                notes: None,
+                tags: None,
+                default_profile_id: Some(custom.id),
+                one_time_profile_id: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    #[tokio::test]
+    async fn another_laptop_on_a_shared_adapter_gets_the_menu_not_the_registered_assignment() {
+        let state = test_state().await;
+        let laptop_a = default_enrollment_and_laptop(&state, "5CG1234AAA").await;
+
+        // Not the assigned script, no local-disk probe, and no automatic
+        // enrollment (which fails closed in this state without a bundle).
+        let (status, body) = boot_body(
+            router(state.clone()),
+            "/boot/aa-bb-cc-dd-ee-ff?serial=5CG1234BBB",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body.contains("assigned to laptop A"));
+        assert!(!body.contains("known_local"));
+        assert!(body.contains("item --gap This network adapter is registered to another computer"));
+        assert!(body.contains("item profile_"));
+        assert!(body.contains("serial=5CG1234BBB"));
+
+        let row = db::get_device(&state.db, laptop_a).await.unwrap();
+        assert_eq!(row.serial_number.as_deref(), Some("5CG1234AAA"));
+        assert!(row.last_seen_at.is_none());
+        let events = db::list_boot_events(&state.db, 10).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].device_id, None);
+        assert!(!events[0].known_device);
+        assert_eq!(events[0].mac.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+        assert_eq!(events[0].serial_number.as_deref(), Some("5CG1234BBB"));
+    }
+
+    #[tokio::test]
+    async fn the_registered_laptop_or_one_without_a_usable_serial_keeps_its_assignment() {
+        let state = test_state().await;
+        default_enrollment_and_laptop(&state, "5CG1234AAA").await;
+
+        for uri in [
+            "/boot/aa-bb-cc-dd-ee-ff?serial=5cg1234aaa",
+            "/boot/aa-bb-cc-dd-ee-ff?serial=",
+            "/boot/aa-bb-cc-dd-ee-ff?serial=Default%20string",
+            "/boot/aa-bb-cc-dd-ee-ff",
+        ] {
+            let (status, body) = boot_body(router(state.clone()), uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            assert!(body.contains("assigned to laptop A"), "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn menu_selection_by_another_laptop_is_not_recorded_on_the_registered_row() {
+        let state = test_state().await;
+        let laptop_a = default_enrollment_and_laptop(&state, "5CG1234AAA").await;
+        let tools = db::create_profile(
+            &state.db,
+            CreateBootProfileRequest {
+                name: "Diagnostics".to_string(),
+                description: None,
+                profile_type: BootProfileType::CustomIpxe,
+                enabled: Some(true),
+                is_default: Some(false),
+                one_time: Some(false),
+                raw_script: Some("#!ipxe\necho diagnostics\n".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+        let (status, body) = boot_body(
+            router(state.clone()),
+            &format!(
+                "/boot/select/{}?mac=aa%3Abb%3Acc%3Add%3Aee%3Aff&serial=5CG1234BBB",
+                tools.id
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("echo diagnostics"));
+
+        let row = db::get_device(&state.db, laptop_a).await.unwrap();
+        assert_eq!(row.last_selected_profile_id, None);
+        assert!(row.last_seen_at.is_none());
+        let events = db::list_boot_events(&state.db, 10).await.unwrap();
+        assert_eq!(events[0].device_id, None);
+        assert_eq!(events[0].selected_profile_id, Some(tools.id));
     }
 
     #[tokio::test]

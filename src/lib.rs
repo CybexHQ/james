@@ -1,6 +1,7 @@
 pub mod appliance;
 pub mod assets;
 pub mod boot;
+pub mod boot_identity;
 pub(crate) mod bounded_io;
 pub mod build;
 pub(crate) mod build_signed_seeds;

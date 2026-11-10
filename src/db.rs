@@ -10,6 +10,7 @@ use sqlx::{
 
 use crate::{
     assets::sanitize_relative_path,
+    boot_identity::{same_serial, usable_serial},
     config::AppConfig,
     error::{AppError, AppResult},
     models::{
@@ -608,11 +609,39 @@ pub async fn get_device_by_serial(pool: &SqlitePool, serial: &str) -> AppResult<
     Ok(row.map(Device::from))
 }
 
+/// How a network boot request that carries a MAC address resolved.
+#[derive(Debug)]
+pub enum SeenDevice {
+    /// The row for the MAC, and whether it existed before this request.
+    Device { device: Device, known: bool },
+    /// The MAC belongs to `registered`, whose usable serial number differs
+    /// from the one this request reported: another computer is booting
+    /// through that network adapter. The row was left untouched.
+    SerialConflict { registered: Device },
+}
+
+#[cfg(test)]
+impl SeenDevice {
+    pub(crate) fn expect_device(self) -> (Device, bool) {
+        match self {
+            Self::Device { device, known } => (device, known),
+            Self::SerialConflict { registered } => {
+                panic!("unexpected serial conflict with device {}", registered.id)
+            }
+        }
+    }
+}
+
+/// Find or record the computer behind a network boot request. The MAC
+/// selects the row; a usable serial number only fills in a row that has none
+/// and, when it differs from the row's, reports a conflict instead of
+/// treating the request as that computer. A new MAC always gets its own row:
+/// a serial alone never selects another computer's row.
 pub async fn upsert_seen_device(
     pool: &SqlitePool,
     mac: &str,
     serial_number: Option<&str>,
-) -> AppResult<(Device, bool)> {
+) -> AppResult<SeenDevice> {
     upsert_seen_device_with_retention(
         pool,
         mac,
@@ -627,17 +656,29 @@ async fn upsert_seen_device_with_retention(
     mac: &str,
     serial_number: Option<&str>,
     max_auto_devices: i64,
-) -> AppResult<(Device, bool)> {
+) -> AppResult<SeenDevice> {
     let mac = normalize_mac(mac)?;
+    let incoming = serial_number.and_then(usable_serial);
     let now = now_rfc3339();
     if let Some(existing) = get_device_by_mac(pool, &mac).await? {
-        let serial = seen_device_serial_number(
-            pool,
-            existing.id,
-            existing.serial_number.clone(),
-            serial_number,
-        )
-        .await?;
+        let stored = existing.serial_number.as_deref().and_then(usable_serial);
+        if let (Some(stored), Some(incoming)) = (stored.as_deref(), incoming.as_deref()) {
+            if !same_serial(stored, incoming) {
+                return Ok(SeenDevice::SerialConflict {
+                    registered: existing,
+                });
+            }
+        }
+        // A row without a usable serial (every row discovered before boot
+        // requests carried one) takes the first usable serial it sees.
+        let serial = match (stored, incoming) {
+            (None, Some(incoming))
+                if serial_is_free(pool, &incoming, Some(existing.id)).await? =>
+            {
+                Some(incoming)
+            }
+            _ => existing.serial_number.clone(),
+        };
         sqlx::query(
             "UPDATE devices
              SET last_seen_at = ?, serial_number = ?, updated_at = ?
@@ -649,28 +690,23 @@ async fn upsert_seen_device_with_retention(
         .bind(existing.id)
         .execute(pool)
         .await?;
-        return Ok((get_device(pool, existing.id).await?, true));
+        return Ok(SeenDevice::Device {
+            device: get_device(pool, existing.id).await?,
+            known: true,
+        });
     }
 
-    if let Some(serial) = serial_number.and_then(clean_str_ref) {
-        if let Some(existing) = get_device_by_serial(pool, &serial).await? {
-            sqlx::query("UPDATE devices SET last_seen_at = ?, updated_at = ? WHERE id = ?")
-                .bind(&now)
-                .bind(&now)
-                .bind(existing.id)
-                .execute(pool)
-                .await?;
-            return Ok((get_device(pool, existing.id).await?, true));
-        }
-    }
-
+    let serial = match incoming {
+        Some(incoming) if serial_is_free(pool, &incoming, None).await? => Some(incoming),
+        _ => None,
+    };
     sqlx::query(
         "INSERT INTO devices
          (mac, serial_number, last_seen_at, notes, tags, created_at, updated_at)
          VALUES (?, ?, ?, '', '[]', ?, ?)",
     )
     .bind(&mac)
-    .bind(serial_number.and_then(clean_str_ref))
+    .bind(serial)
     .bind(&now)
     .bind(&now)
     .bind(&now)
@@ -681,26 +717,20 @@ async fn upsert_seen_device_with_retention(
         .await?
         .ok_or(AppError::NotFound)?;
     prune_auto_discovered_devices(pool, max_auto_devices).await?;
-    Ok((device, false))
+    Ok(SeenDevice::Device {
+        device,
+        known: false,
+    })
 }
 
-async fn seen_device_serial_number(
-    pool: &SqlitePool,
-    existing_id: i64,
-    existing_serial: Option<String>,
-    incoming_serial: Option<&str>,
-) -> AppResult<Option<String>> {
-    match (existing_serial, incoming_serial.and_then(clean_str_ref)) {
-        (None, Some(serial)) => {
-            if let Some(serial_device) = get_device_by_serial(pool, &serial).await? {
-                if serial_device.id != existing_id {
-                    return Ok(None);
-                }
-            }
-            Ok(Some(serial))
-        }
-        (value, _) => Ok(value),
-    }
+/// Serial numbers are unique per Nest; a serial already stored on another
+/// row is never copied onto this one.
+async fn serial_is_free(pool: &SqlitePool, serial: &str, own_id: Option<i64>) -> AppResult<bool> {
+    let holder: Option<i64> = sqlx::query_scalar("SELECT id FROM devices WHERE serial_number = ?")
+        .bind(serial)
+        .fetch_optional(pool)
+        .await?;
+    Ok(holder.is_none() || holder == own_id)
 }
 
 async fn prune_auto_discovered_devices(pool: &SqlitePool, max_devices: i64) -> AppResult<()> {
@@ -2998,15 +3028,6 @@ fn bool_to_i64(value: bool) -> i64 {
     if value { 1 } else { 0 }
 }
 
-fn clean_str_ref(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::models::{
@@ -3441,7 +3462,8 @@ mod tests {
         let (fresh, was_known) =
             upsert_seen_device(&pool, "02:00:00:00:10:01", Some("fresh-serial"))
                 .await
-                .unwrap();
+                .unwrap()
+                .expect_device();
         assert!(!was_known);
         assert!(
             remove_unclaimed_auto_discovered_device(&pool, fresh.id)
@@ -3457,7 +3479,8 @@ mod tests {
 
         let (claimed, was_known) = upsert_seen_device(&pool, "02:00:00:00:10:02", None)
             .await
-            .unwrap();
+            .unwrap()
+            .expect_device();
         assert!(!was_known);
         sqlx::query("UPDATE devices SET managed_client_id = 'managed-client' WHERE id = ?")
             .bind(claimed.id)
@@ -3493,20 +3516,24 @@ mod tests {
         assert!(get_device(&pool, curated.id).await.is_ok());
     }
 
+    fn seen_device_request(mac: &str, serial: Option<&str>) -> CreateDeviceRequest {
+        CreateDeviceRequest {
+            mac: mac.to_string(),
+            hostname: None,
+            serial_number: serial.map(str::to_string),
+            notes: None,
+            tags: None,
+            default_profile_id: None,
+            one_time_profile_id: None,
+        }
+    }
+
     #[tokio::test]
-    async fn seen_device_matches_existing_serial_before_inserting_new_mac() {
+    async fn seen_device_new_mac_never_takes_another_rows_serial() {
         let pool = test_pool().await;
         let known = create_device(
             &pool,
-            CreateDeviceRequest {
-                mac: "02:00:00:00:03:00".to_string(),
-                hostname: None,
-                serial_number: Some("serial-known".to_string()),
-                notes: None,
-                tags: None,
-                default_profile_id: None,
-                one_time_profile_id: None,
-            },
+            seen_device_request("02:00:00:00:03:00", Some("serial-known")),
         )
         .await
         .unwrap();
@@ -3514,17 +3541,159 @@ mod tests {
         let (seen, was_known) =
             upsert_seen_device_with_retention(&pool, "02:00:00:00:03:99", Some("serial-known"), 10)
                 .await
-                .unwrap();
+                .unwrap()
+                .expect_device();
         let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices")
             .fetch_one(&pool)
             .await
             .unwrap();
 
+        assert!(!was_known);
+        assert_ne!(seen.id, known.id);
+        assert_eq!(seen.mac, "02:00:00:00:03:99");
+        assert_eq!(seen.serial_number, None);
+        assert_eq!(rows, 2);
+    }
+
+    #[tokio::test]
+    async fn seen_device_with_another_usable_serial_is_a_conflict_and_leaves_the_row() {
+        let pool = test_pool().await;
+        let laptop_a = create_device(
+            &pool,
+            seen_device_request("02:00:00:00:05:00", Some("5CG1234AAA")),
+        )
+        .await
+        .unwrap();
+
+        let outcome =
+            upsert_seen_device_with_retention(&pool, "02:00:00:00:05:00", Some("5CG1234BBB"), 10)
+                .await
+                .unwrap();
+        let after = get_device(&pool, laptop_a.id).await.unwrap();
+
+        assert!(matches!(
+            outcome,
+            SeenDevice::SerialConflict { ref registered }
+                if registered.id == laptop_a.id
+                    && registered.serial_number.as_deref() == Some("5CG1234AAA")
+        ));
+        assert_eq!(after.serial_number.as_deref(), Some("5CG1234AAA"));
+        assert!(after.last_seen_at.is_none());
+        assert_eq!(after.updated_at, laptop_a.updated_at);
+    }
+
+    #[tokio::test]
+    async fn seen_device_with_the_same_serial_in_another_case_is_known() {
+        let pool = test_pool().await;
+        let laptop = create_device(
+            &pool,
+            seen_device_request("02:00:00:00:06:00", Some("5cg1234aaa")),
+        )
+        .await
+        .unwrap();
+
+        let (seen, was_known) =
+            upsert_seen_device_with_retention(&pool, "02:00:00:00:06:00", Some("5CG1234AAA"), 10)
+                .await
+                .unwrap()
+                .expect_device();
+
         assert!(was_known);
-        assert_eq!(seen.id, known.id);
-        assert_eq!(seen.mac, "02:00:00:00:03:00");
-        assert!(seen.last_seen_at.is_some());
-        assert_eq!(rows, 1);
+        assert_eq!(seen.id, laptop.id);
+        assert_eq!(seen.serial_number.as_deref(), Some("5cg1234aaa"));
+    }
+
+    #[tokio::test]
+    async fn seen_device_without_a_usable_serial_on_either_side_stays_known() {
+        let pool = test_pool().await;
+        let placeholder = create_device(
+            &pool,
+            seen_device_request("02:00:00:00:07:00", Some("Default string")),
+        )
+        .await
+        .unwrap();
+        let unserialed = create_device(&pool, seen_device_request("02:00:00:00:07:01", None))
+            .await
+            .unwrap();
+
+        for (mac, serial, id) in [
+            (
+                "02:00:00:00:07:00",
+                Some("To Be Filled By O.E.M."),
+                placeholder.id,
+            ),
+            ("02:00:00:00:07:00", None, placeholder.id),
+            ("02:00:00:00:07:01", Some("00000000"), unserialed.id),
+            ("02:00:00:00:07:01", None, unserialed.id),
+        ] {
+            let (seen, was_known) = upsert_seen_device_with_retention(&pool, mac, serial, 10)
+                .await
+                .unwrap()
+                .expect_device();
+            assert!(was_known, "{mac} {serial:?}");
+            assert_eq!(seen.id, id);
+        }
+        assert_eq!(
+            get_device(&pool, placeholder.id)
+                .await
+                .unwrap()
+                .serial_number
+                .as_deref(),
+            Some("Default string")
+        );
+        assert_eq!(
+            get_device(&pool, unserialed.id)
+                .await
+                .unwrap()
+                .serial_number,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn seen_device_replaces_a_stored_placeholder_with_a_usable_serial() {
+        let pool = test_pool().await;
+        let device = create_device(
+            &pool,
+            seen_device_request("02:00:00:00:08:00", Some("System Serial Number")),
+        )
+        .await
+        .unwrap();
+
+        let (seen, was_known) =
+            upsert_seen_device_with_retention(&pool, "02:00:00:00:08:00", Some(" PF2ABCDE "), 10)
+                .await
+                .unwrap()
+                .expect_device();
+
+        assert!(was_known);
+        assert_eq!(seen.id, device.id);
+        assert_eq!(seen.serial_number.as_deref(), Some("PF2ABCDE"));
+    }
+
+    #[tokio::test]
+    async fn seen_device_never_matches_or_stores_a_placeholder_serial() {
+        let pool = test_pool().await;
+        let first = create_device(
+            &pool,
+            seen_device_request("02:00:00:00:09:00", Some("Default string")),
+        )
+        .await
+        .unwrap();
+
+        let (seen, was_known) = upsert_seen_device_with_retention(
+            &pool,
+            "02:00:00:00:09:01",
+            Some("Default string"),
+            10,
+        )
+        .await
+        .unwrap()
+        .expect_device();
+
+        assert!(!was_known);
+        assert_ne!(seen.id, first.id);
+        assert_eq!(seen.serial_number, None);
     }
 
     #[tokio::test]
@@ -3562,7 +3731,8 @@ mod tests {
         let (seen, was_known) =
             upsert_seen_device_with_retention(&pool, "02:00:00:00:04:99", Some("serial-owned"), 10)
                 .await
-                .unwrap();
+                .unwrap()
+                .expect_device();
 
         assert!(was_known);
         assert_eq!(seen.id, known_mac.id);
@@ -3574,7 +3744,8 @@ mod tests {
         let pool = test_pool().await;
         let (curated, _) = upsert_seen_device_with_retention(&pool, "02:00:00:00:01:00", None, 10)
             .await
-            .unwrap();
+            .unwrap()
+            .expect_device();
         update_device(
             &pool,
             curated.id,

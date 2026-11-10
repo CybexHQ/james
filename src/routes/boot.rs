@@ -8,7 +8,9 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    AppState, boot as boot_logic, db,
+    AppState, boot as boot_logic,
+    boot_identity::usable_serial,
+    db,
     error::{AppError, AppResult},
     models::{BootProfile, BootProfileType, Device, NewBootEvent, normalize_mac},
 };
@@ -103,13 +105,18 @@ pub async fn boot_select_profile(
 
     if !checker {
         if let Some(mac) = mac.as_deref() {
-            let (seen_device, was_known) =
-                db::upsert_seen_device(&state.db, mac, serial.as_deref()).await?;
-            known_device = was_known;
-            db::set_device_last_selected(&state.db, seen_device.id, profile.id).await?;
-            device = Some(seen_device);
-        } else if let Some(serial) = serial.as_deref() {
-            if let Some(found) = db::get_device_by_serial(&state.db, serial).await? {
+            // On a serial conflict the selection belongs to another computer
+            // than the MAC's row: it is not recorded on that row, and the
+            // installer grant carries no reinstall binding.
+            if let Some((seen_device, was_known)) =
+                resolve_mac_request(&state.db, mac, serial.as_deref()).await?
+            {
+                known_device = was_known;
+                db::set_device_last_selected(&state.db, seen_device.id, profile.id).await?;
+                device = Some(seen_device);
+            }
+        } else if let Some(serial) = serial.as_deref().and_then(usable_serial) {
+            if let Some(found) = db::get_device_by_serial(&state.db, &serial).await? {
                 let touched = db::touch_device_seen(&state.db, found.id).await?;
                 db::set_device_last_selected(&state.db, touched.id, profile.id).await?;
                 known_device = true;
@@ -184,15 +191,19 @@ async fn build_boot_script(
     let serial = clean_optional(serial);
     let mut known_device = false;
     let mut device = None;
+    let mut serial_conflict = false;
 
     if !checker {
         if let Some(mac) = mac.as_deref() {
-            let (seen_device, was_known) =
-                db::upsert_seen_device(&state.db, mac, serial.as_deref()).await?;
-            known_device = was_known;
-            device = Some(seen_device);
-        } else if let Some(serial) = serial.as_deref() {
-            if let Some(found) = db::get_device_by_serial(&state.db, serial).await? {
+            match resolve_mac_request(&state.db, mac, serial.as_deref()).await? {
+                Some((seen_device, was_known)) => {
+                    known_device = was_known;
+                    device = Some(seen_device);
+                }
+                None => serial_conflict = true,
+            }
+        } else if let Some(serial) = serial.as_deref().and_then(usable_serial) {
+            if let Some(found) = db::get_device_by_serial(&state.db, &serial).await? {
                 let touched = db::touch_device_seen(&state.db, found.id).await?;
                 known_device = true;
                 device = Some(touched);
@@ -205,8 +216,12 @@ async fn build_boot_script(
     // A first request from a new MAC may enter the sole default enrollment
     // profile automatically. This only starts the signed installer runtime;
     // destructive installation still requires explicit approval in Tiaris.
+    // A computer whose serial differs from the one stored for its MAC is
+    // booting through another computer's network adapter. It is neither that
+    // computer nor provably new: it gets the menu, so an installed laptop
+    // passing through a shared adapter never enters the installer by itself.
     let allow_automatic_enrollment =
-        automatic_enrollment_allowed(checker, known_device, mac.as_deref());
+        automatic_enrollment_allowed(checker, known_device, serial_conflict, mac.as_deref());
     let selection =
         boot_logic::choose_profile(selection_device, &profiles, allow_automatic_enrollment);
 
@@ -285,22 +300,56 @@ async fn build_boot_script(
         // known MAC first boots local drive 0x80; UEFI falls back to its next
         // BootOrder entry if direct chaining fails, while legacy BIOS falls
         // through to the menu. Health checks and MAC-less requests never hand
-        // off automatically.
-        let try_local_boot_first =
-            automatic_local_handoff_allowed(checker, known_device, mac.as_deref());
+        // off automatically. Neither does a computer booting through another
+        // computer's adapter: on UEFI the handoff would leave a blank laptop
+        // in firmware without ever showing it the menu.
+        let context = if serial_conflict {
+            boot_logic::MenuContext::AdapterOfAnotherComputer
+        } else if automatic_local_handoff_allowed(checker, known_device, mac.as_deref()) {
+            boot_logic::MenuContext::KnownComputer
+        } else {
+            boot_logic::MenuContext::Unrecognized
+        };
         Ok(boot_logic::render_menu(
             &runtime.public_base_url,
             &profiles,
             mac.as_deref(),
             serial.as_deref(),
             runtime.menu_timeout_ms,
-            try_local_boot_first,
+            context,
         ))
     }
 }
 
-fn automatic_enrollment_allowed(checker: bool, known_device: bool, mac: Option<&str>) -> bool {
-    !checker && !known_device && mac.is_some()
+fn automatic_enrollment_allowed(
+    checker: bool,
+    known_device: bool,
+    serial_conflict: bool,
+    mac: Option<&str>,
+) -> bool {
+    !checker && !known_device && !serial_conflict && mac.is_some()
+}
+
+/// The MAC's row and whether it was known, or `None` when the request's
+/// usable serial differs from the row's: another computer is booting through
+/// that network adapter.
+async fn resolve_mac_request(
+    pool: &sqlx::SqlitePool,
+    mac: &str,
+    serial: Option<&str>,
+) -> AppResult<Option<(Device, bool)>> {
+    match db::upsert_seen_device(pool, mac, serial).await? {
+        db::SeenDevice::Device { device, known } => Ok(Some((device, known))),
+        db::SeenDevice::SerialConflict { .. } => {
+            // Serial numbers stay out of logs, like the query strings that
+            // carry them; the boot event records the reported one.
+            tracing::warn!(
+                mac,
+                "network boot serial differs from the computer registered for this MAC; showing the menu without its assignment"
+            );
+            Ok(None)
+        }
+    }
 }
 
 fn automatic_local_handoff_allowed(checker: bool, known_device: bool, mac: Option<&str>) -> bool {
@@ -457,22 +506,12 @@ mod tests {
 
     #[test]
     fn automatic_enrollment_is_limited_to_a_real_first_mac_request() {
-        assert!(automatic_enrollment_allowed(
-            false,
-            false,
-            Some("aa:bb:cc:dd:ee:ff")
-        ));
-        assert!(!automatic_enrollment_allowed(
-            true,
-            false,
-            Some("aa:bb:cc:dd:ee:ff")
-        ));
-        assert!(!automatic_enrollment_allowed(
-            false,
-            true,
-            Some("aa:bb:cc:dd:ee:ff")
-        ));
-        assert!(!automatic_enrollment_allowed(false, false, None));
+        let mac = Some("aa:bb:cc:dd:ee:ff");
+        assert!(automatic_enrollment_allowed(false, false, false, mac));
+        assert!(!automatic_enrollment_allowed(true, false, false, mac));
+        assert!(!automatic_enrollment_allowed(false, true, false, mac));
+        assert!(!automatic_enrollment_allowed(false, false, true, mac));
+        assert!(!automatic_enrollment_allowed(false, false, false, None));
     }
 
     #[test]
