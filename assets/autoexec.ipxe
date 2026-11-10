@@ -1,8 +1,9 @@
 #!ipxe
 # Tiaris Nest second-stage handoff for the package-provided iPXE launchers.
 # ProxyDHCP owns the boot server; the address server may also set next-server.
-# The SMBIOS serial lets the Nest notice a USB network adapter that moved to
-# another computer; firmware without one sends it empty.
+# The SMBIOS serial (hex, so no character can break the URL) lets the Nest
+# notice a USB network adapter that moved to another computer; firmware
+# without one sends it empty.
 dhcp net0 || goto tiaris_retry
 set tiaris-boot-server ${next-server}
 isset ${proxydhcp/next-server} && set tiaris-boot-server ${proxydhcp/next-server} ||
@@ -10,7 +11,7 @@ isset ${pxebs/next-server} && set tiaris-boot-server ${pxebs/next-server} ||
 isset ${tiaris-boot-server} || goto tiaris_failed
 isset ${net0/mac} || goto tiaris_failed
 set tiaris-local-handoff 0
-chain --autofree http://${tiaris-boot-server}/boot/${net0/mac:hexhyp}?serial=${serial:uristring} || goto tiaris_first_chain_failed
+chain --autofree http://${tiaris-boot-server}/boot/${net0/mac:hexhyp}?serial_hex=${serial:hexraw} || goto tiaris_first_chain_failed
 goto tiaris_end
 
 :tiaris_first_chain_failed
@@ -25,7 +26,7 @@ isset ${pxebs/next-server} && set tiaris-boot-server ${pxebs/next-server} ||
 isset ${tiaris-boot-server} || goto tiaris_failed
 isset ${net0/mac} || goto tiaris_failed
 set tiaris-local-handoff 0
-chain --autofree http://${tiaris-boot-server}/boot/${net0/mac:hexhyp}?serial=${serial:uristring} || goto tiaris_second_chain_failed
+chain --autofree http://${tiaris-boot-server}/boot/${net0/mac:hexhyp}?serial_hex=${serial:hexraw} || goto tiaris_second_chain_failed
 goto tiaris_end
 
 :tiaris_second_chain_failed

@@ -492,9 +492,10 @@ mod tests {
 
         // Not the assigned script, no local-disk probe, and no automatic
         // enrollment (which fails closed in this state without a bundle).
+        // autoexec.ipxe sends `${serial:hexraw}`: "5CG1234BBB".
         let (status, body) = boot_body(
             router(state.clone()),
-            "/boot/aa-bb-cc-dd-ee-ff?serial=5CG1234BBB",
+            "/boot/aa-bb-cc-dd-ee-ff?serial_hex=35434731323334424242",
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -521,7 +522,9 @@ mod tests {
         default_enrollment_and_laptop(&state, "5CG1234AAA").await;
 
         for uri in [
+            "/boot/aa-bb-cc-dd-ee-ff?serial_hex=35636731323334616161",
             "/boot/aa-bb-cc-dd-ee-ff?serial=5cg1234aaa",
+            "/boot/aa-bb-cc-dd-ee-ff?serial_hex=",
             "/boot/aa-bb-cc-dd-ee-ff?serial=",
             "/boot/aa-bb-cc-dd-ee-ff?serial=Default%20string",
             "/boot/aa-bb-cc-dd-ee-ff",

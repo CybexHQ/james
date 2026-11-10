@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use crate::{
     AppState, boot as boot_logic,
-    boot_identity::usable_serial,
+    boot_identity::{serial_from_hex, usable_serial},
     db,
     error::{AppError, AppResult},
     models::{BootProfile, BootProfileType, Device, NewBootEvent, normalize_mac},
@@ -22,7 +22,21 @@ const MAX_BOOT_USER_AGENT_LEN: usize = 256;
 pub struct BootQuery {
     pub mac: Option<String>,
     pub serial: Option<String>,
+    /// `${serial:hexraw}` from `autoexec.ipxe` and menu links rendered before
+    /// the serial was known.
+    pub serial_hex: Option<String>,
     pub tiaris_check: Option<String>,
+}
+
+impl BootQuery {
+    /// The SMBIOS serial the request reported, untruncated. A plain value
+    /// from a Nest-rendered menu link wins over iPXE's hex expansion.
+    fn reported_serial(&self) -> Option<String> {
+        self.serial
+            .clone()
+            .filter(|serial| !serial.trim().is_empty())
+            .or_else(|| self.serial_hex.as_deref().and_then(serial_from_hex))
+    }
 }
 
 pub async fn boot_root(
@@ -32,10 +46,11 @@ pub async fn boot_root(
     connect: Option<ConnectInfo<SocketAddr>>,
 ) -> AppResult<Response> {
     let checker = is_local_checker_request(&query, &headers, connect.as_ref().map(|value| value.0));
+    let serial = query.reported_serial();
     let script = build_boot_script(
         &state,
         query.mac,
-        query.serial,
+        serial,
         &headers,
         connect.map(|value| value.0),
         checker,
@@ -52,10 +67,11 @@ pub async fn boot_mac(
     connect: Option<ConnectInfo<SocketAddr>>,
 ) -> AppResult<Response> {
     let checker = is_local_checker_request(&query, &headers, connect.as_ref().map(|value| value.0));
+    let serial = query.reported_serial();
     let script = build_boot_script(
         &state,
         Some(mac),
-        query.serial,
+        serial,
         &headers,
         connect.map(|value| value.0),
         checker,
@@ -100,8 +116,9 @@ pub async fn boot_select_profile(
     let mut device: Option<Device> = None;
     let mut known_device = false;
     let checker = is_local_checker_request(&query, &headers, connect.as_ref().map(|value| value.0));
+    let reported_serial = query.reported_serial();
     let mac = normalized_optional_mac(query.mac)?;
-    let serial = clean_optional(query.serial);
+    let serial = clean_optional(reported_serial.clone());
 
     if !checker {
         if let Some(mac) = mac.as_deref() {
@@ -109,13 +126,13 @@ pub async fn boot_select_profile(
             // than the MAC's row: it is not recorded on that row, and the
             // installer grant carries no reinstall binding.
             if let Some((seen_device, was_known)) =
-                resolve_mac_request(&state.db, mac, serial.as_deref()).await?
+                resolve_mac_request(&state.db, mac, reported_serial.as_deref()).await?
             {
                 known_device = was_known;
                 db::set_device_last_selected(&state.db, seen_device.id, profile.id).await?;
                 device = Some(seen_device);
             }
-        } else if let Some(serial) = serial.as_deref().and_then(usable_serial) {
+        } else if let Some(serial) = reported_serial.as_deref().and_then(usable_serial) {
             if let Some(found) = db::get_device_by_serial(&state.db, &serial).await? {
                 let touched = db::touch_device_seen(&state.db, found.id).await?;
                 db::set_device_last_selected(&state.db, touched.id, profile.id).await?;
@@ -188,21 +205,24 @@ async fn build_boot_script(
     checker: bool,
 ) -> AppResult<String> {
     let mac = normalized_optional_mac(mac)?;
-    let serial = clean_optional(serial);
+    // Identity uses the untruncated value; the event and menu links the
+    // bounded one.
+    let reported_serial = serial;
+    let serial = clean_optional(reported_serial.clone());
     let mut known_device = false;
     let mut device = None;
     let mut serial_conflict = false;
 
     if !checker {
         if let Some(mac) = mac.as_deref() {
-            match resolve_mac_request(&state.db, mac, serial.as_deref()).await? {
+            match resolve_mac_request(&state.db, mac, reported_serial.as_deref()).await? {
                 Some((seen_device, was_known)) => {
                     known_device = was_known;
                     device = Some(seen_device);
                 }
                 None => serial_conflict = true,
             }
-        } else if let Some(serial) = serial.as_deref().and_then(usable_serial) {
+        } else if let Some(serial) = reported_serial.as_deref().and_then(usable_serial) {
             if let Some(found) = db::get_device_by_serial(&state.db, &serial).await? {
                 let touched = db::touch_device_seen(&state.db, found.id).await?;
                 known_device = true;
@@ -624,6 +644,7 @@ mod tests {
         let query = BootQuery {
             mac: None,
             serial: None,
+            serial_hex: None,
             tiaris_check: Some("1".to_string()),
         };
         let mut headers = HeaderMap::new();
@@ -644,10 +665,35 @@ mod tests {
     }
 
     #[test]
+    fn reported_serial_prefers_a_menu_link_value_over_the_ipxe_hex_expansion() {
+        let query = |serial: Option<&str>, serial_hex: Option<&str>| BootQuery {
+            mac: None,
+            serial: serial.map(str::to_string),
+            serial_hex: serial_hex.map(str::to_string),
+            tiaris_check: None,
+        };
+
+        assert_eq!(
+            query(Some("5CG1"), Some("4142"))
+                .reported_serial()
+                .as_deref(),
+            Some("5CG1")
+        );
+        assert_eq!(
+            query(Some(" "), Some("4142")).reported_serial().as_deref(),
+            Some("AB")
+        );
+        assert_eq!(query(None, Some("")).reported_serial(), None);
+        assert_eq!(query(None, Some("not-hex")).reported_serial(), None);
+        assert_eq!(query(None, None).reported_serial(), None);
+    }
+
+    #[test]
     fn checker_marker_requires_exact_value() {
         let query = BootQuery {
             mac: None,
             serial: None,
+            serial_hex: None,
             tiaris_check: Some("true".to_string()),
         };
         let headers = HeaderMap::new();

@@ -4441,6 +4441,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_sync_survives_two_clients_with_the_same_serial() {
+        let pool = managed_test_pool().await;
+        let profile_id = "00000000-0000-4000-8000-000000000102";
+        let mut first = sample_client(
+            "00000000-0000-4000-8000-000000000401",
+            "02:00:00:00:22:01",
+            profile_id,
+        );
+        first.serial_number = Some("5CG1234AAA".to_string());
+        let mut second = sample_client(
+            "00000000-0000-4000-8000-000000000402",
+            "02:00:00:00:22:02",
+            profile_id,
+        );
+        second.serial_number = Some("5CG1234AAA".to_string());
+
+        let mut tx = pool.begin().await.unwrap();
+        sync_profiles(&mut tx, &[sample_profile(profile_id)], true)
+            .await
+            .unwrap();
+        let profile_map = managed_profile_map(&mut tx).await.unwrap();
+        sync_clients(&mut tx, &[first, second], &profile_map, true)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        assert_eq!(
+            synced_serials(&pool).await,
+            vec![
+                ("02:00:00:00:22:01".to_string(), None),
+                (
+                    "02:00:00:00:22:02".to_string(),
+                    Some("5CG1234AAA".to_string())
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn managed_sync_clears_stale_default_when_control_plane_has_none() {
         let pool = managed_test_pool().await;
         let profile = sample_profile("profile-1");

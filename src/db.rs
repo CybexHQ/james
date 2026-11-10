@@ -10,7 +10,7 @@ use sqlx::{
 
 use crate::{
     assets::sanitize_relative_path,
-    boot_identity::{same_serial, usable_serial},
+    boot_identity::{same_serial, stored_by_old_menu_link, usable_serial},
     config::AppConfig,
     error::{AppError, AppResult},
     models::{
@@ -662,53 +662,63 @@ async fn upsert_seen_device_with_retention(
     let now = now_rfc3339();
     if let Some(existing) = get_device_by_mac(pool, &mac).await? {
         let stored = existing.serial_number.as_deref().and_then(usable_serial);
-        if let (Some(stored), Some(incoming)) = (stored.as_deref(), incoming.as_deref()) {
-            if !same_serial(stored, incoming) {
+        // A row without a usable serial (every row discovered before boot
+        // requests carried one) takes the first usable serial it sees, and a
+        // first word stored by old menu links takes the full serial.
+        let fill = match (stored.as_deref(), incoming.as_deref()) {
+            (Some(stored), Some(incoming)) if same_serial(stored, incoming) => None,
+            (Some(stored), Some(incoming)) if stored_by_old_menu_link(stored, incoming) => {
+                Some(incoming)
+            }
+            (Some(_), Some(_)) => {
                 return Ok(SeenDevice::SerialConflict {
                     registered: existing,
                 });
             }
-        }
-        // A row without a usable serial (every row discovered before boot
-        // requests carried one) takes the first usable serial it sees.
-        let serial = match (stored, incoming) {
-            (None, Some(incoming))
-                if serial_is_free(pool, &incoming, Some(existing.id)).await? =>
-            {
-                Some(incoming)
-            }
-            _ => existing.serial_number.clone(),
+            (None, Some(incoming)) => Some(incoming),
+            (_, None) => None,
         };
-        sqlx::query(
-            "UPDATE devices
-             SET last_seen_at = ?, serial_number = ?, updated_at = ?
-             WHERE id = ?",
-        )
-        .bind(&now)
-        .bind(serial)
-        .bind(&now)
-        .bind(existing.id)
-        .execute(pool)
-        .await?;
+        sqlx::query("UPDATE devices SET last_seen_at = ?, updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(&now)
+            .bind(existing.id)
+            .execute(pool)
+            .await?;
+        if let Some(fill) = fill {
+            // One statement, so a concurrent managed sync that moved this
+            // serial or changed the row in between wins instead of turning
+            // the boot into a UNIQUE failure.
+            sqlx::query(
+                "UPDATE devices SET serial_number = ?1
+                 WHERE id = ?2 AND serial_number IS ?3
+                   AND NOT EXISTS (
+                       SELECT 1 FROM devices WHERE serial_number = ?1 AND id <> ?2
+                   )",
+            )
+            .bind(fill)
+            .bind(existing.id)
+            .bind(&existing.serial_number)
+            .execute(pool)
+            .await?;
+        }
         return Ok(SeenDevice::Device {
             device: get_device(pool, existing.id).await?,
             known: true,
         });
     }
 
-    let serial = match incoming {
-        Some(incoming) if serial_is_free(pool, &incoming, None).await? => Some(incoming),
-        _ => None,
-    };
+    // Serial numbers are unique per Nest: a serial another row holds is not
+    // copied onto the new one.
     sqlx::query(
         "INSERT INTO devices
          (mac, serial_number, last_seen_at, notes, tags, created_at, updated_at)
-         VALUES (?, ?, ?, '', '[]', ?, ?)",
+         SELECT ?1,
+                CASE WHEN EXISTS (SELECT 1 FROM devices WHERE serial_number = ?2)
+                     THEN NULL ELSE ?2 END,
+                ?3, '', '[]', ?3, ?3",
     )
     .bind(&mac)
-    .bind(serial)
-    .bind(&now)
-    .bind(&now)
+    .bind(incoming)
     .bind(&now)
     .execute(pool)
     .await?;
@@ -721,16 +731,6 @@ async fn upsert_seen_device_with_retention(
         device,
         known: false,
     })
-}
-
-/// Serial numbers are unique per Nest; a serial already stored on another
-/// row is never copied onto this one.
-async fn serial_is_free(pool: &SqlitePool, serial: &str, own_id: Option<i64>) -> AppResult<bool> {
-    let holder: Option<i64> = sqlx::query_scalar("SELECT id FROM devices WHERE serial_number = ?")
-        .bind(serial)
-        .fetch_optional(pool)
-        .await?;
-    Ok(holder.is_none() || holder == own_id)
 }
 
 async fn prune_auto_discovered_devices(pool: &SqlitePool, max_devices: i64) -> AppResult<()> {
@@ -3669,6 +3669,31 @@ mod tests {
         assert!(was_known);
         assert_eq!(seen.id, device.id);
         assert_eq!(seen.serial_number.as_deref(), Some("PF2ABCDE"));
+    }
+
+    #[tokio::test]
+    async fn seen_device_takes_the_full_serial_over_a_first_word_from_old_menu_links() {
+        let pool = test_pool().await;
+        let vm = create_device(
+            &pool,
+            seen_device_request("02:00:00:00:0a:00", Some("VMware-56")),
+        )
+        .await
+        .unwrap();
+
+        let (seen, was_known) = upsert_seen_device_with_retention(
+            &pool,
+            "02:00:00:00:0a:00",
+            Some("VMware-56 4d 1a 2b"),
+            10,
+        )
+        .await
+        .unwrap()
+        .expect_device();
+
+        assert!(was_known);
+        assert_eq!(seen.id, vm.id);
+        assert_eq!(seen.serial_number.as_deref(), Some("VMware-56 4d 1a 2b"));
     }
 
     #[tokio::test]

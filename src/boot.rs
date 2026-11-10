@@ -163,11 +163,11 @@ pub fn render_menu(
         let _ = writeln!(script, ":profile_{}", profile.id);
         let _ = writeln!(
             script,
-            "chain --autofree {}/boot/select/{}?mac={}&serial={} || goto failed",
+            "chain --autofree {}/boot/select/{}?mac={}&{} || goto failed",
             public_base_url.trim_end_matches('/'),
             profile.id,
             query_value(mac, "${mac}"),
-            query_value(serial, "${serial:uristring}")
+            serial_query(serial)
         );
         script.push_str("goto end\n\n");
     }
@@ -337,6 +337,15 @@ fn ipxe_text(value: &str) -> String {
         .chars()
         .map(|ch| if ch.is_control() { ' ' } else { ch })
         .collect()
+}
+
+/// The serial for a menu link: the encoded value the request reported, or
+/// iPXE's hex expansion when it reported none (see `autoexec.ipxe`).
+fn serial_query(serial: Option<&str>) -> String {
+    match serial {
+        Some(serial) => format!("serial={}", urlencoding::encode(serial)),
+        None => "serial_hex=${serial:hexraw}".to_string(),
+    }
 }
 
 fn query_value(value: Option<&str>, fallback: &str) -> String {
@@ -754,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn menu_links_encode_the_firmware_serial_when_the_request_had_none() {
+    fn menu_links_hex_encode_the_firmware_serial_when_the_request_had_none() {
         let mut installer = profile(2, BootProfileType::NestInstaller);
         installer.name = "Default Enrollment".to_string();
         let profiles = vec![installer];
@@ -768,7 +777,7 @@ mod tests {
             MenuContext::Unrecognized,
         );
 
-        assert!(script.contains("?mac=${mac}&serial=${serial:uristring} || goto failed"));
+        assert!(script.contains("?mac=${mac}&serial_hex=${serial:hexraw} || goto failed"));
         assert!(!script.contains("item --gap This network adapter"));
     }
 
