@@ -771,9 +771,17 @@ mod tests {
         assert_eq!(script.matches("dhcp net0 ||").count(), 2);
         assert_eq!(
             script
-                .matches("chain --autofree http://${tiaris-boot-server}/boot/${net0/mac:hexhyp}")
+                .matches(
+                    "chain --autofree http://${tiaris-boot-server}/boot/${net0/mac:hexhyp}?serial=${serial:uristring} || goto "
+                )
                 .count(),
             2
+        );
+        assert_eq!(script.matches("chain ").count(), 2);
+        assert_eq!(
+            IPXE_AUTOEXEC_BODY,
+            include_bytes!("../nixos-appliance/autoexec.ipxe").as_slice(),
+            "the package and appliance copies of autoexec.ipxe must stay identical"
         );
         assert!(script.contains("isset ${proxydhcp/next-server}"));
         assert!(script.contains("isset ${net0/mac}"));
