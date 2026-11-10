@@ -32,6 +32,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState, RuntimeSettings,
+    boot_identity::usable_serial,
     config::{
         AppConfig, ManageConfig, normalize_bootloader_filename, normalize_http_url,
         validate_menu_timeout_ms,
@@ -2349,10 +2350,28 @@ async fn sync_clients(
         .bind(&client.id)
         .fetch_optional(&mut **tx)
         .await?;
+        // The serial number guards the MAC against another computer booting
+        // through the same network adapter. A placeholder or an empty value
+        // from Manage never clears the serial the Nest recorded at boot, and
+        // a serial Manage assigns here is released from any other row first:
+        // one UNIQUE violation would abort the whole configuration sync.
+        let serial_number = client.serial_number.as_deref().and_then(usable_serial);
+        if let Some(serial_number) = serial_number.as_deref() {
+            sqlx::query(
+                "UPDATE devices SET serial_number = NULL, updated_at = ?
+                 WHERE serial_number = ? AND id IS NOT ?",
+            )
+            .bind(&now)
+            .bind(serial_number)
+            .bind(existing)
+            .execute(&mut **tx)
+            .await?;
+        }
         if let Some(id) = existing {
             sqlx::query(
                 "UPDATE devices
-                 SET managed_client_id = ?, mac = ?, hostname = ?, serial_number = ?,
+                 SET managed_client_id = ?, mac = ?, hostname = ?,
+                     serial_number = COALESCE(?, serial_number),
                      last_seen_at = COALESCE(?, last_seen_at), notes = ?, tags = ?,
                      default_profile_id = ?,
                      one_time_consumed_at = CASE
@@ -2366,7 +2385,7 @@ async fn sync_clients(
             .bind(&client.id)
             .bind(&mac)
             .bind(clean_optional(client.hostname.clone()))
-            .bind(clean_optional(client.serial_number.clone()))
+            .bind(&serial_number)
             .bind(&client.last_seen_at)
             .bind(&client.notes)
             .bind(&tags)
@@ -2390,7 +2409,7 @@ async fn sync_clients(
             .bind(&client.id)
             .bind(&mac)
             .bind(clean_optional(client.hostname.clone()))
-            .bind(clean_optional(client.serial_number.clone()))
+            .bind(&serial_number)
             .bind(&client.last_seen_at)
             .bind(&client.notes)
             .bind(&tags)
@@ -4317,6 +4336,147 @@ mod tests {
         assert!(report.get("managed_client_id").is_none());
         assert!(report.get("default_profile_id").is_none());
         assert!(report.get("one_time_profile_id").is_none());
+    }
+
+    async fn synced_serials(pool: &SqlitePool) -> Vec<(String, Option<String>)> {
+        sqlx::query_as("SELECT mac, serial_number FROM devices ORDER BY mac")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn managed_sync_keeps_the_boot_serial_when_manage_has_none_or_a_placeholder() {
+        let pool = managed_test_pool().await;
+        let profile_id = "00000000-0000-4000-8000-000000000102";
+        for (mac, serial) in [
+            ("02:00:00:00:20:01", "5CG1234AAA"),
+            ("02:00:00:00:20:02", "5CG1234BBB"),
+        ] {
+            sqlx::query(
+                "INSERT INTO devices (mac, serial_number, notes, tags, created_at, updated_at)
+                 VALUES (?, ?, '', '[]', 'now', 'now')",
+            )
+            .bind(mac)
+            .bind(serial)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let first = sample_client(
+            "00000000-0000-4000-8000-000000000201",
+            "02:00:00:00:20:01",
+            profile_id,
+        );
+        let mut second = sample_client(
+            "00000000-0000-4000-8000-000000000202",
+            "02:00:00:00:20:02",
+            profile_id,
+        );
+        second.serial_number = Some("Default string".to_string());
+
+        let mut tx = pool.begin().await.unwrap();
+        sync_profiles(&mut tx, &[sample_profile(profile_id)], true)
+            .await
+            .unwrap();
+        let profile_map = managed_profile_map(&mut tx).await.unwrap();
+        sync_clients(&mut tx, &[first, second], &profile_map, true)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        assert_eq!(
+            synced_serials(&pool).await,
+            vec![
+                (
+                    "02:00:00:00:20:01".to_string(),
+                    Some("5CG1234AAA".to_string())
+                ),
+                (
+                    "02:00:00:00:20:02".to_string(),
+                    Some("5CG1234BBB".to_string())
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_sync_moves_a_serial_between_rows_without_failing() {
+        let pool = managed_test_pool().await;
+        let profile_id = "00000000-0000-4000-8000-000000000102";
+        sqlx::query(
+            "INSERT INTO devices (mac, serial_number, notes, tags, created_at, updated_at)
+             VALUES ('02:00:00:00:21:01', '5CG1234AAA', '', '[]', 'now', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut owner = sample_client(
+            "00000000-0000-4000-8000-000000000301",
+            "02:00:00:00:21:02",
+            profile_id,
+        );
+        owner.serial_number = Some("5CG1234AAA".to_string());
+
+        let mut tx = pool.begin().await.unwrap();
+        sync_profiles(&mut tx, &[sample_profile(profile_id)], true)
+            .await
+            .unwrap();
+        let profile_map = managed_profile_map(&mut tx).await.unwrap();
+        sync_clients(&mut tx, &[owner], &profile_map, false)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        assert_eq!(
+            synced_serials(&pool).await,
+            vec![
+                ("02:00:00:00:21:01".to_string(), None),
+                (
+                    "02:00:00:00:21:02".to_string(),
+                    Some("5CG1234AAA".to_string())
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_sync_survives_two_clients_with_the_same_serial() {
+        let pool = managed_test_pool().await;
+        let profile_id = "00000000-0000-4000-8000-000000000102";
+        let mut first = sample_client(
+            "00000000-0000-4000-8000-000000000401",
+            "02:00:00:00:22:01",
+            profile_id,
+        );
+        first.serial_number = Some("5CG1234AAA".to_string());
+        let mut second = sample_client(
+            "00000000-0000-4000-8000-000000000402",
+            "02:00:00:00:22:02",
+            profile_id,
+        );
+        second.serial_number = Some("5CG1234AAA".to_string());
+
+        let mut tx = pool.begin().await.unwrap();
+        sync_profiles(&mut tx, &[sample_profile(profile_id)], true)
+            .await
+            .unwrap();
+        let profile_map = managed_profile_map(&mut tx).await.unwrap();
+        sync_clients(&mut tx, &[first, second], &profile_map, true)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        assert_eq!(
+            synced_serials(&pool).await,
+            vec![
+                ("02:00:00:00:22:01".to_string(), None),
+                (
+                    "02:00:00:00:22:02".to_string(),
+                    Some("5CG1234AAA".to_string())
+                ),
+            ]
+        );
     }
 
     #[tokio::test]

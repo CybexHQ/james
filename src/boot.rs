@@ -14,6 +14,21 @@ pub enum SelectionSource {
     Menu,
 }
 
+/// What the Nest knows about the computer that receives the boot menu.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MenuContext {
+    /// A new or MAC-less request, or a health check: show the menu.
+    Unrecognized,
+    /// A known computer: try its local disk before showing the menu.
+    KnownComputer,
+    /// Its serial number differs from the computer registered for this MAC,
+    /// so it boots through another computer's network adapter: show the menu
+    /// with a notice, without probing the local disk first. A menu that would
+    /// wait indefinitely boots the local disk after 15 seconds instead, so an
+    /// installed laptop on a shared adapter still starts unattended.
+    AdapterOfAnotherComputer,
+}
+
 #[derive(Debug)]
 pub struct ProfileSelection<'a> {
     pub profile: Option<&'a BootProfile>,
@@ -26,6 +41,9 @@ const IPXE_MENU_SUBTITLE: &str = "PXE BOOT - NEST BOOT - X86_64 - UEFI";
 const IPXE_MENU_TIMEOUT_COPY: &str =
     "Booting the highlighted entry automatically - press any key to pause";
 const IPXE_MENU_FOOTER: &str = "tiaris-nest - pxe - x86_64 - uefi";
+const IPXE_MENU_SHARED_ADAPTER_NOTICE: &str =
+    "This network adapter is registered to another computer";
+const SHARED_ADAPTER_MENU_TIMEOUT_MS: u32 = 15_000;
 
 pub fn choose_profile<'a>(
     device: Option<&Device>,
@@ -94,12 +112,17 @@ pub fn render_menu(
     mac: Option<&str>,
     serial: Option<&str>,
     timeout_ms: u32,
-    try_local_boot_first: bool,
+    context: MenuContext,
 ) -> String {
+    let timeout_ms = if context == MenuContext::AdapterOfAnotherComputer && timeout_ms == 0 {
+        SHARED_ADAPTER_MENU_TIMEOUT_MS
+    } else {
+        timeout_ms
+    };
     let menu_profiles = menu_profiles(profiles);
     let mut script = String::with_capacity(2048 + (menu_profiles.len() * 256));
     script.push_str("#!ipxe\n");
-    if try_local_boot_first {
+    if context == MenuContext::KnownComputer {
         // A previously seen workstation can return through PXE when network
         // boot is ahead of its disk in firmware order. UEFI must regain
         // control so it can advance to the installed NixOS boot entry; BIOS
@@ -116,6 +139,9 @@ pub fn render_menu(
     }
     script.push_str("menu ${tiaris-title}\n");
     script.push_str("item --gap ${tiaris-subtitle}\n");
+    if context == MenuContext::AdapterOfAnotherComputer {
+        let _ = writeln!(script, "item --gap {IPXE_MENU_SHARED_ADAPTER_NOTICE}");
+    }
     script.push_str("item --gap\n");
     script.push_str("item --key l local Boot local disk\n");
 
@@ -145,11 +171,11 @@ pub fn render_menu(
         let _ = writeln!(script, ":profile_{}", profile.id);
         let _ = writeln!(
             script,
-            "chain --autofree {}/boot/select/{}?mac={}&serial={} || goto failed",
+            "chain --autofree {}/boot/select/{}?mac={}&{} || goto failed",
             public_base_url.trim_end_matches('/'),
             profile.id,
             query_value(mac, "${mac}"),
-            query_value(serial, "${serial}")
+            serial_query(serial)
         );
         script.push_str("goto end\n\n");
     }
@@ -321,6 +347,15 @@ fn ipxe_text(value: &str) -> String {
         .collect()
 }
 
+/// The serial for a menu link: the encoded value the request reported, or
+/// iPXE's hex expansion when it reported none (see `autoexec.ipxe`).
+fn serial_query(serial: Option<&str>) -> String {
+    match serial {
+        Some(serial) => format!("serial={}", urlencoding::encode(serial)),
+        None => "serial_hex=${serial:hexraw}".to_string(),
+    }
+}
+
 fn query_value(value: Option<&str>, fallback: &str) -> String {
     value
         .map(|value| urlencoding::encode(value).to_string())
@@ -331,7 +366,7 @@ fn query_value(value: Option<&str>, fallback: &str) -> String {
 mod tests {
     use crate::models::{BootProfile, BootProfileType, Device};
 
-    use super::{SelectionSource, choose_profile, render_menu};
+    use super::{MenuContext, SelectionSource, choose_profile, render_menu};
 
     fn profile(id: i64, profile_type: BootProfileType) -> BootProfile {
         BootProfile {
@@ -466,7 +501,14 @@ mod tests {
             enrollment,
         ];
 
-        let menu = render_menu("http://nest.local", &profiles, None, None, 10_000, false);
+        let menu = render_menu(
+            "http://nest.local",
+            &profiles,
+            None,
+            None,
+            10_000,
+            MenuContext::Unrecognized,
+        );
         assert!(!menu.contains("Reinstall workstation-01"));
         assert!(menu.contains("Default Enrollment"));
 
@@ -542,7 +584,7 @@ mod tests {
             Some("aa:bb:cc:dd:ee:ff"),
             None,
             0,
-            false,
+            MenuContext::Unrecognized,
         );
         assert!(script.starts_with("#!ipxe"));
         assert!(script.contains("chain --autofree http://boot.local:8080/boot/select/2"));
@@ -566,7 +608,14 @@ mod tests {
     #[test]
     fn menu_includes_tiaris_theme() {
         let profiles = vec![profile(1, BootProfileType::LocalDisk)];
-        let script = render_menu("http://boot.local:8080", &profiles, None, None, 0, false);
+        let script = render_menu(
+            "http://boot.local:8080",
+            &profiles,
+            None,
+            None,
+            0,
+            MenuContext::Unrecognized,
+        );
 
         assert!(script.contains("set tiaris-title TIARIS"));
         assert!(script.contains("set tiaris-subtitle PXE BOOT - NEST BOOT - X86_64 - UEFI"));
@@ -589,7 +638,14 @@ mod tests {
     #[test]
     fn configured_menu_timeout_emits_countdown() {
         let profiles = vec![profile(1, BootProfileType::LocalDisk)];
-        let script = render_menu("http://boot.local:8080", &profiles, None, None, 8000, false);
+        let script = render_menu(
+            "http://boot.local:8080",
+            &profiles,
+            None,
+            None,
+            8000,
+            MenuContext::Unrecognized,
+        );
 
         assert!(script.contains("set menu-timeout 8000"));
         assert!(script.contains("item --gap ${tiaris-timeout-copy}"));
@@ -611,7 +667,14 @@ mod tests {
             profile(6, BootProfileType::NestInstaller),
         ];
 
-        let script = render_menu("http://boot.local:8080", &profiles, None, None, 0, false);
+        let script = render_menu(
+            "http://boot.local:8080",
+            &profiles,
+            None,
+            None,
+            0,
+            MenuContext::Unrecognized,
+        );
 
         assert!(script.contains("profile_3"));
         assert!(!script.contains("profile_5"));
@@ -637,7 +700,14 @@ mod tests {
         installer.name = "Installer\n\x1bshell".to_string();
         let profiles = vec![profile(1, BootProfileType::LocalDisk), installer];
 
-        let script = render_menu("http://boot.local:8080", &profiles, None, None, 0, false);
+        let script = render_menu(
+            "http://boot.local:8080",
+            &profiles,
+            None,
+            None,
+            0,
+            MenuContext::Unrecognized,
+        );
 
         assert!(!script.contains('\x1b'));
         assert!(script.contains("Installer  shell"));
@@ -656,7 +726,7 @@ mod tests {
             Some("aa:bb:cc:dd:ee:ff"),
             None,
             0,
-            true,
+            MenuContext::KnownComputer,
         );
 
         let local_handoff = script
@@ -675,6 +745,66 @@ mod tests {
     }
 
     #[test]
+    fn shared_adapter_menu_shows_a_notice_and_never_probes_the_local_disk_first() {
+        let mut installer = profile(2, BootProfileType::NestInstaller);
+        installer.name = "Default Enrollment".to_string();
+        installer.is_default = true;
+        let profiles = vec![profile(1, BootProfileType::LocalDisk), installer];
+
+        let script = render_menu(
+            "http://boot.local:8080",
+            &profiles,
+            Some("aa:bb:cc:dd:ee:ff"),
+            Some("5CG 1234/B"),
+            0,
+            MenuContext::AdapterOfAnotherComputer,
+        );
+
+        assert!(!script.contains("known_local"));
+        assert!(
+            script.contains("item --gap This network adapter is registered to another computer\n")
+        );
+        assert!(script.contains(
+            "/boot/select/2?mac=aa%3Abb%3Acc%3Add%3Aee%3Aff&serial=5CG%201234%2FB || goto failed"
+        ));
+        assert!(script.contains("set menu-timeout 15000\n"));
+        assert!(
+            script.contains(
+                "choose --timeout ${menu-timeout} --default local selected || goto local"
+            )
+        );
+
+        let configured = render_menu(
+            "http://boot.local:8080",
+            &profiles,
+            Some("aa:bb:cc:dd:ee:ff"),
+            None,
+            5000,
+            MenuContext::AdapterOfAnotherComputer,
+        );
+        assert!(configured.contains("set menu-timeout 5000\n"));
+    }
+
+    #[test]
+    fn menu_links_hex_encode_the_firmware_serial_when_the_request_had_none() {
+        let mut installer = profile(2, BootProfileType::NestInstaller);
+        installer.name = "Default Enrollment".to_string();
+        let profiles = vec![installer];
+
+        let script = render_menu(
+            "http://boot.local:8080",
+            &profiles,
+            None,
+            None,
+            0,
+            MenuContext::Unrecognized,
+        );
+
+        assert!(script.contains("?mac=${mac}&serial_hex=${serial:hexraw} || goto failed"));
+        assert!(!script.contains("item --gap This network adapter"));
+    }
+
+    #[test]
     fn unknown_or_macless_menu_does_not_probe_local_disk_before_the_menu() {
         let profiles = vec![profile(1, BootProfileType::LocalDisk)];
 
@@ -684,7 +814,7 @@ mod tests {
             None,
             Some("serial-only"),
             0,
-            false,
+            MenuContext::Unrecognized,
         );
 
         assert!(!script.contains("known_local"));
