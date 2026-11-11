@@ -1,5 +1,5 @@
 {
   "schema": "tiaris.coordinated-release.v2",
-  "manage_revision": "dfb1d0dea99ef2910e45ca824e366c3ada1c508a",
+  "manage_revision": "4b945adc9efbe8ac27c006cdae1326228f64c40d",
   "appliance_family": "nixos"
 }
