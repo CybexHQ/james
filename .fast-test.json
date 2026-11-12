@@ -1,0 +1,45 @@
+{
+  "about": "What `fast-test` runs for a change (see ~/Code/fast-test). Quick steps run on The Dragon; a wide change also runs the full suite on The Beast. The NixOS VM tests, appliance builds and qualification stay out: by hand or the qualification workflow, when someone asks.",
+  "steps": [
+    {
+      "name": "rust-fmt",
+      "when": ["*.rs"],
+      "run": "cargo fmt --all --check"
+    },
+    {
+      "name": "rust",
+      "about": "The unit tests of the changed modules (src/routes/x.rs runs the tests named routes::x::…).",
+      "when": ["src/**/*.rs"],
+      "run": "set --; for f in {files}; do m=${f#src/}; m=${m%.rs}; m=${m%/mod}; set -- \"$@\" \"$(printf %s \"$m\" | sed 's#/#::#g')::\"; done; cargo test --locked --lib --bins -- \"$@\"",
+      "timeout": 30
+    },
+    {
+      "name": "rust-integration",
+      "about": "A changed integration test file.",
+      "when": ["tests/*.rs"],
+      "run": "set --; for f in {files}; do t=${f#tests/}; set -- \"$@\" --test \"${t%.rs}\"; done; cargo test --locked \"$@\"",
+      "timeout": 30
+    },
+    {
+      "name": "appliance-python",
+      "about": "The appliance's Python tests.",
+      "when": ["nixos-appliance/**/*.py", "nixos-appliance/runtime/**"],
+      "run": "python3 -B -m unittest discover -s nixos-appliance/tests"
+    },
+    {
+      "name": "tools-python",
+      "about": "The release and qualification tools' Python tests.",
+      "when": ["tools/**"],
+      "run": "python3 -B -m unittest discover -s tools/tests"
+    }
+  ],
+  "wide": ["Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml", "migrations/**", "src/lib.rs", "src/main.rs", "src/error.rs", "src/config.rs", "src/db.rs", "src/models.rs", "tests/fixtures/**"],
+  "wideIfDeleted": ["src/**", "tests/**"],
+  "full": "cargo fmt --all --check && cargo test --locked && python3 -B -m unittest discover -s nixos-appliance/tests && python3 -B -m unittest discover -s tools/tests",
+  "beast": {
+    "image": "docker.io/library/rust:1.85.0-bookworm",
+    "prepare": "rustup component add rustfmt",
+    "network": "internet",
+    "caches": ["cargo-target"]
+  }
+}
