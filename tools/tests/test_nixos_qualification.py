@@ -329,6 +329,28 @@ class NixosQualificationTests(unittest.TestCase):
             with self.assertRaises((ValueError, P.release.ReleaseError)):
                 P.qualify(directory, '0.2.5', auth['public_key'])
 
+    def test_predecessor_iso_is_inspected_with_its_declared_envelope_validity(self):
+        validity = P.release.appliance_v3.TEMPLATE_ENVELOPE_VALIDITY
+        iso = {'url': 'https://github.com/CybexHQ/james/releases/download/v0.2.99/t.iso',
+               'personalization_offset': 1, 'provisioning_public_keys': ['k'], 'manage_origin': 'https://manage.cybex.net',
+               'base_os_version': '26.05', validity: 744, 'signature': 's'}
+        manifest = {'version': '0.2.99', 'installer_iso_template_v3': iso,
+                    'appliance_release_v1': {'schema': P.release.appliance_v3.SCHEMA}, 'workstation_netboot': {}}
+        seen = {}
+        def inspect(_inputs, _version, **kwargs):
+            seen.update(kwargs)
+            return {k: v for k, v in iso.items() if k != 'signature'} if kwargs.get('envelope_max_validity_hours') == 744 \
+                else {**{k: v for k, v in iso.items() if k != 'signature'}, validity: None}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(P, 'verify_pair', return_value=manifest), patch.object(P, 'stage_media'), \
+                patch.object(P.release.system_closure, 'verify_archive'), \
+                patch.object(P.release, '_verify_nixos_source_identity'), \
+                patch.object(P.release, '_installer_iso_template_inputs', return_value=object()), \
+                patch.object(P.release, '_inspect_installer_iso_template', side_effect=inspect), \
+                patch.object(P, 'identity', return_value={'release_id': '0.2.99'}):
+            self.assertEqual(P.qualify(Path(temporary), '0.2.122', 'key'), {'release_id': '0.2.99'})
+        self.assertEqual(seen['envelope_max_validity_hours'], 744)
+
     def test_missing_historical_publication_is_not_first_release(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(P, 'github', return_value=[]):
             with self.assertRaisesRegex(ValueError, 'first-release'):
