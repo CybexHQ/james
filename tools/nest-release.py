@@ -1113,15 +1113,65 @@ def _pinned_sqlite_migrations_sha256(path: Path = SQLITE_MIGRATIONS_PIN) -> str:
     return values[0]
 
 
+SQLITE_SCHEMA_EVOLUTION = Path(__file__).resolve().parent.parent / "release" / "sqlite-schema-evolution.json"
+SQLITE_MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
+SCHEMA_DECLARATION = re.compile(r"-- tiaris-nest-schema: (?:expand|contract reader-floor=\S+)\s*")
+
+
+def _sqlite_inventory_sha256(rows: list) -> str:
+    """As `nixos-appliance/metadata.py migrations` writes the inventory."""
+    body = json.dumps({"schema": "tiaris.nest.sqlite-migrations.v1", "migrations": rows},
+                      sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False) + "\n"
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def _declared_schema_change(candidate: object, predecessor: str,
+                            evolution: Path = SQLITE_SCHEMA_EVOLUTION,
+                            migrations: Path = SQLITE_MIGRATIONS) -> bool:
+    """Whether `candidate` is exactly this checkout's migrations: the
+    predecessor's inventory plus declared expand/contract migrations, which
+    the releases appliances update from run alongside (see
+    docs/sqlite-schema-evolution.md). The Rust tests lint each migration; the
+    appliance rehearses the candidate's migration before it installs."""
+    try:
+        policy = json.loads(evolution.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        _fail(f"cannot read the SQLite schema evolution policy {evolution}")
+    if (not isinstance(policy, dict) or set(policy) != {
+            "schema", "baseline_last_version", "predecessor_last_version",
+            "predecessor_runs_declared_changes"}
+            or policy["schema"] != "tiaris.nest.sqlite-schema-evolution.v1"
+            or not isinstance(policy["predecessor_last_version"], int)
+            or not isinstance(policy["predecessor_runs_declared_changes"], bool)):
+        _fail(f"{evolution} is not a SQLite schema evolution policy")
+    if not policy["predecessor_runs_declared_changes"]:
+        return False
+    last = policy["predecessor_last_version"]
+    rows = []
+    for path in sorted(migrations.glob("*.sql")):
+        body = path.read_bytes()
+        rows.append({"filename": path.name, "version": int(path.name.split("_", 1)[0]),
+                     "sha256": hashlib.sha256(body).hexdigest(),
+                     "sqlx_checksum": hashlib.sha384(body).hexdigest(), "body": body})
+    def digest(selected):
+        return _sqlite_inventory_sha256([{k: v for k, v in row.items() if k != "body"} for row in selected])
+    added = [row for row in rows if row["version"] > last]
+    if not added or digest(rows) != candidate or digest([r for r in rows if r["version"] <= last]) != predecessor:
+        return False
+    return all(SCHEMA_DECLARATION.fullmatch(row["body"].split(b"\n", 1)[0].decode("utf-8", "replace"))
+               for row in added)
+
+
 def _require_update_compatible_migrations(candidate: object, predecessor: str, label: str) -> None:
-    """The NixOS appliance updater refuses a release whose SQLite migration
-    inventory differs from the installed one; never sign or ship one."""
-    if candidate != predecessor:
+    """The NixOS appliance updater refuses a release whose SQLite migrations
+    its installed release cannot run on after a rollback; never sign or ship
+    one. Another inventory passes only as declared schema changes."""
+    if candidate != predecessor and not _declared_schema_change(candidate, predecessor):
         _fail(
             f"rollback_database_incompatible: the candidate's SQLite migration inventory "
-            f"{candidate} differs from {label} {predecessor}. NixOS appliances refuse this "
-            "update at verification (src/appliance/nixos.rs validate_migrations). A schema "
-            "change needs a separate update-contract design; see release/sqlite-migrations.sha256."
+            f"{candidate} differs from {label} {predecessor} by more than declared schema "
+            "changes the predecessor runs alongside. NixOS appliances refuse this update. "
+            "See docs/sqlite-schema-evolution.md and release/sqlite-schema-evolution.json."
         )
 
 

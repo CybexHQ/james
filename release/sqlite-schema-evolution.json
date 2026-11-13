@@ -1,0 +1,6 @@
+{
+  "schema": "tiaris.nest.sqlite-schema-evolution.v1",
+  "baseline_last_version": 20260928000000,
+  "predecessor_last_version": 20260928000000,
+  "predecessor_runs_declared_changes": false
+}

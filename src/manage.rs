@@ -675,11 +675,54 @@ struct NormalizedManagedSettings {
     menu_timeout_ms: u32,
 }
 
+/// How the background sync loop is doing, for `local_health.sync`: a Nest
+/// that still reports while another subsystem keeps failing is not healthy.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct SyncHealth {
+    /// The last cycle in which every subsystem synced (RFC 3339).
+    pub last_success_at: Option<String>,
+    /// Failed cycles since then.
+    pub consecutive_failures: u32,
+    /// The first subsystem that failed in the last failed cycle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failing_subsystem: Option<&'static str>,
+}
+
+static SYNC_HEALTH: std::sync::Mutex<SyncHealth> = std::sync::Mutex::new(SyncHealth {
+    last_success_at: None,
+    consecutive_failures: 0,
+    failing_subsystem: None,
+});
+static CYCLE_FAILURE: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+pub fn sync_health() -> SyncHealth {
+    SYNC_HEALTH
+        .lock()
+        .map(|health| health.clone())
+        .unwrap_or_default()
+}
+
+fn record_sync_cycle(succeeded: bool) {
+    let subsystem = CYCLE_FAILURE.lock().ok().and_then(|mut first| first.take());
+    if let Ok(mut health) = SYNC_HEALTH.lock() {
+        if succeeded {
+            health.last_success_at = Some(Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true));
+            health.consecutive_failures = 0;
+            health.failing_subsystem = None;
+        } else {
+            health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+            health.failing_subsystem = subsystem.or(Some("managed sync"));
+        }
+    }
+}
+
 pub fn spawn(state: AppState) {
     tokio::spawn(async move {
         let mut consecutive_failures: u32 = 0;
         loop {
-            let interval = match sync_once_with_outcome(&state).await {
+            let outcome = sync_once_with_outcome(&state).await;
+            record_sync_cycle(outcome.is_ok());
+            let interval = match outcome {
                 Ok(report) => {
                     consecutive_failures = 0;
                     let normal_interval =
@@ -799,6 +842,9 @@ fn retain_sync_failure(
         "managed subsystem sync failed; continuing independent reconciliation"
     );
     if first_failure.is_none() {
+        if let Ok(mut first) = CYCLE_FAILURE.lock() {
+            first.get_or_insert(subsystem);
+        }
         *first_failure = Some(error.context(format!("{subsystem} failed")));
     }
 }

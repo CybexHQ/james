@@ -128,13 +128,31 @@ pub async fn connect_with_url(database_url: &str) -> AppResult<SqlitePool> {
         .await?)
 }
 
+/// Startup migration: this release's migrations, run alongside newer
+/// declared ones a rolled-back release left (`crate::schema_evolution`).
 pub async fn migrate(pool: &SqlitePool) -> AppResult<()> {
-    sqlx::migrate!("./migrations")
-        .run(pool)
-        .await
-        .map_err(|err| AppError::Config(err.to_string()))?;
-    quarantine_protected_build_jobs(pool).await?;
+    let plan = migrate_with(
+        pool,
+        &crate::schema_evolution::MIGRATOR,
+        &crate::schema_evolution::own_release(),
+    )
+    .await?;
+    crate::schema_evolution::record_status(&plan);
     Ok(())
+}
+
+/// [`migrate`] with an explicit migrator and reader release (rehearsals and
+/// tests of other releases' migrations).
+pub async fn migrate_with(
+    pool: &SqlitePool,
+    migrator: &sqlx::migrate::Migrator,
+    reader: &semver::Version,
+) -> AppResult<crate::schema_evolution::Plan> {
+    let plan = crate::schema_evolution::migrate(pool, migrator, reader)
+        .await
+        .map_err(|err| AppError::Config(format!("{err:#}")))?;
+    quarantine_protected_build_jobs(pool).await?;
+    Ok(plan)
 }
 
 /// Scrub protected legacy inputs before any worker or Tiaris report can read

@@ -1892,7 +1892,55 @@ async fn local_health(readiness: crate::readiness::ApplianceReadiness) -> Value 
         } else {
             "degraded"
         };
-    json!({"status":status,"checks":checks,"pxe_discovery":pxe,"resources":crate::resources::latest()})
+    let state_storage = crate::disk::stats(Path::new(crate::state_backup::STATE_DIR)).ok();
+    let sync = crate::manage::sync_health();
+    let attention = health_attention(state_storage.as_ref(), &sync);
+    json!({
+        "status":status,"checks":checks,"pxe_discovery":pxe,"resources":crate::resources::latest(),
+        // Facts Manage alerts on; none of them changes `status` (which gates
+        // Nest updates), so a full STATE or a failing subsystem never blocks
+        // the update that would fix it.
+        "storage":{"state":state_storage},
+        "sync":sync,
+        "database":crate::schema_evolution::status(),
+        "state_backup":crate::state_backup::last_receipt(Path::new(crate::state_backup::STATE_DIR)),
+        "attention":attention,
+    })
+}
+
+/// STATE (16 GiB: database, identity, receipts) below this is attention.
+const STATE_STORAGE_LOW_BYTES: u64 = 512 * 1024 * 1024;
+/// Failed sync cycles (about 30 s apart, then backing off) before attention.
+const SYNC_FAILING_CYCLES: u32 = 3;
+
+/// Bounded codes for what needs a person even while the Nest still reports.
+fn health_attention(
+    state: Option<&crate::disk::DiskStats>,
+    sync: &crate::manage::SyncHealth,
+) -> Vec<&'static str> {
+    let mut codes = Vec::new();
+    match state {
+        Some(state)
+            if state.available_bytes < STATE_STORAGE_LOW_BYTES
+                || state.available_bytes.saturating_mul(20) < state.total_bytes =>
+        {
+            codes.push("state_storage_low")
+        }
+        None => codes.push("state_storage_unknown"),
+        _ => {}
+    }
+    if sync.consecutive_failures >= SYNC_FAILING_CYCLES {
+        codes.push("sync_failing");
+    }
+    let database = crate::schema_evolution::status();
+    if database["tolerated_newer"]
+        .as_array()
+        .is_some_and(|rows| !rows.is_empty())
+    {
+        // Rolled back from a release that changed the schema.
+        codes.push("database_newer_than_release");
+    }
+    codes
 }
 
 fn secure_boot_enabled() -> bool {
@@ -1962,6 +2010,48 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
+
+    #[test]
+    fn local_health_names_a_full_state_disk_and_failing_sync_without_changing_status() {
+        let gib = 1024 * 1024 * 1024;
+        let disk = |available: u64| crate::disk::DiskStats {
+            path: crate::state_backup::STATE_DIR.into(),
+            total_bytes: 16 * gib,
+            available_bytes: available,
+        };
+        let quiet = crate::manage::SyncHealth::default();
+        assert!(health_attention(Some(&disk(8 * gib)), &quiet).is_empty());
+        assert_eq!(
+            health_attention(Some(&disk(256 * 1024 * 1024)), &quiet),
+            ["state_storage_low"]
+        );
+        // Under 5% of the partition even with more than 512 MiB free.
+        let large = crate::disk::DiskStats {
+            path: "/state".into(),
+            total_bytes: 400 * gib,
+            available_bytes: 19 * gib,
+        };
+        assert_eq!(
+            health_attention(Some(&large), &quiet),
+            ["state_storage_low"]
+        );
+        assert_eq!(health_attention(None, &quiet), ["state_storage_unknown"]);
+        let failing = crate::manage::SyncHealth {
+            last_success_at: Some("2026-11-13T10:00:00Z".into()),
+            consecutive_failures: 3,
+            failing_subsystem: Some("boot configuration and report"),
+        };
+        assert_eq!(
+            health_attention(Some(&disk(8 * gib)), &failing),
+            ["sync_failing"]
+        );
+        let reported = serde_json::to_value(&failing).unwrap();
+        assert_eq!(
+            reported["failing_subsystem"],
+            "boot configuration and report"
+        );
+        assert_eq!(reported["last_success_at"], "2026-11-13T10:00:00Z");
+    }
 
     #[test]
     fn retired_ubuntu_runtime_cannot_materialize_an_update() {

@@ -533,11 +533,13 @@ fn cleanup_failed_request(request: &Path, original: &[u8], bundle: &Path) -> Res
     Ok(true)
 }
 
-fn validate_migrations(source: &NixosRelease, candidate: &NixosRelease) -> Result<()> {
-    ensure!(
-        source.sqlite_migrations_sha256 == candidate.sqlite_migrations_sha256,
-        "rollback_database_incompatible"
-    );
+/// The installed inventory must be exact and the live history must start with
+/// it. Newer rows may follow only as declared expansions a rolled-back
+/// candidate left; the snapshot check (`verify_database`) proves their
+/// declarations. A candidate with another inventory is admitted here only to
+/// be rehearsed: the root updater migrates a copy with the candidate and opens
+/// it with this release before preparing anything (`generation_update.py`).
+fn validate_migrations(source: &NixosRelease, _candidate: &NixosRelease) -> Result<()> {
     let bytes = crate::provisioning::read_bounded_nofollow(
         Path::new(MIGRATIONS_PATH),
         16 * 1024 * 1024,
@@ -561,8 +563,12 @@ fn validate_migrations(source: &NixosRelease, candidate: &NixosRelease) -> Resul
     let expected = inventory["migrations"]
         .as_array()
         .ok_or_else(|| anyhow!("migration inventory missing"))?;
+    live_history_admissible(&live, expected)
+}
+
+fn live_history_admissible(live: &[Value], expected: &[Value]) -> Result<()> {
     ensure!(
-        live.len() == expected.len(),
+        live.len() >= expected.len(),
         "rollback_database_incompatible: migration count"
     );
     for (row, entry) in live.iter().zip(expected) {
@@ -571,6 +577,19 @@ fn validate_migrations(source: &NixosRelease, candidate: &NixosRelease) -> Resul
                 && row["sqlx_checksum"] == entry["sqlx_checksum"]
                 && row["success"] == 1,
             "rollback_database_incompatible: live migration mismatch"
+        );
+    }
+    let newest = expected
+        .last()
+        .and_then(|entry| entry["version"].as_i64())
+        .unwrap_or(0);
+    for row in &live[expected.len()..] {
+        ensure!(
+            row["version"]
+                .as_i64()
+                .is_some_and(|version| version > newest)
+                && row["success"] == 1,
+            "rollback_database_incompatible: unexpected live migration"
         );
     }
     Ok(())
@@ -848,10 +867,7 @@ fn snapshot_database(private: &Path) -> Result<PathBuf> {
     Ok(backup)
 }
 
-/// Invoked from both the predecessor and imported candidate binaries on one
-/// private SQLite snapshot; never migrates or restores the live appliance DB.
-pub async fn verify_database(path: &Path) -> Result<()> {
-    use sqlx::{Connection, Row};
+fn check_snapshot(path: &Path) -> Result<()> {
     ensure!(
         unsafe { libc::geteuid() } == 0,
         "database compatibility verification requires root"
@@ -865,38 +881,39 @@ pub async fn verify_database(path: &Path) -> Result<()> {
             && metadata.len() <= 1024 * 1024 * 1024,
         "unsafe database compatibility snapshot"
     );
-    let options = sqlx::sqlite::SqliteConnectOptions::new()
-        .filename(path)
-        .read_only(true)
-        .busy_timeout(Duration::from_secs(5));
-    let mut connection = sqlx::SqliteConnection::connect_with(&options).await?;
-    let integrity: String = sqlx::query_scalar("PRAGMA integrity_check(1)")
-        .fetch_one(&mut connection)
-        .await?;
-    ensure!(
-        integrity == "ok",
-        "rollback_database_incompatible: SQLite integrity failure"
-    );
-    let migrator = sqlx::migrate!("./migrations");
-    let expected: Vec<_> = migrator.iter().collect();
-    let rows = sqlx::query(
-        "SELECT version,checksum,success FROM _sqlx_migrations ORDER BY version LIMIT 4097",
-    )
-    .fetch_all(&mut connection)
-    .await?;
-    ensure!(
-        rows.len() == expected.len(),
-        "rollback_database_incompatible: migration count"
-    );
-    for (row, migration) in rows.iter().zip(expected) {
-        ensure!(
-            row.try_get::<i64, _>("version")? == migration.version
-                && row.try_get::<Vec<u8>, _>("checksum")? == migration.checksum.as_ref()
-                && row.try_get::<bool, _>("success")?,
-            "rollback_database_incompatible: compiled migration history"
-        );
+    Ok(())
+}
+
+/// Invoked from both the predecessor and imported candidate binaries on one
+/// private SQLite snapshot; never migrates or restores the live appliance DB.
+/// Without `rollback_target`: this release can start on the snapshot (its
+/// history is a prefix of ours, or ours plus newer declared expansions).
+/// With it: this release, as the rollback target, still runs on a database
+/// the candidate migrated (`crate::schema_evolution`).
+pub async fn verify_database(path: &Path, rollback_target: bool) -> Result<()> {
+    check_snapshot(path)?;
+    if rollback_target {
+        crate::schema_evolution::verify_rollback_target(path).await?;
+    } else {
+        crate::schema_evolution::verify_openable(path).await?;
     }
-    connection.close().await?;
+    Ok(())
+}
+
+/// Candidate side of a schema-changing update: migrate a private copy of the
+/// root snapshot, as this release's first boot would migrate the live DB.
+pub async fn rehearse_database(path: &Path, output: &Path) -> Result<()> {
+    check_snapshot(path)?;
+    let parent = fs::symlink_metadata(
+        output
+            .parent()
+            .ok_or_else(|| anyhow!("rehearsal output has no directory"))?,
+    )?;
+    ensure!(
+        parent.is_dir() && parent.uid() == 0 && parent.mode() & 0o077 == 0,
+        "unsafe database rehearsal directory"
+    );
+    crate::schema_evolution::rehearse(path, output).await?;
     Ok(())
 }
 
@@ -992,6 +1009,35 @@ mod tests {
         server.await.unwrap();
         assert!(!path.exists());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn live_history_may_extend_the_installed_inventory_only_with_newer_rows() {
+        let row = |version: i64, checksum: &str, success: i64| json!({"version": version, "sqlx_checksum": checksum, "success": success});
+        let installed = [row(1, "aa", 1), row(2, "bb", 1)];
+        let installed: Vec<Value> = installed
+            .iter()
+            .map(|entry| json!({"version": entry["version"], "sqlx_checksum": entry["sqlx_checksum"]}))
+            .collect();
+        assert!(live_history_admissible(&[row(1, "aa", 1), row(2, "bb", 1)], &installed).is_ok());
+        // A rolled-back candidate's declared expansion stays behind.
+        assert!(
+            live_history_admissible(
+                &[row(1, "aa", 1), row(2, "bb", 1), row(3, "cc", 1)],
+                &installed
+            )
+            .is_ok()
+        );
+        for live in [
+            vec![row(1, "aa", 1)],
+            vec![row(1, "aa", 1), row(2, "xx", 1)],
+            vec![row(1, "aa", 1), row(2, "bb", 0)],
+            vec![row(1, "aa", 1), row(2, "bb", 1), row(3, "cc", 0)],
+            vec![row(0, "zz", 1), row(1, "aa", 1), row(2, "bb", 1)],
+        ] {
+            let error = live_history_admissible(&live, &installed).unwrap_err();
+            assert!(error.to_string().contains("rollback_database_incompatible"));
+        }
     }
 
     #[test]

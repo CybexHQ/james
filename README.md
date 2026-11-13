@@ -193,15 +193,20 @@ the `.19` development appliances. Later builds must preserve that migration
 and its checksum even when the multicast capability is unavailable, so those
 appliances can restart or upgrade without discarding their state.
 
-The SQLite schema itself is frozen at the inventory of the published releases
-(`release/sqlite-migrations.sha256`, v0.2.70 and 0.2.58-dev.9): the NixOS
-updater refuses an update whose migration inventory differs from the installed
-release's (`rollback_database_incompatible`), so `cargo test`, the tool tests
-and the `manifest` signing step reject any change to `migrations/`, and
-`verify-successor --previous-release … --current-release …` compares the two
-signed releases. A schema change needs its own update-contract design first.
-New state lives in files under the Nest state directory (`src/state_files.rs`):
-detected commits, scans and upload grants.
+The SQLite schema starts with the inventory of the published releases
+(`release/sqlite-migrations.sha256`): releases before schema evolution refuse
+an update whose migration inventory differs (`rollback_database_incompatible`).
+Later releases admit declared expand/contract migrations that the installed
+release can still run on after a rollback, proven on a copy of the live
+database before the update; see `docs/sqlite-schema-evolution.md`. `cargo test`,
+the tool tests and the `manifest` signing step refuse any other change to
+`migrations/`, and still refuse every new migration until
+`release/sqlite-schema-evolution.json` says the releases Nests update from run
+declared changes. Until then new state lives in files under the Nest state
+directory (`src/state_files.rs`): detected commits, scans and upload grants.
+
+Nest state and keys can be backed up encrypted and restored onto a
+replacement Nest: `docs/nest-state-backup.md`.
 
 ## Off-site software uploads
 

@@ -287,6 +287,114 @@ class Recovery(unittest.TestCase):
         self.assertEqual(set(removed[:-1]), {self.paths[key] for key in ('PREPARE', 'COMMIT', 'ROLLBACK')})
 
 
+class SchemaRehearsal(unittest.TestCase):
+    """A schema-changing candidate is rehearsed on a copy before anything is
+    prepared (docs/sqlite-schema-evolution.md)."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.cache = self.directory / 'private/attempt/cache'
+        self.cache.mkdir(parents=True)
+        self.inventory = self.directory / 'sqlite-migrations.json'
+        self.inventory.write_bytes(b'{"installed":true}\n')
+        self.known = {'schema': 'tiaris.nest.known-good-system.v3', 'generations': [
+            {'system_generation': '7', 'system_toplevel': '/nix/store/source', 'loader_entry': 'nixos-generation-7.conf'},
+            {'system_generation': '6', 'system_toplevel': '/nix/store/evolving', 'loader_entry': 'nixos-generation-6.conf'},
+            {'system_generation': '5', 'system_toplevel': '/nix/store/older', 'loader_entry': 'nixos-generation-5.conf'}]}
+        self.saved = {}
+        self.enterContext(patch.object(update, 'INVENTORY', self.inventory))
+        self.enterContext(patch.object(update, 'KNOWN', self.directory / 'known'))
+        self.enterContext(patch.object(update, 'ROOTS', self.directory / 'roots'))
+        self.enterContext(patch.object(update, 'ENTRIES', self.directory / 'entries'))
+        self.enterContext(patch.object(update, 'PROFILES', self.directory / 'profiles'))
+        self.enterContext(patch.object(update, 'read', lambda path, **kw: path.read_bytes()))
+        self.enterContext(patch.object(update, 'load', lambda path, **kw: copy.deepcopy(self.known)))
+        self.enterContext(patch.object(update, 'save', lambda path, value: self.saved.__setitem__(path, value)))
+        self.enterContext(patch.object(update, 'sync_dir'))
+        self.enterContext(patch.object(update, 'current', lambda: {'system_generation': '7'}))
+        self.calls = []
+        def run(*arguments, **kwargs):
+            self.calls.append([str(a) for a in arguments])
+            if 'rehearse-appliance-database' in self.calls[-1]:
+                (self.cache.parent / 'database-rehearsal.sqlite').write_bytes(b'copy')
+            return ''
+        self.enterContext(patch.object(update, 'run', side_effect=run))
+        self.verified = {'system_toplevel': '/nix/store/candidate', 'sqlite_migrations_sha256':
+                         hashlib.sha256(b'{"installed":true}\n').hexdigest()}
+
+    def test_a_schema_neutral_update_is_not_rehearsed(self):
+        self.assertFalse(update.schema_changes(self.verified))
+        self.verified['sqlite_migrations_sha256'] = 'c' * 64
+        self.assertTrue(update.schema_changes(self.verified))
+
+    def test_candidate_migrates_a_copy_then_every_retained_release_must_open_it(self):
+        opened = []
+        def opens(binary, database):
+            opened.append(str(binary))
+            return str(binary) != '/nix/store/older/sw/bin/tiaris-nest'
+        with patch.object(update, 'opens_rollback', side_effect=opens):
+            retire = update.rehearse_database(self.verified, self.cache)
+        rehearsal = str(self.cache.parent / 'database-rehearsal.sqlite')
+        self.assertEqual(self.calls, [['/nix/store/candidate/sw/bin/tiaris-nest', 'rehearse-appliance-database',
+            '--database', str(self.cache.parent / 'database-compatibility.sqlite'), '--output', rehearsal]])
+        self.assertEqual(opened, [str(update.SOURCE_NEST), '/nix/store/evolving/sw/bin/tiaris-nest',
+                                  '/nix/store/older/sw/bin/tiaris-nest'])
+        self.assertEqual([row['system_generation'] for row in retire], ['5'])
+        self.assertFalse(Path(rehearsal).exists())
+
+    def test_a_failed_rehearsal_refuses_with_the_database_reason(self):
+        def fails(*arguments, **kwargs):
+            raise subprocess.CalledProcessError(1, arguments)
+        with patch.object(update, 'run', side_effect=fails):
+            with self.assertRaises(update.DatabaseIncompatible):
+                update.rehearse_database(self.verified, self.cache)
+        with patch.object(update, 'opens_rollback', return_value=False):
+            with self.assertRaisesRegex(update.DatabaseIncompatible, 'running release'):
+                update.rehearse_database(self.verified, self.cache)
+        source = (RUNTIME / 'generation_update.py').read_text()
+        self.assertIn("'rollback_database_incompatible' if isinstance(error, DatabaseIncompatible)", source)
+
+    def test_retirement_prunes_first_and_never_touches_the_booted_generation(self):
+        (self.directory / 'profiles').mkdir()
+        (self.directory / 'profiles/system-5-link').symlink_to('/nix/store/older')
+        (self.directory / 'entries').mkdir()
+        (self.directory / 'entries/nixos-generation-5.conf').write_text('entry')
+        (self.directory / 'roots').mkdir()
+        (self.directory / 'roots/good-5').symlink_to('/nix/store/older')
+        update.retire_generations([self.known['generations'][2]])
+        self.assertEqual(self.calls, [['nix-env', '--profile', str(update.PROFILE), '--delete-generations', '5']])
+        self.assertFalse((self.directory / 'entries/nixos-generation-5.conf').exists())
+        self.assertFalse((self.directory / 'roots/good-5').is_symlink())
+        self.assertEqual([row['system_generation'] for row in self.saved[self.directory / 'known']['generations']], ['7', '6'])
+        # A repeat after a crash finds the profile gone and prunes nothing twice.
+        (self.directory / 'profiles/system-5-link').unlink()
+        self.calls.clear()
+        update.retire_generations([self.known['generations'][2]])
+        self.assertEqual(self.calls, [])
+        with self.assertRaisesRegex(ValueError, 'booted'):
+            update.retire_generations([self.known['generations'][0]])
+
+    def test_opening_needs_a_release_that_knows_the_rollback_check(self):
+        for code, expected in ((0, True), (2, False)):
+            binary = self.directory / ('nest-' + str(code))
+            binary.write_text('#!/bin/sh\nexit ' + str(code) + '\n')
+            binary.chmod(0o700)
+            self.assertIs(update.opens_rollback(binary, self.directory / 'db.sqlite'), expected)
+        self.assertFalse(update.opens_rollback(self.directory / 'missing', self.directory / 'db.sqlite'))
+
+    def test_rehearsal_happens_before_anything_is_prepared(self):
+        stage = (RUNTIME / 'generation_update.py').read_text()
+        stage = stage[stage.index('def stage():'):]
+        candidate_check = stage.index("'verify-appliance-database'")
+        rehearsal = stage.index('if schema_changes(verified):')
+        retirement = stage.index('retire_generations(rehearse_database(verified, cache))')
+        prepare = stage.index('save(PREPARE, receipt)')
+        self.assertLess(candidate_check, rehearsal)
+        self.assertLess(rehearsal, retirement)
+        self.assertLess(retirement, prepare)
+
+
 class BootAnchors(unittest.TestCase):
     def test_missing_corrupt_or_wrong_system_boot_payload_rejects(self):
         with tempfile.TemporaryDirectory() as temporary:
