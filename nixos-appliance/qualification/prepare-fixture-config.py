@@ -28,8 +28,8 @@ def prepare(template, candidate_dir, predecessor_dir, directory):
     if info.st_uid != 0 or info.st_mode & 0o077:
         raise ValueError('fixture template directory must be root-private')
     value = config.validate(json.loads(config.read_file(template)))
-    if value['manage_origin'] != 'https://manage.cybex.net':
-        raise ValueError('production fixture template must name the production artifact origin')
+    config.production_origin(value['manage_origin'],
+                             'production fixture template must name the production artifact origin')
     # Validate dedicated secret material before performing builds. This does not
     # require stale template image IDs or a previous candidate source to exist.
     for field in ('tls_certificate', 'tls_private_key', 'provisioning_seed_file'):

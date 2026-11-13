@@ -75,6 +75,36 @@ requires greater runtime SemVer; advancing a runtime or compatibility epoch
 also requires changed bundle bytes. Successor verification runs before signing
 compatibility and again immediately before immutable publication.
 
+### Production Management origin
+
+Production Manage is `https://manage.tiaris.com`. Every Nest release is built
+for one Management origin, named in its signed installer descriptor; a Nest
+connects only to that origin. A production release is built with the repository
+variable `CYBEX_JAMES_BUILD_MANAGE_ORIGIN` set to `https://manage.tiaris.com`.
+When that variable is unset, the Nest binaries are still built for
+`https://manage.tiaris.com`, never for the former name.
+
+Production releases up to and including v0.2.99 were built for the former name,
+`https://manage.cybex.net`. The publish and promotion gates accept both names as
+production (`tools/production_origins.py`) and refuse every other origin.
+
+A release lineage keeps its origin. The one exception is a one-time change from
+`https://manage.cybex.net` to `https://manage.tiaris.com`, owner decision of
+13 November 2026, recorded in `release/production-origin-transition.json`. The
+record names the exact last former-name release (v0.2.99 and the SHA-256 of its
+two signed descriptors). Release signing and the successor check before
+publication admit the change only when the predecessor is exactly that release.
+The pair of origins is fixed in `tools/nest-release.py`, so the record cannot
+allow the change back or any other change. After the first `manage.tiaris.com`
+release is published, it is the predecessor and the record no longer applies.
+
+The change is reinstall-only. Updating a Nest installed for
+`https://manage.cybex.net` to a `https://manage.tiaris.com` release is not
+supported: the new Nest binaries check that their installed provisioning state
+and system identity name their own origin, so such an update is refused. Each
+Nest is installed fresh from the new release's appliance ISO, which Manage
+personalizes as usual.
+
 ### Where the runtime pin lives
 
 `release/workstation-netboot-source.json` and `release/coordinated.json` on `main`

@@ -1343,6 +1343,279 @@ class NestReleaseToolTests(unittest.TestCase):
         self.assertEqual(rejected.returncode, 2)
         self.assertIn(b"requires manage_origin", rejected.stderr)
 
+    def sign_compatibility_asset(self, value: dict[str, object], path: Path) -> Path:
+        release_tool = runpy.run_path(str(TOOL))
+        payload = json.loads(json.dumps(value))
+        payload.pop("signature", None)
+        private_fd = os.open(self.private_key, os.O_RDONLY)
+        try:
+            signature = release_tool["_sign"](
+                private_fd, release_tool["_release_compatibility_message"](payload)
+            )
+        finally:
+            os.close(private_fd)
+        self.write_canonical_json(
+            path, {**payload, "signature": base64.b64encode(signature).decode("ascii")}
+        )
+        return path
+
+    def production_origin_lineage(
+        self, previous_origin: str, current_origin: str
+    ) -> tuple[Path, Path, dict[str, object]]:
+        """A signed predecessor (0.1.1) and successor (0.1.2) plus a matching record."""
+        manifest_path = self.directory / "release.json"
+        if not manifest_path.exists():
+            signed = self.run_tool(*self.manifest_arguments(manifest_path))
+            self.assertEqual(signed.returncode, 0, signed.stderr.decode())
+        generated_path = self.directory / "generated-compatibility.json"
+        if not generated_path.exists():
+            generated = self.run_tool(
+                *self.compatibility_arguments(generated_path, manifest_path)
+            )
+            self.assertEqual(generated.returncode, 0, generated.stderr.decode())
+        generated_asset = json.loads(generated_path.read_text(encoding="utf-8"))
+        previous_value = json.loads(json.dumps(generated_asset))
+        previous_value["artifacts"]["appliance_iso_template"]["manage_origin"] = previous_origin
+        previous_value["release_manifest"]["url"] = (
+            "https://github.com/CybexHQ/james/releases/download/v0.1.1/tiaris-nest-release.json"
+        )
+        previous_path = self.sign_compatibility_asset(
+            previous_value, self.directory / "origin-predecessor.json"
+        )
+        current_value = json.loads(json.dumps(generated_asset))
+        current_value["nest_release_version"] = "0.1.2"
+        current_value["artifacts"]["appliance_iso_template"]["manage_origin"] = current_origin
+        current_path = self.sign_compatibility_asset(
+            current_value, self.directory / "origin-successor.json"
+        )
+        record = json.loads(
+            (REPOSITORY / "release" / "production-origin-transition.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        record["predecessor"] = {
+            "nest_release_version": "0.1.1",
+            "tag_name": "v0.1.1",
+            "compatibility_sha256": hashlib.sha256(previous_path.read_bytes()).hexdigest(),
+            "manifest_sha256": previous_value["release_manifest"]["sha256"],
+        }
+        return previous_path, current_path, record
+
+    def verify_origin_successor(
+        self, previous: Path, current: Path, record: dict[str, object] | None
+    ) -> subprocess.CompletedProcess[bytes]:
+        arguments = [
+            "verify-successor",
+            "--previous-compatibility", str(previous),
+            "--current-compatibility", str(current),
+            "--trusted-public-key", self.public_key(),
+        ]
+        if record is not None:
+            record_path = self.directory / "production-origin-transition.json"
+            self.write_canonical_json(record_path, record)
+            arguments += ["--production-origin-transition", str(record_path)]
+        return self.run_tool(*arguments)
+
+    def test_lineage_admits_the_recorded_production_origin_change_once(self) -> None:
+        previous, current, record = self.production_origin_lineage(
+            "https://manage.cybex.net", "https://manage.tiaris.com"
+        )
+        accepted = self.verify_origin_successor(previous, current, record)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr.decode())
+        self.assertIn(b"one-time production Management origin change", accepted.stdout)
+        self.assertIn(b"reinstall-only", accepted.stdout)
+
+        # Without the record the change is still refused.
+        rejected = self.verify_origin_successor(previous, current, None)
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"must not change within a release lineage", rejected.stderr)
+
+        # The record admits the change only directly after its exact predecessor.
+        for field, value in (
+            ("compatibility_sha256", "0" * 64),
+            ("manifest_sha256", "0" * 64),
+        ):
+            changed = json.loads(json.dumps(record))
+            changed["predecessor"][field] = value
+            with self.subTest(field=field):
+                rejected = self.verify_origin_successor(previous, current, changed)
+                self.assertEqual(rejected.returncode, 2)
+                self.assertIn(b"exact recorded predecessor", rejected.stderr)
+        changed = json.loads(json.dumps(record))
+        changed["predecessor"].update(nest_release_version="0.1.0", tag_name="v0.1.0")
+        rejected = self.verify_origin_successor(previous, current, changed)
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"exact recorded predecessor", rejected.stderr)
+        changed = json.loads(json.dumps(record))
+        changed["repository"] = "CybexHQ/other"
+        rejected = self.verify_origin_successor(previous, current, changed)
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"exact recorded predecessor", rejected.stderr)
+
+    def test_production_origin_record_cannot_authorize_any_other_change(self) -> None:
+        tiaris, cybex = "https://manage.tiaris.com", "https://manage.cybex.net"
+        for previous_origin, current_origin in (
+            (tiaris, cybex),  # the change back
+            (cybex, "https://dev.tiaris.com"),
+            (cybex, "https://manage.example.test"),
+            ("https://dev.tiaris.com", tiaris),
+            ("https://manage.example.test", tiaris),
+        ):
+            with self.subTest(previous=previous_origin, current=current_origin):
+                previous, current, record = self.production_origin_lineage(
+                    previous_origin, current_origin
+                )
+                rejected = self.verify_origin_successor(previous, current, record)
+                self.assertEqual(rejected.returncode, 2)
+                self.assertIn(b"must not change within a release lineage", rejected.stderr)
+                # Rewriting the record's pair does not help: the pair is fixed in code.
+                record.update(
+                    from_manage_origin=previous_origin, to_manage_origin=current_origin
+                )
+                rejected = self.verify_origin_successor(previous, current, record)
+                self.assertEqual(rejected.returncode, 2)
+                self.assertIn(b"must not change within a release lineage", rejected.stderr)
+
+        previous, current, record = self.production_origin_lineage(cybex, tiaris)
+        invalid_records = []
+        for field, value in (
+            ("schema", "tiaris.nest.production-origin-transition.v2"),
+            ("operation", "update"),
+            ("from_manage_origin", tiaris),
+            ("to_manage_origin", cybex),
+            ("reason", ""),
+            ("repository", "not a repository"),
+        ):
+            changed = json.loads(json.dumps(record))
+            changed[field] = value
+            invalid_records.append((field, changed))
+        changed = json.loads(json.dumps(record))
+        changed["extra"] = True
+        invalid_records.append(("extra", changed))
+        changed = json.loads(json.dumps(record))
+        changed["predecessor"]["tag_name"] = "v9.9.9"
+        invalid_records.append(("tag_name", changed))
+        for name, changed in invalid_records:
+            with self.subTest(record=name):
+                rejected = self.verify_origin_successor(previous, current, changed)
+                self.assertEqual(rejected.returncode, 2)
+                self.assertIn(b"production origin transition record is invalid", rejected.stderr)
+        record_path = self.directory / "noncanonical-transition.json"
+        record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        rejected = self.run_tool(
+            "verify-successor",
+            "--previous-compatibility", str(previous),
+            "--current-compatibility", str(current),
+            "--trusted-public-key", self.public_key(),
+            "--production-origin-transition", str(record_path),
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"production origin transition record is invalid", rejected.stderr)
+
+    def test_signing_a_tiaris_successor_requires_the_recorded_change(self) -> None:
+        manifest_path = self.directory / "release.json"
+        signed = self.run_tool(*self.manifest_arguments(manifest_path))
+        self.assertEqual(signed.returncode, 0, signed.stderr.decode())
+        previous, _current, record = self.production_origin_lineage(
+            "https://manage.cybex.net", "https://manage.tiaris.com"
+        )
+        record_path = self.directory / "production-origin-transition.json"
+        self.write_canonical_json(record_path, record)
+
+        production_template = self.directory / (
+            "tiaris-nest-appliance-template-0.1.2-x86_64-linux.iso"
+        )
+        production_template.write_bytes(self.template.read_bytes())
+        self.template = production_template
+        self.manage_origin = "https://manage.tiaris.com"
+        self.write_template_metadata(version="0.1.2")
+        successor_manifest = self.directory / "tiaris-release.json"
+        arguments = self.manifest_arguments(successor_manifest)
+        arguments[arguments.index("--version") + 1] = "0.1.2"
+        for index, value in enumerate(arguments):
+            arguments[index] = value.replace("v0.1.1", "v0.1.2").replace(
+                "template-0.1.1", "template-0.1.2"
+            )
+        signed = self.run_tool(*arguments)
+        self.assertEqual(signed.returncode, 0, signed.stderr.decode())
+        compatibility = self.compatibility_arguments(
+            self.directory / "tiaris-compatibility.json", successor_manifest
+        )
+        url_index = compatibility.index("--manifest-url") + 1
+        compatibility[url_index] = compatibility[url_index].replace("v0.1.1", "v0.1.2")
+
+        rejected = self.run_tool(
+            *compatibility, "--previous-compatibility", str(previous)
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn(b"must not change within a release lineage", rejected.stderr)
+        accepted = self.run_tool(
+            *compatibility,
+            "--previous-compatibility", str(previous),
+            "--production-origin-transition", str(record_path),
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr.decode())
+        asset = json.loads(
+            (self.directory / "tiaris-compatibility.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            asset["artifacts"]["appliance_iso_template"]["manage_origin"],
+            "https://manage.tiaris.com",
+        )
+
+    def test_committed_production_origin_record_binds_published_v0_2_99(self) -> None:
+        release_tool = runpy.run_path(str(TOOL))
+        record = release_tool["_production_origin_transition"](
+            REPOSITORY / "release" / "production-origin-transition.json"
+        )
+        self.assertEqual(record["from_manage_origin"], "https://manage.cybex.net")
+        self.assertEqual(record["to_manage_origin"], "https://manage.tiaris.com")
+        self.assertEqual(record["repository"], "CybexHQ/james")
+        fixture = REPOSITORY / "tools" / "tests" / "fixtures" / "production-origin" / "v0.2.99"
+        body = (fixture / "tiaris-nest-release-compatibility.json").read_bytes()
+        asset = json.loads(body)
+        payload = release_tool["_verified_release_compatibility_payload"](
+            asset, body, asset["public_key"], require_current_runtime_contract=False
+        )
+        self.assertEqual(
+            payload["artifacts"]["appliance_iso_template"]["manage_origin"],
+            "https://manage.cybex.net",
+        )
+        self.assertEqual(
+            hashlib.sha256((fixture / "tiaris-nest-release.json").read_bytes()).hexdigest(),
+            record["predecessor"]["manifest_sha256"],
+        )
+        self.assertTrue(
+            release_tool["_production_origin_transition_binds"](record, payload, body)
+        )
+
+    def test_production_manage_origin_gate_names_both_production_origins(self) -> None:
+        for origin in ("https://manage.tiaris.com", "https://manage.cybex.net"):
+            with self.subTest(origin=origin):
+                accepted = self.run_tool(
+                    "require-production-manage-origin", "--manage-origin", origin
+                )
+                self.assertEqual(accepted.returncode, 0, accepted.stderr.decode())
+        for origin in (
+            "https://dev.tiaris.com",
+            "https://manage.example.test",
+            "https://manage.tiaris.com:8443",
+            "http://manage.tiaris.com",
+            "https://manage.tiaris.com/",
+            "",
+        ):
+            with self.subTest(origin=origin):
+                rejected = self.run_tool(
+                    "require-production-manage-origin", "--manage-origin", origin
+                )
+                self.assertEqual(rejected.returncode, 2)
+        origins = runpy.run_path(str(REPOSITORY / "tools" / "production_origins.py"))
+        self.assertEqual(origins["PRODUCTION_MANAGE_ORIGIN"], "https://manage.tiaris.com")
+        self.assertEqual(
+            origins["PRODUCTION_MANAGE_ORIGINS"],
+            ("https://manage.tiaris.com", "https://manage.cybex.net"),
+        )
+
     def test_appliance_state_schema_transition_rejects_downgrade_and_removal(
         self,
     ) -> None:

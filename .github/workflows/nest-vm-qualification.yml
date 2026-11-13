@@ -134,7 +134,11 @@ jobs:
             input="TIARIS_NEST_QUALIFICATION_$name"
             : "${!input:?configure the protected production qualification environment}"
           done
-          test "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" = https://manage.cybex.net
+          # Production origins: tools/production_origins.py (a test keeps them equal).
+          case "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" in
+            https://manage.tiaris.com | https://manage.cybex.net) ;;
+            *) echo 'error: production qualification needs a production Management origin' >&2; exit 1 ;;
+          esac
           test "$TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN" = "$TIARIS_NEST_BUILD_MANAGE_ORIGIN"
           [[ "$TIARIS_NEST_QUALIFICATION_CONFIG" = /* ]]
           [[ "$TIARIS_NEST_QUALIFICATION_STATE_ROOT" = /* ]]
@@ -410,7 +414,11 @@ jobs:
             input="TIARIS_NEST_QUALIFICATION_$name"
             : "${!input:?configure the protected production qualification environment}"
           done
-          test "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" = https://manage.cybex.net
+          # Production origins: tools/production_origins.py (a test keeps them equal).
+          case "$TIARIS_NEST_BUILD_MANAGE_ORIGIN" in
+            https://manage.tiaris.com | https://manage.cybex.net) ;;
+            *) echo 'error: production qualification needs a production Management origin' >&2; exit 1 ;;
+          esac
           test "$TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN" = "$TIARIS_NEST_BUILD_MANAGE_ORIGIN"
           [[ "$TIARIS_NEST_QUALIFICATION_CONFIG" = /* ]]
           [[ "$TIARIS_NEST_QUALIFICATION_STATE_ROOT" = /* ]]

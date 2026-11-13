@@ -42,6 +42,22 @@ assert _closure_spec is not None and _closure_spec.loader is not None
 system_closure = importlib.util.module_from_spec(_closure_spec)
 _closure_spec.loader.exec_module(system_closure)
 
+_origins_spec = importlib.util.spec_from_file_location(
+    "tiaris_production_origins", Path(__file__).with_name("production_origins.py")
+)
+assert _origins_spec is not None and _origins_spec.loader is not None
+production_origins = importlib.util.module_from_spec(_origins_spec)
+_origins_spec.loader.exec_module(production_origins)
+
+PRODUCTION_ORIGIN_TRANSITION_SCHEMA = "tiaris.nest.production-origin-transition.v1"
+PRODUCTION_ORIGIN_TRANSITION_FIELDS = {
+    "schema", "repository", "operation", "from_manage_origin", "to_manage_origin",
+    "predecessor", "authorized_by", "authorized_on", "reason",
+}
+PRODUCTION_ORIGIN_TRANSITION_PREDECESSOR_FIELDS = {
+    "nest_release_version", "tag_name", "compatibility_sha256", "manifest_sha256",
+}
+
 
 SCHEMA = "tiaris.nest.release.v1"
 RELEASE_COMPATIBILITY_SCHEMA = "tiaris.nest.release-compatibility.v1"
@@ -3139,7 +3155,10 @@ def _enforce_appliance_state_schema_transition(
 
 
 def _enforce_installer_manage_origin_transition(
-    previous_payload: dict[str, object], current_payload: dict[str, object]
+    previous_payload: dict[str, object],
+    current_payload: dict[str, object],
+    previous_body: bytes | None = None,
+    transition_path: str | os.PathLike[str] | None = None,
 ) -> None:
     previous_template = previous_payload["artifacts"]["appliance_iso_template"]
     current_template = current_payload["artifacts"]["appliance_iso_template"]
@@ -3151,8 +3170,93 @@ def _enforce_installer_manage_origin_transition(
         # the lineage exactly once. Current parsing already requires the field.
         return
     current_origin = current_template.get("manage_origin")
-    if previous_origin != current_origin:
-        _fail("installer Management origin must not change within a release lineage")
+    if previous_origin == current_origin:
+        return
+    if (
+        previous_origin == production_origins.FORMER_PRODUCTION_MANAGE_ORIGIN
+        and current_origin == production_origins.PRODUCTION_MANAGE_ORIGIN
+        and transition_path is not None
+        and previous_body is not None
+    ):
+        record = _production_origin_transition(Path(transition_path))
+        if _production_origin_transition_binds(record, previous_payload, previous_body):
+            print(
+                "admitted the one-time production Management origin change "
+                f"{previous_origin} -> {current_origin} after "
+                f"{previous_payload['nest_release_version']} "
+                f"({Path(transition_path).name}); the successor is reinstall-only"
+            )
+            return
+        _fail(
+            "the production Management origin change is authorized only after its "
+            "exact recorded predecessor"
+        )
+    _fail("installer Management origin must not change within a release lineage")
+
+
+def _production_origin_transition(path: Path) -> dict[str, object]:
+    """The committed, reviewed record of the one production origin change.
+
+    The pair of origins is fixed in code: the record cannot authorize any other
+    change, nor the change back. It names the exact last former-origin release,
+    so the change is admitted only directly after that publication.
+    """
+    record, body = _load_bounded_json(
+        path, "production origin transition", maximum_bytes=64 * 1024
+    )
+    predecessor = record.get("predecessor")
+    if (
+        body != _canonical_json_body(record)
+        or set(record) != PRODUCTION_ORIGIN_TRANSITION_FIELDS
+        or record["schema"] != PRODUCTION_ORIGIN_TRANSITION_SCHEMA
+        or record["operation"] != "reinstall-only"
+        or record["from_manage_origin"] != production_origins.FORMER_PRODUCTION_MANAGE_ORIGIN
+        or record["to_manage_origin"] != production_origins.PRODUCTION_MANAGE_ORIGIN
+        or not isinstance(record["repository"], str)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", record["repository"])
+        or not isinstance(predecessor, dict)
+        or set(predecessor) != PRODUCTION_ORIGIN_TRANSITION_PREDECESSOR_FIELDS
+        or not all(isinstance(value, str) for value in predecessor.values())
+        or not all(
+            isinstance(record[field], str) and record[field]
+            for field in ("authorized_by", "authorized_on", "reason")
+        )
+    ):
+        _fail("production origin transition record is invalid")
+    _validate_version(predecessor["nest_release_version"])
+    if predecessor["tag_name"] != "v" + predecessor["nest_release_version"]:
+        _fail("production origin transition record is invalid")
+    _require_sha256(predecessor["compatibility_sha256"], "transition predecessor compatibility")
+    _require_sha256(predecessor["manifest_sha256"], "transition predecessor manifest")
+    return record
+
+
+def _production_origin_transition_binds(
+    record: dict[str, object], previous_payload: dict[str, object], previous_body: bytes
+) -> bool:
+    predecessor = record["predecessor"]
+    manifest = previous_payload.get("release_manifest")
+    expected_url = (
+        f"https://github.com/{record['repository']}/releases/download/"
+        f"{predecessor['tag_name']}/tiaris-nest-release.json"
+    )
+    return (
+        isinstance(manifest, dict)
+        and previous_payload.get("nest_release_version") == predecessor["nest_release_version"]
+        and hashlib.sha256(previous_body).hexdigest() == predecessor["compatibility_sha256"]
+        and manifest.get("sha256") == predecessor["manifest_sha256"]
+        and manifest.get("url") == expected_url
+    )
+
+
+def _require_production_manage_origin_command(arguments: argparse.Namespace) -> None:
+    origin = _validate_manage_origin(arguments.manage_origin)
+    if not production_origins.is_production(origin):
+        _fail(
+            "a production Nest release must be built for "
+            + " or ".join(production_origins.PRODUCTION_MANAGE_ORIGINS)
+        )
+    print(f"production Management origin: {origin}")
 
 
 def _verify_signed_messages(
@@ -3258,7 +3362,9 @@ def _release_compatibility_command(arguments: argparse.Namespace) -> None:
                 require_current_installer_origin=False,
             )
             _enforce_appliance_state_schema_transition(previous_payload, payload)
-            _enforce_installer_manage_origin_transition(previous_payload, payload)
+            _enforce_installer_manage_origin_transition(
+                previous_payload, payload, previous_body,
+                getattr(arguments, "production_origin_transition", None))
         message = _release_compatibility_message(payload)
         signature = _sign(private_fd, message)
         _require_stable_private_key(private_fd, private_identity)
@@ -3352,7 +3458,9 @@ def _verify_release_successor_command(arguments: argparse.Namespace) -> None:
             current_version, getattr(arguments, "historical_authorization", None)),
     )
     _enforce_appliance_state_schema_transition(previous_payload, current_payload)
-    _enforce_installer_manage_origin_transition(previous_payload, current_payload)
+    _enforce_installer_manage_origin_transition(
+        previous_payload, current_payload, previous_body,
+        getattr(arguments, "production_origin_transition", None))
     previous_release = getattr(arguments, "previous_release", None)
     current_release = getattr(arguments, "current_release", None)
     if (previous_release is None) != (current_release is None):
@@ -4001,6 +4109,7 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     compatibility.add_argument("--historical-authorization", help="current-key authorization for one exact historical predecessor")
+    compatibility.add_argument("--production-origin-transition", help="committed record of the one-time production Management origin change (release/production-origin-transition.json)")
     compatibility.add_argument(
         "--output",
         required=True,
@@ -4052,6 +4161,7 @@ def _parser() -> argparse.ArgumentParser:
         help="latest published signed release compatibility asset",
     )
     verify_successor.add_argument("--historical-authorization", help="current-key authorization for one exact historical predecessor")
+    verify_successor.add_argument("--production-origin-transition", help="committed record of the one-time production Management origin change (release/production-origin-transition.json)")
     verify_successor.add_argument(
         "--current-compatibility",
         required=True,
@@ -4101,6 +4211,14 @@ def _parser() -> argparse.ArgumentParser:
         help="canonical https://host[:non-default-port] origin without credentials, path, query, or fragment",
     )
     validate_manage_origin.set_defaults(handler=_validate_manage_origin_command)
+
+    require_production_origin = commands.add_parser(
+        "require-production-manage-origin",
+        allow_abbrev=False,
+        help="require one of the production Management origins (tools/production_origins.py)",
+    )
+    require_production_origin.add_argument("--manage-origin", required=True)
+    require_production_origin.set_defaults(handler=_require_production_manage_origin_command)
 
     inspect_netboot = commands.add_parser(
         "inspect-workstation-netboot",

@@ -16,6 +16,10 @@ from urllib.parse import urlsplit
 _spec = importlib.util.spec_from_file_location('fixture_tls_client_hello', Path(__file__).with_name('tls_client_hello.py'))
 egress = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(egress)
+_origins_spec = importlib.util.spec_from_file_location(
+    'tiaris_production_origins', Path(__file__).resolve().parents[2] / 'tools/production_origins.py')
+production_origins = importlib.util.module_from_spec(_origins_spec)
+_origins_spec.loader.exec_module(production_origins)
 
 SCHEMA = 'tiaris.nest.isolated-manage-config.v2'
 SOURCE = 'https://github.com/CybexHQ/development'
@@ -74,6 +78,11 @@ def raw_key(value):
     if len(key) != 32 or base64.b64encode(key).decode() != value:
         raise ValueError('fixture Ed25519 keys must be canonical 32-byte Base64')
     return key
+
+
+def production_origin(value, message):
+    """A production fixture serves exactly one of production's Management origins."""
+    return production_origins.require_production(value, message)
 
 
 def origin(value):

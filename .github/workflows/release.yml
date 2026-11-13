@@ -452,6 +452,7 @@ jobs:
             previous_compatibility_args=(
               --previous-compatibility "$RUNNER_TEMP/tiaris-nest-previous-release-compatibility.json"
               --historical-authorization release/recovery-adoption.json
+              --production-origin-transition release/production-origin-transition.json
             )
           fi
           template_args=(
@@ -614,10 +615,14 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          if [ "${TIARIS_NEST_BUILD_MANAGE_ORIGIN:-}" != https://manage.cybex.net ]; then
-            echo '::error::Development-origin artifacts cannot be published or promoted as production releases.'
-            exit 1
-          fi
+          # Production origins: tools/production_origins.py (a test keeps them equal).
+          case "${TIARIS_NEST_BUILD_MANAGE_ORIGIN:-}" in
+            https://manage.tiaris.com | https://manage.cybex.net) ;;
+            *)
+              echo '::error::Development-origin artifacts cannot be published or promoted as production releases.'
+              exit 1
+              ;;
+          esac
 
       - name: Checkout exact tag for independent verification
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -1122,10 +1127,14 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          if [ "${TIARIS_NEST_BUILD_MANAGE_ORIGIN:-}" != https://manage.cybex.net ]; then
-            echo '::error::Development-origin artifacts cannot be published or promoted as production releases.'
-            exit 1
-          fi
+          # Production origins: tools/production_origins.py (a test keeps them equal).
+          case "${TIARIS_NEST_BUILD_MANAGE_ORIGIN:-}" in
+            https://manage.tiaris.com | https://manage.cybex.net) ;;
+            *)
+              echo '::error::Development-origin artifacts cannot be published or promoted as production releases.'
+              exit 1
+              ;;
+          esac
 
       - name: Checkout exact promotion source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

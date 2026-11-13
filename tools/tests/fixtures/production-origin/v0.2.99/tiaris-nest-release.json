@@ -1,0 +1,89 @@
+{
+  "schema": "tiaris.nest.release.v1",
+  "version": "0.2.99",
+  "release_url": "https://github.com/CybexHQ/james/releases/tag/v0.2.99",
+  "notes_url": "https://github.com/CybexHQ/james/releases/tag/v0.2.99",
+  "published_at": "2026-11-10T10:41:01Z",
+  "artifact": {
+    "url": "https://github.com/CybexHQ/james/releases/download/v0.2.99/tiaris-nest-x86_64-linux",
+    "sha256": "663ee007ad850418f4e29adc63ee753d0129e6996468a5e7eb83df4fd978c69b"
+  },
+  "signature": "X731KdFh3aK6wdkGmMeZMsQm/Ny9Sd+Oz0ZhuRl+WGBh/ymDzp2P0UOmLiazlcbcSC3iFBXxmNiaNzOjJxcoBw==",
+  "installer_iso_template_v3": {
+    "version": "0.2.99",
+    "architecture": "x86_64-linux",
+    "base_os": "nixos",
+    "base_os_version": "26.05",
+    "url": "https://github.com/CybexHQ/james/releases/download/v0.2.99/tiaris-nest-appliance-template-0.2.99-x86_64-linux.iso",
+    "size_bytes": 1577601024,
+    "template_sha256": "190e4112e9f196e529a6abbaea351c089d4271aad6c0009ae54a2e1652772f40",
+    "personalization_offset": 1577283584,
+    "personalization_size": 8192,
+    "placeholder_sha256": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+    "provisioning_public_keys": [
+      "+jP1KchZdnIb5F2shD2jPc4+sRte0iR0m1+Jhg07N8Q="
+    ],
+    "manage_origin": "https://manage.cybex.net",
+    "package_delivery": "system-closure-v1",
+    "envelope_max_validity_hours": 744,
+    "signature": "YeEmdAqhdJLJcRcmbacmtIyYl1SEOoDUjV7omg9CTOLInWv0mdwtWtdHM/K39ka+C+U6vJe5qKiN+HzuyGnnAA=="
+  },
+  "appliance_release_v1": {
+    "release_id": "0.2.99",
+    "base_os": "nixos",
+    "base_os_version": "26.05",
+    "source_revision": "52c96f7669e88ed117fe45ac0b1c011e75c64c5c",
+    "manage_source_revision": "70eec7d2a2cc47f079e901a83389251ee0353630",
+    "nixpkgs_revision": "74cc63f702f7d60a557e152a57b40fb1fd0f72ac",
+    "system_toplevel": "/nix/store/irhgprnxah68j2dizjmqpr82dm3fii5q-nixos-system-tiaris-nest-26.05pre-git",
+    "required_system_versions": {
+      "kernel": "6.18.38",
+      "linux-firmware": "20260622",
+      "nix": "2.34.7",
+      "systemd-boot": "260.2",
+      "tiaris-nest": "0.2.99"
+    },
+    "sqlite_migrations_sha256": "0ccbb89564904ffbec89c0bad7f33460ee2c64e1d73d418a60b6ef5f73a3dc37",
+    "schema": "tiaris.nest.appliance-release.v3",
+    "system_closure": {
+      "url": "https://github.com/CybexHQ/james/releases/download/v0.2.99/tiaris-nest-appliance-closure-0.2.99-x86_64-linux.tar.zst",
+      "sha256": "89dd658f61c956ef043689373fed9f84e85dd676173418e28b3b659a813ff236",
+      "size_bytes": 1854319284
+    },
+    "minimum_protocol": 4,
+    "minimum_state_schema": 3,
+    "rollback_compatible": true,
+    "release_notes": "https://github.com/CybexHQ/james/releases/tag/v0.2.99",
+    "signature": "RSpQ9QnRxEmO+hHL6o1XOg36Tfr08Um1SVDtnFAqMqiQYtVSk/YYSknGhvGVkZQdpJLD0BfccV5oK+63XmaDAg=="
+  },
+  "workstation_netboot": {
+    "schema": "tiaris.nest.workstation-netboot.v1",
+    "runtime_version": "1.0.142",
+    "manage_source_revision": "70eec7d2a2cc47f079e901a83389251ee0353630",
+    "nixpkgs_revision": "74cc63f702f7d60a557e152a57b40fb1fd0f72ac",
+    "architecture": "x86_64-linux",
+    "format": "split-squashfs-v1",
+    "required_nest_protocol": 4,
+    "url": "https://github.com/CybexHQ/james/releases/download/v0.2.99/tiaris-workstation-netboot-1.0.142-70eec7d2a2cc-x86_64-linux.tar.zst",
+    "sha256": "aca26f0a36d3209c00810cea8da31f754533ce1434b96fe7b8dc3193b0837bfb",
+    "size_bytes": 1266606704,
+    "manifest_sha256": "3e3e6728e189ad6a40385b1a48e3a32b2f7675a686879db472901e8c317fea88",
+    "components": {
+      "bzImage": {
+        "sha256": "90e092e32626d6bb10c96b9f546aa25e47b83d849b16242810b4289cda2370f9",
+        "size_bytes": 13517312
+      },
+      "initrd": {
+        "sha256": "aef82aff7ab12ef5ce21326babe3663ecc5a1fdb1aed3f7d57517c16b3d0b900",
+        "size_bytes": 46524485
+      },
+      "nix-store.squashfs": {
+        "sha256": "54fb3c4aae51dca14d7cada8f384f6df53945ba4d3e1b867e87a6d203b9076ae",
+        "size_bytes": 1219502080
+      }
+    },
+    "manage_source_sha256": "c6e2116559e3b03a294e57378f90ffce6cdd8b1a4384d9aae39fbac2557a5d6e",
+    "manage_source_size_bytes": 75540480,
+    "signature": "s4mYu1qCg4l879jFhyI45T6bSjp0kPDfhpatNDzPZSA79OEnRAoWPf21hM3zDi0pc/T0yC7OKiywtT8L+86MCg=="
+  }
+}

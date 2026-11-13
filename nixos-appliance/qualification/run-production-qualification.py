@@ -139,7 +139,9 @@ def main():
     if args.isolated_manage_config:
         import isolated_manage_config
         config, _ = isolated_manage_config.load(args.isolated_manage_config)
-        if args.manage_origin != 'https://manage.cybex.net' or config['manage_origin'] != args.manage_origin:
+        isolated_manage_config.production_origin(
+            args.manage_origin, 'Production qualification config must bind the exact artifact origin')
+        if config['manage_origin'] != args.manage_origin:
             raise ValueError('Production qualification config must bind the exact artifact origin')
         if args.token_file or args.allow_device_helper:
             raise ValueError('Isolated qualification cannot accept an external session or device helper')

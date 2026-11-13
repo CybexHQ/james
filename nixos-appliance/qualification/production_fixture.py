@@ -21,8 +21,7 @@ def fixture(state, config_path, candidate, predecessor, phase, *, evidence_dir=N
     value, _ = config.load(config_path)
     if phase not in {'fresh', 'update', 'rollback', 'cold'}:
         raise ValueError('unsupported production qualification phase')
-    if value['manage_origin'] != 'https://manage.cybex.net':
-        raise ValueError('production fixture must bind the production artifact origin')
+    config.production_origin(value['manage_origin'], 'production fixture must bind the production artifact origin')
     directory = state / 'fixture-config'
     directory.mkdir(mode=0o700)
     selected = dict(value, initial_release='predecessor' if phase in {'update', 'rollback'} else 'candidate')
