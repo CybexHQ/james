@@ -43,6 +43,91 @@ pub const REQUIRED_MANAGE_ORIGIN: &str = match option_env!("TIARIS_NEST_BUILD_MA
     Some(origin) => origin,
     None => PRODUCTION_MANAGE_ORIGIN,
 };
+/// Production Manage's former name. Nests installed up to v0.2.99 record it in
+/// their durable state; `tools/production_origins.py` keeps the tooling's copy.
+pub const FORMER_PRODUCTION_MANAGE_ORIGIN: &str = "https://manage.cybex.net";
+/// The one older origin whose durable state this build accepts as its own
+/// (see [`effective_manage_origin`]). A build for production Manage accepts
+/// its former name; a build for the former name accepts nothing older.
+/// Proof builds for other origins may name one with
+/// `TIARIS_NEST_BUILD_LEGACY_MANAGE_ORIGIN`; a build whose required or legacy
+/// origin is a production name refuses to compile with any pair other than
+/// former -> current, so a release can carry only that alias.
+pub const LEGACY_MANAGE_ORIGIN: Option<&str> = legacy_manage_origin(
+    REQUIRED_MANAGE_ORIGIN,
+    option_env!("TIARIS_NEST_BUILD_LEGACY_MANAGE_ORIGIN"),
+);
+const _: () = assert!(
+    legacy_pair_allowed(REQUIRED_MANAGE_ORIGIN, LEGACY_MANAGE_ORIGIN),
+    "a production-origin Nest build accepts only https://manage.cybex.net -> https://manage.tiaris.com"
+);
+
+const fn same_str(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+const fn is_production_origin(origin: &str) -> bool {
+    same_str(origin, PRODUCTION_MANAGE_ORIGIN) || same_str(origin, FORMER_PRODUCTION_MANAGE_ORIGIN)
+}
+
+/// The legacy origin of a build for `required`: the build override when set
+/// (empty means unset), otherwise the fixed production rename.
+const fn legacy_manage_origin(
+    required: &str,
+    overridden: Option<&'static str>,
+) -> Option<&'static str> {
+    match overridden {
+        Some(origin) if !origin.is_empty() => Some(origin),
+        _ if same_str(required, PRODUCTION_MANAGE_ORIGIN) => Some(FORMER_PRODUCTION_MANAGE_ORIGIN),
+        _ => None,
+    }
+}
+
+/// One alias, one direction. It never names the build's own origin, and when
+/// either side is a production name it is exactly former -> current.
+// Only the compile-time assertion above calls it outside tests.
+#[cfg_attr(not(test), allow(dead_code))]
+const fn legacy_pair_allowed(required: &str, legacy: Option<&str>) -> bool {
+    match legacy {
+        None => !same_str(required, PRODUCTION_MANAGE_ORIGIN),
+        Some(legacy) => {
+            if legacy.is_empty() || same_str(legacy, required) {
+                false
+            } else if is_production_origin(required) || is_production_origin(legacy) {
+                same_str(required, PRODUCTION_MANAGE_ORIGIN)
+                    && same_str(legacy, FORMER_PRODUCTION_MANAGE_ORIGIN)
+            } else {
+                true
+            }
+        }
+    }
+}
+
+/// The Management origin this build serves for a durably recorded origin:
+/// the build's own origin for itself or for its one legacy name, otherwise
+/// none. On-disk state keeps the recorded value; only its use is mapped.
+pub fn effective_manage_origin(stored: &str) -> Option<&'static str> {
+    effective_origin_for(REQUIRED_MANAGE_ORIGIN, LEGACY_MANAGE_ORIGIN, stored)
+}
+
+fn effective_origin_for(
+    required: &'static str,
+    legacy: Option<&str>,
+    stored: &str,
+) -> Option<&'static str> {
+    (stored == required || legacy == Some(stored)).then_some(required)
+}
 pub const DEFAULT_ENVELOPE_PATH: &str = "/cdrom/TIARIS_PROVISIONING.BIN";
 pub const DEFAULT_PROVISIONING_KEYS_PATH: &str = "/cdrom/tiaris/provisioning-public-keys";
 pub const DEFAULT_RELEASE_PUBLIC_KEY_PATH: &str = packages::RELEASE_PUBLIC_KEY_PATH;
@@ -164,7 +249,7 @@ fn validate_installed_state_inner(
         || !durable.identity_active
         || !durable.installation_complete
         || durable.session_id != durable.plan.session_id
-        || durable.manage_origin != REQUIRED_MANAGE_ORIGIN
+        || effective_manage_origin(&durable.manage_origin).is_none()
     {
         bail!("promoted provisioning state invariants are invalid")
     }
@@ -190,7 +275,8 @@ fn validate_installed_state_inner(
         None => config.manage.organization_slug.is_empty(),
     };
     if !config.manage.enabled
-        || config.manage.api_url != durable.manage_origin
+        // Configuration loading already maps the legacy origin (config.rs).
+        || effective_manage_origin(&durable.manage_origin) != Some(config.manage.api_url.as_str())
         || config.manage.organization_id != plan.organization_id.to_string()
         || !organization_slug_matches
     {
@@ -912,6 +998,118 @@ mod tests {
         assert!(tooling.contains(&format!(
             "\nPRODUCTION_MANAGE_ORIGIN = \"{PRODUCTION_MANAGE_ORIGIN}\"\n"
         )));
+    }
+
+    const TIARIS: &str = "https://manage.tiaris.com";
+    const CYBEX: &str = "https://manage.cybex.net";
+
+    #[test]
+    fn former_production_origin_matches_the_release_tooling() {
+        let tooling = include_str!("../../tools/production_origins.py");
+        assert_eq!(FORMER_PRODUCTION_MANAGE_ORIGIN, CYBEX);
+        assert!(tooling.contains(&format!(
+            "\nFORMER_PRODUCTION_MANAGE_ORIGIN = \"{FORMER_PRODUCTION_MANAGE_ORIGIN}\"\n"
+        )));
+    }
+
+    #[test]
+    fn legacy_origin_state_is_accepted_only_by_a_tiaris_build() {
+        let legacy = legacy_manage_origin(TIARIS, None);
+        assert_eq!(legacy, Some(CYBEX));
+        assert!(legacy_pair_allowed(TIARIS, legacy));
+        assert_eq!(effective_origin_for(TIARIS, legacy, CYBEX), Some(TIARIS));
+        assert_eq!(effective_origin_for(TIARIS, legacy, TIARIS), Some(TIARIS));
+        // The compiled build: the default release build carries exactly this alias.
+        if REQUIRED_MANAGE_ORIGIN == TIARIS {
+            assert_eq!(LEGACY_MANAGE_ORIGIN, Some(CYBEX));
+            assert_eq!(effective_manage_origin(CYBEX), Some(TIARIS));
+            assert_eq!(effective_manage_origin(TIARIS), Some(TIARIS));
+        }
+    }
+
+    #[test]
+    fn tiaris_origin_state_is_never_mapped_back_to_cybex() {
+        let legacy = legacy_manage_origin(CYBEX, None);
+        assert_eq!(legacy, None);
+        assert_eq!(effective_origin_for(CYBEX, legacy, TIARIS), None);
+        // A reverse alias cannot be compiled into a production-origin build.
+        assert!(!legacy_pair_allowed(CYBEX, Some(TIARIS)));
+    }
+
+    #[test]
+    fn unknown_recorded_origin_is_refused() {
+        let legacy = legacy_manage_origin(TIARIS, None);
+        for stored in [
+            "https://dev.tiaris.com",
+            "https://manage.cybex.net/",
+            "https://manage.tiaris.com/",
+            "http://manage.cybex.net",
+            "https://MANAGE.cybex.net",
+            "",
+        ] {
+            assert_eq!(
+                effective_origin_for(TIARIS, legacy, stored),
+                None,
+                "{stored}"
+            );
+        }
+        if REQUIRED_MANAGE_ORIGIN == TIARIS {
+            assert_eq!(effective_manage_origin("https://dev.tiaris.com"), None);
+        }
+    }
+
+    #[test]
+    fn cybex_build_accepts_nothing_new() {
+        let legacy = legacy_manage_origin(CYBEX, None);
+        assert!(legacy_pair_allowed(CYBEX, legacy));
+        assert_eq!(effective_origin_for(CYBEX, legacy, CYBEX), Some(CYBEX));
+        for stored in [
+            TIARIS,
+            "https://dev.tiaris.com",
+            "https://manage.example.test",
+        ] {
+            assert_eq!(
+                effective_origin_for(CYBEX, legacy, stored),
+                None,
+                "{stored}"
+            );
+        }
+    }
+
+    #[test]
+    fn production_builds_refuse_every_other_alias_pair() {
+        let dev = "https://manage.example.test";
+        let old = "https://old.example.test";
+        for (required, legacy) in [
+            (TIARIS, None),
+            (TIARIS, Some(TIARIS)),
+            (TIARIS, Some(dev)),
+            (TIARIS, Some("")),
+            (CYBEX, Some(TIARIS)),
+            (CYBEX, Some(dev)),
+            (dev, Some(TIARIS)),
+            (dev, Some(CYBEX)),
+            (dev, Some(dev)),
+        ] {
+            assert!(
+                !legacy_pair_allowed(required, legacy),
+                "{required} {legacy:?}"
+            );
+        }
+        // An explicit override of the release pair names the same pair.
+        assert_eq!(legacy_manage_origin(TIARIS, Some(CYBEX)), Some(CYBEX));
+        assert_eq!(legacy_manage_origin(TIARIS, Some("")), Some(CYBEX));
+        // Proof builds for non-production origins may name one alias of their own.
+        assert_eq!(legacy_manage_origin(dev, None), None);
+        assert!(legacy_pair_allowed(dev, None));
+        assert_eq!(legacy_manage_origin(dev, Some(old)), Some(old));
+        assert!(legacy_pair_allowed(dev, Some(old)));
+        assert_eq!(effective_origin_for(dev, Some(old), old), Some(dev));
+        assert_eq!(effective_origin_for(dev, Some(old), TIARIS), None);
+        assert!(legacy_pair_allowed(
+            REQUIRED_MANAGE_ORIGIN,
+            LEGACY_MANAGE_ORIGIN
+        ));
     }
 
     #[test]

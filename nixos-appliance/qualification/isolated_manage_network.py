@@ -401,9 +401,8 @@ class Adapter:
             raise ValueError('actual nft confinement differs from the exact owned command plan')
 
     def probe_dns(self, c, prefix, source):
-        host = urlsplit(c['manage_origin']).hostname
         base = [*prefix, 'dig', '-b', source]
-        for host in (host, *c['egress_hosts']):
+        for host in (*rules.manage_hosts(c), *c['egress_hosts']):
             answer = self.run(base + ['@' + c['peer_ipv4'], host, 'A', '+short',
                                       '+time=1', '+tries=1']).decode().splitlines()
             if answer != [c['peer_ipv4']]:

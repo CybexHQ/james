@@ -10,6 +10,10 @@ pub(super) fn durable_plan(
     verified: &protocol::VerifiedEnvelope,
     inventory: &NestProvisioningInventory,
 ) -> Result<SignedInstallPlan> {
+    // Deliberately exact, without the legacy-origin alias of
+    // `effective_manage_origin`: media recovery admits new signed authority,
+    // so a disk whose state names manage.cybex.net is reinstalled from
+    // manage.tiaris.com media rather than recovered onto (RELEASES.md).
     if durable.session_id != verified.envelope.session_id
         || durable.manage_origin != verified.envelope.manage_origin
         || durable.management_signing_public_key_b64

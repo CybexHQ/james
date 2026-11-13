@@ -230,6 +230,13 @@ class Owner:
                                    'peer_ipv4': str(ipaddress.ip_interface(scope['subnet']).ip),
                                    'network_id': None, 'backend_subnet': config['backend_subnet'],
                                    'egress_hosts': config['egress_hosts']}}
+            target = inputs.transition(config)
+            if target:
+                # One certificate and one listener serve both names; Manage
+                # starts at the former origin until switch_public_origin.
+                receipt['context']['manage_alias_hosts'] = inputs.served_hostnames(config)[1:]
+                receipt['transition_manage_origin'] = target
+                receipt['public_manage_origin'] = config['manage_origin']
             docker = self.docker(receipt)
             receipt['images'] = {
                 'app': {role: docker.image(config['app_images'][role], 'app', config['manage_revision'],
@@ -372,7 +379,8 @@ class Owner:
         if self.tls_proxy is not None:
             raise ValueError('refusing to replace an active TLS forwarder')
         self.tls_proxy = tls_forwarding.Proxy(receipt['peer_ipv4'], self.tls_address(receipt),
-            hostname=urlsplit(receipt['manage_origin']).hostname, upstream_hosts=receipt['context']['egress_hosts'])
+            hostname=urlsplit(receipt['manage_origin']).hostname, upstream_hosts=receipt['context']['egress_hosts'],
+            aliases=receipt['context'].get('manage_alias_hosts', ()))
 
     def client(self, receipt):
         def guarded():
@@ -380,7 +388,8 @@ class Owner:
             if self.tls_proxy is None:
                 raise ValueError('TLS access requires the retained fixture owner')
             return self.tls_proxy.verify(receipt['peer_ipv4'], self.tls_address(receipt),
-                hostname=urlsplit(receipt['manage_origin']).hostname, upstream_hosts=receipt['context']['egress_hosts'])
+                hostname=urlsplit(receipt['manage_origin']).hostname, upstream_hosts=receipt['context']['egress_hosts'],
+                aliases=tuple(receipt['context'].get('manage_alias_hosts', ())))
         return transport.Transport(receipt, guarded)
 
     def wait_health(self, receipt):
@@ -492,6 +501,40 @@ class Owner:
         self.wait_health(receipt)
         self.verify_artifacts(receipt)
 
+    def replace_public_origin_environment(self, receipt, origin):
+        """Point the app's public and provisioning origin at one served name."""
+        self.rewrite_app_environment(receipt, {'TIARIS_PUBLIC_API_URL': origin,
+                                               'TIARIS_NEST_PROVISIONING_MANAGE_ORIGIN': origin})
+
+    def switch_public_origin(self):
+        """Restart Manage at the transition origin (manage.cybex.net -> manage.tiaris.com).
+
+        The database, TLS certificate, DNS and listener stay; both names keep
+        resolving to the fixture, as both reach production after the rename."""
+        with self.lock():
+            receipt = self.read()
+            target = receipt.get('transition_manage_origin')
+            if not target or target == receipt['manage_origin']:
+                raise ValueError('fixture was not prepared for a Management origin transition')
+            if receipt['status'] == 'ready':
+                receipt = self.verify()
+                if receipt['public_manage_origin'] == target:
+                    return receipt
+                receipt['status'] = 'switching-origin'
+                self.save(receipt)
+            elif receipt['status'] != 'switching-origin':
+                raise ValueError('isolated Tiaris fixture cannot switch origin in its current state')
+            else:
+                self.guard(receipt)
+                self.verify_artifacts(receipt)
+            self.replace_public_origin_environment(receipt, target)
+            receipt['public_manage_origin'] = target
+            self.save(receipt)
+            self.recreate_app(receipt)
+            receipt['status'] = 'ready'
+            self.save(receipt)
+            return self.verify()
+
     def replace_release_environment(self, receipt, role):
         release = receipt['releases'][role]
         transports = receipt['artifact_transports']['releases'][role]
@@ -503,6 +546,10 @@ class Owner:
             'TIARIS_DEV_NEST_RELEASE_MANIFEST_TRANSPORT_URL': transports['manifest_transport_url'],
             'TIARIS_DEV_NEST_WORKSTATION_TRANSPORT_URL': transports['bundle_transport_url'],
         }
+        self.rewrite_app_environment(receipt, replacements)
+
+    def rewrite_app_environment(self, receipt, replacements):
+        """Replace exactly one pinned line per key in the app's environment."""
         path = self.directory / 'app.env'
         body = inputs.read_file(path, private=False, uid=10001)
         found = {key: 0 for key in replacements}

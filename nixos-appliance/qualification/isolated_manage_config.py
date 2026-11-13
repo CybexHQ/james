@@ -27,6 +27,9 @@ PRODUCTION = Path('/home/john/Code/Cybex/manage')
 FIELDS = {'schema', 'manage_origin', 'manage_checkout', 'manage_revision', 'app_images',
           'postgres_image', 'tls_image', 'backend_subnet', 'tls_certificate', 'tls_private_key',
           'provisioning_seed_file', 'release_public_key', 'egress_hosts', 'initial_release'}
+# Optional: a fixture for the production rename serves the former origin first
+# and, after `IsolatedManage.switch_public_origin`, the current one.
+TRANSITION = 'transition_manage_origin'
 
 
 def canonical(value):
@@ -101,10 +104,38 @@ def origin(value):
     raise ValueError('fixture origin must be a DNS hostname')
 
 
+def transition(value):
+    """The one rename a fixture may serve: production's former name -> current name."""
+    target = value.get(TRANSITION)
+    if target is None:
+        return None
+    origin(target)
+    if (value['manage_origin'] != production_origins.FORMER_PRODUCTION_MANAGE_ORIGIN
+            or target != production_origins.PRODUCTION_MANAGE_ORIGIN):
+        raise ValueError('a fixture origin transition is exactly the production Management rename')
+    return target
+
+
+def served_hostnames(value):
+    """Every hostname the fixture terminates: its origin, then a transition target."""
+    return [urlsplit(item).hostname for item in (value['manage_origin'], transition(value)) if item]
+
+
+def require_certificate_hosts(certificate, hostnames, run=command):
+    """One certificate must name every served hostname (subjectAltName)."""
+    for hostname in hostnames:
+        answer = run(['openssl', 'x509', '-noout', '-checkhost', hostname], data=certificate).decode()
+        if answer.strip() != f'Hostname {hostname} does match certificate':
+            raise ValueError('fixture certificate does not name every served Management hostname')
+
+
 def validate(value):
-    if not isinstance(value, dict) or set(value) != FIELDS or value['schema'] != SCHEMA:
+    if (not isinstance(value, dict) or set(value) - {TRANSITION} != FIELDS
+            or value['schema'] != SCHEMA):
         raise ValueError('unexpected isolated Tiaris configuration fields')
     origin(value['manage_origin'])
+    if transition(value) and set(served_hostnames(value)) & set(value['egress_hosts'] or []):
+        raise ValueError('a served Management hostname is not an upstream egress host')
     if not re.fullmatch(r'[0-9a-f]{40}', value['manage_revision']):
         raise ValueError('fixture needs an exact reviewed Tiaris source revision')
     if not isinstance(value['app_images'], dict) or set(value['app_images']) != {'predecessor', 'candidate'}:
@@ -158,6 +189,8 @@ def load(config_path, run=command):
     material = key_material(read_file(config['provisioning_seed_file'], maximum=128).decode().strip(),
                             read_file(config['tls_certificate'], private=False, maximum=65536),
                             read_file(config['tls_private_key'], maximum=65536), run)
+    if transition(config):
+        require_certificate_hosts(material['certificate'], served_hostnames(config), run)
     return config, material
 
 
@@ -196,7 +229,11 @@ def signed_releases(config, secrets, candidate_dir, predecessor_dir, *, verifier
         manifest = snapshot['manifest']
         asset = snapshot['compatibility']
         descriptor = manifest['installer_iso_template_v3']
-        if (descriptor['manage_origin'] != config['manage_origin']
+        # A transition fixture boots the predecessor for the former origin and
+        # updates to a candidate built for the current one.
+        expected_origin = (transition(config) or config['manage_origin']) if role == 'candidate' \
+            else config['manage_origin']
+        if (descriptor['manage_origin'] != expected_origin
                 or secrets['public_key'] not in descriptor['provisioning_public_keys']
                 or manifest['appliance_release_v1']['schema'] != predecessor.release.appliance_v3.SCHEMA):
             raise ValueError('both exact signed NixOS ISOs must admit this origin and fixture signer')

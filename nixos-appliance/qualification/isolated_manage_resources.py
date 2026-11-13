@@ -63,19 +63,10 @@ def environment(config, secrets, release, transports, db_password, ssh_ca, proxy
 
 
 def nginx_config(receipt):
-    hostname = receipt['manage_origin'][8:]
+    """One server per served hostname: the origin, then any transition alias."""
     challenge = json.dumps({key: receipt[key] for key in ('owner', 'challenge', 'manage_origin')}, separators=(',', ':'))
-    return f'''worker_processes 1;
-pid /tmp/nginx.pid;
-error_log /dev/stderr warn;
-events {{ worker_connections 256; }}
-http {{
-  access_log off;
-  client_body_temp_path /tmp/client;
-  proxy_temp_path /tmp/proxy;
-  fastcgi_temp_path /tmp/fastcgi;
-  uwsgi_temp_path /tmp/uwsgi;
-  scgi_temp_path /tmp/scgi;
+    hostnames = [receipt['manage_origin'][8:], *receipt.get('context', {}).get('manage_alias_hosts', [])]
+    servers = ''.join(f'''
   server {{
     listen 8443 ssl;
     server_name {hostname};
@@ -95,7 +86,18 @@ http {{
       proxy_read_timeout 120s;
       client_max_body_size 32m;
     }}
-  }}
+  }}''' for hostname in hostnames)
+    return f'''worker_processes 1;
+pid /tmp/nginx.pid;
+error_log /dev/stderr warn;
+events {{ worker_connections 256; }}
+http {{
+  access_log off;
+  client_body_temp_path /tmp/client;
+  proxy_temp_path /tmp/proxy;
+  fastcgi_temp_path /tmp/fastcgi;
+  uwsgi_temp_path /tmp/uwsgi;
+  scgi_temp_path /tmp/scgi;{servers}
 }}
 '''.encode()
 

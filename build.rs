@@ -4,6 +4,7 @@ fn main() {
     const PIN_FILE: &str = "release/nixpkgs.nix";
     println!("cargo:rerun-if-changed={PIN_FILE}");
     println!("cargo:rerun-if-env-changed=TIARIS_NEST_BUILD_MANAGE_ORIGIN");
+    println!("cargo:rerun-if-env-changed=TIARIS_NEST_BUILD_LEGACY_MANAGE_ORIGIN");
     let source = fs::read_to_string(
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"))
             .join(PIN_FILE),

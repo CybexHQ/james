@@ -37,6 +37,8 @@ def prepare(template, candidate_dir, predecessor_dir, directory):
             raise ValueError('fixture credentials must be dedicated template inputs')
     material = config.key_material(config.read_file(value['provisioning_seed_file']).decode().strip(),
         config.read_file(value['tls_certificate'], private=False), config.read_file(value['tls_private_key']))
+    if config.transition(value):
+        config.require_certificate_hosts(material['certificate'], config.served_hostnames(value))
     candidate = predecessor.verify_pair_snapshot(candidate_dir, value['release_public_key'])
     previous = predecessor.verify_pair_snapshot(predecessor_dir or candidate_dir, value['release_public_key'])
     revision = candidate['manifest']['appliance_release_v1']['manage_source_revision']
@@ -59,8 +61,11 @@ def prepare(template, candidate_dir, predecessor_dir, directory):
     images = {}
     for role, snapshot in (('candidate', candidate), ('predecessor', previous)):
         manifest, asset = snapshot['manifest'], snapshot['compatibility']
+        # A rename fixture's candidate is built for the transition origin.
+        origin = (config.transition(value) or value['manage_origin']) if role == 'candidate' \
+            else value['manage_origin']
         if (manifest['appliance_release_v1']['schema'] != 'tiaris.nest.appliance-release.v3'
-                or manifest['installer_iso_template_v3']['manage_origin'] != value['manage_origin']
+                or manifest['installer_iso_template_v3']['manage_origin'] != origin
                 or material['public_key'] not in manifest['installer_iso_template_v3']['provisioning_public_keys']):
             raise ValueError('fixture inputs must be exact-origin signed NixOS releases')
         projection = asset['compatibility_sha256']
