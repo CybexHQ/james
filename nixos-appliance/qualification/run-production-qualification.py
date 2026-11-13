@@ -303,11 +303,12 @@ def qualify_phase(args, phase, manifest, previous, candidate_dir, predecessor_di
             execute(*command, env=environment)
         if phase in {'update', 'rollback'}:
             if owner:
-                owner.select_release('candidate')
                 if fixture_origin(args) != args.manage_origin:
                     # The production rename happens between the installed
-                    # predecessor and its update; Manage keeps its database.
+                    # predecessor and its update, before Manage selects the
+                    # candidate built for the new name; Manage keeps its database.
                     owner.switch_public_origin()
+                owner.select_release('candidate')
             command = [sys.executable, '-B', HELPERS / 'run-isolated-update.py', '--state-dir', state,
                 '--fixture', state / 'fixture', '--predecessor-evidence', fresh,
                 '--predecessor-manifest', selected, '--candidate-manifest', candidate_manifest,

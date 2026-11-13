@@ -147,6 +147,22 @@ class CoordinatorTests(unittest.TestCase):
                         child.pidfd = None
         self.temporary.cleanup()
 
+    def test_rename_fixture_candidate_binds_only_the_alias_origin(self):
+        self.coordinator = self.create()
+        self.coordinator.scope = {**self.scope, 'manage_alias_hosts': ['alias.example.test']}
+        alias = 'https://alias.example.test'
+        candidate = self.values[self.releases['candidate']['directory']]['manifest']['installer_iso_template_v3']
+        predecessor = self.values[self.releases['predecessor']['directory']]['manifest']['installer_iso_template_v3']
+        candidate['manage_origin'] = alias
+        self.assertEqual(self.coordinator._verify_release('candidate')['version'], '1.2.3')
+        self.coordinator._verify_release('predecessor')  # still the fixture origin
+        predecessor['manage_origin'] = alias
+        with self.assertRaisesRegex(ValueError, 'installer origin differs'):
+            self.coordinator._verify_release('predecessor')
+        self.coordinator.scope = dict(self.scope)  # single-origin fixture: no alias admitted
+        with self.assertRaisesRegex(ValueError, 'installer origin differs'):
+            self.coordinator._verify_release('candidate')
+
     def test_cold_staging_uses_only_the_authenticated_candidate(self):
         releases = {role: self.releases['candidate'] for role in A.ROLES}
         self.coordinator = self.create(releases=releases, candidate_only=True)

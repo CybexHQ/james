@@ -38,7 +38,7 @@ below map to the existing `CYBEX_JAMES_*` GitHub variables; the runner retains
   moved to the current origin (database kept). With such a template, set
   `TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN` to the candidate's (current)
   origin: `run-production-qualification.py` installs the predecessor at the
-  former origin, calls `switch_public_origin()` after `select_release('candidate')`,
+  former origin, calls `switch_public_origin()` and then `select_release('candidate')`,
   and passes `--candidate-manage-origin` to `run-isolated-update.py`, which
   refuses the update unless the fixture's Manage already serves that origin.
   Only the update and rollback phases run; the candidate's fresh install is

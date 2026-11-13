@@ -138,7 +138,7 @@ class QualificationPhaseTests(unittest.TestCase):
                 self.assertEqual(command[index + 1], 'https://manage.tiaris.com')
             for owner in owners:
                 self.assertEqual([name for name, *_ in owner.method_calls if name != 'verify'],
-                                 ['select_release', 'switch_public_origin'])
+                                 ['switch_public_origin', 'select_release'])
             # Scope and cleanup stay bound to the fixture's own (former) origin.
             cleanup = [c for c in commands if 'development-scope.py' in str(c[2])]
             self.assertTrue(cleanup)
