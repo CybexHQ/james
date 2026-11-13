@@ -38,7 +38,7 @@
   "full": "cargo fmt --all --check && cargo test --locked && env -u CI python3 -B -m unittest discover -s nixos-appliance/tests && python3 -B -m unittest discover -s tools/tests",
   "beast": {
     "image": "docker.io/library/rust:1.85.0-bookworm",
-    "prepare": "rustup component add rustfmt",
+    "prepare": "apt-get update -qq && apt-get install -y -qq --no-install-recommends jq zstd ripgrep >/dev/null && rustup component add rustfmt",
     "network": "internet",
     "caches": ["cargo-target"]
   }
