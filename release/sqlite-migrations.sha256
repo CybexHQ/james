@@ -10,7 +10,9 @@
 # and tools/tests compare it with this value, and `tools/nest-release.py
 # manifest` refuses to sign a release built from another inventory.
 #
-# A schema change needs its own update-contract design first (how the updater
-# admits it and how a rollback keeps the predecessor working). Until then keep
+# A schema change follows docs/sqlite-schema-evolution.md: only declared
+# expand/contract migrations appended after the inventory below, and only once
+# release/sqlite-schema-evolution.json says the releases appliances update from
+# run declared changes (`predecessor_runs_declared_changes`). Until then keep
 # new state in files under the Nest state directory (src/state_files.rs).
 0ccbb89564904ffbec89c0bad7f33460ee2c64e1d73d418a60b6ef5f73a3dc37

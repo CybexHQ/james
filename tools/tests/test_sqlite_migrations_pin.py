@@ -40,6 +40,51 @@ class SqliteMigrationsPinTests(unittest.TestCase):
         with self.assertRaisesRegex(TOOL["ReleaseError"], "rollback_database_incompatible"):
             TOOL["_require_update_compatible_migrations"]("f" * 64, pinned, "the pin")
 
+    def _schema_change(self, directory, added, runs_declared=True):
+        migrations = Path(directory) / "migrations"
+        migrations.mkdir()
+        for path in sorted((ROOT / "migrations").glob("*.sql")):
+            (migrations / path.name).write_bytes(path.read_bytes())
+        last = max(int(path.name.split("_", 1)[0]) for path in migrations.glob("*.sql"))
+        predecessor = self._inventory(migrations)
+        for name, body in added.items():
+            (migrations / name).write_text(body)
+        policy = Path(directory) / "policy.json"
+        policy.write_text(json.dumps({
+            "schema": "tiaris.nest.sqlite-schema-evolution.v1", "baseline_last_version": last,
+            "predecessor_last_version": last, "predecessor_runs_declared_changes": runs_declared}))
+        return predecessor, self._inventory(migrations), policy, migrations
+
+    def _inventory(self, migrations):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "sqlite-migrations.json"
+            subprocess.run([sys.executable, "-I", str(ROOT / "nixos-appliance/metadata.py"), "migrations",
+                            str(migrations), str(output)], check=True)
+            return hashlib.sha256(output.read_bytes()).hexdigest()
+
+    def test_declared_schema_changes_pass_only_once_predecessors_run_them(self):
+        declared = {"20991201000000_notes.sql": "-- tiaris-nest-schema: expand\nCREATE TABLE notes (id INTEGER);\n"}
+        with tempfile.TemporaryDirectory() as directory:
+            predecessor, candidate, policy, migrations = self._schema_change(directory, declared)
+            self.assertNotEqual(predecessor, candidate)
+            self.assertTrue(TOOL["_declared_schema_change"](candidate, predecessor, policy, migrations))
+            # Not this checkout's inventory, or not from the pinned predecessor.
+            self.assertFalse(TOOL["_declared_schema_change"]("e" * 64, predecessor, policy, migrations))
+            self.assertFalse(TOOL["_declared_schema_change"](candidate, "e" * 64, policy, migrations))
+        with tempfile.TemporaryDirectory() as directory:
+            predecessor, candidate, policy, migrations = self._schema_change(directory, declared, False)
+            self.assertFalse(TOOL["_declared_schema_change"](candidate, predecessor, policy, migrations))
+        with tempfile.TemporaryDirectory() as directory:
+            predecessor, candidate, policy, migrations = self._schema_change(
+                directory, {"20991201000000_notes.sql": "CREATE TABLE notes (id INTEGER);\n"})
+            self.assertFalse(TOOL["_declared_schema_change"](candidate, predecessor, policy, migrations))
+            policy.write_text("{}")
+            with self.assertRaisesRegex(TOOL["ReleaseError"], "not a SQLite schema evolution policy"):
+                TOOL["_declared_schema_change"](candidate, predecessor, policy, migrations)
+
+    def test_an_inventory_other_than_this_checkouts_is_never_a_declared_change(self):
+        self.assertFalse(TOOL["_declared_schema_change"]("f" * 64, TOOL["_pinned_sqlite_migrations_sha256"]()))
+
     def test_release_manifests_must_be_the_ones_their_assets_name(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "tiaris-nest-release.json"
