@@ -36,7 +36,9 @@ pub use protocol::{MAX_ENVELOPE_VALIDITY_HOURS, ProvisioningEnvelope, SignedInst
 use setup_status::{InstallStep, SetupStatusReporter};
 pub use setup_status::{SETUP_STATUS_PATH, SETUP_STATUS_SCHEMA};
 
-pub const PRODUCTION_MANAGE_ORIGIN: &str = "https://manage.cybex.net";
+/// Production Manage. An unset `TIARIS_NEST_BUILD_MANAGE_ORIGIN` builds for it;
+/// `tools/production_origins.py` keeps the release tooling's copy.
+pub const PRODUCTION_MANAGE_ORIGIN: &str = "https://manage.tiaris.com";
 pub const REQUIRED_MANAGE_ORIGIN: &str = match option_env!("TIARIS_NEST_BUILD_MANAGE_ORIGIN") {
     Some(origin) => origin,
     None => PRODUCTION_MANAGE_ORIGIN,
@@ -901,7 +903,15 @@ mod tests {
 
     #[test]
     fn production_origin_is_fixed_https() {
-        assert_eq!(PRODUCTION_MANAGE_ORIGIN, "https://manage.cybex.net");
+        assert_eq!(PRODUCTION_MANAGE_ORIGIN, "https://manage.tiaris.com");
+    }
+
+    #[test]
+    fn production_origin_matches_the_release_tooling() {
+        let tooling = include_str!("../../tools/production_origins.py");
+        assert!(tooling.contains(&format!(
+            "\nPRODUCTION_MANAGE_ORIGIN = \"{PRODUCTION_MANAGE_ORIGIN}\"\n"
+        )));
     }
 
     #[test]
