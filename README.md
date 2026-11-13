@@ -263,6 +263,32 @@ queued and converges when it next checks in. Nest reports only bounded error
 codes and never treats a wake receipt as proof that a workstation actually
 started.
 
+## USB installer stick
+
+Computers that cannot network-boot (no PXE through their USB Ethernet adapter,
+Chromebooks with MrChromebox UEFI firmware, Wi-Fi-only laptops) start from a
+USB stick instead (Tiaris `docs/design/usb-installer.md`). The stick image is
+built from the pinned Tiaris source with the appliance and served read-only:
+
+- `GET /usb-installer/` is a plain page with the download link, opened from
+  the school network; `GET /usb-installer/tiaris-usb-installer.img` streams
+  the image with this Nest's `tiaris/site.json` (public boot URL, device ID,
+  organization slug) written into its 4 KiB placeholder. A damaged or
+  missing image is not served.
+- `GET /usb-installer/v1/boot?mac=&serial_hex=` answers what `/boot/<mac>`
+  would start, with the same identification, selection, one-time consumption
+  and boot events: a `launch` (the `tiaris.nest.kexec.v1` session plus the
+  runtime's component digests) or a `menu` of installer profiles.
+  `GET /usb-installer/v1/select/<profile>` launches a menu choice as
+  `/boot/select` does; `GET /usb-installer/v1/runtime` names the active
+  runtime without creating a session. A stick older than
+  `MINIMUM_STICK_PROTOCOL` gets `410`.
+
+Nest advertises `usb_installer_v1` only when it has the image and Manage
+says it accepts the capability (`usb_installer_supported`). The stick
+starts the runtime with `kexec`; the grant, enrollment and approval are those
+of network boot, and its Wi-Fi password never reaches Nest.
+
 ## Classroom rootfs multicast
 
 Nest can advertise `workstation_rootfs_multicast_v1` and coalesce live boot

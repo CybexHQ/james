@@ -1965,35 +1965,29 @@ pub fn boot_grant_message(claims: &BootGrantClaims) -> String {
     )
 }
 
-pub async fn create_boot_session(
-    state: &AppState,
-    normalized_mac: &str,
-    profile_id: Option<&str>,
-    managed_device_id: Option<&str>,
-    reinstall_request_id: Option<&str>,
-) -> Result<BootSessionLaunch> {
-    crate::models::normalize_mac(normalized_mac)
-        .map_err(|_| anyhow!("boot session MAC is invalid"))?;
-    for (label, value) in [
-        ("profile", profile_id),
-        ("reinstall request", reinstall_request_id),
-    ] {
-        if let Some(value) = value {
-            uuid::Uuid::parse_str(value)
-                .with_context(|| format!("boot session {label} identity is invalid"))?;
-        }
-    }
-    if managed_device_id.is_some_and(|value| !is_safe_control_plane_id(value)) {
-        bail!("boot session managed device identity is invalid");
-    }
-    uuid::Uuid::parse_str(&state.config.manage.organization_id)
-        .context("boot session organization identity is invalid")?;
-    validate_organization_slug(&state.config.manage.organization_slug)?;
+/// The verified runtime this Nest serves to new boot sessions, read without
+/// creating one.
+#[derive(Clone, Debug, Serialize)]
+pub struct ActiveRuntimeIdentity {
+    pub bundle_sha256: String,
+    pub runtime_version: String,
+    pub components: ComponentDescriptors,
+    pub kernel_url: String,
+    pub initrd_url: String,
+    pub squashfs_url: String,
+}
 
-    // Import state describes reconciliation of the newest desired candidate;
-    // it does not revoke an independently verified active bundle. Keep serving
-    // the active runtime while a replacement is queued, downloading, held, or
-    // failed, and fail closed only when there is no verified active bundle.
+struct ActiveRuntime {
+    bundle_sha256: String,
+    descriptor: WorkstationNetbootDescriptor,
+    manifest: WorkstationNetbootManifest,
+}
+
+/// Import state describes reconciliation of the newest desired candidate; it
+/// does not revoke an independently verified active bundle. Keep serving the
+/// active runtime while a replacement is queued, downloading, held, or failed,
+/// and fail closed only when there is no verified active bundle.
+async fn load_active_runtime(state: &AppState) -> Result<ActiveRuntime> {
     let active: Option<(String, String, String)> = sqlx::query_as(
         "SELECT runtime.active_bundle_sha256, bundle.descriptor_json, bundle.root_path
          FROM workstation_netboot_runtime runtime
@@ -2019,6 +2013,85 @@ pub async fn create_boot_session(
     }
     let manifest = parse_canonical_manifest(&manifest_body)?;
     validate_manifest(&manifest, &descriptor)?;
+    Ok(ActiveRuntime {
+        bundle_sha256,
+        descriptor,
+        manifest,
+    })
+}
+
+fn component_urls(public_base: &str, bundle_sha256: &str) -> (String, String, String) {
+    (
+        format!("{public_base}/netboot/{bundle_sha256}/bzImage"),
+        format!("{public_base}/netboot/{bundle_sha256}/initrd"),
+        format!("{public_base}/netboot/{bundle_sha256}/nix-store.squashfs"),
+    )
+}
+
+pub async fn active_runtime_identity(state: &AppState) -> Result<ActiveRuntimeIdentity> {
+    let runtime = load_active_runtime(state).await?;
+    let (kernel_url, initrd_url, squashfs_url) =
+        component_urls(state.config.public_base_url(), &runtime.bundle_sha256);
+    Ok(ActiveRuntimeIdentity {
+        bundle_sha256: runtime.bundle_sha256,
+        runtime_version: runtime.descriptor.runtime_version,
+        components: runtime.manifest.components,
+        kernel_url,
+        initrd_url,
+        squashfs_url,
+    })
+}
+
+pub async fn create_boot_session(
+    state: &AppState,
+    normalized_mac: &str,
+    profile_id: Option<&str>,
+    managed_device_id: Option<&str>,
+    reinstall_request_id: Option<&str>,
+) -> Result<BootSessionLaunch> {
+    create_boot_session_for_runtime(
+        state,
+        normalized_mac,
+        profile_id,
+        managed_device_id,
+        reinstall_request_id,
+    )
+    .await
+    .map(|(launch, _)| launch)
+}
+
+/// The same signed session as `create_boot_session`, with the identity of the
+/// runtime it launches (for loaders that verify the components themselves).
+pub async fn create_boot_session_for_runtime(
+    state: &AppState,
+    normalized_mac: &str,
+    profile_id: Option<&str>,
+    managed_device_id: Option<&str>,
+    reinstall_request_id: Option<&str>,
+) -> Result<(BootSessionLaunch, ActiveRuntimeIdentity)> {
+    crate::models::normalize_mac(normalized_mac)
+        .map_err(|_| anyhow!("boot session MAC is invalid"))?;
+    for (label, value) in [
+        ("profile", profile_id),
+        ("reinstall request", reinstall_request_id),
+    ] {
+        if let Some(value) = value {
+            uuid::Uuid::parse_str(value)
+                .with_context(|| format!("boot session {label} identity is invalid"))?;
+        }
+    }
+    if managed_device_id.is_some_and(|value| !is_safe_control_plane_id(value)) {
+        bail!("boot session managed device identity is invalid");
+    }
+    uuid::Uuid::parse_str(&state.config.manage.organization_id)
+        .context("boot session organization identity is invalid")?;
+    validate_organization_slug(&state.config.manage.organization_slug)?;
+
+    let ActiveRuntime {
+        bundle_sha256,
+        descriptor,
+        manifest,
+    } = load_active_runtime(state).await?;
 
     let identity = crate::manage::nest_boot_identity(&state.config)?;
     if !is_safe_control_plane_id(&identity.device_id) {
@@ -2114,23 +2187,32 @@ pub async fn create_boot_session(
     sync_directory(&sessions_root)?;
 
     let public_base = state.config.public_base_url();
-    let kernel_url = format!("{public_base}/netboot/{bundle_sha256}/bzImage");
-    let initrd_url = format!("{public_base}/netboot/{bundle_sha256}/initrd");
-    let squashfs_url = format!("{public_base}/netboot/{bundle_sha256}/nix-store.squashfs");
+    let (kernel_url, initrd_url, squashfs_url) = component_urls(public_base, &bundle_sha256);
     let context_url = format!("{public_base}/boot-session/{session_id}/context.cpio");
     let command_line = manifest
         .kernel_cmdline_template
         .replace("{squashfs_url}", &squashfs_url);
-    Ok(BootSessionLaunch {
-        schema: "tiaris.nest.kexec.v1",
-        bundle_sha256,
-        kernel_url,
-        initrd_url,
-        context_url,
-        squashfs_url,
-        command_line,
-        expires_at,
-    })
+    let identity = ActiveRuntimeIdentity {
+        bundle_sha256: bundle_sha256.clone(),
+        runtime_version: descriptor.runtime_version.clone(),
+        components: manifest.components.clone(),
+        kernel_url: kernel_url.clone(),
+        initrd_url: initrd_url.clone(),
+        squashfs_url: squashfs_url.clone(),
+    };
+    Ok((
+        BootSessionLaunch {
+            schema: "tiaris.nest.kexec.v1",
+            bundle_sha256,
+            kernel_url,
+            initrd_url,
+            context_url,
+            squashfs_url,
+            command_line,
+            expires_at,
+        },
+        identity,
+    ))
 }
 
 fn is_safe_control_plane_id(value: &str) -> bool {
@@ -3090,6 +3172,7 @@ pub fn safe_failure_kind(error: &anyhow::Error) -> &'static str {
 mod tests {
     use super::*;
     include!("netboot_transport_tests.rs");
+    include!("usb_installer_route_tests.rs");
     use ed25519_dalek::SigningKey;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},

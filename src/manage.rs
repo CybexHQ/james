@@ -183,6 +183,10 @@ struct AgentNestConfigResponse {
     /// so, Nest does not advertise it (an older Manage rejects the report).
     #[serde(default)]
     software_cache_upload_supported: bool,
+    /// Manage accepts `usb_installer_v1` in reports; until it says so, Nest
+    /// does not advertise it (an older Manage rejects the report).
+    #[serde(default)]
+    usb_installer_supported: bool,
     #[serde(default)]
     software_update_channel: Option<Value>,
     #[serde(default)]
@@ -950,11 +954,13 @@ async fn sync_nest_foundation(
     let mut peer_runtime_epoch = None;
     let mut peer_supports_scheduling = false;
     let mut peer_accepts_uploads = false;
+    let mut peer_accepts_usb_installer = false;
     let mut report_protocol = TIARIS_COMPONENT_PROTOCOL_VERSION;
     match fetch_nest_config(state, managed).await {
         Ok(desired) => {
             peer_supports_scheduling = desired.update_schedule_supported;
             peer_accepts_uploads = desired.software_cache_upload_supported;
+            peer_accepts_usb_installer = desired.usb_installer_supported;
             report_protocol = negotiated_report_protocol(desired.compatibility.as_ref());
             peer_runtime_epoch = desired
                 .compatibility
@@ -973,7 +979,10 @@ async fn sync_nest_foundation(
         managed,
         peer_runtime_epoch.is_some(),
         peer_supports_scheduling,
-        peer_accepts_uploads,
+        PeerReportSupport {
+            uploads: peer_accepts_uploads,
+            usb_installer: peer_accepts_usb_installer,
+        },
         report_protocol,
     )
     .await
@@ -1291,9 +1300,10 @@ async fn report_nest_state(
     managed: &mut ManagedState,
     peer_supports_runtime_fencing: bool,
     peer_supports_scheduling: bool,
-    peer_accepts_uploads: bool,
+    peer_support: PeerReportSupport,
     report_protocol: u32,
 ) -> Result<NestReportReceipt> {
+    let peer_accepts_uploads = peer_support.uploads;
     let (build_jobs, build_listing_valid) = match db::list_build_jobs_report_page(
         &state.db,
         managed.nest_active_report_cursor,
@@ -1510,11 +1520,7 @@ async fn report_nest_state(
     };
     let body = NestAgentReportRequest {
         protocol_version: report_protocol,
-        capabilities: nest_capabilities(
-            &state.config,
-            peer_supports_scheduling,
-            peer_accepts_uploads,
-        ),
+        capabilities: nest_capabilities(&state.config, peer_supports_scheduling, peer_support),
         cache,
         build_jobs,
         cache_artifacts,
@@ -2678,20 +2684,37 @@ async fn signed_request_for_config(
     })
 }
 
+/// Optional report contents Manage said it accepts in its latest config.
+#[derive(Clone, Copy, Debug, Default)]
+struct PeerReportSupport {
+    uploads: bool,
+    usb_installer: bool,
+}
+
 fn nest_capabilities(
     config: &AppConfig,
     peer_supports_scheduling: bool,
-    peer_accepts_uploads: bool,
+    peer_support: PeerReportSupport,
 ) -> Vec<&'static str> {
     let mut capabilities = nest_capabilities_for_mode(
         config,
         peer_supports_scheduling,
         crate::appliance::nixos::is_nixos(),
     );
-    if peer_accepts_uploads {
+    // The stick protocol always answers; the capability tells Manage that
+    // this Nest also has a stick image to download.
+    let usb_image = peer_support.usb_installer && crate::usb_installer::image_available();
+    push_peer_capabilities(&mut capabilities, peer_support.uploads, usb_image);
+    capabilities
+}
+
+fn push_peer_capabilities(capabilities: &mut Vec<&'static str>, uploads: bool, usb_image: bool) {
+    if uploads {
         capabilities.push(crate::software_cache_upload::CAPABILITY);
     }
-    capabilities
+    if usb_image {
+        capabilities.push(crate::usb_installer::CAPABILITY);
+    }
 }
 
 fn nest_capabilities_for_mode(
@@ -4826,11 +4849,54 @@ mod tests {
         let newer: AgentNestConfigResponse =
             serde_json::from_value(json!({"software_cache_upload_supported": true})).unwrap();
         let config = AppConfig::default();
-        let legacy = nest_capabilities(&config, false, older.software_cache_upload_supported);
-        let modern = nest_capabilities(&config, false, newer.software_cache_upload_supported);
+        let support = |desired: &AgentNestConfigResponse| PeerReportSupport {
+            uploads: desired.software_cache_upload_supported,
+            usb_installer: desired.usb_installer_supported,
+        };
+        let legacy = nest_capabilities(&config, false, support(&older));
+        let modern = nest_capabilities(&config, false, support(&newer));
         assert!(!legacy.contains(&crate::software_cache_upload::CAPABILITY));
         assert!(modern.contains(&crate::software_cache_upload::CAPABILITY));
         assert_eq!(modern.len(), legacy.len() + 1);
+    }
+
+    #[test]
+    fn usb_installer_capability_requires_manage_support_and_an_image() {
+        // A Manage that does not know `usb_installer_v1` rejects the whole
+        // report; a Nest without the stick image has nothing to download.
+        let older: AgentNestConfigResponse = serde_json::from_value(json!({})).unwrap();
+        let newer: AgentNestConfigResponse =
+            serde_json::from_value(json!({"usb_installer_supported": true})).unwrap();
+        assert!(!older.usb_installer_supported);
+        assert!(newer.usb_installer_supported);
+        for (uploads, usb_image, expected) in [
+            (false, false, vec![]),
+            (false, true, vec![crate::usb_installer::CAPABILITY]),
+            (
+                true,
+                true,
+                vec![
+                    crate::software_cache_upload::CAPABILITY,
+                    crate::usb_installer::CAPABILITY,
+                ],
+            ),
+        ] {
+            let mut capabilities = Vec::new();
+            push_peer_capabilities(&mut capabilities, uploads, usb_image);
+            assert_eq!(capabilities, expected);
+        }
+        // This test process has no stick image, so even a supporting Manage
+        // gets no capability.
+        let config = AppConfig::default();
+        let reported = nest_capabilities(
+            &config,
+            false,
+            PeerReportSupport {
+                uploads: false,
+                usb_installer: true,
+            },
+        );
+        assert!(!reported.contains(&crate::usb_installer::CAPABILITY));
     }
 
     #[test]
