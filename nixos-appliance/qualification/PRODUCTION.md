@@ -22,7 +22,10 @@ Both qualification jobs use `production-release-qualification`. The process inpu
 below map to the existing `CYBEX_JAMES_*` GitHub variables; the runner retains
 `cybex-james-lab`. Configure those infrastructure values without rotating keys:
 
-- `TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN`: `https://manage.cybex.net`.
+- `TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN`: the production origin the candidate
+  was built for, `https://manage.tiaris.com` (releases up to v0.2.99:
+  `https://manage.cybex.net`). It must equal `CYBEX_JAMES_BUILD_MANAGE_ORIGIN`,
+  and the fixture template's `manage_origin` must name it too.
 - `TIARIS_NEST_QUALIFICATION_CONFIG`: absolute path to a dedicated root-private
   fixture template, in the format accepted by `isolated_manage_config.py`.
 - `TIARIS_NEST_QUALIFICATION_STATE_ROOT`: an existing root-owned 0700 directory.
@@ -268,5 +271,17 @@ built and signed Nest baseline and all warm and cold acceptance gates.
 
 A successor must advance both the appliance version and workstation runtime,
 preserve the Management origin, and never lower the runtime compatibility epoch
-or appliance state schema. The original recovery-adoption authorization remains
+or appliance state schema. The one exception to the origin rule is the recorded
+change from `https://manage.cybex.net` to `https://manage.tiaris.com` directly
+after v0.2.99 (`release/production-origin-transition.json`, see `RELEASES.md`). The original recovery-adoption authorization remains
 unchanged. A later candidate version requires a new exact signed authorization.
+
+## Production origin change
+
+The isolated fixture serves exactly one origin, and both the candidate and its
+upgrade baseline must be built for it. The first `https://manage.tiaris.com`
+release therefore has no same-origin NixOS baseline: fresh and cold
+qualification run against a `https://manage.tiaris.com` fixture, while warm
+update and rollback qualification start with the next release, whose baseline is
+the first `https://manage.tiaris.com` release. Installed Nests are reinstalled,
+not updated, across this change.
