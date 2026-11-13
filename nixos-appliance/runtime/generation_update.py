@@ -307,6 +307,81 @@ def recover_boot():
     clear_transaction(receipt)
 
 
+SOURCE_NEST = Path('/run/current-system/sw/bin/tiaris-nest')
+INVENTORY = Path('/usr/share/tiaris-nest/sqlite-migrations.json')
+PROFILES = Path('/nix/var/nix/profiles')
+ENTRIES = Path('/boot/loader/entries')
+
+
+class DatabaseIncompatible(ValueError):
+    """The candidate's schema would strand a release that must keep running."""
+
+
+def schema_changes(verified):
+    """Whether the candidate carries another SQLite migration inventory."""
+    installed = hashlib.sha256(read(INVENTORY, maximum=16 * 1024 ** 2)).hexdigest()
+    return installed != verified['sqlite_migrations_sha256']
+
+
+def opens_rollback(binary, database):
+    """Whether one release still runs on the rehearsed database (exit 0).
+    A release older than schema evolution does not know the option: no."""
+    try:
+        result = subprocess.run([str(binary), 'verify-appliance-database', '--database', str(database),
+                                 '--rollback-target'], capture_output=True, timeout=600)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def rehearse_database(verified, cache):
+    """A schema-changing candidate first migrates a private copy of the root
+    snapshot; the running release must then still start, read and write on
+    that copy, because a rollback after the candidate's first boot runs it on
+    the migrated live database (docs/sqlite-schema-evolution.md). Returns the
+    other retained generations that could not: they must leave the boot menu
+    before the candidate touches the live database."""
+    backup = cache.parent / 'database-compatibility.sqlite'
+    rehearsal = cache.parent / 'database-rehearsal.sqlite'
+    candidate = Path(verified['system_toplevel']) / 'sw/bin/tiaris-nest'
+    try:
+        run(candidate, 'rehearse-appliance-database', '--database', backup, '--output', rehearsal, timeout=600)
+    except subprocess.CalledProcessError:
+        raise DatabaseIncompatible('candidate cannot migrate a copy of the database') from None
+    if not opens_rollback(SOURCE_NEST, rehearsal):
+        raise DatabaseIncompatible('running release cannot run on the migrated copy')
+    source = current()['system_generation']
+    retire = [row for row in load(KNOWN)['generations'] if row['system_generation'] != source
+              and not opens_rollback(Path(row['system_toplevel']) / 'sw/bin/tiaris-nest', rehearsal)]
+    rehearsal.unlink()
+    sync_dir(rehearsal.parent)
+    return retire
+
+
+def retire_generations(rows):
+    """Remove retained generations that cannot run on the new schema. Pruning
+    first keeps this idempotent: a crash before the receipt update repeats the
+    same removal, and a crash after it leaves nothing bootable behind."""
+    if not rows:
+        return
+    source = current()['system_generation']
+    for row in rows:
+        generation = row['system_generation']
+        if generation == source or not re.fullmatch('[1-9][0-9]*', generation):
+            raise ValueError('refusing to retire the booted or an invalid generation')
+        if (PROFILES / ('system-' + generation + '-link')).is_symlink():
+            run('nix-env', '--profile', PROFILE, '--delete-generations', generation)
+        entry = ENTRIES / row['loader_entry']
+        entry.unlink(missing_ok=True)
+        sync_dir(entry.parent)
+        (ROOTS / ('good-' + generation)).unlink(missing_ok=True)
+    retired = {row['system_generation'] for row in rows}
+    known = load(KNOWN)
+    save(KNOWN, {'schema': known['schema'],
+                 'generations': [row for row in known['generations'] if row['system_generation'] not in retired]})
+    print('Retired generations that cannot run on the candidate schema: ' + ', '.join(sorted(retired)), flush=True)
+
+
 def free_space(verified):
     usage = shutil.disk_usage('/nix/store')
     # Root verification accounted staging and imported paths on their actual
@@ -381,9 +456,11 @@ def stage():
                     raise ValueError('unexpected database compatibility backup')
                 run(verified['system_toplevel'] + '/sw/bin/tiaris-nest', 'verify-appliance-database',
                     '--database', verified['database_backup'], timeout=60)
+                retire = rehearse_database(verified, cache) if schema_changes(verified) else []
             except Exception:
                 (ROOTS / ('pending-' + attempt)).unlink(missing_ok=True)
                 raise
+            retire_generations(retire)
             source = current()
             receipt.update(schema='tiaris.nest.system-prepare-intent.v3', source_generation=source['system_generation'],
                 source_toplevel=source['system_toplevel'], source_loader_entry=source['loader_entry'], source_installed=load(INSTALLED), source_known_good=load(KNOWN))
@@ -411,7 +488,7 @@ def stage():
             emit_status(receipt, 'rebooting', 'reboot_pending')
             os.sync()
             run('systemctl', '--no-block', 'reboot')
-        except Exception:
+        except Exception as error:
             if PENDING.exists():
                 # Once sealed, source boot owns terminal rollback and candidate cleanup.
                 restore_source(receipt)
@@ -424,7 +501,8 @@ def stage():
                 cleanup(receipt)
                 remove(PREPARE)
             else:
-                emit_status(receipt, 'failed', 'verification_failed', 'closure_import_failed', current()['system_generation'])
+                reason = 'rollback_database_incompatible' if isinstance(error, DatabaseIncompatible) else 'closure_import_failed'
+                emit_status(receipt, 'failed', 'verification_failed', reason, current()['system_generation'])
                 cleanup(receipt)
             raise
 

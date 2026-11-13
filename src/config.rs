@@ -49,6 +49,17 @@ pub enum Command {
     VerifyApplianceDatabase {
         #[arg(long)]
         database: PathBuf,
+        /// Also prove this release still runs on it after a rollback: its
+        /// schema, startup and queries on a private copy.
+        #[arg(long)]
+        rollback_target: bool,
+    },
+    /// Candidate side of an update: migrate a private copy of a snapshot.
+    RehearseApplianceDatabase {
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
     },
     ApplyApplianceUpdateSchedule,
     CheckApplianceUpdateSchedule,

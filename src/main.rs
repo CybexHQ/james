@@ -20,8 +20,15 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let command = cli.command.clone().unwrap_or(Command::Serve);
-    if let Command::VerifyApplianceDatabase { database } = &command {
-        return tiaris_nest::appliance::nixos::verify_database(database).await;
+    if let Command::VerifyApplianceDatabase {
+        database,
+        rollback_target,
+    } = &command
+    {
+        return tiaris_nest::appliance::nixos::verify_database(database, *rollback_target).await;
+    }
+    if let Command::RehearseApplianceDatabase { database, output } = &command {
+        return tiaris_nest::appliance::nixos::rehearse_database(database, output).await;
     }
     if matches!(command, Command::VerifyApplianceUpdatePolicy) {
         println!(
@@ -147,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
         Command::ValidateApplianceConfig => {
             unreachable!("validate-appliance-config exits before database setup")
         }
-        Command::VerifyApplianceDatabase { .. } => {
+        Command::VerifyApplianceDatabase { .. } | Command::RehearseApplianceDatabase { .. } => {
             unreachable!("database verification exits before config loading")
         }
         Command::VerifyApplianceUpdatePolicy => {
@@ -204,6 +211,7 @@ fn managed_command_requires_service_user(
                 | Command::VerifyApplianceUpdate
                 | Command::VerifyApplianceUpdatePolicy
                 | Command::VerifyApplianceDatabase { .. }
+                | Command::RehearseApplianceDatabase { .. }
                 | Command::ApplyApplianceUpdateSchedule
                 | Command::CheckApplianceUpdateSchedule
                 | Command::VerifyApplianceCandidateUpdate
