@@ -232,6 +232,37 @@ class ProductionTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 acceptance.validate_scope(manifest, {'qualification_scope': invalid})
 
+    def test_production_fixture_accepts_only_production_origins(self):
+        config = load('isolated_manage_config')
+        for origin in ('https://manage.tiaris.com', 'https://manage.cybex.net'):
+            self.assertEqual(config.production_origin(origin, 'rejected'), origin)
+        for origin in ('https://dev.tiaris.com', 'https://manage.tiaris.com/', 'https://manage.example.test', None):
+            with self.subTest(origin=origin), self.assertRaisesRegex(ValueError, 'rejected'):
+                config.production_origin(origin, 'rejected')
+        acceptance = load('release_acceptance')
+        manifest = {'installer_iso_template_v3': {'manage_origin': 'https://manage.tiaris.com'},
+                    'appliance_release_v1': {'manage_source_revision': 'a' * 40}}
+        scope = {'schema': 'tiaris.nest.isolated-qualification.v1', 'manage_origin': 'https://manage.tiaris.com',
+                 'manage_revision': 'a' * 40, 'owner': '01234567-89ab-cdef-0123-456789abcdef',
+                 'live_production_access': False}
+        acceptance.validate_scope(manifest, {'qualification_scope': scope})
+        for invalid in ({}, scope | {'manage_origin': 'https://manage.cybex.net'}):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                acceptance.validate_scope(manifest, {'qualification_scope': invalid})
+
+    def test_production_fixture_rejects_a_development_origin(self):
+        fixture = load('production_fixture')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = root / 'test-fresh'
+            state.mkdir(mode=0o700)
+            value = {'manage_origin': 'https://dev.tiaris.com', 'app_images': {'candidate': 'image'}}
+            with patch.object(fixture.config, 'load', return_value=(value, None)), \
+                    self.assertRaisesRegex(ValueError, 'production artifact origin'):
+                with fixture.fixture(state, root / 'config', root / 'candidate', root / 'predecessor', 'fresh'):
+                    self.fail('A development-origin fixture must not enter production qualification')
+            self.assertFalse((state / 'fixture-config').exists())
+
     def test_rpc_allows_only_bounded_operations(self):
         rpc = load('isolated_manage_rpc')
         owner = Mock()

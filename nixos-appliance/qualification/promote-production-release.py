@@ -119,7 +119,8 @@ def main():
         manifest = predecessor.verify_pair(directory, args.trusted_public_key, base + predecessor.MANIFEST)
         if manifest['version'] != args.tag[1:]:
             raise ValueError('Staged manifest does not bind its tag')
-        if manifest.get('installer_iso_template_v3', {}).get('manage_origin') != 'https://manage.cybex.net':
+        if not acceptance.production_origins.is_production(
+                manifest.get('installer_iso_template_v3', {}).get('manage_origin')):
             raise ValueError('Development-origin artifacts cannot be promoted as production releases')
         acceptance.validate_public_closure(manifest, predecessor.sha(directory / predecessor.MANIFEST),
                                            receipts[EVIDENCE], args.source)

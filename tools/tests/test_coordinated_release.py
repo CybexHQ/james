@@ -60,6 +60,43 @@ class ProductionQualificationWorkflowTests(unittest.TestCase):
                     self.assertNotEqual(subprocess.run(['bash', '-c', script], env=changed,
                                                        capture_output=True).returncode, 0)
 
+    def test_scope_guards_accept_the_tiaris_production_origin_only_when_both_inputs_name_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            sudo = Path(temporary) / 'sudo'
+            sudo.write_text('#!/bin/sh\nexit 0\n')
+            sudo.chmod(0o755)
+            environment = {**self.environment(), 'PATH': temporary + os.pathsep + os.environ['PATH']}
+            tiaris = 'https://manage.tiaris.com'
+            for job in ('release_qualify', 'release_cold_qualify'):
+                script = step_script(job, 'Require isolated NixOS production qualification')
+                for build, qualification, accepted in (
+                        (tiaris, tiaris, True),
+                        (tiaris, 'https://manage.cybex.net', False),
+                        ('https://manage.cybex.net', tiaris, False),
+                        ('https://dev.tiaris.com', 'https://dev.tiaris.com', False)):
+                    changed = {**environment, 'TIARIS_NEST_BUILD_MANAGE_ORIGIN': build,
+                               'TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN': qualification}
+                    with self.subTest(job=job, build=build, qualification=qualification):
+                        result = subprocess.run(['bash', '-c', script], env=changed, capture_output=True)
+                        self.assertEqual(result.returncode == 0, accepted, result.stderr)
+
+    def test_workflow_production_origin_gates_match_the_release_tooling(self):
+        origins = runpy.run_path(str(ROOT / 'tools/production_origins.py'))['PRODUCTION_MANAGE_ORIGINS']
+        expected = ' | '.join(origins) + ') ;;'
+        for workflow, count in (('release.yml', 2), ('nest-vm-qualification.yml', 2)):
+            body = (ROOT / '.github/workflows' / workflow).read_text()
+            with self.subTest(workflow=workflow):
+                self.assertEqual(body.count(expected), count)
+                self.assertNotIn('= https://manage.cybex.net', body)
+                self.assertNotIn('!= https://manage.cybex.net', body)
+
+    def test_release_signing_and_successor_checks_pass_the_production_origin_record(self):
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        self.assertIn('--production-origin-transition release/production-origin-transition.json', workflow)
+        predecessor = (ROOT / 'nixos-appliance/qualification/release_predecessor.py').read_text()
+        self.assertIn("production_origin_transition=args.production_origin_transition", predecessor)
+        self.assertIn("ORIGIN_TRANSITION = ROOT / 'release/production-origin-transition.json'", predecessor)
+
     def test_runner_receives_fixture_config_without_external_session_or_environment_preservation(self):
         for job, name in (('release_qualify', 'Qualify fresh installation, real upgrade and automatic rollback'),
                           ('release_cold_qualify', 'Require exact published bytes and cold runtime convergence')):
@@ -150,7 +187,9 @@ class ProductionQualificationWorkflowTests(unittest.TestCase):
         for job in ('release_publish', 'release_promote'):
             script = step_script(job, 'Require production-bound artifacts for publication')
             for origin, accepted in [('', False), ('https://dev.example.test', False),
-                                     ('https://manage.cybex.net/', False), ('https://manage.cybex.net', True)]:
+                                     ('https://manage.cybex.net/', False), ('https://manage.cybex.net', True),
+                                     ('https://manage.tiaris.com', True), ('https://manage.tiaris.com/', False),
+                                     ('https://dev.tiaris.com', False)]:
                 result = subprocess.run(['bash', '-c', script], env={**os.environ,
                     'TIARIS_NEST_BUILD_MANAGE_ORIGIN': origin}, capture_output=True)
                 self.assertEqual(result.returncode == 0, accepted)

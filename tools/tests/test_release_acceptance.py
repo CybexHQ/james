@@ -319,6 +319,48 @@ class AcceptanceTests(unittest.TestCase):
         # Policy releases never claim VM evidence that was not checked.
         self.assertFalse(any(line.startswith('Tiaris-Cold-') for line in notes))
 
+    def test_promotion_accepts_both_production_origins(self):
+        for origin in ('https://manage.tiaris.com', 'https://manage.cybex.net'):
+            manifest = copy.deepcopy(self.manifest)
+            manifest['installer_iso_template_v3']['manage_origin'] = origin
+            with self.subTest(origin=origin):
+                staged, promoted, mutation, _ = self.promote(manifest=manifest)
+                mutation.assert_called_once()
+                self.assertEqual(promoted['assets'], staged['assets'])
+        for origin in ('https://dev.tiaris.com', 'https://manage.tiaris.com:8443', None):
+            manifest = copy.deepcopy(self.manifest)
+            manifest['installer_iso_template_v3']['manage_origin'] = origin
+            with self.subTest(origin=origin), self.assertRaisesRegex(ValueError, 'Development-origin'):
+                self.promote(manifest=manifest, expect_edit=False)
+
+    def test_tiaris_production_cold_cli_requires_public_receipt(self):
+        manifest = copy.deepcopy(self.manifest)
+        manifest['installer_iso_template_v3']['manage_origin'] = 'https://manage.tiaris.com'
+        scope = self.cold['qualification_scope'] | {'manage_origin': 'https://manage.tiaris.com'}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path, cold_path, workstation_path, public_path = [root / name for name in
+                ('manifest.json', 'cold.json', 'workstation.json', 'public.json')]
+            manifest_path.write_text(json.dumps(manifest))
+            cold_path.write_text(json.dumps(self.cold | {'qualification_scope': scope,
+                'qualified_manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest()}))
+            workstation_path.write_text(json.dumps(self.workstation | {'qualification_scope': scope}))
+            public_path.write_text(json.dumps(self.public_closure | {
+                'manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest()}))
+            command = ['acceptance', '--phase', 'cold', '--manifest', str(manifest_path),
+                       '--evidence', str(cold_path), '--workstation', str(workstation_path),
+                       '--source', self.source]
+            with mock.patch.object(sys, 'argv', command), self.assertRaisesRegex(ValueError, 'public closure'):
+                acceptance.main()
+            with mock.patch.object(sys, 'argv', command + ['--public-closure', str(public_path)]):
+                acceptance.main()
+            # Evidence from the former origin's fixture never qualifies a tiaris.com release.
+            cold_path.write_text(json.dumps(self.cold | {
+                'qualified_manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest()}))
+            with mock.patch.object(sys, 'argv', command + ['--public-closure', str(public_path)]), \
+                    self.assertRaisesRegex(ValueError, 'exact-origin isolated qualification'):
+                acceptance.main()
+
     def test_promotion_requires_a_passed_public_closure_job(self):
         for jobs in ([], [{'name': promotion.CLOSURE_JOB, 'conclusion': 'failure'}],
                      [{'name': promotion.CLOSURE_JOB, 'conclusion': 'success'}] * 2,

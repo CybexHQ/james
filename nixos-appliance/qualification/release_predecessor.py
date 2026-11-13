@@ -30,6 +30,7 @@ def module(name, path):
 release = module('nest_release', ROOT / 'tools/nest-release.py')
 transition = module('namespace_transition', Path(__file__).with_name('namespace_transition.py'))
 TRANSITION = ROOT / 'release/namespace-transition.json'
+ORIGIN_TRANSITION = ROOT / 'release/production-origin-transition.json'
 
 
 def canonical(value):
@@ -291,9 +292,11 @@ def main():
         parser.add_argument('--' + name, required=True)
     for name in ('directory', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
-    for name in ('authorization', 'expected-identity', 'github-output', 'retain-manage-source-to', 'qualification-predecessor-dir'):
+    for name in ('authorization', 'expected-identity', 'github-output', 'retain-manage-source-to', 'qualification-predecessor-dir',
+                 'production-origin-transition'):
         parser.add_argument('--' + name, type=Path)
-    parser.set_defaults(authorization=ROOT / 'release/recovery-adoption.json')
+    parser.set_defaults(authorization=ROOT / 'release/recovery-adoption.json',
+                        production_origin_transition=ORIGIN_TRANSITION)
     parser.add_argument('--qualification-predecessor-manifest-sha256')
     parser.add_argument('--download-media', action='store_true')
     parser.add_argument('--current-compatibility', type=Path)
@@ -317,7 +320,8 @@ def main():
             else:
                 release._verify_release_successor_command(argparse.Namespace(
                     current_compatibility=args.current_compatibility, previous_compatibility=ancestry_dir / COMPATIBILITY,
-                    trusted_public_key=args.trusted_public_key, historical_authorization=args.authorization))
+                    trusted_public_key=args.trusted_public_key, historical_authorization=args.authorization,
+                    production_origin_transition=args.production_origin_transition))
         if args.download_media:
             value = qualify(args.directory, args.candidate_version, args.trusted_public_key,
                 args.qualification_predecessor_dir, args.qualification_predecessor_manifest_sha256)

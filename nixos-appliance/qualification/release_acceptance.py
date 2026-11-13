@@ -2,10 +2,16 @@
 import argparse
 import datetime
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
 import runpy
+
+_origins_spec = importlib.util.spec_from_file_location(
+    'tiaris_production_origins', Path(__file__).resolve().parents[2] / 'tools/production_origins.py')
+production_origins = importlib.util.module_from_spec(_origins_spec)
+_origins_spec.loader.exec_module(production_origins)
 
 LIFECYCLE_FLAGS = (
     'ok', 'no_disk_write_before_approval', 'identity_rotation',
@@ -21,7 +27,7 @@ DELIVERY_FLAGS = (
 
 def validate_scope(manifest, evidence):
     origin = manifest.get('installer_iso_template_v3', {}).get('manage_origin')
-    if origin == 'https://manage.cybex.net':
+    if production_origins.is_production(origin):
         import uuid
         scope = evidence.get('qualification_scope', {})
         if (set(scope) != {'schema', 'manage_origin', 'manage_revision', 'owner', 'live_production_access'}
@@ -238,7 +244,7 @@ def main():
         if args.workstation is None:
             raise ValueError('Stable promotion requires workstation acceptance')
         validate_workstation(manifest, evidence, json.loads(args.workstation.read_bytes()))
-        if manifest['installer_iso_template_v3']['manage_origin'] == 'https://manage.cybex.net' \
+        if production_origins.is_production(manifest['installer_iso_template_v3']['manage_origin']) \
                 and args.public_closure is None:
             raise ValueError('Production cold acceptance requires public closure qualification')
         if args.public_closure is not None:
