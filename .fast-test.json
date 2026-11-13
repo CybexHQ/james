@@ -1,5 +1,5 @@
 {
-  "about": "What `fast-test` runs for a change (see ~/Code/fast-test). Quick steps run on The Dragon; a wide change also runs the full suite on The Beast. The NixOS VM tests, appliance builds and qualification stay out: by hand or the qualification workflow, when someone asks. So do the signed-seed tests that need a Nix daemon (test_source_policy_seed_cache.py): they run where CI is set, in the release workflow's Nix guest, and The Beast's container sets CI without having Nix, so `full` runs the appliance tests without it.",
+  "about": "What `fast-test` runs for a change (see ~/Code/fast-test). Quick steps run on The Dragon; the Rust tests run on The Beast, and a wide change also runs the full suite there. The NixOS VM tests, appliance builds and qualification stay out: by hand or the qualification workflow, when someone asks. So do the signed-seed tests that need a Nix daemon (test_source_policy_seed_cache.py): they run where CI is set, in the release workflow's Nix guest, and The Beast's container sets CI without having Nix, so `full` runs the appliance tests without it.",
   "steps": [
     {
       "name": "rust-fmt",
@@ -8,15 +8,17 @@
     },
     {
       "name": "rust",
-      "about": "The unit tests of the changed modules (src/routes/x.rs runs the tests named routes::x::…).",
+      "about": "The unit tests of the changed modules (src/routes/x.rs runs the tests named routes::x::…), on The Beast: building them compiles the crate.",
       "when": ["src/**/*.rs"],
+      "where": "beast",
       "run": "set --; for f in {files}; do m=${f#src/}; m=${m%.rs}; m=${m%/mod}; set -- \"$@\" \"$(printf %s \"$m\" | sed 's#/#::#g')::\"; done; cargo test --locked --lib --bins -- \"$@\"",
       "timeout": 30
     },
     {
       "name": "rust-integration",
-      "about": "A changed integration test file.",
+      "about": "A changed integration test file, on The Beast.",
       "when": ["tests/*.rs"],
+      "where": "beast",
       "run": "set --; for f in {files}; do t=${f#tests/}; set -- \"$@\" --test \"${t%.rs}\"; done; cargo test --locked \"$@\"",
       "timeout": 30
     },
