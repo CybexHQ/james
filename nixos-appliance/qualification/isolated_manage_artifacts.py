@@ -81,7 +81,8 @@ def _rfc1918(address):
 
 
 def normalize_scope(value):
-    if not isinstance(value, dict) or set(value) != SCOPE_FIELDS:
+    # `manage_alias_hosts` (network rules) only adds an owned TLS hostname.
+    if not isinstance(value, dict) or set(value) - {'manage_alias_hosts'} != SCOPE_FIELDS:
         raise ValueError('artifact coordinator scope shape is invalid')
     try:
         owner = str(uuid.UUID(value['owner']))

@@ -28,6 +28,15 @@ below map to the existing `CYBEX_JAMES_*` GitHub variables; the runner retains
   and the fixture template's `manage_origin` must name it too.
 - `TIARIS_NEST_QUALIFICATION_CONFIG`: absolute path to a dedicated root-private
   fixture template, in the format accepted by `isolated_manage_config.py`.
+  For the production rename (v0.2.122 updating a `manage.cybex.net` Nest in
+  place) the template may add `transition_manage_origin:
+  "https://manage.tiaris.com"` with `manage_origin: "https://manage.cybex.net"`;
+  no other pair is accepted. Its one TLS certificate must name both hostnames.
+  The fixture then answers DNS and terminates TLS for both names, binds the
+  predecessor to the former and the candidate to the current origin, and
+  `switch_public_origin()` restarts its Manage with `TIARIS_PUBLIC_API_URL`
+  moved to the current origin (database kept). The qualification driver and
+  workflow do not call it yet: their origin checks still expect one origin.
 - `TIARIS_NEST_QUALIFICATION_STATE_ROOT`: an existing root-owned 0700 directory.
 - `TIARIS_NEST_QUALIFICATION_SUBNET`: an unused private IPv4 /24 with its gateway.
 - `TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR` and

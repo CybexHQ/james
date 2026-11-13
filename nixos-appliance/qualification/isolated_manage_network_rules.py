@@ -21,12 +21,26 @@ _spec.loader.exec_module(egress)
 FIELDS = {'owner', 'bridge', 'subnet', 'manage_origin', 'peer_ipv4', 'network_id',
           'backend_subnet', 'egress_hosts'}
 SCHEMA = 'tiaris.nest.isolated-manage-network.v1'
+# Optional: further owned Management hostnames (the production rename fixture).
+ALIASES = 'manage_alias_hosts'
+
+
+def manage_hosts(c):
+    """The fixture's own Management hostnames: its origin, then any aliases."""
+    return [urlsplit(c['manage_origin']).hostname, *c.get(ALIASES, [])]
 
 
 def validate(c):
-    if not isinstance(c, dict) or set(c) != FIELDS:
+    if not isinstance(c, dict) or set(c) - {ALIASES} != FIELDS:
         raise ValueError('adapter requires an exact private fixture context')
     egress.hosts(c['egress_hosts'])
+    if ALIASES in c:
+        aliases = c[ALIASES]
+        if (not isinstance(aliases, list) or len(aliases) != 1
+                or any(not isinstance(a, str) or a in c['egress_hosts']
+                       or not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+', a)
+                       or 'https://' + a == c['manage_origin'] for a in aliases)):
+            raise ValueError('fixture Management alias must be one distinct canonical hostname')
     if str(uuid.UUID(c['owner'])) != c['owner'] or not re.fullmatch(r'jnq[0-9a-f]{10}', c['bridge']):
         raise ValueError('invalid fixture owner or bridge')
     if not re.fullmatch(r'[0-9a-f]{64}', c['network_id']):
@@ -56,7 +70,7 @@ def dns_config(c):
     validate(c)
     return ('# tiaris qualification owner ' + c['owner'] + '\nno-resolv\nno-hosts\nlocal=/#/\n'
             + ''.join('host-record=' + host + ',' + c['peer_ipv4'] + '\n'
-                      for host in (urlsplit(c['manage_origin']).hostname, *c['egress_hosts'])))
+                      for host in (*manage_hosts(c), *c['egress_hosts'])))
 
 
 def match(left, right, op='=='):

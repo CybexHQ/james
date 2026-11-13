@@ -931,5 +931,128 @@ class TLSTests(unittest.TestCase):
                 transport.endpoint(receipt() | {'peer_ipv4': peer})
 
 
+class OriginTransitionFixtureTests(unittest.TestCase):
+    """The fixture can serve production's rename: one certificate, two names."""
+    CYBEX, TIARIS = 'https://manage.cybex.net', 'https://manage.tiaris.com'
+
+    def transition_config(self, **extra):
+        return configuration() | {'manage_origin': self.CYBEX,
+                                  'transition_manage_origin': self.TIARIS} | extra
+
+    def test_only_the_production_rename_is_a_valid_transition(self):
+        value = config.validate(self.transition_config())
+        self.assertEqual(config.served_hostnames(value), ['manage.cybex.net', 'manage.tiaris.com'])
+        self.assertEqual(config.served_hostnames(configuration()), ['dev.example.test'])
+        for bad in (self.transition_config(manage_origin=self.TIARIS, transition_manage_origin=self.CYBEX),
+                    self.transition_config(transition_manage_origin='https://dev.tiaris.com'),
+                    self.transition_config(manage_origin='https://dev.example.test'),
+                    self.transition_config(transition_manage_origin=self.TIARIS + '/'),
+                    self.transition_config(egress_hosts=['manage.tiaris.com']),
+                    self.transition_config(extra='field')):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                config.validate(bad)
+
+    def test_certificate_must_name_both_hostnames(self):
+        with tempfile.TemporaryDirectory() as directory:
+            def certificate(names):
+                cert, key = Path(directory) / 'cert.pem', Path(directory) / 'key.pem'
+                subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+                                '-keyout', key, '-out', cert, '-subj', '/CN=' + names[0],
+                                '-addext', 'subjectAltName=' + ','.join('DNS:' + n for n in names)],
+                               check=True, capture_output=True)
+                return cert.read_bytes()
+            hosts = ['manage.cybex.net', 'manage.tiaris.com']
+            config.require_certificate_hosts(certificate(hosts), hosts)
+            with self.assertRaises(ValueError):
+                config.require_certificate_hosts(certificate(hosts[:1]), hosts)
+
+    def test_releases_bind_predecessor_to_former_and_candidate_to_current_origin(self):
+        key = base64.b64encode(b'p' * 32).decode()
+        def manifest(version, origin):
+            return {'version': version,
+                    'installer_iso_template_v3': {'manage_origin': origin, 'provisioning_public_keys': [key],
+                                                  'url': 'https://example.invalid/iso/installer.iso'},
+                    'appliance_release_v1': {'schema': 'v3', 'manage_source_revision': 'a' * 40,
+                                             'system_closure': {'url': 'https://example.invalid/c/closure.tar.zst'}},
+                    'workstation_netboot': {'url': 'https://example.invalid/w/bundle.tar.zst'}}
+        def run(candidate_origin, predecessor_origin):
+            verifier = types.SimpleNamespace(
+                verify_pair_snapshot=mock.Mock(side_effect=[
+                    {'manifest': manifest(v, o), 'manifest_body': v.encode(),
+                     'compatibility': {'compatibility_sha256': 'c' * 64,
+                                       'release_manifest': {'url': 'https://example.invalid/' + v}},
+                     'compatibility_body': b'c'}
+                    for v, o in (('1.2.3', candidate_origin), ('1.2.2', predecessor_origin))]),
+                MANIFEST='manifest.json',
+                release=types.SimpleNamespace(appliance_v3=types.SimpleNamespace(SCHEMA='v3')), advance=mock.Mock())
+            return config.signed_releases(self.transition_config(), {'public_key': key}, Path('/candidate'),
+                                          Path('/predecessor'), verifier=verifier)
+        self.assertEqual(run(self.TIARIS, self.CYBEX)['candidate']['version'], '1.2.3')
+        for pair in ((self.CYBEX, self.CYBEX), (self.TIARIS, self.TIARIS), (self.CYBEX, self.TIARIS)):
+            with self.subTest(pair=pair), self.assertRaises(ValueError):
+                run(*pair)
+
+    def test_nginx_serves_each_name_and_single_host_output_is_unchanged(self):
+        value = receipt() | {'manage_origin': self.CYBEX, 'context': {}}
+        single = resources.nginx_config(value).decode()
+        self.assertEqual(single.count('server {'), 1)
+        self.assertEqual(single, resources.nginx_config({k: v for k, v in value.items() if k != 'context'}).decode())
+        both = resources.nginx_config(value | {'context': {'manage_alias_hosts': ['manage.tiaris.com']}}).decode()
+        self.assertEqual(both.count('server {'), 2)
+        for host in ('manage.cybex.net', 'manage.tiaris.com'):
+            self.assertIn('server_name ' + host + ';', both)
+            self.assertIn('if ($host != ' + host + ') { return 444; }', both)
+            self.assertIn('proxy_set_header Host ' + host + ';', both)
+
+    def test_switch_restarts_only_the_app_at_the_current_origin_and_resumes(self):
+        owner = owner_module.Owner(Path('/private/run'), mock.Mock())
+        saved = {'status': 'ready', 'manage_origin': self.CYBEX, 'public_manage_origin': self.CYBEX,
+                 'transition_manage_origin': self.TIARIS, 'files': {}}
+        owner.lock = contextlib.nullcontext
+        owner.read = lambda: saved
+        owner.verify = mock.Mock(side_effect=lambda: saved)
+        owner.guard = mock.Mock(return_value=True)
+        owner.verify_artifacts = mock.Mock()
+        owner.save = mock.Mock()
+        owner.rewrite_app_environment = mock.Mock()
+        owner.recreate_app = mock.Mock(side_effect=ValueError('interrupted'))
+        with self.assertRaisesRegex(ValueError, 'interrupted'):
+            owner.switch_public_origin()
+        self.assertEqual(saved['status'], 'switching-origin')
+        self.assertEqual(saved['public_manage_origin'], self.TIARIS)
+        self.assertEqual(saved['manage_origin'], self.CYBEX)
+        owner.rewrite_app_environment.assert_called_with(saved, {
+            'TIARIS_PUBLIC_API_URL': self.TIARIS, 'TIARIS_NEST_PROVISIONING_MANAGE_ORIGIN': self.TIARIS})
+        owner.recreate_app = mock.Mock()
+        self.assertIs(owner.switch_public_origin(), saved)
+        self.assertEqual(saved['status'], 'ready')
+        owner.recreate_app.assert_called_once_with(saved)
+        owner.recreate_app.reset_mock()
+        owner.switch_public_origin()
+        owner.recreate_app.assert_not_called()
+        with self.assertRaisesRegex(ValueError, 'not prepared'):
+            owner.read = lambda: {'status': 'ready', 'manage_origin': self.CYBEX}
+            owner.switch_public_origin()
+
+    def test_environment_rewrite_replaces_exactly_the_origin_lines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            owner = owner_module.Owner(Path(directory), mock.Mock())
+            owner.directory.mkdir()
+            path = owner.directory / 'app.env'
+            path.write_bytes(resources.env_body({'UNCHANGED': 'retained', 'TIARIS_PUBLIC_API_URL': self.CYBEX,
+                                                 'TIARIS_NEST_PROVISIONING_MANAGE_ORIGIN': self.CYBEX}))
+            saved = {'files': {}}
+            def write_plain(target, body, **_kwargs):
+                Path(target).write_bytes(body)
+            with mock.patch.object(config, 'read_file', return_value=path.read_bytes()), \
+                    mock.patch.object(resources, 'write', side_effect=write_plain):
+                owner.replace_public_origin_environment(saved, self.TIARIS)
+            body = path.read_text()
+            self.assertIn('UNCHANGED=retained\n', body)
+            self.assertIn('TIARIS_PUBLIC_API_URL=' + self.TIARIS + '\n', body)
+            self.assertIn('TIARIS_NEST_PROVISIONING_MANAGE_ORIGIN=' + self.TIARIS + '\n', body)
+            self.assertNotIn(self.CYBEX, body)
+
+
 if __name__ == '__main__':
     unittest.main()

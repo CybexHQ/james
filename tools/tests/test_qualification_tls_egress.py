@@ -139,5 +139,63 @@ class TLSRoutingTests(unittest.TestCase):
                 thread.join()
 
 
+class OriginTransitionRoutingTests(unittest.TestCase):
+    """A rename fixture owns both Management names; neither reaches upstream."""
+
+    def context(self, **extra):
+        return {'owner': '01234567-89ab-cdef-0123-456789abcdef', 'bridge': 'jnq0123456789',
+                'subnet': '10.99.16.1/24', 'manage_origin': 'https://manage.cybex.net',
+                'peer_ipv4': '10.99.16.1', 'network_id': 'a' * 64,
+                'backend_subnet': '10.99.17.0/28', 'egress_hosts': list(hello.UPSTREAM_HOSTS), **extra}
+
+    def test_dns_answers_both_management_names_at_the_private_peer(self):
+        single = self.context()
+        both = self.context(manage_alias_hosts=['manage.tiaris.com'])
+        self.assertNotIn('manage.tiaris.com', rules.dns_config(single))
+        self.assertEqual(rules.manage_hosts(both), ['manage.cybex.net', 'manage.tiaris.com'])
+        for host in ('manage.cybex.net', 'manage.tiaris.com'):
+            self.assertIn('host-record=' + host + ',10.99.16.1\n', rules.dns_config(both))
+        self.assertEqual(rules.ruleset(single), rules.ruleset(both))
+        for aliases in (['manage.cybex.net'], ['github.com'], [], ['a.example', 'b.example'],
+                        ['Manage.tiaris.com'], 'manage.tiaris.com', ['localhost']):
+            with self.subTest(aliases=aliases), self.assertRaises(ValueError):
+                rules.validate(self.context(manage_alias_hosts=aliases))
+
+    def test_forwarder_terminates_alias_locally_and_keeps_its_policy_exact(self):
+        class Echo(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.request.sendall(self.request.recv(65536))
+        class Backend(socketserver.TCPServer):
+            allow_reuse_address = True
+        with Backend(('127.0.0.2', 8443), Echo) as backend:
+            thread = threading.Thread(target=backend.serve_forever, daemon=True)
+            thread.start()
+            routing = proxy.Proxy('127.0.0.3', '127.0.0.2', hostname='manage.cybex.net',
+                                  upstream_hosts=hello.UPSTREAM_HOSTS, aliases=('manage.tiaris.com',),
+                                  _test_port=0)
+            try:
+                with patch.object(proxy.egress, 'public_endpoint', side_effect=ValueError('not approved')) as external:
+                    for host in ('manage.cybex.net', 'manage.tiaris.com'):
+                        with socket.create_connection(routing.address, timeout=2) as client:
+                            wire = client_hello(host)
+                            client.sendall(wire)
+                            self.assertEqual(client.recv(65536), wire)
+                    external.assert_not_called()
+                self.assertTrue(routing.verify('127.0.0.3', '127.0.0.2', hostname='manage.cybex.net',
+                                               upstream_hosts=hello.UPSTREAM_HOSTS,
+                                               aliases=('manage.tiaris.com',)))
+                with self.assertRaises(ValueError):
+                    routing.verify('127.0.0.3', '127.0.0.2', hostname='manage.cybex.net',
+                                   upstream_hosts=hello.UPSTREAM_HOSTS)
+            finally:
+                routing.close()
+                backend.shutdown()
+                thread.join()
+        for aliases in (('manage.cybex.net',), ('github.com',), ('a.example', 'a.example'), ('',)):
+            with self.subTest(aliases=aliases), self.assertRaises(ValueError):
+                proxy.Proxy('127.0.0.3', '127.0.0.2', hostname='manage.cybex.net',
+                            upstream_hosts=hello.UPSTREAM_HOSTS, aliases=aliases, _test_port=0)
+
+
 if __name__ == '__main__':
     unittest.main()
