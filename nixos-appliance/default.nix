@@ -46,6 +46,17 @@ let
     nixpkgsRevision = pin.revision;
     nixpkgsPath = nixpkgs;
     udpcast = import (builtins.toPath manageRepo + "/deploy/nixos/udpcast-pinned.nix") { inherit pkgs; };
+    # The USB installer stick for computers that cannot network-boot
+    # (Tiaris docs/design/usb-installer.md), built from the same pinned
+    # Tiaris source. The Nest serves it at /usb-installer/ with its own site
+    # file; a Tiaris revision without it simply ships no stick.
+    usbInstaller =
+      let stick = builtins.toPath manageRepo + "/deploy/nixos/tiaris-usb-installer.nix";
+      in if builtins.pathExists stick then import stick {
+        inherit nixpkgs pkgs system;
+        repoRoot = builtins.toPath manageRepo;
+        sourceRevision = manageSourceRevision;
+      } else null;
     # Presentation-only GRUB theme directory (theme.txt, images, .pf2 fonts).
     grubTheme = import (builtins.toPath manageRepo + "/deploy/nixos/tiaris-grub-theme.nix") {
       inherit pkgs;
