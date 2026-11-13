@@ -78,6 +78,14 @@ class AcceptanceTests(unittest.TestCase):
     def validate(self, value, phase='cold'):
         acceptance.validate_lifecycle(self.manifest, self.digest, value, self.source, phase)
 
+    def test_transition_origin_may_change_only_by_the_production_rename(self):
+        former, current = 'https://manage.cybex.net', 'https://manage.tiaris.com'
+        self.assertTrue(acceptance.transition_origins(current, current))
+        self.assertTrue(acceptance.transition_origins(current, former))
+        self.assertFalse(acceptance.transition_origins(former, current))
+        self.assertFalse(acceptance.transition_origins('https://dev.tiaris.com', former))
+        self.assertFalse(acceptance.transition_origins(current, 'https://dev.tiaris.com'))
+
     def test_prepublication_absence_is_explicit_and_cannot_pass_cold_acceptance(self):
         pre = self.cold | {k: False for k in acceptance.DELIVERY_FLAGS}
         pre.update(candidate_runtime_required=False, workstation_runtime_prepublication_deferred=True,

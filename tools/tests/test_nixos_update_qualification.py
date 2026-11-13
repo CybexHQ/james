@@ -600,6 +600,40 @@ class TransitionTests(unittest.TestCase):
             run = Run(); mutation()
             with self.assertRaises(ValueError): validate()
 
+    def test_inputs_admit_only_the_production_rename_across_origins(self):
+        former, current = 'https://manage.cybex.net', 'https://manage.tiaris.com'
+        def validate(candidate_origin, predecessor_origin, fixture_origin, argument):
+            run = Run()
+            run.candidate['installer_iso_template_v3']['manage_origin'] = candidate_origin
+            run.previous['installer_iso_template_v3']['manage_origin'] = predecessor_origin
+            T.validate_inputs(run.candidate, hashlib.sha256(run.candidate_body).hexdigest(), run.previous,
+                hashlib.sha256(run.previous_body).hexdigest(), run.evidence, fixture_origin, SOURCE,
+                candidate_origin=argument)
+        validate(current, former, former, current)  # the one rename, former -> current
+        for case in ((current, former, former, None),       # rename needs the explicit candidate origin
+                     (former, current, current, former),    # never back
+                     (current, current, former, current),   # predecessor must be at the fixture origin
+                     (ORIGIN, former, former, ORIGIN),      # no other pair
+                     (current, ORIGIN, ORIGIN, current)):
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                validate(*case)
+
+    def test_rename_update_requires_fixture_moved_to_candidate_origin(self):
+        former, current = 'https://manage.cybex.net', 'https://manage.tiaris.com'
+        scope = {'schema': R.SCOPE['ISOLATED_SCHEMA'], 'manage_origin': former}
+        with patch.object(R, 'fixture_request',
+                          return_value={'manage_origin': former, 'public_manage_origin': current}) as rpc:
+            R.require_public_origin(Path('/private'), scope, current)
+        rpc.assert_called_once_with(Path('/private'), 'public_origin')
+        for answer in ({'manage_origin': former, 'public_manage_origin': former},
+                       {'manage_origin': current, 'public_manage_origin': current}):
+            with self.subTest(answer=answer), patch.object(R, 'fixture_request', return_value=answer), \
+                    self.assertRaisesRegex(ValueError, 'not moved to the candidate origin'):
+                R.require_public_origin(Path('/private'), scope, current)
+        with patch.object(R, 'fixture_request') as rpc, self.assertRaisesRegex(ValueError, 'isolated fixture'):
+            R.require_public_origin(Path('/private'), {**scope, 'schema': 'other'}, current)
+        rpc.assert_not_called()
+
     def test_invalid_scope_precedes_api_fixture_server_and_files(self):
         with patch.object(R, 'private_state', side_effect=ValueError('scope denied')), patch.object(R, 'API') as api, \
              patch.object(R, 'Fixture') as fixture, patch.object(R.subprocess, 'Popen') as server, \

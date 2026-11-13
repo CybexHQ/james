@@ -21,7 +21,7 @@ def load(name):
 
 
 class QualificationPhaseTests(unittest.TestCase):
-    def run_fixture(self, root, *, cold=False, failure=None):
+    def run_fixture(self, root, *, cold=False, failure=None, transition=False):
         runner = load('run-production-qualification')
         fixture = load('production_fixture')
         for name in ('candidate', 'predecessor', 'evidence', 'state'):
@@ -36,6 +36,10 @@ class QualificationPhaseTests(unittest.TestCase):
             evidence_dir=root / 'evidence', state_root=root / 'state', trusted_public_key='public',
             manage_origin='https://manage.cybex.net', isolated_manage_config=root / 'config',
             subnet='10.99.1.1/24', allow_device_helper=None, manage_checkout=None)
+        if transition:
+            # Production rename: the candidate is built for the current name,
+            # the fixture and its predecessor start at the former one.
+            args.manage_origin, args.fixture_origin = 'https://manage.tiaris.com', 'https://manage.cybex.net'
         entries, exits, owners, commands, input_paths = [], [], [], [], []
 
         @contextlib.contextmanager
@@ -120,6 +124,34 @@ class QualificationPhaseTests(unittest.TestCase):
                 self.assertIn('development-scope.py', str(commands[-1][2]))
                 self.assertNotIn('private', json.dumps(timing))
                 self.assertNotIn('not-for-export', json.dumps(timing))
+
+    def test_production_rename_switches_origin_between_install_and_update(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            args, entries, owners, commands, _, _, error = self.run_fixture(Path(temporary), transition=True)
+            self.assertIsNone(error)
+            # A fresh candidate install needs the current origin from the start.
+            self.assertEqual(entries, ['update', 'rollback'])
+            updates = [c for c in commands if 'run-isolated-update.py' in str(c[2])]
+            self.assertEqual(len(updates), 2)
+            for command in updates:
+                index = command.index('--candidate-manage-origin')
+                self.assertEqual(command[index + 1], 'https://manage.tiaris.com')
+            for owner in owners:
+                self.assertEqual([name for name, *_ in owner.method_calls if name != 'verify'],
+                                 ['select_release', 'switch_public_origin'])
+            # Scope and cleanup stay bound to the fixture's own (former) origin.
+            cleanup = [c for c in commands if 'development-scope.py' in str(c[2])]
+            self.assertTrue(cleanup)
+            for command in cleanup:
+                self.assertEqual(command[command.index('--manage-origin') + 1], 'https://manage.cybex.net')
+
+    def test_single_origin_run_never_switches_origin(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, owners, commands, _, _, error = self.run_fixture(Path(temporary))
+            self.assertIsNone(error)
+            for owner in owners:
+                owner.switch_public_origin.assert_not_called()
+            self.assertFalse(any('--candidate-manage-origin' in c for c in commands))
 
     def test_cold_uses_only_one_independent_published_snapshot_and_one_workstation_sequence(self):
         with tempfile.TemporaryDirectory() as temporary:

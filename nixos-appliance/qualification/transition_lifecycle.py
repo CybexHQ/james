@@ -113,13 +113,20 @@ def verify_admission(admission, request, candidate, device):
     return admission['attempt_id']
 
 
-def validate_inputs(candidate, candidate_digest, previous, previous_digest, evidence, origin, source):
+def validate_inputs(candidate, candidate_digest, previous, previous_digest, evidence, origin, source,
+                    candidate_origin=None):
+    """`origin` is the fixture's; `candidate_origin` is set only for the one
+    production rename (manage.cybex.net -> manage.tiaris.com)."""
     release_predecessor.advance(candidate['version'], previous['version'])
-    for manifest in (candidate, previous):
+    if candidate_origin is not None and (
+            origin, candidate_origin) != (release_acceptance.production_origins.FORMER_PRODUCTION_MANAGE_ORIGIN,
+                                          release_acceptance.production_origins.PRODUCTION_MANAGE_ORIGIN):
+        raise ValueError('Transition manifests must bind this development NixOS scope')
+    for manifest, expected_origin in ((candidate, candidate_origin or origin), (previous, origin)):
         descriptor = manifest['appliance_release_v1']
         if (descriptor['schema'] != 'tiaris.nest.appliance-release.v3'
                 or descriptor['release_id'] != manifest['version'] or descriptor['base_os'] != 'nixos'
-                or manifest['installer_iso_template_v3']['manage_origin'] != origin):
+                or manifest['installer_iso_template_v3']['manage_origin'] != expected_origin):
             raise ValueError('Transition manifests must bind this development NixOS scope')
     descriptor = previous['appliance_release_v1']
     generation(evidence.get('system_generation'))
@@ -408,6 +415,9 @@ def run(api, fixture, candidate, candidate_body, previous, previous_body, eviden
                 sleep(1)
                 continue
             observation = {k: node.get(k) for k in ('update_status', 'update_stage', 'system_generation', 'appliance_release')}
+            reason = (node.get('appliance_package_update') or {}).get('rollback_reason')
+            if reason:
+                observation['rollback_reason'] = reason
             if not observations or observations[-1] != observation:
                 if len(observations) >= 256:
                     raise ValueError('Transition exceeded its bounded stage history')

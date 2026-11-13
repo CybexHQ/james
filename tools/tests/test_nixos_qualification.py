@@ -159,6 +159,27 @@ class NixosQualificationTests(unittest.TestCase):
             self.assertEqual(inputs['nest_repository'], str(ROOT))
             self.assertEqual((state / 'release-inputs.json').stat().st_mode & 0o777, 0o600)
 
+    def test_isolated_config_origins_bind_one_origin_or_the_production_rename(self):
+        fixture = module('nixos_fixture_origins', HELPERS / 'isolated_fixture.py')
+        with patch.dict(sys.modules, {'release_predecessor': P, 'isolated_fixture': fixture}), \
+                patch.object(sys, 'path', [str(HELPERS), *sys.path]):
+            runner = module('nixos_runner_origins', HELPERS / 'run-production-qualification.py')
+            former, current = 'https://manage.cybex.net', 'https://manage.tiaris.com'
+            single = {'manage_origin': current}
+            self.assertEqual(runner.qualification_origins(current, single), (current, current))
+            with self.assertRaisesRegex(ValueError, 'exact artifact origin'):
+                runner.qualification_origins(former, single)
+            rename = {'manage_origin': former, 'transition_manage_origin': current}
+            self.assertEqual(runner.qualification_origins(current, rename), (former, current))
+            with self.assertRaisesRegex(ValueError, 'current origin'):
+                runner.qualification_origins(former, rename)
+            with self.assertRaises(ValueError):  # never back to the former name
+                runner.qualification_origins(former, {'manage_origin': current, 'transition_manage_origin': former})
+            args = SimpleNamespace(manage_origin=current)
+            self.assertEqual(runner.fixture_origin(args), current)
+            args.fixture_origin = former
+            self.assertEqual(runner.fixture_origin(args), former)
+
     def test_partial_tap_setup_releases_only_the_nonpersistent_owned_fd(self):
         scope = {'owner': 'owner'}
         with patch.object(S, 'verify', return_value=(scope, {})), \

@@ -138,6 +138,13 @@ def validate_public_closure(manifest, manifest_sha256, evidence, source):
 
 
 
+def transition_origins(candidate, predecessor):
+    """An update keeps its origin, except the one production rename (former -> current)."""
+    return candidate == predecessor or (
+        predecessor == production_origins.FORMER_PRODUCTION_MANAGE_ORIGIN
+        and candidate == production_origins.PRODUCTION_MANAGE_ORIGIN)
+
+
 def validate_transition(manifest, digest, previous, previous_digest, evidence, source, phase):
     import release_predecessor
     release_predecessor.advance(manifest['version'], previous['version'])
@@ -145,7 +152,8 @@ def validate_transition(manifest, digest, previous, previous_digest, evidence, s
     if (candidate['schema'] != 'tiaris.nest.appliance-release.v3'
             or predecessor['schema'] != candidate['schema']
             or candidate['source_revision'] != source
-            or manifest['installer_iso_template_v3']['manage_origin'] != previous['installer_iso_template_v3']['manage_origin']
+            or not transition_origins(manifest['installer_iso_template_v3']['manage_origin'],
+                                      previous['installer_iso_template_v3']['manage_origin'])
             or evidence.get('schema') != f'tiaris.nest.nixos-appliance-{phase}-qualification.v1'
             or evidence.get('candidate_manifest_sha256') != digest
             or evidence.get('predecessor_manifest_sha256') != previous_digest

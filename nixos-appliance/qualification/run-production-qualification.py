@@ -90,6 +90,30 @@ def verify_candidate(directory, public_key, origin):
     return manifest
 
 
+def qualification_origins(manage_origin, config):
+    """Return (fixture origin, candidate origin) for an isolated fixture config.
+
+    `manage_origin` is the artifact origin the candidate was built for. A
+    production-rename fixture (`transition_manage_origin`, only
+    manage.cybex.net -> manage.tiaris.com) installs the predecessor while its
+    Manage serves the former name and updates to a candidate built for the
+    current one; every other configuration binds a single origin."""
+    import isolated_manage_config
+    target = isolated_manage_config.transition(config)
+    if target is None:
+        if config['manage_origin'] != manage_origin:
+            raise ValueError('Production qualification config must bind the exact artifact origin')
+        return manage_origin, manage_origin
+    if manage_origin != target:
+        raise ValueError('A production-rename fixture qualifies a candidate built for its current origin')
+    return config['manage_origin'], target
+
+
+def fixture_origin(args):
+    """The origin the fixture Manage starts at (the predecessor's origin)."""
+    return getattr(args, 'fixture_origin', None) or args.manage_origin
+
+
 def write_release_inputs(state, selected, manage_checkout, origin):
     """Bind selected fixture bytes separately from the reviewed running harness."""
     manifest, body = predecessor.checked_json(selected)
@@ -131,6 +155,7 @@ def main():
     parser.add_argument('--state-root', type=Path, default=os.environ.get('TIARIS_NEST_QUALIFICATION_STATE_ROOT'))
     parser.add_argument('--allow-device-helper', type=Path, default=os.environ.get('TIARIS_NEST_QUALIFICATION_ALLOW_DEVICE_HELPER'))
     parser.add_argument('--manage-checkout', type=Path, default=os.environ.get('TIARIS_NEST_QUALIFICATION_MANAGE_CHECKOUT'))
+    parser.add_argument('--phases', help='comma-separated subset of the warm phases (update,rollback,fresh)')
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,22}', args.run)
             or not all((args.manage_origin, args.subnet, args.state_root))
@@ -141,8 +166,7 @@ def main():
         config, _ = isolated_manage_config.load(args.isolated_manage_config)
         isolated_manage_config.production_origin(
             args.manage_origin, 'Production qualification config must bind the exact artifact origin')
-        if config['manage_origin'] != args.manage_origin:
-            raise ValueError('Production qualification config must bind the exact artifact origin')
+        args.fixture_origin, _ = qualification_origins(args.manage_origin, config)
         if args.token_file or args.allow_device_helper:
             raise ValueError('Isolated qualification cannot accept an external session or device helper')
     else:
@@ -190,14 +214,25 @@ def qualify_run(args, timings):
         with timings.measure('inputs', 'verify-predecessor'):
             previous = predecessor.qualify(args.predecessor_dir, manifest['version'], args.trusted_public_key)
         previous_manifest = predecessor.checked_json(args.predecessor_dir / predecessor.MANIFEST)[0]
-        if previous_manifest['installer_iso_template_v3']['manage_origin'] != args.manage_origin:
+        # A production-rename fixture's predecessor records the former origin.
+        if previous_manifest['installer_iso_template_v3']['manage_origin'] != fixture_origin(args):
             raise ValueError('Predecessor origin must equal the development candidate origin')
         (args.evidence_dir / 'tiaris-nest-qualified-predecessor.json').write_bytes(predecessor.canonical(previous))
         shutil.copyfile(args.predecessor_dir / predecessor.MANIFEST,
                         args.evidence_dir / 'tiaris-nest-qualified-predecessor-release.json')
         phases = ['update', 'rollback', 'fresh']
+        if fixture_origin(args) != args.manage_origin:
+            # A fresh candidate install needs Manage at the candidate's origin
+            # from the start; the ordinary single-origin qualification covers
+            # it, so a rename fixture qualifies the in-place update and rollback.
+            phases = ['update', 'rollback']
     else:
         phases = ['cold']
+    if getattr(args, 'phases', None):
+        requested = args.phases.split(',')
+        if not requested or len(set(requested)) != len(requested) or set(requested) - set(phases):
+            raise ValueError('Requested phases must be a subset of this run\'s phases')
+        phases = [phase for phase in phases if phase in requested]
     # One verified private input snapshot supplies bytes to independent fresh
     # fixtures. No listener, database, machine, session or success is shared.
     # Keep it alive until every phase and its cleanup has settled.
@@ -223,7 +258,7 @@ def qualify_run(args, timings):
 def qualify_phase(args, phase, manifest, previous, candidate_dir, predecessor_dir, timings):
     state = args.state_root / (args.run + '-' + phase)
     candidate_manifest = candidate_dir / predecessor.MANIFEST
-    scope_args = argparse.Namespace(run=state.name, state_dir=state, subnet=args.subnet, manage_origin=args.manage_origin,
+    scope_args = argparse.Namespace(run=state.name, state_dir=state, subnet=args.subnet, manage_origin=fixture_origin(args),
                                     isolated_manage=bool(args.isolated_manage_config))
     with timings.measure(phase, 'scope'):
         SCOPE['prepare'](scope_args)
@@ -269,10 +304,16 @@ def qualify_phase(args, phase, manifest, previous, candidate_dir, predecessor_di
         if phase in {'update', 'rollback'}:
             if owner:
                 owner.select_release('candidate')
+                if fixture_origin(args) != args.manage_origin:
+                    # The production rename happens between the installed
+                    # predecessor and its update; Manage keeps its database.
+                    owner.switch_public_origin()
             command = [sys.executable, '-B', HELPERS / 'run-isolated-update.py', '--state-dir', state,
                 '--fixture', state / 'fixture', '--predecessor-evidence', fresh,
                 '--predecessor-manifest', selected, '--candidate-manifest', candidate_manifest,
                 '--output', args.evidence_dir / f'tiaris-nest-nixos-{phase}-qualification.json']
+            if fixture_origin(args) != args.manage_origin:
+                command += ['--candidate-manage-origin', args.manage_origin]
             if phase == 'rollback':
                 command += ['--rollback']
             with timings.measure(phase, 'transition'):
@@ -300,12 +341,12 @@ def qualify_phase(args, phase, manifest, previous, candidate_dir, predecessor_di
     finally:
         with timings.measure(phase, 'cleanup'):
             if args.isolated_manage_config:
-                release_phase(resources, state, args.manage_origin, scope['bridge'])
+                release_phase(resources, state, fixture_origin(args), scope['bridge'])
             else:
                 try:
                     resources.close()
                 finally:
-                    cleanup_phase(state, scope, args.manage_origin, args.allow_device_helper,
+                    cleanup_phase(state, scope, fixture_origin(args), args.allow_device_helper,
                                   manifest['version'] if phase in {'fresh', 'cold'} else previous['release_id'])
             if successful:
                 for fixture in (state / 'fixture', state / 'workstation'):
