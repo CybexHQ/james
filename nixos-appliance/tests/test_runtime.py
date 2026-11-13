@@ -387,8 +387,8 @@ class SchemaRehearsal(unittest.TestCase):
         stage = (RUNTIME / 'generation_update.py').read_text()
         stage = stage[stage.index('def stage():'):]
         candidate_check = stage.index("'verify-appliance-database'")
-        rehearsal = stage.index('rehearse_database(verified, cache)')
-        retirement = stage.index('retire_generations(retire)')
+        rehearsal = stage.index('if schema_changes(verified):')
+        retirement = stage.index('retire_generations(rehearse_database(verified, cache))')
         prepare = stage.index('save(PREPARE, receipt)')
         self.assertLess(candidate_check, rehearsal)
         self.assertLess(rehearsal, retirement)

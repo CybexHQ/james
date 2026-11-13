@@ -456,11 +456,11 @@ def stage():
                     raise ValueError('unexpected database compatibility backup')
                 run(verified['system_toplevel'] + '/sw/bin/tiaris-nest', 'verify-appliance-database',
                     '--database', verified['database_backup'], timeout=60)
-                retire = rehearse_database(verified, cache) if schema_changes(verified) else []
+                if schema_changes(verified):
+                    retire_generations(rehearse_database(verified, cache))
             except Exception:
                 (ROOTS / ('pending-' + attempt)).unlink(missing_ok=True)
                 raise
-            retire_generations(retire)
             source = current()
             receipt.update(schema='tiaris.nest.system-prepare-intent.v3', source_generation=source['system_generation'],
                 source_toplevel=source['system_toplevel'], source_loader_entry=source['loader_entry'], source_installed=load(INSTALLED), source_known_good=load(KNOWN))
