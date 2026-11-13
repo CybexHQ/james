@@ -190,6 +190,16 @@ pub fn render_menu(
     script
 }
 
+/// The profiles a USB installer stick can start: the menu's Nest installer
+/// profiles, in menu order. The stick cannot run custom iPXE, and booting the
+/// local disk is what removing the stick does.
+pub fn installer_menu_profiles(profiles: &[BootProfile]) -> Vec<&BootProfile> {
+    menu_profiles(profiles)
+        .into_iter()
+        .filter(|profile| profile.profile_type == BootProfileType::NestInstaller)
+        .collect()
+}
+
 fn menu_profiles(profiles: &[BootProfile]) -> Vec<&BootProfile> {
     let mut profiles: Vec<_> = profiles
         .iter()

@@ -1,5 +1,6 @@
 pub mod boot;
 pub mod files;
+pub mod usb_installer;
 
 use std::net::SocketAddr;
 
@@ -35,6 +36,18 @@ pub fn router(state: AppState) -> Router {
         .route("/boot/:mac/kexec.json", get(boot::boot_kexec))
         .route("/boot/by-serial/:serial", get(boot::boot_serial))
         .route("/boot/select/:profile_id", get(boot::boot_select_profile))
+        .route("/usb-installer", get(usb_installer::usb_page))
+        .route("/usb-installer/", get(usb_installer::usb_page))
+        .route(
+            "/usb-installer/tiaris-usb-installer.img",
+            get(usb_installer::usb_image),
+        )
+        .route("/usb-installer/v1/boot", get(usb_installer::usb_boot))
+        .route("/usb-installer/v1/runtime", get(usb_installer::usb_runtime))
+        .route(
+            "/usb-installer/v1/select/:profile_id",
+            get(usb_installer::usb_select),
+        )
         .route("/files/*path", get(files::boot_file))
         .route("/cache/*path", get(files::cache_file))
         .route(

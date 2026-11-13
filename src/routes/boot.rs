@@ -31,7 +31,7 @@ pub struct BootQuery {
 impl BootQuery {
     /// The SMBIOS serial the request reported, untruncated. A plain value
     /// from a Nest-rendered menu link wins over iPXE's hex expansion.
-    fn reported_serial(&self) -> Option<String> {
+    pub(super) fn reported_serial(&self) -> Option<String> {
         self.serial
             .clone()
             .filter(|serial| !serial.trim().is_empty())
@@ -113,34 +113,21 @@ pub async fn boot_select_profile(
         return Err(AppError::NotFound);
     }
 
-    let mut device: Option<Device> = None;
-    let mut known_device = false;
     let checker = is_local_checker_request(&query, &headers, connect.as_ref().map(|value| value.0));
     let reported_serial = query.reported_serial();
     let mac = normalized_optional_mac(query.mac)?;
     let serial = clean_optional(reported_serial.clone());
-
-    if !checker {
-        if let Some(mac) = mac.as_deref() {
-            // On a serial conflict the selection belongs to another computer
-            // than the MAC's row: it is not recorded on that row, and the
-            // installer grant carries no reinstall binding.
-            if let Some((seen_device, was_known)) =
-                resolve_mac_request(&state.db, mac, reported_serial.as_deref()).await?
-            {
-                known_device = was_known;
-                db::set_device_last_selected(&state.db, seen_device.id, profile.id).await?;
-                device = Some(seen_device);
-            }
-        } else if let Some(serial) = reported_serial.as_deref().and_then(usable_serial) {
-            if let Some(found) = db::get_device_by_serial(&state.db, &serial).await? {
-                let touched = db::touch_device_seen(&state.db, found.id).await?;
-                db::set_device_last_selected(&state.db, touched.id, profile.id).await?;
-                known_device = true;
-                device = Some(touched);
-            }
-        }
-    }
+    let (device, known_device) = if checker {
+        (None, false)
+    } else {
+        identify_selecting_client(
+            &state,
+            mac.as_deref(),
+            reported_serial.as_deref(),
+            profile.id,
+        )
+        .await?
+    };
 
     let selected_mac = mac
         .as_deref()
@@ -148,27 +135,49 @@ pub async fn boot_select_profile(
     let script = render_selected_profile(&state, &profile, selected_mac, device.as_ref()).await?;
 
     if !checker {
-        db::insert_boot_event(
-            &state.db,
-            NewBootEvent {
-                device_id: device.as_ref().map(|device| device.id),
-                mac: mac.or_else(|| device.as_ref().map(|device| device.mac.clone())),
-                serial_number: serial.or_else(|| {
-                    device
-                        .as_ref()
-                        .and_then(|device| device.serial_number.clone())
-                }),
-                ip_address: remote_ip(connect.map(|value| value.0), &headers),
-                user_agent: user_agent(&headers),
-                selected_profile_id: Some(profile.id),
-                selected_profile_name: Some(profile.name.clone()),
+        record_boot_event(
+            &state,
+            &BootEventInput {
+                mac: mac.as_deref(),
+                serial: serial.as_deref(),
+                device: device.as_ref(),
                 known_device,
+                selected_profile: Some(&profile),
             },
+            connect.map(|value| value.0),
+            &headers,
         )
         .await?;
     }
 
     Ok(ipxe_response(script))
+}
+
+/// The computer that chose `profile_id` from a menu, and whether it was
+/// known. The choice is recorded on its row. On a serial conflict the choice
+/// belongs to another computer than the MAC's row: it is not recorded on that
+/// row, and the installer grant carries no reinstall binding.
+pub(super) async fn identify_selecting_client(
+    state: &AppState,
+    mac: Option<&str>,
+    reported_serial: Option<&str>,
+    profile_id: i64,
+) -> AppResult<(Option<Device>, bool)> {
+    if let Some(mac) = mac {
+        if let Some((seen_device, was_known)) =
+            resolve_mac_request(&state.db, mac, reported_serial).await?
+        {
+            db::set_device_last_selected(&state.db, seen_device.id, profile_id).await?;
+            return Ok((Some(seen_device), was_known));
+        }
+    } else if let Some(serial) = reported_serial.and_then(usable_serial) {
+        if let Some(found) = db::get_device_by_serial(&state.db, &serial).await? {
+            let touched = db::touch_device_seen(&state.db, found.id).await?;
+            db::set_device_last_selected(&state.db, touched.id, profile_id).await?;
+            return Ok((Some(touched), true));
+        }
+    }
+    Ok((None, false))
 }
 
 pub async fn boot_kexec(
@@ -205,45 +214,25 @@ async fn build_boot_script(
     checker: bool,
 ) -> AppResult<String> {
     let mac = normalized_optional_mac(mac)?;
-    // Identity uses the untruncated value; the event and menu links the
-    // bounded one.
-    let reported_serial = serial;
-    let serial = clean_optional(reported_serial.clone());
-    let mut known_device = false;
-    let mut device = None;
-    let mut serial_conflict = false;
-
-    if !checker {
-        if let Some(mac) = mac.as_deref() {
-            match resolve_mac_request(&state.db, mac, reported_serial.as_deref()).await? {
-                Some((seen_device, was_known)) => {
-                    known_device = was_known;
-                    device = Some(seen_device);
-                }
-                None => serial_conflict = true,
-            }
-        } else if let Some(serial) = reported_serial.as_deref().and_then(usable_serial) {
-            if let Some(found) = db::get_device_by_serial(&state.db, &serial).await? {
-                let touched = db::touch_device_seen(&state.db, found.id).await?;
-                known_device = true;
-                device = Some(touched);
-            }
-        }
-    }
+    let client = identify_boot_client(state, mac, serial, checker).await?;
+    let BootClient {
+        mac,
+        reported_serial,
+        serial,
+        device,
+        known_device,
+        serial_conflict,
+    } = client;
 
     let profiles = db::list_enabled_profiles(&state.db).await?;
-    let selection_device = if known_device { device.as_ref() } else { None };
-    // A first request from a new MAC may enter the sole default enrollment
-    // profile automatically. This only starts the signed installer runtime;
-    // destructive installation still requires explicit approval in Tiaris.
-    // A computer whose serial differs from the one stored for its MAC is
-    // booting through another computer's network adapter. It is neither that
-    // computer nor provably new: it gets the menu, so an installed laptop
-    // passing through a shared adapter never enters the installer by itself.
-    let allow_automatic_enrollment =
-        automatic_enrollment_allowed(checker, known_device, serial_conflict, mac.as_deref());
-    let selection =
-        boot_logic::choose_profile(selection_device, &profiles, allow_automatic_enrollment);
+    let selection = choose_boot_profile(
+        &profiles,
+        device.as_ref(),
+        known_device,
+        serial_conflict,
+        mac.as_deref(),
+        checker,
+    );
 
     let selected_profile = selection.profile.cloned();
     let selected_script = if let Some(profile) = selected_profile.as_ref() {
@@ -272,42 +261,19 @@ async fn build_boot_script(
 
     if !checker {
         if let (Some(device), Some(profile)) = (device.as_ref(), selected_profile.as_ref()) {
-            match selection.source {
-                boot_logic::SelectionSource::OneTime => {
-                    db::consume_one_time_profile(&state.db, device.id, profile.id).await?;
-                }
-                boot_logic::SelectionSource::Assigned => {
-                    db::set_device_last_selected(&state.db, device.id, profile.id).await?;
-                }
-                boot_logic::SelectionSource::AutomaticEnrollment => {
-                    db::set_device_last_selected(&state.db, device.id, profile.id).await?;
-                }
-                boot_logic::SelectionSource::Menu => {}
-            }
+            record_selection(state, device, profile, selection.source).await?;
         }
-    }
-
-    if !checker {
-        db::insert_boot_event(
-            &state.db,
-            NewBootEvent {
-                device_id: device.as_ref().map(|device| device.id),
-                mac: mac
-                    .clone()
-                    .or_else(|| device.as_ref().map(|device| device.mac.clone())),
-                serial_number: serial.clone().or_else(|| {
-                    device
-                        .as_ref()
-                        .and_then(|device| device.serial_number.clone())
-                }),
-                ip_address: remote_ip(connect, headers),
-                user_agent: user_agent(headers),
-                selected_profile_id: selected_profile.as_ref().map(|profile| profile.id),
-                selected_profile_name: selected_profile
-                    .as_ref()
-                    .map(|profile| profile.name.clone()),
+        record_boot_event(
+            state,
+            &BootEventInput {
+                mac: mac.as_deref(),
+                serial: serial.as_deref(),
+                device: device.as_ref(),
                 known_device,
+                selected_profile: selected_profile.as_ref(),
             },
+            connect,
+            headers,
         )
         .await?;
     }
@@ -342,6 +308,137 @@ async fn build_boot_script(
             context,
         ))
     }
+}
+
+/// What the Nest knows about the computer behind one boot request.
+pub(super) struct BootClient {
+    pub mac: Option<String>,
+    /// The serial as reported, untruncated: identity uses it.
+    pub reported_serial: Option<String>,
+    /// The bounded serial for boot events and menu links.
+    pub serial: Option<String>,
+    pub device: Option<Device>,
+    pub known_device: bool,
+    /// The serial differs from the one stored for the MAC: another computer
+    /// boots through this network adapter.
+    pub serial_conflict: bool,
+}
+
+pub(super) async fn identify_boot_client(
+    state: &AppState,
+    mac: Option<String>,
+    reported_serial: Option<String>,
+    checker: bool,
+) -> AppResult<BootClient> {
+    // Identity uses the untruncated value; the event and menu links the
+    // bounded one.
+    let serial = clean_optional(reported_serial.clone());
+    let mut client = BootClient {
+        mac,
+        reported_serial,
+        serial,
+        device: None,
+        known_device: false,
+        serial_conflict: false,
+    };
+    if checker {
+        return Ok(client);
+    }
+    if let Some(mac) = client.mac.as_deref() {
+        match resolve_mac_request(&state.db, mac, client.reported_serial.as_deref()).await? {
+            Some((seen_device, was_known)) => {
+                client.known_device = was_known;
+                client.device = Some(seen_device);
+            }
+            None => client.serial_conflict = true,
+        }
+    } else if let Some(serial) = client.reported_serial.as_deref().and_then(usable_serial) {
+        if let Some(found) = db::get_device_by_serial(&state.db, &serial).await? {
+            let touched = db::touch_device_seen(&state.db, found.id).await?;
+            client.known_device = true;
+            client.device = Some(touched);
+        }
+    }
+    Ok(client)
+}
+
+pub(super) fn choose_boot_profile<'a>(
+    profiles: &'a [BootProfile],
+    device: Option<&Device>,
+    known_device: bool,
+    serial_conflict: bool,
+    mac: Option<&str>,
+    checker: bool,
+) -> boot_logic::ProfileSelection<'a> {
+    let selection_device = if known_device { device } else { None };
+    // A first request from a new MAC may enter the sole default enrollment
+    // profile automatically. This only starts the signed installer runtime;
+    // destructive installation still requires explicit approval in Tiaris.
+    // A computer whose serial differs from the one stored for its MAC is
+    // booting through another computer's network adapter. It is neither that
+    // computer nor provably new: it gets the menu, so an installed laptop
+    // passing through a shared adapter never enters the installer by itself.
+    let allow_automatic_enrollment =
+        automatic_enrollment_allowed(checker, known_device, serial_conflict, mac);
+    boot_logic::choose_profile(selection_device, profiles, allow_automatic_enrollment)
+}
+
+/// Records which profile a computer received: a one-time profile is
+/// consumed, an assigned or automatic one becomes its last selection.
+pub(super) async fn record_selection(
+    state: &AppState,
+    device: &Device,
+    profile: &BootProfile,
+    source: boot_logic::SelectionSource,
+) -> AppResult<()> {
+    match source {
+        boot_logic::SelectionSource::OneTime => {
+            db::consume_one_time_profile(&state.db, device.id, profile.id).await?;
+        }
+        boot_logic::SelectionSource::Assigned
+        | boot_logic::SelectionSource::AutomaticEnrollment => {
+            db::set_device_last_selected(&state.db, device.id, profile.id).await?;
+        }
+        boot_logic::SelectionSource::Menu => {}
+    }
+    Ok(())
+}
+
+pub(super) struct BootEventInput<'a> {
+    pub mac: Option<&'a str>,
+    pub serial: Option<&'a str>,
+    pub device: Option<&'a Device>,
+    pub known_device: bool,
+    pub selected_profile: Option<&'a BootProfile>,
+}
+
+pub(super) async fn record_boot_event(
+    state: &AppState,
+    input: &BootEventInput<'_>,
+    connect: Option<SocketAddr>,
+    headers: &HeaderMap,
+) -> AppResult<()> {
+    db::insert_boot_event(
+        &state.db,
+        NewBootEvent {
+            device_id: input.device.map(|device| device.id),
+            mac: input
+                .mac
+                .map(ToOwned::to_owned)
+                .or_else(|| input.device.map(|device| device.mac.clone())),
+            serial_number: input
+                .serial
+                .map(ToOwned::to_owned)
+                .or_else(|| input.device.and_then(|device| device.serial_number.clone())),
+            ip_address: remote_ip(connect, headers),
+            user_agent: user_agent(headers),
+            selected_profile_id: input.selected_profile.map(|profile| profile.id),
+            selected_profile_name: input.selected_profile.map(|profile| profile.name.clone()),
+            known_device: input.known_device,
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 fn automatic_enrollment_allowed(
@@ -402,6 +499,23 @@ async fn create_installer_launch(
     mac: &str,
     device: Option<&Device>,
 ) -> AppResult<crate::netboot::BootSessionLaunch> {
+    create_installer_launch_for_runtime(state, profile, mac, device)
+        .await
+        .map(|(launch, _)| launch)
+}
+
+/// The signed installer session for `profile`, bound to the device row's
+/// managed identity and reinstall request exactly as the iPXE path binds it,
+/// with the identity of the runtime it launches.
+pub(super) async fn create_installer_launch_for_runtime(
+    state: &AppState,
+    profile: &BootProfile,
+    mac: &str,
+    device: Option<&Device>,
+) -> AppResult<(
+    crate::netboot::BootSessionLaunch,
+    crate::netboot::ActiveRuntimeIdentity,
+)> {
     let profile_id = profile.managed_profile_id.as_deref().ok_or_else(|| {
         AppError::Config("Nest installer profile has no managed identity".to_string())
     })?;
@@ -413,7 +527,7 @@ async fn create_installer_launch(
     } else {
         None
     };
-    crate::netboot::create_boot_session(
+    crate::netboot::create_boot_session_for_runtime(
         state,
         mac,
         Some(profile_id),
@@ -428,7 +542,7 @@ fn normalized_optional_mac(mac: Option<String>) -> AppResult<Option<String>> {
     mac.map(|mac| normalize_mac(&mac)).transpose()
 }
 
-fn boot_profile_id_from_path(value: &str) -> AppResult<i64> {
+pub(super) fn boot_profile_id_from_path(value: &str) -> AppResult<i64> {
     let parsed = value.parse::<i64>().map_err(|_| AppError::NotFound)?;
     if parsed <= 0 {
         return Err(AppError::NotFound);
@@ -436,7 +550,7 @@ fn boot_profile_id_from_path(value: &str) -> AppResult<i64> {
     Ok(parsed)
 }
 
-fn clean_optional(value: Option<String>) -> Option<String> {
+pub(super) fn clean_optional(value: Option<String>) -> Option<String> {
     value.and_then(|value| clean_text(&value, MAX_BOOT_SERIAL_LEN))
 }
 
