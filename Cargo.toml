@@ -21,12 +21,16 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["clock", "serde"] }
 chrono-tz = "0.10"
 clap = { version = "4.5", features = ["derive", "env"] }
+# X25519 for state backups (already in the graph through ed25519-dalek).
+curve25519-dalek = "4"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 hex = "0.4"
 libc = "0.2"
 maud = { version = "0.27", features = ["axum"] }
 mime_guess = "2.0"
 rand = "0.8"
+# AEAD and HKDF for state backups (already in the graph through rustls).
+ring = "0.17"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 semver = "1"
 serde = { version = "1.0", features = ["derive"] }

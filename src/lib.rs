@@ -35,6 +35,7 @@ pub mod schema_evolution;
 pub mod software_cache;
 pub mod software_cache_upload;
 pub mod software_updates;
+pub mod state_backup;
 pub(crate) mod state_files;
 pub(crate) mod subprocess;
 pub mod usb_installer;

@@ -675,7 +675,8 @@ pub(crate) async fn verify_openable_with(
     Ok(plan)
 }
 
-async fn private_copy(source: &Path, target: &Path) -> Result<()> {
+/// A consistent copy of `source` (also while it is in use) in a new private file.
+pub(crate) async fn private_copy(source: &Path, target: &Path) -> Result<()> {
     ensure!(!target.exists(), "database copy target already exists");
     let target_text = target
         .to_str()

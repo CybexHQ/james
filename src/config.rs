@@ -61,6 +61,40 @@ pub enum Command {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Create a backup key pair; keep the private key off the Nest.
+    GenerateStateBackupKey {
+        #[arg(long)]
+        private_key: PathBuf,
+        #[arg(long)]
+        public_key: PathBuf,
+    },
+    /// Encrypted backup of the Nest state and database (root).
+    BackupApplianceState {
+        /// The backup public key (`generate-state-backup-key`).
+        #[arg(long)]
+        recipient: PathBuf,
+        /// A new file outside the state directory.
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value = crate::state_backup::STATE_DIR)]
+        state_dir: PathBuf,
+    },
+    /// Restore a state backup onto this Nest (root, Nest service stopped).
+    RestoreApplianceState {
+        #[arg(long)]
+        backup: PathBuf,
+        /// The backup private key.
+        #[arg(long)]
+        identity: PathBuf,
+        #[arg(long, default_value = crate::state_backup::STATE_DIR)]
+        state_dir: PathBuf,
+        /// `data` for a replacement Nest; `full` for an empty state disk.
+        #[arg(long, value_enum, default_value_t = crate::state_backup::Scope::Data)]
+        scope: crate::state_backup::Scope,
+        /// Check the whole backup and report; change nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     ApplyApplianceUpdateSchedule,
     CheckApplianceUpdateSchedule,
     /// Re-authenticate a legacy update request from its already-booted candidate.
