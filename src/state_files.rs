@@ -1,9 +1,10 @@
 //! Small state records kept as files under the Nest state directory.
 //!
-//! The NixOS appliance updater requires every release to carry the SQLite
-//! migration inventory of the release it replaces (`release/sqlite-migrations.sha256`),
-//! so state added without an update-contract design lives here instead of in
-//! new tables. Every record is one JSON document `{schema, version, data}`:
+//! NixOS appliances before schema evolution refuse a release whose SQLite
+//! migration inventory differs from theirs (`release/sqlite-migrations.sha256`,
+//! `docs/sqlite-schema-evolution.md`), so state added before the releases Nests
+//! update from run declared migrations lives here instead of in new tables.
+//! Every record is one JSON document `{schema, version, data}`:
 //!
 //! - written atomically: a private temporary file (`O_CREAT|O_EXCL`, 0600,
 //!   `O_NOFOLLOW`) is written, fsynced and renamed over the record, then the

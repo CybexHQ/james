@@ -394,9 +394,13 @@ digests and exact successful live SQLx version/checksum rows. The canonical
 `sqlite-migrations.json` is recursively sorted compact JSON plus LF with schema
 `tiaris.nest.sqlite-migrations.v1`, sorted `migrations` entries containing
 `filename`, SHA-256 `sha256`, SHA-384 `sqlx_checksum`, and integer `version`.
-Hash the entire file including LF. Do not ignore/rewrite SQLx history or restore
-an old database on rollback. New migration inventories require a separately
-qualified predecessor-compatibility bridge.
+Hash the entire file including LF. Do not rewrite SQLx history or restore an
+old database on rollback. Another inventory is admitted only as declared
+expand/contract migrations: the candidate migrates a private copy of the root
+snapshot and the running release must still start, read and write on it as
+its rollback target; retained generations that cannot leave the boot menu
+first (`docs/sqlite-schema-evolution.md`). Releases before schema evolution
+keep requiring equal inventories.
 
 Fsync preparation intent before any profile/ESP mutation and set/verify persistent
 EFI `LoaderEntryDefault` to the exact source entry **before** the boot action.
