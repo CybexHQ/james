@@ -411,6 +411,47 @@ class ReleaseOnlyClosure(unittest.TestCase):
                 update.nar_hash_bytes(invalid)
 
 
+class CandidateContactOrigin(unittest.TestCase):
+    """The candidate accepts Management contact at its own origin for legacy state."""
+
+    def bootstrap(self, directory):
+        path = Path(directory) / 'bootstrap'
+        path.write_text('#!/bin/sh\ntest "$1" = effective-manage-origin || exit 2\n'
+                        'case "$2" in https://manage.tiaris.com|https://manage.cybex.net) '
+                        'echo https://manage.tiaris.com ;; *) exit 1 ;; esac\n')
+        path.chmod(0o755)
+        return str(path)
+
+    def ready(self, recorded, contacted):
+        boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        files = {
+            'manage-contact.json': {'schema': 'tiaris.nest.manage-contact.v1', 'boot_id': boot_id,
+                                    'device_id': 'nest-1', 'public_key_fingerprint': 'f' * 64,
+                                    'manage_origin': contacted, 'reported_at': now},
+            'manage-state.json': {'device_id': 'nest-1', 'public_key_fingerprint': 'f' * 64},
+            'provisioning-state.json': {'manage_origin': recorded},
+        }
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(update, 'BOOTSTRAP', self.bootstrap(directory)), \
+                patch.object(update, 'load', lambda path, **_: copy.deepcopy(files[Path(path).name])):
+            return update.contact_ready({})
+
+    def test_legacy_recorded_origin_accepts_contact_at_the_build_origin(self):
+        self.assertTrue(self.ready('https://manage.cybex.net', 'https://manage.tiaris.com'))
+        self.assertTrue(self.ready('https://manage.tiaris.com', 'https://manage.tiaris.com'))
+
+    def test_contact_at_the_old_origin_or_unknown_state_is_refused(self):
+        self.assertFalse(self.ready('https://manage.cybex.net', 'https://manage.cybex.net'))
+        self.assertFalse(self.ready('https://dev.tiaris.com', 'https://dev.tiaris.com'))
+        self.assertFalse(self.ready('https://dev.tiaris.com', 'https://manage.tiaris.com'))
+
+    def test_unavailable_bootstrap_is_not_an_origin(self):
+        with patch.object(update, 'BOOTSTRAP', '/bin/false'):
+            self.assertIsNone(update.effective_manage_origin('https://manage.cybex.net'))
+        self.assertIsNone(update.effective_manage_origin(None))
+
+
 class SelfCacheTrust(unittest.TestCase):
     KEY = 'tiaris-nest-cache:' + 'A' * 42 + 'E='
 

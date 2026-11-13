@@ -26,6 +26,16 @@ def sha256(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def require_legacy_origin(compiled, expected_origin):
+    """A production build accepts exactly the rename's former name, nothing else."""
+    origins = {}
+    exec((REPO / 'tools/production_origins.py').read_text(), origins)
+    fixed = {origins['PRODUCTION_MANAGE_ORIGIN']: origins['FORMER_PRODUCTION_MANAGE_ORIGIN'],
+             origins['FORMER_PRODUCTION_MANAGE_ORIGIN']: ''}
+    if expected_origin in fixed and compiled != fixed[expected_origin]:
+        raise ValueError('compiled bootstrap legacy Tiaris origin differs from the production rename')
+
+
 def clean_checkout(directory, revision, repository):
     if not re.fullmatch('[0-9a-f]{40}', revision):
         raise ValueError('source revision must be exact lowercase 40-hex')
@@ -79,6 +89,8 @@ def inspect_template(iso, package, args, work):
         raise ValueError('ISO bootstrap differs from verified compiled package')
     if run(package / 'bin/tiaris-nest-bootstrap', 'required-manage-origin') != args.expected_manage_origin:
         raise ValueError('compiled bootstrap Tiaris origin differs')
+    require_legacy_origin(run(package / 'bin/tiaris-nest-bootstrap', 'legacy-manage-origin'),
+                          args.expected_manage_origin)
     grub = work / 'grub.cfg'
     extract(iso, '/EFI/BOOT/grub.cfg', grub)
     content = grub.read_text()

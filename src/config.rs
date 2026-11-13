@@ -444,7 +444,15 @@ impl AppConfig {
         self.manage.api_url = if self.manage.api_url.trim().is_empty() {
             String::new()
         } else {
-            normalize_http_url("manage.api_url", &self.manage.api_url)?
+            let url = normalize_http_url("manage.api_url", &self.manage.api_url)?;
+            // A Nest installed for Management's former name keeps that name
+            // in its immutable configuration; every runtime consumer (client,
+            // boot grants, contact receipts, console) uses the current one.
+            if crate::provisioning::LEGACY_MANAGE_ORIGIN == Some(url.as_str()) {
+                crate::provisioning::REQUIRED_MANAGE_ORIGIN.to_string()
+            } else {
+                url
+            }
         };
         self.manage.organization_id = normalize_organization_id(&self.manage.organization_id)?;
         self.manage.organization_slug =
@@ -1210,6 +1218,37 @@ mod tests {
 
         assert_eq!(config.server.listen_addr, "127.0.0.1:8080");
         assert_eq!(config.boot.bootloader_filename, "snponly.efi");
+    }
+
+    #[test]
+    fn config_load_maps_only_the_legacy_manage_origin_to_the_build_origin() {
+        let load = |api_url: &str| {
+            let path = write_temp_config(&format!(
+                "[manage]\nenabled = true\napi_url = \"{api_url}\"\norganization_id = \"550e8400-e29b-41d4-a716-446655440000\"\n"
+            ));
+            let config = AppConfig::load(&path).unwrap();
+            let _ = fs::remove_file(&path);
+            config.manage.api_url
+        };
+        let required = crate::provisioning::REQUIRED_MANAGE_ORIGIN;
+        if let Some(legacy) = crate::provisioning::LEGACY_MANAGE_ORIGIN {
+            assert_eq!(load(legacy), required);
+            assert_eq!(load(&format!("{legacy}/")), required);
+            assert_eq!(load(&format!("{legacy}/api")), format!("{legacy}/api"));
+        }
+        assert_eq!(load(required), required);
+        if required == crate::provisioning::PRODUCTION_MANAGE_ORIGIN {
+            // Never mapped back to the former name.
+            assert_eq!(
+                load("https://manage.tiaris.com"),
+                "https://manage.tiaris.com"
+            );
+            assert_eq!(
+                load("https://manage.cybex.net"),
+                "https://manage.tiaris.com"
+            );
+        }
+        assert_eq!(load("https://manage.example"), "https://manage.example");
     }
 
     #[test]

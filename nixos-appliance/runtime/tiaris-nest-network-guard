@@ -11,9 +11,11 @@ test -s "$approved" && test -s "$fallback" && test -s "$plan"
 
 install -m 0600 "$approved" "$active"
 /usr/lib/tiaris-nest/tiaris-nest-netplan-activate
-origin="$(jq -er '.manage_origin' "$control_dir/provisioning-state.json")"
-required_origin="$(/usr/lib/tiaris-nest/tiaris-nest-bootstrap required-manage-origin)"
-test "$origin" = "$required_origin"
+stored_origin="$(jq -er '.manage_origin' "$control_dir/provisioning-state.json")"
+# The build's own origin for its own or its one legacy name (a Nest installed
+# for manage.cybex.net reaches manage.tiaris.com); any other origin fails boot.
+origin="$(/usr/lib/tiaris-nest/tiaris-nest-bootstrap effective-manage-origin "$stored_origin")"
+test -n "$origin"
 
 # Activation makes networkd reconfigure the link even for an unchanged profile:
 # the DHCP lease, route and resolver are briefly dropped and re-acquired, so a

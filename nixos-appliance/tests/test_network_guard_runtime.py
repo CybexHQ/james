@@ -11,6 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 ORIGIN = 'https://manage.example.test'
+LEGACY_ORIGIN = 'https://old-manage.example.test'
 
 
 def fixture_plan(dhcp4):
@@ -25,7 +26,7 @@ def fixture_plan(dhcp4):
 class NetworkGuardRuntimeTests(unittest.TestCase):
     """The guard re-applies the approved profile; networkd then resets the link."""
 
-    def guard(self, *, dhcp4, approved_failures, fallback_failures=0, replacements=None):
+    def guard(self, *, dhcp4, approved_failures, fallback_failures=0, replacements=None, stored_origin=ORIGIN):
         temporary = self.enterContext(tempfile.TemporaryDirectory())
         root = Path(temporary)
         control, netplan, binaries = root / 'control', root / 'netplan', root / 'bin'
@@ -34,7 +35,7 @@ class NetworkGuardRuntimeTests(unittest.TestCase):
         (control / 'netplan-approved.json').write_text(json.dumps(fixture_plan(dhcp4)))
         (control / 'netplan-dhcp-fallback.json').write_text(json.dumps(fixture_plan(True)))
         (control / 'install-plan.json').write_text('{}')
-        (control / 'provisioning-state.json').write_text(json.dumps({'manage_origin': ORIGIN}))
+        (control / 'provisioning-state.json').write_text(json.dumps({'manage_origin': stored_origin}))
         for name in ('network-fallback-active', 'netplan-pending.sha256', 'netplan-before-change.yaml'):
             (control / name).write_text('stale recovery evidence')
 
@@ -45,7 +46,11 @@ class NetworkGuardRuntimeTests(unittest.TestCase):
             return str(path)
 
         activation = helper('activate', '#!/bin/sh\necho activated >> "$TEST_LOG"\n')
-        bootstrap = helper('bootstrap', '#!/bin/sh\ntest "$1" = required-manage-origin || exit 2\necho "$TEST_ORIGIN"\n')
+        # The compiled alias: the build's own origin for itself or its legacy name.
+        bootstrap = helper('bootstrap', '''#!/bin/sh
+test "$1" = effective-manage-origin && test "$#" -eq 2 || exit 2
+case "$2" in "$TEST_ORIGIN" | "$TEST_LEGACY_ORIGIN") echo "$TEST_ORIGIN" ;; *) exit 1 ;; esac
+''')
         # Fails while the link is "resetting": the first N requests after each
         # activation fail fast, as curl does while the lease/route is absent.
         helper('curl', '''#!/bin/sh
@@ -81,7 +86,7 @@ shutil.copyfile(*paths)
         started = time.monotonic()
         result = subprocess.run(['bash', '-c', script, 'tiaris-nest-network-guard'],
             env={**os.environ, 'PATH': str(binaries) + os.pathsep + os.environ['PATH'], 'TEST_LOG': str(log),
-                 'TEST_ORIGIN': ORIGIN, 'TEST_APPROVED_FAILURES': str(approved_failures),
+                 'TEST_ORIGIN': ORIGIN, 'TEST_LEGACY_ORIGIN': LEGACY_ORIGIN, 'TEST_APPROVED_FAILURES': str(approved_failures),
                  'TEST_FALLBACK_FAILURES': str(fallback_failures)},
             text=True, capture_output=True, timeout=60)
         return SimpleResult(result, time.monotonic() - started, log.read_text().splitlines(), control, netplan)
@@ -141,6 +146,19 @@ shutil.copyfile(*paths)
         self.assertEqual(json.loads((result.netplan / '90-tiaris-nest.yaml').read_text()), fixture_plan(False))
         for name in ('network-fallback-active', 'netplan-pending.sha256', 'netplan-before-change.yaml'):
             self.assertFalse((result.control / name).exists())
+
+    def test_legacy_recorded_origin_probes_the_build_origin(self):
+        # A Nest installed for manage.cybex.net boots a manage.tiaris.com build.
+        result = self.guard(dhcp4=True, approved_failures=0, stored_origin=LEGACY_ORIGIN)
+        self.assertEqual(result.process.returncode, 0, result.process.stderr)
+        self.assertEqual(result.log, ['activated', 'curl 1'])
+        self.assertEqual(json.loads((result.control / 'provisioning-state.json').read_text()),
+                         {'manage_origin': LEGACY_ORIGIN})
+
+    def test_unknown_recorded_origin_fails_before_any_request(self):
+        result = self.guard(dhcp4=True, approved_failures=0, stored_origin='https://other.example.test')
+        self.assertNotEqual(result.process.returncode, 0)
+        self.assertEqual(result.log, ['activated'])
 
     def test_retry_windows_preserve_previous_request_budgets(self):
         script = (ROOT / 'runtime/tiaris-nest-network-guard').read_text()

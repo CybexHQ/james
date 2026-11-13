@@ -98,12 +98,26 @@ The pair of origins is fixed in `tools/nest-release.py`, so the record cannot
 allow the change back or any other change. After the first `manage.tiaris.com`
 release is published, it is the predecessor and the record no longer applies.
 
-The change is reinstall-only. Updating a Nest installed for
-`https://manage.cybex.net` to a `https://manage.tiaris.com` release is not
-supported: the new Nest binaries check that their installed provisioning state
-and system identity name their own origin, so such an update is refused. Each
-Nest is installed fresh from the new release's appliance ISO, which Manage
-personalizes as usual.
+Releases before v0.2.122 are reinstall-only for that change: their
+binaries require the installed provisioning state to name their own origin, so
+an update from a `https://manage.cybex.net` Nest boots and rolls back
+(`local_health_failed`).
+
+From v0.2.122 a build for `https://manage.tiaris.com` also accepts installed
+state that records `https://manage.cybex.net`, and uses the new origin for it
+(`LEGACY_MANAGE_ORIGIN` and `effective_manage_origin` in
+`src/provisioning/mod.rs`). Nothing on disk is rewritten: the provisioning
+state, install plan and configuration keep the old value, and configuration
+loading maps it, so the Manage client, boot grants, contact receipts and the
+console all use the new origin. The boot network guard and the update's
+candidate contact check ask `tiaris-nest-bootstrap effective-manage-origin`.
+The alias is one way and one pair: a build for `https://manage.cybex.net`
+accepts nothing new, `https://manage.tiaris.com` is never mapped back, and any
+other recorded origin is refused. A build whose origin, or whose optional
+`TIARIS_NEST_BUILD_LEGACY_MANAGE_ORIGIN` (proof builds only), is a production
+name does not compile with any other pair, and `nixos-appliance/build.py`
+checks the compiled `legacy-manage-origin`. Media recovery onto such a disk
+stays exact (`src/provisioning/recovery.rs`): reinstall it instead.
 
 ### Where the runtime pin lives
 

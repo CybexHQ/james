@@ -111,6 +111,19 @@ class ProductionTests(unittest.TestCase):
                 self.assertEqual((owned.stat().st_uid, owned.stat().st_gid), (1000, 1000))
 
 
+    def test_production_build_carries_only_the_fixed_legacy_origin(self):
+        build = runpy.run_path(str(HELPERS.parent / 'build.py'))
+        tiaris, cybex = 'https://manage.tiaris.com', 'https://manage.cybex.net'
+        build['require_legacy_origin'](cybex, tiaris)
+        build['require_legacy_origin']('', cybex)
+        build['require_legacy_origin']('', 'https://dev.example.test')
+        build['require_legacy_origin']('https://old.example.test', 'https://dev.example.test')
+        for compiled, origin in (('', tiaris), ('https://dev.example.test', tiaris),
+                                 (tiaris, cybex), (tiaris, tiaris)):
+            with self.subTest(compiled=compiled, origin=origin), \
+                    self.assertRaisesRegex(ValueError, 'production rename'):
+                build['require_legacy_origin'](compiled, origin)
+
     def test_signed_appliance_cache_requires_exact_workstation_agent(self):
         build = runpy.run_path(str(HELPERS.parent / 'build.py'))
         agent = Path('/nix/store/' + 'a' * 32 + '-tiaris-agent-0.1.0')

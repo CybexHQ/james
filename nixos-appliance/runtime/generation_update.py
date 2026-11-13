@@ -429,6 +429,21 @@ def stage():
             raise
 
 
+BOOTSTRAP = '/usr/lib/tiaris-nest/tiaris-nest-bootstrap'
+
+
+def effective_manage_origin(stored):
+    """The origin the booted build serves for a recorded one: its own, or its
+    single compiled legacy name (manage.cybex.net -> manage.tiaris.com)."""
+    if not isinstance(stored, str) or not stored:
+        return None
+    result = subprocess.run([BOOTSTRAP, 'effective-manage-origin', stored],
+                            text=True, capture_output=True, timeout=10)
+    if result.returncode:
+        return None
+    return result.stdout.strip() or None
+
+
 def contact_ready(receipt):
     value = load(STATE / 'agent/manage-contact.json', owner=UID, maximum=16384)
     identity = load(STATE / 'agent/manage-state.json', owner=UID)
@@ -439,7 +454,8 @@ def contact_ready(receipt):
         and value['boot_id'] == Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         and value['device_id'] == identity['device_id']
         and value['public_key_fingerprint'] == identity['public_key_fingerprint']
-        and value['manage_origin'] == plan['manage_origin'] and 0 <= age <= 90)
+        and value['manage_origin'] == effective_manage_origin(plan['manage_origin'])
+        and 0 <= age <= 90)
 
 
 def health_ready(receipt):
