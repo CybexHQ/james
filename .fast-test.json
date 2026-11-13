@@ -1,5 +1,5 @@
 {
-  "about": "What `fast-test` runs for a change (see ~/Code/fast-test). Quick steps run on The Dragon; a wide change also runs the full suite on The Beast. The NixOS VM tests, appliance builds and qualification stay out: by hand or the qualification workflow, when someone asks.",
+  "about": "What `fast-test` runs for a change (see ~/Code/fast-test). Quick steps run on The Dragon; a wide change also runs the full suite on The Beast. The NixOS VM tests, appliance builds and qualification stay out: by hand or the qualification workflow, when someone asks. So do the signed-seed tests that need a Nix daemon (test_source_policy_seed_cache.py): they run where CI is set, in the release workflow's Nix guest, and The Beast's container sets CI without having Nix, so `full` runs the appliance tests without it.",
   "steps": [
     {
       "name": "rust-fmt",
@@ -35,10 +35,10 @@
   ],
   "wide": ["Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml", "migrations/**", "src/lib.rs", "src/main.rs", "src/error.rs", "src/config.rs", "src/db.rs", "src/models.rs", "tests/fixtures/**"],
   "wideIfDeleted": ["src/**", "tests/**"],
-  "full": "cargo fmt --all --check && cargo test --locked && python3 -B -m unittest discover -s nixos-appliance/tests && python3 -B -m unittest discover -s tools/tests",
+  "full": "cargo fmt --all --check && cargo test --locked && env -u CI python3 -B -m unittest discover -s nixos-appliance/tests && python3 -B -m unittest discover -s tools/tests",
   "beast": {
     "image": "docker.io/library/rust:1.85.0-bookworm",
-    "prepare": "rustup component add rustfmt",
+    "prepare": "apt-get update -qq && apt-get install -y -qq --no-install-recommends jq zstd ripgrep >/dev/null && rustup component add rustfmt",
     "network": "internet",
     "caches": ["cargo-target"]
   }
