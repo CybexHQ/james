@@ -1,5 +1,10 @@
 # Agent instructions
 
+## How to answer
+
+- Always answer concisely and in plain English: short sentences, everyday words, the answer first. Leave out filler,
+  jargon and long lists unless someone asks for more detail.
+
 ## Testing (fast testing)
 - After a change, run `fast-test` in the repository folder. It tests only what changed since `main` (commits,
   staged and unstaged edits, new files): quick tests here on The Dragon, heavy ones (VMs, Nix, databases, wide
