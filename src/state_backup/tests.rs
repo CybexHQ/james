@@ -480,8 +480,8 @@ fn only_state_that_cannot_be_downloaded_again_is_included() {
 
 #[test]
 fn private_files_keep_their_mode_under_the_backup_service_umask() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("state-backup.json");
+    let scratch = Scratch::new("umask");
+    let path = scratch.join("state-backup.json");
     // The daily backup service runs with UMask=0077; the receipt must still be group-readable (0640) for the Nest
     // service, which reports it to Manage. The umask is process-wide, so restore it at once.
     let previous = unsafe { libc::umask(0o077) };
