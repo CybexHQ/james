@@ -25,6 +25,8 @@ clap = { version = "4.5", features = ["derive", "env"] }
 curve25519-dalek = "4"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 hex = "0.4"
+# Wraps response bodies to count downloads in flight (already in the graph through axum).
+http-body = "1"
 libc = "0.2"
 maud = { version = "0.27", features = ["axum"] }
 mime_guess = "2.0"

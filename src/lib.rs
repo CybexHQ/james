@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod appliance;
 pub mod assets;
 pub mod boot;

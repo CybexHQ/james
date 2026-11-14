@@ -351,6 +351,7 @@ async fn run_server(
         tiaris_nest::state_backup::upload::spawn(state.clone());
     }
     tiaris_nest::console_status::spawn(state.clone());
+    tiaris_nest::activity::spawn(state.clone());
     tiaris_nest::resources::spawn(
         state.db.clone(),
         state.config.paths.data_dir.join("resources.json"),
