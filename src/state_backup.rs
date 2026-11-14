@@ -97,14 +97,19 @@ fn fingerprint(public: &[u8; 32]) -> String {
     hex::encode(Sha256::digest(public))
 }
 
+/// A new file with exactly `mode`. The open's mode is narrowed by the process umask (the backup service runs with
+/// `UMask=0077`), which made the 0640 receipt 0600 and unreadable to the Nest service: set it again afterwards.
 fn create_private(path: &Path, mode: u32) -> Result<fs::File> {
-    fs::OpenOptions::new()
+    let file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(mode)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)
-        .with_context(|| format!("create {}", path.display()))
+        .with_context(|| format!("create {}", path.display()))?;
+    file.set_permissions(fs::Permissions::from_mode(mode))
+        .with_context(|| format!("set the mode of {}", path.display()))?;
+    Ok(file)
 }
 
 fn sync_parent(path: &Path) -> Result<()> {
