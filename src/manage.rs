@@ -113,6 +113,19 @@ struct ManagedState {
     nest_cache_report_generation: Option<i64>,
     nest_report_rotation_round: u8,
     nest_report_warning_fingerprint: Option<String>,
+    /// What Manage last said it supports. A failed configuration fetch (Manage restarting, a dropped connection)
+    /// reports with these instead of with nothing, so one bad fetch never withdraws capabilities such as the update
+    /// schedule ("Update now") from Manage's record of this Nest.
+    last_peer_contract: Option<PeerContract>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct PeerContract {
+    supports_scheduling: bool,
+    accepts_uploads: bool,
+    accepts_usb_installer: bool,
+    runtime_epoch: bool,
+    report_protocol: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -997,39 +1010,42 @@ async fn sync_nest_foundation(
     managed: &mut ManagedState,
 ) -> Result<NestReportReceipt> {
     let mut first_failure = None;
-    let mut peer_runtime_epoch = None;
-    let mut peer_supports_scheduling = false;
-    let mut peer_accepts_uploads = false;
-    let mut peer_accepts_usb_installer = false;
-    let mut report_protocol = TIARIS_COMPONENT_PROTOCOL_VERSION;
-    match fetch_nest_config(state, managed).await {
+    let peer = match fetch_nest_config(state, managed).await {
         Ok(desired) => {
-            peer_supports_scheduling = desired.update_schedule_supported;
-            peer_accepts_uploads = desired.software_cache_upload_supported;
-            peer_accepts_usb_installer = desired.usb_installer_supported;
-            report_protocol = negotiated_report_protocol(desired.compatibility.as_ref());
-            peer_runtime_epoch = desired
-                .compatibility
-                .as_ref()
-                .and_then(|contract| contract.workstation_runtime_epoch);
+            let peer = PeerContract {
+                supports_scheduling: desired.update_schedule_supported,
+                accepts_uploads: desired.software_cache_upload_supported,
+                accepts_usb_installer: desired.usb_installer_supported,
+                runtime_epoch: desired
+                    .compatibility
+                    .as_ref()
+                    .and_then(|contract| contract.workstation_runtime_epoch)
+                    .is_some(),
+                report_protocol: negotiated_report_protocol(desired.compatibility.as_ref()),
+            };
+            managed.last_peer_contract = Some(peer);
             apply_nest_desired(state, managed, desired, &mut first_failure).await;
+            peer
         }
-        Err(error) => retain_sync_failure(
-            &mut first_failure,
-            "Nest desired configuration fetch",
-            error,
-        ),
-    }
+        Err(error) => {
+            retain_sync_failure(
+                &mut first_failure,
+                "Nest desired configuration fetch",
+                error,
+            );
+            peer_contract_after_failed_fetch(managed.last_peer_contract)
+        }
+    };
     let report = match report_nest_state(
         state,
         managed,
-        peer_runtime_epoch.is_some(),
-        peer_supports_scheduling,
+        peer.runtime_epoch,
+        peer.supports_scheduling,
         PeerReportSupport {
-            uploads: peer_accepts_uploads,
-            usb_installer: peer_accepts_usb_installer,
+            uploads: peer.accepts_uploads,
+            usb_installer: peer.accepts_usb_installer,
         },
-        report_protocol,
+        peer.report_protocol,
     )
     .await
     {
@@ -1043,6 +1059,18 @@ async fn sync_nest_foundation(
         return Err(error);
     }
     Ok(report.expect("successful Nest report returns its receipt"))
+}
+
+/// The contract a report uses when this round's configuration fetch failed: the last one Manage confirmed, or the
+/// most conservative one when it never answered.
+fn peer_contract_after_failed_fetch(last: Option<PeerContract>) -> PeerContract {
+    last.unwrap_or(PeerContract {
+        supports_scheduling: false,
+        accepts_uploads: false,
+        accepts_usb_installer: false,
+        runtime_epoch: false,
+        report_protocol: TIARIS_COMPONENT_PROTOCOL_VERSION,
+    })
 }
 
 fn store_update_schedule(policy: Option<Value>, supported: bool) -> Result<()> {
@@ -3652,6 +3680,33 @@ fn safe_error(err: &anyhow::Error) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_failed_configuration_fetch_keeps_the_last_confirmed_peer_contract() {
+        let confirmed = PeerContract {
+            supports_scheduling: true,
+            accepts_uploads: true,
+            accepts_usb_installer: true,
+            runtime_epoch: true,
+            report_protocol: TIARIS_DETECTED_COMMITS_PROTOCOL_VERSION,
+        };
+        // Manage restarting between two syncs must not withdraw Update now and the other capabilities.
+        assert_eq!(peer_contract_after_failed_fetch(Some(confirmed)), confirmed);
+        let never = peer_contract_after_failed_fetch(None);
+        assert!(!never.supports_scheduling && !never.accepts_uploads && !never.runtime_epoch);
+        assert_eq!(never.report_protocol, TIARIS_COMPONENT_PROTOCOL_VERSION);
+        // The confirmed contract survives a restart of the Nest itself (managed state is a file).
+        let managed = ManagedState {
+            last_peer_contract: Some(confirmed),
+            ..ManagedState::default()
+        };
+        let stored: ManagedState =
+            serde_json::from_str(&serde_json::to_string(&managed).unwrap()).unwrap();
+        assert_eq!(stored.last_peer_contract, Some(confirmed));
+        // Older state files without the field still load.
+        let old: ManagedState = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.last_peer_contract, None);
+    }
     use super::*;
     use crate::{
         config::{AppConfig, ManageConfig},
