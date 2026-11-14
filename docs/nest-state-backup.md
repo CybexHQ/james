@@ -1,7 +1,10 @@
 # Nest state backup and restore
 
 How to back up a Nest's state and keys, and restore them onto a replacement.
-Code: `src/state_backup.rs`; tests: `src/state_backup/tests.rs`.
+Code: `src/state_backup.rs` (backup and restore), `src/state_backup/schedule.rs`
+(the daily backup) and `src/state_backup/upload.rs` (the upload to Manage);
+tests next to each (`tests.rs`, `schedule_tests.rs`, `upload_tests.rs`) and
+`nixos-appliance/tests/test_state_backup_units.py` for the timer.
 
 ## What is in a backup
 
@@ -26,17 +29,87 @@ tiaris-nest generate-state-backup-key \
 ```
 
 Store `nest-backup.key` (mode 0600) in the school's password manager or safe.
-Copy `nest-backup.pub` to the Nest.
+Copy `nest-backup.pub` to the Nest. Never copy the private key to the Nest:
+the Nest never needs it, and `set-state-backup-key` refuses it.
 
-## Back up (on the Nest, as root)
+## Automatic daily backups (on the Nest, as root, once)
+
+```sh
+sudo tiaris-nest set-state-backup-key --public-key /root/nest-backup.pub
+```
+
+This keeps the public key in STATE at `backup/recipient.pub` (0644) and
+prints its fingerprint. From then on `tiaris-nest-state-backup.timer` runs
+once a day at a random time in a four-hour window (and after a Nest was off
+at that time) and:
+
+- writes one encrypted backup to `/var/cache/tiaris-nest/state-backups/`
+  (`<backup id>.backup` and a description `<backup id>.json` with its time,
+  size and digest), outside STATE, so a backup never fills STATE;
+- starts only if at least 4 GiB, or a tenth of that disk when more, stays
+  free after it (it holds the Nix store and the workstation cache too);
+  otherwise it records `low_disk` and tries again the next day;
+- keeps the newest three backups within 2 GiB (always the newest one) and
+  removes what an interrupted run left;
+- records what it did in `status/state-backup-schedule.json`.
+
+Without a key the timer does nothing and the Nest reports
+`backup_key_missing`. To change the key, run the command again with the new
+public key; to stop, delete `backup/recipient.pub`.
+
+The Nest service then uploads every kept backup once to Manage, newest first,
+as a signed Nest request:
+
+```text
+PUT /v1/agent/nest/state-backups/{backup_id}
+Content-Type: application/octet-stream    (the encrypted file, at most 256 MiB)
+X-Tiaris-Backup-Sha256: <hex>
+X-Tiaris-Backup-Created-At: <RFC 3339>
+X-Tiaris-Backup-Format: tiaris.nest-state-backup.v1
+-> 200 {"backup_id", "sha256", "size_bytes", "stored_at"}
+```
+
+The id is a UUID. Sending the same backup again gets the same answer; a 409
+(Manage holds other bytes under that id) is not retried. Other failures are
+retried after 1, 2, 4 … minutes, at most six hours apart. A Manage without
+the route (404 or 405) is asked again once a day; until then the backups stay
+on the Nest only (`backup_upload_unsupported`). A backup over 256 MiB is kept
+on the Nest and not sent. What was sent is recorded in
+`agent/state-backup-uploads.json`; a `data` restore keeps the replacement's
+own record.
+
+### What the Nest reports
+
+`local_health.state_backup` is the last backup's receipt (`created_at`,
+`size_bytes`, `files`), as before. `local_health.state_backup_upload` adds:
+
+| Field | Meaning |
+| --- | --- |
+| `key_configured` | a backup public key is set |
+| `status` | `none` (no backup kept yet), `pending`, `uploaded` (the newest is in Manage), `failing` or `unsupported` |
+| `last_local` | the newest kept backup: `backup_id`, `created_at`, `size_bytes` |
+| `kept` | how many backups the Nest keeps |
+| `last_uploaded` | the newest backup Manage confirmed: `backup_id`, `created_at`, `size_bytes`, `stored_at` |
+| `last_error` | the newest backup's last upload error code (`network`, `http_503`, `conflict`, `too_large`, `damaged`, …) |
+| `unsupported_since` | when Manage first answered 404/405 |
+| `last_run` | the last scheduled run: `at`, `outcome` (`backed_up`, `key_missing`, `low_disk`, `failed`) |
+
+Attention codes: `backup_key_missing` (no key set) and `backup_upload_failing`
+(the newest backup failed three uploads, or cannot be sent: conflict, too
+large, damaged).
+
+## Back up by hand (on the Nest, as root)
 
 ```sh
 sudo tiaris-nest backup-appliance-state \
   --recipient /root/nest-backup.pub --output /var/cache/tiaris-nest/nest-$(date +%F).backup
 ```
 
-The output must be a new file outside STATE. Copy it off the Nest (for
-example `scp` through the support certificate) and delete the local copy.
+The output must be a new file outside STATE; an existing file is refused
+and left as it is (a second backup on the same day needs another name). Copy
+it off the Nest (for example `scp` through the support certificate) and
+delete the local copy. An automatic backup from
+`/var/cache/tiaris-nest/state-backups/` restores the same way.
 Each backup leaves `status/state-backup.json` (time, size, digest; no
 secrets), which the Nest reports to Manage as `local_health.state_backup`.
 
@@ -54,7 +127,9 @@ secrets), which the Nest reports to Manage as `local_health.state_backup`.
    sudo systemctl start tiaris-nest.service
    ```
 
-3. Delete the private key and backup from the replacement.
+3. Delete the private key and backup from the replacement, then set the
+   backup public key again (`set-state-backup-key`): a `data` restore keeps
+   the replacement's own (none).
 
 The default `--scope data` restores the database, the workstation cache
 signing key (so installed computers keep trusting the Nest's cache) and the
