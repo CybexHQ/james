@@ -348,6 +348,7 @@ async fn run_server(
     if state.config.manage.enabled {
         tiaris_nest::manage::spawn(state.clone());
         tiaris_nest::software_cache_upload::spawn(state.clone());
+        tiaris_nest::state_backup::upload::spawn(state.clone());
     }
     tiaris_nest::console_status::spawn(state.clone());
     tiaris_nest::resources::spawn(

@@ -1894,7 +1894,9 @@ async fn local_health(readiness: crate::readiness::ApplianceReadiness) -> Value 
         };
     let state_storage = crate::disk::stats(Path::new(crate::state_backup::STATE_DIR)).ok();
     let sync = crate::manage::sync_health();
-    let attention = health_attention(state_storage.as_ref(), &sync);
+    let mut attention = health_attention(state_storage.as_ref(), &sync);
+    let backup = crate::state_backup::upload::health(Path::new(crate::state_backup::STATE_DIR));
+    attention.extend(backup.attention);
     json!({
         "status":status,"checks":checks,"pxe_discovery":pxe,"resources":crate::resources::latest(),
         // Facts Manage alerts on; none of them changes `status` (which gates
@@ -1904,6 +1906,8 @@ async fn local_health(readiness: crate::readiness::ApplianceReadiness) -> Value 
         "sync":sync,
         "database":crate::schema_evolution::status(),
         "state_backup":crate::state_backup::last_receipt(Path::new(crate::state_backup::STATE_DIR)),
+        // Automatic backups: key, kept copies and the upload to Manage.
+        "state_backup_upload":backup.fact,
         "attention":attention,
     })
 }

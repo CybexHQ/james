@@ -2701,11 +2701,38 @@ async fn signed_request_for_config(
     path: &str,
     body: Vec<u8>,
 ) -> Result<reqwest::RequestBuilder> {
+    let request = signed_request_with_digest(config, managed, method, path, &sha256_hex(&body))?;
+    Ok(if body.is_empty() {
+        request
+    } else {
+        request.body(body)
+    })
+}
+
+/// A signed Nest agent request whose caller streams a body of the given
+/// SHA-256 (hex) itself, for bodies too large to hold in memory.
+pub(crate) fn signed_streaming_request(
+    config: &AppConfig,
+    method: Method,
+    path: &str,
+    body_sha256: &str,
+) -> Result<reqwest::RequestBuilder> {
+    ensure_manage_enabled_config(config)?;
+    let managed = load_managed_state_from_config(config)?;
+    signed_request_with_digest(config, &managed, method, path, body_sha256)
+}
+
+fn signed_request_with_digest(
+    config: &AppConfig,
+    managed: &ManagedState,
+    method: Method,
+    path: &str,
+    body_sha256: &str,
+) -> Result<reqwest::RequestBuilder> {
     let signing = signing_key(managed)?;
     let device_id = managed_device_id(managed)?;
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let request_id = random_request_id();
-    let body_sha256 = sha256_hex(&body);
     let endpoint = api_url_for_config(config, path)?;
     let signed_path = request_path_and_query(&endpoint)?;
     let canonical = canonical_agent_payload(
@@ -2713,21 +2740,16 @@ async fn signed_request_for_config(
         &signed_path,
         &timestamp,
         &request_id,
-        &body_sha256,
+        body_sha256,
     );
     let signature = URL_SAFE_NO_PAD.encode(signing.sign(canonical.as_bytes()).to_bytes());
-    let request = http_client_for_config(config)?
+    Ok(http_client_for_config(config)?
         .request(method, endpoint)
         .header("x-tiaris-organization", organization_header(config)?)
         .header("x-tiaris-device-id", device_id)
         .header("x-tiaris-request-id", request_id)
         .header("x-tiaris-timestamp", timestamp)
-        .header("x-tiaris-signature", signature);
-    Ok(if body.is_empty() {
-        request
-    } else {
-        request.body(body)
-    })
+        .header("x-tiaris-signature", signature))
 }
 
 /// Optional report contents Manage said it accepts in its latest config.
@@ -3187,7 +3209,7 @@ fn managed_device_id(state: &ManagedState) -> Result<&str> {
         .ok_or_else(|| anyhow!("missing managed device id"))
 }
 
-fn canonical_agent_payload(
+pub(crate) fn canonical_agent_payload(
     method: &str,
     path_and_query: &str,
     timestamp: &str,

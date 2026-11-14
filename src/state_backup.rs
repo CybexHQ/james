@@ -71,6 +71,7 @@ pub const IDENTITY_BOUND: &[&str] = &[
     "agent/software-cache.netrc",
     "agent/software-cache-upload.json",
     "agent/software-cache-uploads",
+    "agent/state-backup-uploads.json",
 ];
 /// Where a backup leaves its secret-free receipt (`local_health`).
 pub const RECEIPT: &str = "status/state-backup.json";
@@ -943,6 +944,7 @@ pub async fn restore(
 }
 
 pub mod schedule;
+pub mod upload;
 
 #[cfg(test)]
 mod tests;
