@@ -20,7 +20,8 @@ STATE = Path.home() / '.local/state/cybex-james-build'
 PUBLIC_ENV = ('TIARIS_NEST_BUILD_MANAGE_ORIGIN', 'TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY',
               'TIARIS_NEST_PROVISIONING_PUBLIC_KEYS',
               'GITHUB_REF_NAME', 'BUILD_VERSION', 'BUILD_BUNDLE', 'BUILD_RUNTIME',
-              'BUILD_MANAGE_REVISION', 'BUILD_NIXPKGS_REVISION', 'BUILD_HAS_PREDECESSOR')
+              'BUILD_MANAGE_REVISION', 'BUILD_NIXPKGS_REVISION', 'BUILD_HAS_PREDECESSOR',
+              'BUILD_REUSE_RUNTIME')
 
 
 def run(*args, **kwargs):
@@ -117,7 +118,10 @@ def main():
                 run(*command(image, name, source, scratch, output, STATE, os.environ))
                 for filename in ('tiaris-nest-bootstrap', 'tiaris-nest-appliance-template-metadata.json'):
                     shutil.copyfile(scratch / filename, runner_temp / filename)
-                shutil.copytree(scratch / 'tiaris-workstation-netboot-tree', runner_temp / 'tiaris-workstation-netboot-tree')
+                # A reused workstation runtime is not rebuilt, so it has no tree.
+                if os.environ.get('BUILD_REUSE_RUNTIME') != 'true':
+                    shutil.copytree(scratch / 'tiaris-workstation-netboot-tree',
+                                    runner_temp / 'tiaris-workstation-netboot-tree')
                 # This tree contains unsigned public cache bytes only. The release
                 # key is consumed by pack-system-closure.py after the sandbox exits.
                 copy_disposable_tree(scratch / 'tiaris-nest-unsigned-closure', runner_temp / 'tiaris-nest-unsigned-closure')

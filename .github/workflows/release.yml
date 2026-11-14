@@ -344,6 +344,52 @@ jobs:
             fi
           fi
 
+      # An unchanged runtime (same version, Tiaris revision and nixpkgs pin as
+      # the latest published release) is reused: its signed descriptor, URL
+      # and bytes stay those of the release that first published it. The
+      # same bytes are attached to this release too, so publication checks
+      # are unchanged. A changed runtime at the published version is refused.
+      - name: Decide whether the published workstation runtime is reused
+        id: workstation-runtime
+        if: steps.release-candidate.outputs.reuse != 'true'
+        shell: bash
+        env:
+          RUNTIME_VERSION: ${{ steps.workstation-source.outputs.runtime_version }}
+          RUNTIME_MANAGE_REVISION: ${{ steps.workstation-source.outputs.revision }}
+          RUNTIME_NIXPKGS_REVISION: ${{ steps.workstation-source.outputs.nixpkgs_revision }}
+          RUNTIME_BUNDLE: ${{ steps.workstation-source.outputs.bundle_name }}
+        run: |
+          set -Eeuo pipefail
+          predecessor="$RUNNER_TEMP/tiaris-nest-predecessor/tiaris-nest-release.json"
+          identity="$RUNNER_TEMP/tiaris-nest-published-predecessor.json"
+          # A first release, a legacy predecessor or one signed by an earlier
+          # authority cannot lend its runtime: build and sign a new one.
+          if [ ! -s "$predecessor" ] || [ ! -s "$identity" ] || \
+            [ "$(jq -r '.authority_public_key // ""' "$identity")" != "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" ]; then
+            echo reuse=false >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          plan="$(python3 tools/nest-release.py workstation-runtime-plan \
+            --previous-manifest "$predecessor" \
+            --trusted-public-key "$TIARIS_NEST_UPDATE_TRUSTED_PUBLIC_KEY" \
+            --workstation-netboot-runtime-version "$RUNTIME_VERSION" \
+            --workstation-netboot-manage-revision "$RUNTIME_MANAGE_REVISION" \
+            --workstation-netboot-nixpkgs-revision "$RUNTIME_NIXPKGS_REVISION")"
+          printf '%s\n' "$plan" | grep -E '^(reuse|url|sha256|size_bytes|bundle_name)=' >> "$GITHUB_OUTPUT"
+          grep -qx reuse=true <<<"$plan" || exit 0
+          url="$(sed -n 's/^url=//p' <<<"$plan")"
+          sha256="$(sed -n 's/^sha256=//p' <<<"$plan")"
+          size="$(sed -n 's/^size_bytes=//p' <<<"$plan")"
+          test "$(sed -n 's/^bundle_name=//p' <<<"$plan")" = "$RUNTIME_BUNDLE"
+          [[ "$url" == "https://github.com/$GITHUB_REPOSITORY/releases/download/v"*"/$RUNTIME_BUNDLE" ]]
+          install -d -m 0755 dist
+          part="dist/.$RUNTIME_BUNDLE.download"
+          curl -4 --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --connect-timeout 30 --max-time 1800 --max-filesize "$size" --output "$part" "$url"
+          test "$(stat -c %s "$part")" = "$size"
+          test "$(sha256sum "$part" | cut -d ' ' -f 1)" = "$sha256"
+          mv -- "$part" "dist/$RUNTIME_BUNDLE"
+
       - name: Build exact binaries, appliance media, and workstation runtime
         if: steps.release-candidate.outputs.reuse != 'true'
         shell: bash
@@ -354,6 +400,7 @@ jobs:
           BUILD_MANAGE_REVISION: ${{ steps.workstation-source.outputs.revision }}
           BUILD_NIXPKGS_REVISION: ${{ steps.workstation-source.outputs.nixpkgs_revision }}
           BUILD_HAS_PREDECESSOR: ${{ steps.published-predecessor.outputs.exists }}
+          BUILD_REUSE_RUNTIME: ${{ steps.workstation-runtime.outputs.reuse }}
         run: |
           source tools/ci-host-reservation.sh
           reserve_ci_host_capacity "Nest build $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" 48 12
@@ -364,15 +411,19 @@ jobs:
             cargo build --release --locked --bin tiaris-nest --bin tiaris-nest-bootstrap
           source_epoch="$(git -C manage-source show -s --format=%ct HEAD)"
           [[ "$source_epoch" =~ ^[1-9][0-9]*$ ]]
-          nix-build release/workstation-netboot.nix \
-            --arg manageRepo ./manage-source \
-            --arg sourceDateEpoch "$source_epoch" \
-            --out-link result-workstation-netboot
           install -d -m 0755 dist
           install -m 0755 target/release/tiaris-nest dist/tiaris-nest-x86_64-linux
           install -m 0755 target/release/tiaris-nest-bootstrap "$RUNNER_TEMP/tiaris-nest-bootstrap"
           test "$("$RUNNER_TEMP/tiaris-nest-bootstrap" required-manage-origin)" = \
             "$TIARIS_NEST_BUILD_MANAGE_ORIGIN"
+          # A reused runtime is already in dist/ with its published bytes.
+          if [ "$BUILD_REUSE_RUNTIME" = true ]; then
+            test -f "dist/$BUILD_BUNDLE"
+          else
+          nix-build release/workstation-netboot.nix \
+            --arg manageRepo ./manage-source \
+            --arg sourceDateEpoch "$source_epoch" \
+            --out-link result-workstation-netboot
           staging="$RUNNER_TEMP/tiaris-workstation-netboot-tree"
           install -d -m 0755 "$staging"
           for component in manifest.json bzImage initrd nix-store.squashfs; do
@@ -391,6 +442,7 @@ jobs:
             --workstation-netboot-runtime-version "$BUILD_RUNTIME" \
             --workstation-netboot-manage-revision "$BUILD_MANAGE_REVISION" \
             --workstation-netboot-nixpkgs-revision "$BUILD_NIXPKGS_REVISION"
+          fi
           mapfile -t provisioning_keys < <(printf '%s\n' "$TIARIS_NEST_PROVISIONING_PUBLIC_KEYS" | sed '/^[[:space:]]*$/d')
           template_args=()
           for key in "${provisioning_keys[@]}"; do
@@ -466,6 +518,15 @@ jobs:
           for key in "${provisioning_keys[@]}"; do
             template_args+=(--provisioning-public-key "$key")
           done
+          if [ "${{ steps.workstation-runtime.outputs.reuse }}" = true ]; then
+            workstation_args=(--reuse-workstation-netboot "$RUNNER_TEMP/tiaris-nest-predecessor/tiaris-nest-release.json")
+          else
+            workstation_args=(
+              --workstation-netboot-bundle "dist/${{ steps.workstation-source.outputs.bundle_name }}"
+              --workstation-netboot-tree "$RUNNER_TEMP/tiaris-workstation-netboot-tree"
+              --workstation-netboot-url "$artifact_base/${{ steps.workstation-source.outputs.bundle_name }}"
+            )
+          fi
           python3 -B tools/pack-system-closure.py \
             --cache "$RUNNER_TEMP/tiaris-nest-unsigned-closure/cache" \
             --build-metadata "$RUNNER_TEMP/tiaris-nest-unsigned-closure/build-metadata.json" \
@@ -485,9 +546,7 @@ jobs:
             --appliance-system-closure "dist/tiaris-nest-appliance-closure-$version-x86_64-linux.tar.zst" \
             --appliance-system-closure-metadata "$RUNNER_TEMP/tiaris-nest-appliance-closure-metadata.json" \
             --appliance-system-closure-url "$artifact_base/tiaris-nest-appliance-closure-$version-x86_64-linux.tar.zst" \
-            --workstation-netboot-bundle "dist/${{ steps.workstation-source.outputs.bundle_name }}" \
-            --workstation-netboot-tree "$RUNNER_TEMP/tiaris-workstation-netboot-tree" \
-            --workstation-netboot-url "$artifact_base/${{ steps.workstation-source.outputs.bundle_name }}" \
+            "${workstation_args[@]}" \
             --workstation-netboot-runtime-version "${{ steps.workstation-source.outputs.runtime_version }}" \
             --workstation-netboot-manage-revision "${{ steps.workstation-source.outputs.revision }}" \
             --workstation-netboot-nixpkgs-revision "${{ steps.workstation-source.outputs.nixpkgs_revision }}" \

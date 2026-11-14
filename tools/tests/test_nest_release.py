@@ -1719,6 +1719,8 @@ class NestReleaseToolTests(unittest.TestCase):
             b"descriptor identity changed at equal SemVer precedence",
             generation_rejected.stderr,
         )
+        # The refusal names what changed: only the release-specific URL.
+        self.assertIn(b"(changed: url)", generation_rejected.stderr)
 
         successor_rejected = self.run_tool(
             "verify-successor",
@@ -1734,6 +1736,168 @@ class NestReleaseToolTests(unittest.TestCase):
             b"descriptor identity changed at equal SemVer precedence",
             successor_rejected.stderr,
         )
+
+    def successor_manifest_arguments(self, version: str) -> list[str]:
+        """Nest release `version` with its own template; no workstation options."""
+        template = self.directory / f"tiaris-nest-appliance-template-{version}-x86_64-linux.iso"
+        template.write_bytes(self.template.read_bytes())
+        self.write_template_metadata(version=version)
+        arguments = self.manifest_arguments(self.directory / f"release-{version}.json")
+        arguments[arguments.index("--version") + 1] = version
+        arguments[arguments.index("--installer-iso-template") + 1] = str(template)
+        return [
+            value.replace("v0.1.1", f"v{version}").replace("template-0.1.1", f"template-{version}")
+            for value in arguments
+        ]
+
+    def published_runtime(self) -> tuple[Path, Path, list[str]]:
+        """A published 0.1.1 release with runtime 2.3.4 and its compatibility asset."""
+        manifest = self.directory / "published-release.json"
+        workstation_arguments, _bundle, _tree = self.workstation_arguments()
+        signed = self.run_tool(*self.manifest_arguments(manifest), *workstation_arguments)
+        self.assertEqual(signed.returncode, 0, signed.stderr.decode())
+        asset = self.directory / "published-compatibility.json"
+        generated = self.run_tool(*self.compatibility_arguments(asset, manifest))
+        self.assertEqual(generated.returncode, 0, generated.stderr.decode())
+        runtime_inputs = [
+            "--workstation-netboot-runtime-version", "2.3.4",
+            "--workstation-netboot-manage-revision", "a" * 40,
+            "--workstation-netboot-nixpkgs-revision", "b" * 40,
+        ]
+        return manifest, asset, runtime_inputs
+
+    def runtime_plan(self, manifest: Path, *inputs: str) -> subprocess.CompletedProcess[bytes]:
+        return self.run_tool(
+            "workstation-runtime-plan", "--previous-manifest", str(manifest),
+            "--trusted-public-key", self.public_key(), *inputs,
+        )
+
+    @unittest.skipUnless(shutil.which("zstd"), "zstd is required")
+    def test_unchanged_runtime_reuses_the_published_signed_descriptor(self) -> None:
+        published, published_asset, inputs = self.published_runtime()
+        plan = self.runtime_plan(published, *inputs)
+        self.assertEqual(plan.returncode, 0, plan.stderr.decode())
+        lines = dict(line.split("=", 1) for line in plan.stdout.decode().splitlines())
+        descriptor = json.loads(published.read_text())["workstation_netboot"]
+        self.assertEqual(lines["reuse"], "true")
+        self.assertEqual(lines["url"], descriptor["url"])
+        self.assertEqual(lines["sha256"], descriptor["sha256"])
+
+        arguments = self.successor_manifest_arguments("0.1.2")
+        current = Path(arguments[arguments.index("--output") + 1])
+        signed = self.run_tool(
+            *arguments, "--reuse-workstation-netboot", str(published), *inputs,
+            "--workstation-netboot-manage-source-sha256", "c" * 64,
+            "--workstation-netboot-manage-source-size-bytes", "123",
+        )
+        self.assertEqual(signed.returncode, 0, signed.stderr.decode())
+        # The same signed descriptor: its URL still names the publishing release.
+        reused = json.loads(current.read_text())["workstation_netboot"]
+        self.assertEqual(reused, descriptor)
+        self.assertIn("/v0.1.1/", reused["url"])
+
+        asset = self.directory / "current-compatibility.json"
+        compatibility = self.compatibility_arguments(asset, current)
+        index = compatibility.index("--manifest-url") + 1
+        compatibility[index] = compatibility[index].replace("v0.1.1", "v0.1.2")
+        generated = self.run_tool(
+            *compatibility, "--previous-compatibility", str(published_asset)
+        )
+        self.assertEqual(generated.returncode, 0, generated.stderr.decode())
+        successor = self.run_tool(
+            "verify-successor", "--previous-compatibility", str(published_asset),
+            "--current-compatibility", str(asset), "--trusted-public-key", self.public_key(),
+        )
+        self.assertEqual(successor.returncode, 0, successor.stderr.decode())
+
+    @unittest.skipUnless(shutil.which("zstd"), "zstd is required")
+    def test_changed_runtime_inputs_at_the_published_version_are_refused(self) -> None:
+        published, _asset, inputs = self.published_runtime()
+        changed = list(inputs)
+        changed[changed.index("--workstation-netboot-manage-revision") + 1] = "d" * 40
+        plan = self.runtime_plan(published, *changed)
+        self.assertEqual(plan.returncode, 2)
+        self.assertIn(
+            b"workstation runtime 2.3.4 was already published from different inputs "
+            b"(Tiaris source revision " + b"a" * 40 + b" -> " + b"d" * 40 + b")",
+            plan.stderr,
+        )
+        arguments = self.successor_manifest_arguments("0.1.2")
+        for runtime_inputs, reason in (
+            (changed, b"Tiaris source revision"),
+            ([*inputs, "--workstation-netboot-manage-source-sha256", "e" * 64,
+              "--workstation-netboot-manage-source-size-bytes", "123"],
+             b"packaged Tiaris source SHA-256"),
+        ):
+            refused = self.run_tool(
+                *arguments, "--reuse-workstation-netboot", str(published), *runtime_inputs
+            )
+            self.assertEqual(refused.returncode, 2)
+            self.assertIn(reason, refused.stderr)
+            self.assertIn(b"advance deploy/nixos/workstation-netboot-version", refused.stderr)
+        # A reused runtime is never combined with a rebuilt bundle.
+        workstation_arguments = self.workstation_arguments_from(published)
+        mixed = self.run_tool(
+            *arguments, "--reuse-workstation-netboot", str(published), *workstation_arguments
+        )
+        self.assertEqual(mixed.returncode, 2)
+        self.assertIn(b"replaces the workstation netboot bundle", mixed.stderr)
+
+    def workstation_arguments_from(self, published: Path) -> list[str]:
+        descriptor = json.loads(published.read_text())["workstation_netboot"]
+        return [
+            "--workstation-netboot-bundle", str(self.directory / descriptor["url"].rsplit("/", 1)[-1]),
+            "--workstation-netboot-tree", str(self.directory / "workstation-tree"),
+            "--workstation-netboot-url", descriptor["url"],
+            "--workstation-netboot-runtime-version", descriptor["runtime_version"],
+            "--workstation-netboot-manage-revision", descriptor["manage_source_revision"],
+            "--workstation-netboot-nixpkgs-revision", descriptor["nixpkgs_revision"],
+        ]
+
+    @unittest.skipUnless(shutil.which("zstd"), "zstd is required")
+    def test_verify_accepts_only_the_exact_published_runtime_and_its_bytes(self) -> None:
+        published, _asset, _inputs = self.published_runtime()
+        api = runpy.run_path(str(TOOL))
+        public_der = api["ED25519_PUBLIC_DER_PREFIX"] + base64.b64decode(self.public_key())
+        descriptor = json.loads(published.read_text())["workstation_netboot"]
+        bundle = self.directory / descriptor["url"].rsplit("/", 1)[-1]
+        verify = api["_verify_reused_workstation_netboot"]
+        verify(dict(descriptor), published, public_der, str(bundle))
+        verify(dict(descriptor), published, public_der, None)
+        with self.assertRaisesRegex(api["ReleaseError"], "differs from its published descriptor"):
+            verify({**descriptor, "url": descriptor["url"].replace("v0.1.1", "v0.1.2")},
+                   published, public_der, None)
+        bundle.write_bytes(bundle.read_bytes() + b"\0")
+        with self.assertRaisesRegex(api["ReleaseError"], "bundle differs from its signed descriptor"):
+            verify(dict(descriptor), published, public_der, str(bundle))
+        other_key = self.directory / "other-key.pem"
+        subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(other_key)],
+                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        other_key.chmod(0o600)
+        other_public = self.run_tool("public-key", "--private-key", str(other_key)).stdout.decode().strip()
+        with self.assertRaises(api["ReleaseError"]):
+            verify(dict(descriptor), published,
+                   api["ED25519_PUBLIC_DER_PREFIX"] + base64.b64decode(other_public), None)
+
+    @unittest.skipUnless(shutil.which("zstd"), "zstd is required")
+    def test_a_newer_runtime_version_is_built_not_reused(self) -> None:
+        published, _asset, inputs = self.published_runtime()
+        newer = list(inputs)
+        newer[newer.index("--workstation-netboot-runtime-version") + 1] = "2.3.5"
+        plan = self.runtime_plan(published, *newer)
+        self.assertEqual(plan.returncode, 0, plan.stderr.decode())
+        self.assertEqual(plan.stdout.decode().strip(), "reuse=false")
+        refused = self.run_tool(
+            *self.successor_manifest_arguments("0.1.2"),
+            "--reuse-workstation-netboot", str(published), *newer,
+        )
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn(b"build and sign the new runtime", refused.stderr)
+        older = list(inputs)
+        older[older.index("--workstation-netboot-runtime-version") + 1] = "2.3.3"
+        plan = self.runtime_plan(published, *older)
+        self.assertEqual(plan.returncode, 2)
+        self.assertIn(b"older than the published runtime 2.3.4", plan.stderr)
 
     @unittest.skipUnless(shutil.which("zstd"), "zstd is required")
     def test_release_successor_enforces_runtime_watermark_invariants(self) -> None:
