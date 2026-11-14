@@ -114,16 +114,16 @@ class LocalCandidateTests(unittest.TestCase):
         self.assertEqual(candidate.inventory(target), candidate.inventory(self.source))
         self.assertFalse((self.path / 'nonexistent-local-store').exists())
 
-    def test_retention_prunes_only_expired_recognized_candidates(self):
+    def test_retention_keeps_the_newest_two_and_this_run(self):
         import os
-        self.seal()
+        for number, run in enumerate(('40', '41', '42', '43', '44')):
+            expected = candidate.identity(run, 'a' * 40, 'v0.2.8')
+            candidate.seal(self.store, expected, self.source, self.path / f'receipt-{run}.json')
+            os.utime(self.store / run, (1000 + number, 1000 + number))
         unrelated = self.store / 'operator-notes'
         unrelated.write_text('retain')
-        candidate.prune(self.store)
-        self.assertTrue((self.store / '42').exists())
-        os.utime(self.store / '42', (1, 1))
-        candidate.prune(self.store)
-        self.assertFalse((self.store / '42').exists())
+        candidate.prune(self.store, keep='40')
+        self.assertEqual(sorted(path.name for path in self.store.iterdir() if path.name.isdigit()), ['40', '43', '44'])
         self.assertEqual(unrelated.read_text(), 'retain')
 
 
