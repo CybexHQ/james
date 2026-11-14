@@ -3,6 +3,7 @@ import copy
 import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,6 +15,18 @@ from isolated_manage_transport import http_error_details
 
 def now():
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+def workstation_memory_mib(environment=None):
+    """The disposable workstation's memory: 8 GiB, or a school-sized 4 GiB and up.
+
+    TIARIS_NEST_QUALIFICATION_WORKSTATION_MEMORY_MIB selects it, like the appliance's
+    TIARIS_NEST_QUALIFICATION_MEMORY_MIB; the development golden path runs 4096."""
+    value = (os.environ if environment is None else environment).get(
+        'TIARIS_NEST_QUALIFICATION_WORKSTATION_MEMORY_MIB', '8192')
+    if not value.isdigit() or not 4096 <= int(value) <= 65536:
+        raise ValueError('Workstation memory must be 4096 to 65536 MiB')
+    return int(value)
 
 
 def fresh(value, started):
@@ -178,8 +191,9 @@ class Workstation:
     def __enter__(self):
         available = int(next(v.split()[1] for v in Path('/proc/meminfo').read_text().splitlines()
                              if v.startswith('MemAvailable:'))) * 1024
-        if available < 10 * 1024**3:
-            raise ValueError('Disposable workstation needs 10 GiB additional available RAM')
+        memory = workstation_memory_mib()
+        if available < (memory + 2048) * 1024**2:
+            raise ValueError(f'Disposable workstation needs {memory // 1024 + 2} GiB additional available RAM')
         self.directory.mkdir(mode=0o700)
         d = self.directory
         shutil.copyfile('/usr/share/OVMF/OVMF_VARS_4M.fd', d / 'OVMF_VARS.fd')
@@ -189,7 +203,7 @@ class Workstation:
         try:
             self.tap = SCOPE['tap'](self.state, self.scope['manage_origin'], self.bridge, 'workstation', True)
             self.process = subprocess.Popen(['qemu-system-x86_64', '-enable-kvm', '-machine', 'q35,smm=on', '-global', 'driver=cfi.pflash01,property=secure,value=on',
-                '-cpu', 'host', '-smp', '4', '-m', '8192',
+                '-cpu', 'host', '-smp', '4', '-m', str(memory),
                 '-uuid', self.hardware['uuid'],
                 '-drive', 'if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd',
                 '-drive', f'if=pflash,format=raw,unit=1,file={d}/OVMF_VARS.fd',

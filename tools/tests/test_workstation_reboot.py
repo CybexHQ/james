@@ -147,5 +147,15 @@ class RebootTests(unittest.TestCase):
         }})
 
 
+class WorkstationMemoryTest(unittest.TestCase):
+    def test_default_is_eight_gib_and_school_sized_four_gib_is_allowed(self):
+        self.assertEqual(workstation.workstation_memory_mib({}), 8192)
+        self.assertEqual(workstation.workstation_memory_mib(
+            {'TIARIS_NEST_QUALIFICATION_WORKSTATION_MEMORY_MIB': '4096'}), 4096)
+        for bad in ('2048', '4k', '', '70000'):
+            with self.assertRaises(ValueError):
+                workstation.workstation_memory_mib({'TIARIS_NEST_QUALIFICATION_WORKSTATION_MEMORY_MIB': bad})
+
+
 if __name__ == '__main__':
     unittest.main()
