@@ -353,6 +353,54 @@ async fn a_damaged_truncated_or_foreign_backup_changes_nothing() {
 }
 
 #[tokio::test]
+async fn a_failed_backup_never_removes_a_file_it_did_not_create() {
+    let scratch = Scratch::new("collision");
+    let old = scratch.join("old-state");
+    old_nest(&old).await;
+    let (private, public) = (scratch.join("backup.key"), scratch.join("backup.pub"));
+    generate_key(&private, &public).unwrap();
+    // The documented date-named backup, run twice on one day.
+    let output = scratch.join("nest-2026-11-14.backup");
+    backup(&old, &public, &output).await.unwrap();
+    let first = fs::read(&output).unwrap();
+    let error = backup(&old, &public, &output).await.unwrap_err();
+    assert!(format!("{error:#}").contains("create"), "{error:#}");
+    assert_eq!(
+        fs::read(&output).unwrap(),
+        first,
+        "the earlier backup stays"
+    );
+    // Still a whole backup.
+    let target = scratch.join("target");
+    fs::create_dir(&target).unwrap();
+    restore(&output, &private, &target, Scope::Full, true)
+        .await
+        .unwrap();
+
+    // A failure before the output is created leaves an existing file alone.
+    let broken = scratch.join("broken-state");
+    fs::create_dir_all(broken.join(DATABASE)).unwrap();
+    let existing = scratch.join("existing.backup");
+    fs::write(&existing, b"an earlier backup").unwrap();
+    let error = backup(&broken, &public, &existing).await.unwrap_err();
+    assert!(error.to_string().contains("not a regular file"), "{error}");
+    assert_eq!(fs::read(&existing).unwrap(), b"an earlier backup");
+    // A run that fails never leaves a partial output or snapshot.
+    let fresh = scratch.join("fresh.backup");
+    let error = backup(&old, &scratch.join("no-such.pub"), &fresh)
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("no-such.pub"), "{error:#}");
+    assert!(!fresh.exists());
+    let leftovers: Vec<_> = fs::read_dir(&scratch.0)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".database-"))
+        .collect();
+    assert!(leftovers.is_empty(), "no database snapshot is left behind");
+}
+
+#[tokio::test]
 async fn a_database_this_release_cannot_run_on_is_not_restored() {
     let scratch = Scratch::new("schema");
     let old = scratch.join("old-state");

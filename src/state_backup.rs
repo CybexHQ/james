@@ -539,6 +539,9 @@ pub async fn backup(state: &Path, recipient: &Path, output: &Path) -> Result<Bac
             .unwrap_or("backup"),
         uuid::Uuid::new_v4().simple()
     ));
+    // Only a file this run created may be removed on failure: `output` may
+    // name an earlier backup (a second date-named backup on the same day).
+    let mut created = false;
     let result = async {
         let database = state.join(DATABASE);
         let database_metadata = match fs::symlink_metadata(&database) {
@@ -556,6 +559,7 @@ pub async fn backup(state: &Path, recipient: &Path, output: &Path) -> Result<Bac
         ensure!(total <= MAX_TOTAL_BYTES, "state exceeds the backup bound");
         let created_at = crate::db::now_rfc3339();
         let file = create_private(output, 0o600)?;
+        created = true;
         let sealer = Sealer::new(BufWriter::new(file), &recipient)?;
         let mut builder = tar::Builder::new(zstd::Encoder::new(sealer, 3)?);
         let mut records = Vec::new();
@@ -615,7 +619,7 @@ pub async fn backup(state: &Path, recipient: &Path, output: &Path) -> Result<Bac
     }
     .await;
     let _ = fs::remove_file(&snapshot);
-    if result.is_err() {
+    if result.is_err() && created {
         let _ = fs::remove_file(output);
     }
     let summary = result?;
@@ -712,12 +716,11 @@ fn safe_relative(path: &str) -> Result<PathBuf> {
     Ok(relative.to_path_buf())
 }
 
+/// Entry name to its SHA-256 (hex) and size.
+type Digests = BTreeMap<String, (String, u64)>;
+
 /// Decrypts, bounds and digests every entry into `staging`.
-fn extract(
-    backup: &Path,
-    secret: &[u8; 32],
-    staging: &Path,
-) -> Result<(Manifest, BTreeMap<String, (String, u64)>)> {
+fn extract(backup: &Path, secret: &[u8; 32], staging: &Path) -> Result<(Manifest, Digests)> {
     let opener = Opener::new(BufReader::new(open_nofollow(backup)?), secret)?;
     let mut archive = tar::Archive::new(zstd::Decoder::new(opener)?);
     let mut seen = BTreeMap::new();
@@ -778,7 +781,7 @@ fn extract(
         manifest.schema == MANIFEST_SCHEMA,
         "unknown backup manifest schema"
     );
-    let mut expected: BTreeMap<String, (String, u64)> = manifest
+    let mut expected: Digests = manifest
         .files
         .iter()
         .map(|file| {
