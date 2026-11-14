@@ -115,9 +115,15 @@ struct ManagedState {
     nest_report_warning_fingerprint: Option<String>,
     /// What Manage last said it supports. A failed configuration fetch (Manage restarting, a dropped connection)
     /// reports with these instead of with nothing, so one bad fetch never withdraws capabilities such as the update
-    /// schedule ("Update now") from Manage's record of this Nest.
+    /// schedule ("Update now") from Manage's record of this Nest. Kept for PEER_CONTRACT_MAX_AGE_SECONDS only.
     last_peer_contract: Option<PeerContract>,
+    /// When Manage confirmed `last_peer_contract` (Unix seconds).
+    last_peer_contract_at: Option<i64>,
 }
+
+/// How long a confirmed contract outlives failing configuration fetches. Long enough for a Manage deploy or outage,
+/// short enough that a Manage rolled back to an older release is not offered newer capabilities for days.
+const PEER_CONTRACT_MAX_AGE_SECONDS: i64 = 24 * 60 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct PeerContract {
@@ -1024,6 +1030,7 @@ async fn sync_nest_foundation(
                 report_protocol: negotiated_report_protocol(desired.compatibility.as_ref()),
             };
             managed.last_peer_contract = Some(peer);
+            managed.last_peer_contract_at = Some(Utc::now().timestamp());
             apply_nest_desired(state, managed, desired, &mut first_failure).await;
             peer
         }
@@ -1033,7 +1040,11 @@ async fn sync_nest_foundation(
                 "Nest desired configuration fetch",
                 error,
             );
-            peer_contract_after_failed_fetch(managed.last_peer_contract)
+            peer_contract_after_failed_fetch(
+                managed.last_peer_contract,
+                managed.last_peer_contract_at,
+                Utc::now().timestamp(),
+            )
         }
     };
     let report = match report_nest_state(
@@ -1061,10 +1072,16 @@ async fn sync_nest_foundation(
     Ok(report.expect("successful Nest report returns its receipt"))
 }
 
-/// The contract a report uses when this round's configuration fetch failed: the last one Manage confirmed, or the
-/// most conservative one when it never answered.
-fn peer_contract_after_failed_fetch(last: Option<PeerContract>) -> PeerContract {
-    last.unwrap_or(PeerContract {
+/// The contract a report uses when this round's configuration fetch failed: the last one Manage confirmed within
+/// PEER_CONTRACT_MAX_AGE_SECONDS, or the most conservative one when it never answered or answered too long ago.
+fn peer_contract_after_failed_fetch(
+    last: Option<PeerContract>,
+    confirmed_at: Option<i64>,
+    now: i64,
+) -> PeerContract {
+    let fresh =
+        confirmed_at.is_some_and(|at| at <= now && now - at <= PEER_CONTRACT_MAX_AGE_SECONDS);
+    last.filter(|_| fresh).unwrap_or(PeerContract {
         supports_scheduling: false,
         accepts_uploads: false,
         accepts_usb_installer: false,
@@ -3690,19 +3707,38 @@ mod tests {
             runtime_epoch: true,
             report_protocol: TIARIS_DETECTED_COMMITS_PROTOCOL_VERSION,
         };
+        let now = 1_800_000_000;
         // Manage restarting between two syncs must not withdraw Update now and the other capabilities.
-        assert_eq!(peer_contract_after_failed_fetch(Some(confirmed)), confirmed);
-        let never = peer_contract_after_failed_fetch(None);
+        assert_eq!(
+            peer_contract_after_failed_fetch(Some(confirmed), Some(now - 600), now),
+            confirmed
+        );
+        // A contract older than a day (Manage rolled back, its config still failing) degrades to the safe one,
+        // and so does one without a confirmation time (a state file from 6374b64) or from the future.
+        let stale = peer_contract_after_failed_fetch(
+            Some(confirmed),
+            Some(now - PEER_CONTRACT_MAX_AGE_SECONDS - 1),
+            now,
+        );
+        assert!(!stale.supports_scheduling && !stale.runtime_epoch);
+        assert!(!peer_contract_after_failed_fetch(Some(confirmed), None, now).supports_scheduling);
+        assert!(
+            !peer_contract_after_failed_fetch(Some(confirmed), Some(now + 3600), now)
+                .supports_scheduling
+        );
+        let never = peer_contract_after_failed_fetch(None, None, now);
         assert!(!never.supports_scheduling && !never.accepts_uploads && !never.runtime_epoch);
         assert_eq!(never.report_protocol, TIARIS_COMPONENT_PROTOCOL_VERSION);
         // The confirmed contract survives a restart of the Nest itself (managed state is a file).
         let managed = ManagedState {
             last_peer_contract: Some(confirmed),
+            last_peer_contract_at: Some(now),
             ..ManagedState::default()
         };
         let stored: ManagedState =
             serde_json::from_str(&serde_json::to_string(&managed).unwrap()).unwrap();
         assert_eq!(stored.last_peer_contract, Some(confirmed));
+        assert_eq!(stored.last_peer_contract_at, Some(now));
         // Older state files without the field still load.
         let old: ManagedState = serde_json::from_str("{}").unwrap();
         assert_eq!(old.last_peer_contract, None);
