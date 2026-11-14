@@ -150,6 +150,9 @@ class AdmissionExercise:
         self.hold_projection = None
         self.original_schedule = None
         self.original_schedule_revision = None
+        # Manage releases with updating when idle report a mode; the closed
+        # window holds only in window mode, and older Manage rejects the field.
+        self.original_mode = None
         self.closed_schedule_value = None
         self.schedule_revision = None
         self.run_now_owned = False
@@ -212,12 +215,16 @@ class AdmissionExercise:
                 raise ValueError('Q07 schedule is unsupported or already owns an attempt')
             self.original_schedule = dict(state['schedule'])
             self.original_schedule_revision = state['revision']
+            self.original_mode = state.get('mode')
             schedule = closed_schedule(self.now())
             self.closed_schedule_value = schedule
-            changed = self.api(self.prefix + '/update-schedule',
-                {'expected_revision': state['revision'], 'schedule': schedule})
+            closing = {'expected_revision': state['revision'], 'schedule': schedule}
+            if self.original_mode is not None:
+                closing['mode'] = 'window'
+            changed = self.api(self.prefix + '/update-schedule', closing)
             if (changed.get('revision') != state['revision'] + 1
                     or changed.get('schedule') != schedule
+                    or changed.get('mode', 'window') != 'window'
                     or changed.get('run_now_attempt_id') is not None):
                 raise ValueError('Q07 closed schedule did not preserve exact revision semantics')
             self.schedule_revision = changed['revision']
@@ -503,11 +510,14 @@ class AdmissionExercise:
                     and (not self.run_now_owned or self.terminal)
                     and state.get('run_now_attempt_id') in (None, self.attempt))
                 if safe:
-                    restored = self.api(self.prefix + '/update-schedule',
-                        {'expected_revision': self.schedule_revision,
-                         'schedule': self.original_schedule})
+                    restoring = {'expected_revision': self.schedule_revision,
+                                 'schedule': self.original_schedule}
+                    if self.original_mode is not None:
+                        restoring['mode'] = self.original_mode
+                    restored = self.api(self.prefix + '/update-schedule', restoring)
                     if (restored.get('revision') != self.schedule_revision + 1
                             or restored.get('schedule') != self.original_schedule
+                            or restored.get('mode') != self.original_mode
                             or restored.get('run_now_attempt_id') is not None):
                         raise ValueError('Q07 schedule restoration was not exact')
                     self.original_schedule = None

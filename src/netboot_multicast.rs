@@ -336,6 +336,12 @@ impl NetbootMulticast {
         }
     }
 
+    /// Whether computers are gathering for, or receiving, a multicast
+    /// SquashFS transfer right now.
+    pub async fn transfer_active(&self) -> bool {
+        self.shared.state.lock().await.batch.is_some()
+    }
+
     async fn cancel_active(&self) -> Option<String> {
         let mut state = self.shared.state.lock().await;
         let gathering = state

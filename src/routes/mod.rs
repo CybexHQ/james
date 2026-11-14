@@ -69,6 +69,8 @@ pub fn router(state: AppState) -> Router {
         .layer(DefaultBodyLimit::max(REQUEST_BODY_LIMIT_BYTES))
         .layer(middleware::from_fn(add_security_headers))
         .layer(TraceLayer::new_for_http().make_span_with(request_trace_span))
+        // Outermost, so a download counts until its last byte is sent.
+        .layer(middleware::from_fn(crate::activity::track))
         .with_state(state)
 }
 

@@ -2245,6 +2245,7 @@ dependencies = [
  "curve25519-dalek",
  "ed25519-dalek",
  "hex",
+ "http-body",
  "libc",
  "maud",
  "mime_guess",

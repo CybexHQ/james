@@ -2856,6 +2856,7 @@ fn nest_capabilities_for_mode(
         capabilities.push(CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1);
         if peer_supports_scheduling {
             capabilities.push(crate::appliance::schedule::CAPABILITY);
+            capabilities.push(crate::appliance::schedule::WHEN_IDLE_CAPABILITY);
         }
     }
     if crate::netboot_multicast::binary_available(config) {
@@ -5068,10 +5069,15 @@ mod tests {
         let modern = nest_capabilities_for_mode(&config, newer.update_schedule_supported, true);
         assert!(!legacy.contains(&crate::appliance::schedule::CAPABILITY));
         assert!(modern.contains(&crate::appliance::schedule::CAPABILITY));
+        assert!(!legacy.contains(&crate::appliance::schedule::WHEN_IDLE_CAPABILITY));
+        assert!(modern.contains(&crate::appliance::schedule::WHEN_IDLE_CAPABILITY));
         assert_eq!(
             modern
                 .into_iter()
-                .filter(|cap| *cap != crate::appliance::schedule::CAPABILITY)
+                .filter(|cap| {
+                    *cap != crate::appliance::schedule::CAPABILITY
+                        && *cap != crate::appliance::schedule::WHEN_IDLE_CAPABILITY
+                })
                 .collect::<Vec<_>>(),
             legacy
         );

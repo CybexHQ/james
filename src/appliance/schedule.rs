@@ -7,6 +7,18 @@ use uuid::Uuid;
 const INBOX: &str = "/var/lib/tiaris-nest/state/inbox/update-schedule.json";
 const CONTROL: &str = "/var/lib/tiaris-nest/control/update-schedule.json";
 pub const CAPABILITY: &str = "appliance_update_schedule_v1";
+/// The Nest understands `tiaris.nest.update-schedule.v2`: install as soon as
+/// it is idle, or only inside the schedule.
+pub const WHEN_IDLE_CAPABILITY: &str = "appliance_update_when_idle_v1";
+const SCHEMA_V1: &str = "tiaris.nest.update-schedule.v1";
+const SCHEMA_V2: &str = "tiaris.nest.update-schedule.v2";
+/// When an admitted update may install. Schema v1 has no mode: window only.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    WhenIdle,
+    Window,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Schedule {
@@ -33,6 +45,8 @@ pub struct SignedPolicy {
     pub device_incarnation_id: Uuid,
     pub provisioning_session_id: Uuid,
     pub revision: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<Mode>,
     pub schedule: Schedule,
     pub run_now: Option<RunNow>,
     pub signature: String,
@@ -40,8 +54,14 @@ pub struct SignedPolicy {
 impl SignedPolicy {
     fn verify(&self, state: &crate::provisioning::DurableProvisioningState) -> Result<()> {
         ensure!(
-            self.schema == "tiaris.nest.update-schedule.v1"
-                && self.device_id == state.plan.reserved_device_id
+            matches!(
+                (self.schema.as_str(), self.mode),
+                (SCHEMA_V1, None) | (SCHEMA_V2, Some(_))
+            ),
+            "schedule schema and mode disagree"
+        );
+        ensure!(
+            self.device_id == state.plan.reserved_device_id
                 && self.provisioning_session_id == state.session_id
                 && !self.device_incarnation_id.is_nil()
                 && self.revision > 0,
@@ -199,6 +219,7 @@ mod tests {
             device_incarnation_id: Uuid::from_bytes([8; 16]),
             provisioning_session_id: state.session_id,
             revision: 1,
+            mode: None,
             schedule: Schedule {
                 timezone: "UTC".into(),
                 weekdays: vec![0, 2, 6],
@@ -213,11 +234,14 @@ mod tests {
             }),
             signature: String::new(),
         };
-        let mut value = serde_json::to_value(&policy).unwrap();
-        value.as_object_mut().unwrap().remove("signature");
-        let mut bytes = b"TIARIS-NEST-UPDATE-SCHEDULE-V1\n".to_vec();
-        bytes.extend(serde_json::to_vec(&crate::appliance::canonical_json(value)).unwrap());
-        policy.signature = URL_SAFE_NO_PAD.encode(key.sign(&bytes).to_bytes());
+        sign(&mut policy, &key);
+        assert!(
+            !serde_json::to_value(&policy)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("mode")
+        );
         policy.verify(&state).unwrap();
         let mut changed = policy.clone();
         changed.run_now.as_mut().unwrap().system_closure_sha256 = Some("b".repeat(64));
@@ -235,5 +259,37 @@ mod tests {
         changed.device_incarnation_id = Uuid::new_v4();
         assert!(validate_transition(&policy, &changed).is_err());
         assert!(validate_transition(&policy, &policy).is_ok());
+
+        // Schema v2 carries a signed mode; each schema accepts only its shape.
+        let mut idle = policy.clone();
+        idle.schema = "tiaris.nest.update-schedule.v2".into();
+        idle.revision = 2;
+        idle.mode = Some(Mode::WhenIdle);
+        sign(&mut idle, &key);
+        idle.verify(&state).unwrap();
+        assert!(validate_transition(&policy, &idle).is_ok());
+        let mut changed = idle.clone();
+        changed.mode = Some(Mode::Window);
+        assert!(changed.verify(&state).is_err(), "mode is signed");
+        let mut changed = idle.clone();
+        changed.mode = None;
+        sign(&mut changed, &key);
+        assert!(changed.verify(&state).is_err(), "v2 needs a mode");
+        let mut changed = policy.clone();
+        changed.mode = Some(Mode::WhenIdle);
+        sign(&mut changed, &key);
+        assert!(changed.verify(&state).is_err(), "v1 has no mode");
+        let parsed: SignedPolicy =
+            serde_json::from_value(serde_json::to_value(&idle).unwrap()).unwrap();
+        assert_eq!(parsed.mode, Some(Mode::WhenIdle));
+        assert_eq!(serde_json::to_value(Mode::WhenIdle).unwrap(), "when_idle");
+    }
+
+    fn sign(policy: &mut SignedPolicy, key: &ed25519_dalek::SigningKey) {
+        let mut value = serde_json::to_value(&*policy).unwrap();
+        value.as_object_mut().unwrap().remove("signature");
+        let mut bytes = b"TIARIS-NEST-UPDATE-SCHEDULE-V1\n".to_vec();
+        bytes.extend(serde_json::to_vec(&crate::appliance::canonical_json(value)).unwrap());
+        policy.signature = URL_SAFE_NO_PAD.encode(key.sign(&bytes).to_bytes());
     }
 }

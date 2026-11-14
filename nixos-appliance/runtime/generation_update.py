@@ -393,118 +393,200 @@ def free_space(verified):
         raise ValueError('insufficient_esp_space')
 
 
-def still_waiting_for_window():
-    """Reuse protected identity only to defer; opening the window re-verifies all bytes."""
+WINDOW = '/usr/lib/tiaris-nest/tiaris-nest-appliance-update-window'
+PREPARED_SCHEMA = 'tiaris.nest.prepared-appliance-update.v1'
+WAITING_STAGES = ('maintenance_window', 'nest_busy')
+
+
+def prepared_receipt_path(attempt):
+    return CONTROL / 'appliance-updates' / safe_attempt(attempt) / 'prepared-update.json'
+
+
+def waiting_for():
+    """None when the signed policy lets the update start now, else the stage
+    it waits in: the maintenance window, or the Nest being busy."""
+    result = subprocess.run([WINDOW, str(CONTROL / 'install-plan.json')], timeout=30,
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        return None
+    if result.returncode != 75:
+        raise ValueError('invalid update policy')
+    reason = result.stdout.strip()
+    return reason if reason in WAITING_STAGES else 'maintenance_window'
+
+
+def prepared_update():
+    """The prepared receipt of the exact current request on the exact running
+    system, with its imported closure still rooted; else None. Activation
+    checks the imported closure against the signed release again."""
     try:
         body = read(REQUEST, owner=UID, maximum=256 * 1024)
         attempt = safe_attempt(json.loads(body)['attempt_id'])
-        verified = load(CONTROL / 'appliance-updates' / attempt / 'verified-update.json')
+        prepared = load(prepared_receipt_path(attempt))
         source = current()
-        if (verified['schema'] != 'tiaris.nest.verified-appliance-update.v3'
-                or verified['attempt_id'] != attempt
-                or verified['request_sha256'] != hashlib.sha256(body).hexdigest()
-                or verified['source_system_generation'] != source['system_generation']
-                or verified['source_system_toplevel'] != source['system_toplevel']):
-            return False
+        root = ROOTS / ('pending-' + attempt)
+        if (prepared['schema'] != PREPARED_SCHEMA
+                or prepared['attempt_id'] != attempt
+                or prepared['request_sha256'] != hashlib.sha256(body).hexdigest()
+                or prepared['source_system_generation'] != source['system_generation']
+                or prepared['source_system_toplevel'] != source['system_toplevel']
+                or prepared['cache_path'] != str(STAGING / 'private' / attempt / 'cache')
+                or not root.is_symlink() or str(root.resolve()) != prepared['system_toplevel']
+                or not Path(prepared['system_toplevel']).is_dir()
+                or not isinstance(prepared['retire_generations'], list)):
+            return None
     except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return prepared
+
+
+def started(attempt):
+    """Whether this attempt already reported activation. Reports only move
+    forward, so after a crash it never goes back to waiting."""
+    try:
+        status = load(STATUS / 'appliance-update-status.json')
+    except (OSError, ValueError):
         return False
-    policy = subprocess.run(['/usr/lib/tiaris-nest/tiaris-nest-appliance-update-window', str(CONTROL / 'install-plan.json')], timeout=30)
-    if policy.returncode == 75 and read(REQUEST, owner=UID, maximum=256 * 1024) == body:
-        emit_status(verified, 'waiting_window', 'maintenance_window')
-        return True
-    return False
+    return status.get('attempt_id') == attempt and status.get('status') == 'preparing'
+
+
+def request_identity(request):
+    """Status fields of the untrusted request, only to report progress."""
+    release = request['release']
+    return {'attempt_id': safe_attempt(request['attempt_id']), 'target_release': release['release_id'],
+            'source_revision': release['source_revision'], 'system_closure_sha256': release['system_closure']['sha256'],
+            'system_toplevel': release['system_toplevel']}
+
+
+def prepare():
+    """Everything slow happens while the running release keeps serving:
+    verify the signed bundle, import and root its closure, check it against
+    the release and rehearse the database. Nothing here touches boot state."""
+    identity = request_identity(load(REQUEST, owner=UID, maximum=256 * 1024))
+    if not started(identity['attempt_id']):
+        emit_status(identity, 'waiting_window', 'preparing_ahead')
+    # Root verifier revalidates signature, exact inbox inode/archive, complete
+    # NAR graph, live SQLite and signed policy before yielding private cache.
+    cache = Path(run('/usr/bin/tiaris-nest', 'verify-appliance-update', timeout=4 * 3600))
+    attempt = safe_attempt(cache.parent.name)
+    if cache != STAGING / 'private' / attempt / 'cache':
+        raise ValueError('invalid verified update cache path')
+    verified = load(CONTROL / 'appliance-updates' / attempt / 'verified-update.json')
+    attempt = safe_attempt(verified['attempt_id'])
+    if (verified['schema'] != 'tiaris.nest.verified-appliance-update.v3'
+            or cache != STAGING / 'private' / attempt / 'cache'
+            or verified['cache_path'] != str(cache)):
+        raise ValueError('invalid verified update receipt')
+    receipt = dict(verified)
+    try:
+        free_space(verified)
+        run('nix', '--extra-experimental-features', 'nix-command', 'copy', '--from', 'file://' + str(cache),
+            '--option', 'substituters', '', '--option', 'require-sigs', 'true', verified['system_toplevel'], timeout=4 * 3600)
+        # Root the closure first so garbage collection cannot swap a
+        # checked member, then check it before running anything from it.
+        pin(verified['system_toplevel'], 'pending-' + attempt)
+        try:
+            verify_store_closure(cache, verified['system_toplevel'])
+            if verified['database_backup'] != str(cache.parent / 'database-compatibility.sqlite'):
+                raise ValueError('unexpected database compatibility backup')
+            run(verified['system_toplevel'] + '/sw/bin/tiaris-nest', 'verify-appliance-database',
+                '--database', verified['database_backup'], timeout=60)
+            # Retirement waits for activation: an update that never starts
+            # must not cost the boot menu its older generations.
+            retire = rehearse_database(verified, cache) if schema_changes(verified) else []
+        except Exception:
+            (ROOTS / ('pending-' + attempt)).unlink(missing_ok=True)
+            raise
+    except Exception as error:
+        reason = 'rollback_database_incompatible' if isinstance(error, DatabaseIncompatible) else 'closure_import_failed'
+        emit_status(receipt, 'failed', 'verification_failed', reason, current()['system_generation'])
+        cleanup(receipt)
+        raise
+    prepared = {**verified, 'schema': PREPARED_SCHEMA, 'retire_generations': retire,
+                'prepared_at': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
+    save(prepared_receipt_path(attempt), prepared)
+    return prepared
+
+
+def activate(prepared):
+    """The short part: recheck the rooted closure, then arm the candidate as
+    a one-shot boot and restart into it. The source stays the default."""
+    attempt = safe_attempt(prepared['attempt_id'])
+    cache = Path(prepared['cache_path'])
+    receipt = {key: value for key, value in prepared.items() if key not in ('retire_generations', 'prepared_at')}
+    receipt['schema'] = 'tiaris.nest.verified-appliance-update.v3'
+    try:
+        emit_status(receipt, 'preparing', 'activating')
+        verify_store_closure(cache, receipt['system_toplevel'])
+        if shutil.disk_usage('/boot').free < 256 * 1024 ** 2:
+            raise ValueError('insufficient_esp_space')
+        retire_generations(prepared['retire_generations'])
+    except Exception:
+        (ROOTS / ('pending-' + attempt)).unlink(missing_ok=True)
+        emit_status(receipt, 'failed', 'verification_failed', 'closure_import_failed', current()['system_generation'])
+        cleanup(receipt)
+        raise
+    try:
+        source = current()
+        receipt.update(schema='tiaris.nest.system-prepare-intent.v3', source_generation=source['system_generation'],
+            source_toplevel=source['system_toplevel'], source_loader_entry=source['loader_entry'], source_installed=load(INSTALLED), source_known_good=load(KNOWN))
+        save(PREPARE, receipt)
+        # Persistent EFI override protects the source before Nix rewrites loader.conf.
+        set_default(source['loader_entry'])
+        run('nix-env', '--profile', PROFILE, '--set', receipt['system_toplevel'], timeout=300)
+        generation = generation_for(receipt['system_toplevel'])
+        if generation == source['system_generation']:
+            raise ValueError('candidate generation did not advance')
+        receipt.update(candidate_generation=generation, candidate_loader_entry='nixos-generation-' + generation + '.conf')
+        save(PREPARE, receipt)
+        run(receipt['system_toplevel'] + '/bin/switch-to-configuration', 'boot', timeout=300)
+        set_default(source['loader_entry'])
+        verify_boot_entry(receipt['source_loader_entry'], receipt['source_toplevel'])
+        verify_boot_entry(receipt['candidate_loader_entry'], receipt['system_toplevel'])
+        receipt['schema'] = 'tiaris.nest.pending-system-generation.v3'
+        receipt['prepared_boot_id'] = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        receipt['prepared_at'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        save(PENDING, receipt)
+        run('bootctl', 'set-oneshot', receipt['candidate_loader_entry'])
+        if (firmware_entry('LoaderEntryOneShot') != receipt['candidate_loader_entry']
+                or firmware_entry('LoaderEntryDefault') != receipt['source_loader_entry']):
+            raise ValueError('firmware one-shot candidate/source default readback differs')
+        emit_status(receipt, 'rebooting', 'reboot_pending')
+        os.sync()
+        run('systemctl', '--no-block', 'reboot')
+    except Exception:
+        if PENDING.exists():
+            # Once sealed, source boot owns terminal rollback and candidate cleanup.
+            restore_source(receipt)
+            emit_status(receipt, 'failed', 'arming_failed', 'candidate_arm_failed')
+            recover_boot()
+        elif PREPARE.exists():
+            restore_source(receipt)
+            prune_candidate(receipt)
+            emit_status(receipt, 'failed', 'preparation_failed', 'candidate_prepare_failed', current()['system_generation'])
+            cleanup(receipt)
+            remove(PREPARE)
+        else:
+            (ROOTS / ('pending-' + attempt)).unlink(missing_ok=True)
+            emit_status(receipt, 'failed', 'preparation_failed', 'candidate_prepare_failed', current()['system_generation'])
+            cleanup(receipt)
+        raise
 
 
 def stage():
+    """Prepare as soon as an update arrives, wait for what the signed policy
+    names (Update now, the Nest being idle, or the window), then switch."""
     if not REQUEST.exists():
         return
     with maintenance_lock():
         if any(path.exists() for path in (PENDING, PREPARE, COMMIT, ROLLBACK)):
             raise ValueError('pending generation transaction requires recovery')
-        if still_waiting_for_window():
+        prepared = prepared_update() or prepare()
+        waiting = None if started(prepared['attempt_id']) else waiting_for()
+        if waiting:
+            emit_status(prepared, 'waiting_window', waiting)
             return
-        # Root verifier revalidates signature, exact inbox inode/archive, complete
-        # NAR graph, live SQLite and signed policy before yielding private cache.
-        cache = Path(run('/usr/bin/tiaris-nest', 'verify-appliance-update', timeout=4 * 3600))
-        attempt = safe_attempt(cache.parent.name)
-        if cache != STAGING / 'private' / attempt / 'cache':
-            raise ValueError('invalid verified update cache path')
-        verified = load(CONTROL / 'appliance-updates' / attempt / 'verified-update.json')
-        attempt = safe_attempt(verified['attempt_id'])
-        if (verified['schema'] != 'tiaris.nest.verified-appliance-update.v3'
-                or cache != STAGING / 'private' / attempt / 'cache'
-                or verified['cache_path'] != str(cache)):
-            raise ValueError('invalid verified update receipt')
-        receipt = dict(verified)
-        try:
-            policy = subprocess.run(['/usr/lib/tiaris-nest/tiaris-nest-appliance-update-window', str(CONTROL / 'install-plan.json')], timeout=30)
-            if policy.returncode == 75:
-                emit_status(receipt, 'waiting_window', 'maintenance_window')
-                return
-            if policy.returncode:
-                raise ValueError('invalid update policy')
-            free_space(verified)
-            emit_status(receipt, 'preparing', 'importing_closure')
-            run('nix', '--extra-experimental-features', 'nix-command', 'copy', '--from', 'file://' + str(cache),
-                '--option', 'substituters', '', '--option', 'require-sigs', 'true', verified['system_toplevel'], timeout=4 * 3600)
-            # Root the closure first so garbage collection cannot swap a
-            # checked member, then check it before running anything from it.
-            pin(verified['system_toplevel'], 'pending-' + attempt)
-            try:
-                verify_store_closure(cache, verified['system_toplevel'])
-                if verified['database_backup'] != str(cache.parent / 'database-compatibility.sqlite'):
-                    raise ValueError('unexpected database compatibility backup')
-                run(verified['system_toplevel'] + '/sw/bin/tiaris-nest', 'verify-appliance-database',
-                    '--database', verified['database_backup'], timeout=60)
-                if schema_changes(verified):
-                    retire_generations(rehearse_database(verified, cache))
-            except Exception:
-                (ROOTS / ('pending-' + attempt)).unlink(missing_ok=True)
-                raise
-            source = current()
-            receipt.update(schema='tiaris.nest.system-prepare-intent.v3', source_generation=source['system_generation'],
-                source_toplevel=source['system_toplevel'], source_loader_entry=source['loader_entry'], source_installed=load(INSTALLED), source_known_good=load(KNOWN))
-            save(PREPARE, receipt)
-            # Persistent EFI override protects the source before Nix rewrites loader.conf.
-            set_default(source['loader_entry'])
-            run('nix-env', '--profile', PROFILE, '--set', verified['system_toplevel'], timeout=300)
-            generation = generation_for(verified['system_toplevel'])
-            if generation == source['system_generation']:
-                raise ValueError('candidate generation did not advance')
-            receipt.update(candidate_generation=generation, candidate_loader_entry='nixos-generation-' + generation + '.conf')
-            save(PREPARE, receipt)
-            run(verified['system_toplevel'] + '/bin/switch-to-configuration', 'boot', timeout=300)
-            set_default(source['loader_entry'])
-            verify_boot_entry(receipt['source_loader_entry'], receipt['source_toplevel'])
-            verify_boot_entry(receipt['candidate_loader_entry'], receipt['system_toplevel'])
-            receipt['schema'] = 'tiaris.nest.pending-system-generation.v3'
-            receipt['prepared_boot_id'] = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-            receipt['prepared_at'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-            save(PENDING, receipt)
-            run('bootctl', 'set-oneshot', receipt['candidate_loader_entry'])
-            if (firmware_entry('LoaderEntryOneShot') != receipt['candidate_loader_entry']
-                    or firmware_entry('LoaderEntryDefault') != receipt['source_loader_entry']):
-                raise ValueError('firmware one-shot candidate/source default readback differs')
-            emit_status(receipt, 'rebooting', 'reboot_pending')
-            os.sync()
-            run('systemctl', '--no-block', 'reboot')
-        except Exception as error:
-            if PENDING.exists():
-                # Once sealed, source boot owns terminal rollback and candidate cleanup.
-                restore_source(receipt)
-                emit_status(receipt, 'failed', 'arming_failed', 'candidate_arm_failed')
-                recover_boot()
-            elif PREPARE.exists():
-                restore_source(receipt)
-                prune_candidate(receipt)
-                emit_status(receipt, 'failed', 'preparation_failed', 'candidate_prepare_failed', current()['system_generation'])
-                cleanup(receipt)
-                remove(PREPARE)
-            else:
-                reason = 'rollback_database_incompatible' if isinstance(error, DatabaseIncompatible) else 'closure_import_failed'
-                emit_status(receipt, 'failed', 'verification_failed', reason, current()['system_generation'])
-                cleanup(receipt)
-            raise
+        activate(prepared)
 
 
 BOOTSTRAP = '/usr/lib/tiaris-nest/tiaris-nest-bootstrap'
