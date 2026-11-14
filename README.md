@@ -402,11 +402,24 @@ signing step. The private deploy key is available only inside that protected env
 
 ### Managed appliance updates
 
-Signed policy admits a candidate inside its maintenance window or through
-**Update now**. Holds, active builds, maintenance leases and network transactions
-defer activation. The service polls requests every 30 seconds. Root independently
-verifies the bounded archive and the live SQLite migration inventory, imports
-its closure, seals the next generation and selects it for one boot.
+The Nest prepares an update as soon as it arrives, while the running release
+keeps serving: root independently verifies the bounded archive and the live
+SQLite migration inventory, imports and roots its closure, checks it against the
+release and rehearses the database (status `waiting_window`, stage
+`preparing_ahead`). Nothing touches boot state yet. Signed policy then admits
+the switch: **Update now**, the Nest being idle (mode `when_idle`, the default
+from Manage), or the maintenance window (mode `window`, and every v1 policy).
+While it waits the stage is `nest_busy` or `maintenance_window`. At the switch
+root checks the closure again, seals the next generation and selects it for one
+boot. Holds, active builds, maintenance leases and network transactions defer
+it. The service polls requests every 30 seconds.
+
+Idle means nothing kept the Nest busy for 10 minutes: no request from a
+computer in flight or served (boot, netboot, installer, USB stick, cache; health
+probes do not count), no unexpired boot grant, no queued or running build and no
+multicast transfer. The daemon writes this to `/run/tiaris-nest/activity.json`
+every 20 seconds (`src/activity.rs`). A missing or stale report counts as busy
+until the Nest has been up for 30 minutes: then the daemon serves nothing.
 
 The known-good EFI default stays in place until repeated fresh local health
 and permanent-identity Tiaris contact succeed. Failure returns to the known-good

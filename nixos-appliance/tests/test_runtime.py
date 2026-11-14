@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -100,23 +101,143 @@ class MaintenancePolicy(unittest.TestCase):
             changed['run_now'][key] = 'different'
             self.assertFalse(self.check(changed, '2026-09-20T12:00:00+00:00'))
 
-    def test_closed_window_reuses_only_verified_identity_and_open_window_reverifies(self):
-        attempt = '11111111-1111-4111-8111-111111111111'
-        body = state.canonical({'attempt_id': attempt})
-        verified = {'schema': 'tiaris.nest.verified-appliance-update.v3', 'attempt_id': attempt,
-                    'request_sha256': hashlib.sha256(body).hexdigest(),
-                    'source_system_generation': '1', 'source_system_toplevel': '/source'}
-        with patch.object(update, 'read', return_value=body), patch.object(update, 'load', return_value=verified), \
-                patch.object(update, 'current', return_value={'system_generation': '1', 'system_toplevel': '/source'}), \
-                patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=75)) as policy, \
-                patch.object(update, 'emit_status') as status:
-            self.assertTrue(update.still_waiting_for_window())
-            status.assert_called_once_with(verified, 'waiting_window', 'maintenance_window')
-            policy.return_value.returncode = 0
-            self.assertFalse(update.still_waiting_for_window())
-            policy.return_value.returncode = 75
-            verified['request_sha256'] = 'different'
-            self.assertFalse(update.still_waiting_for_window())
+    def test_when_idle_waits_only_for_a_busy_nest_and_run_now_skips_it(self):
+        policy = self.policy([0], '02:00', 60)
+        policy['mode'] = 'when_idle'
+        at = datetime.datetime.fromisoformat('2026-09-23T12:00:00+00:00')
+        self.assertIsNone(window.waiting_for(policy, self.request, at, lambda now: True))
+        self.assertEqual(window.waiting_for(policy, self.request, at, lambda now: False), 'nest_busy')
+        policy['run_now'] = {'attempt_id': 'a', 'release_id': '1.2.3', 'system_closure_sha256': 'digest'}
+        self.assertIsNone(window.waiting_for(policy, self.request, at, lambda now: False))
+        # Schema v1 and mode window keep the schedule, whatever the activity.
+        for mode in (None, 'window'):
+            changed = self.policy([0], '02:00', 60)
+            if mode:
+                changed['mode'] = mode
+            self.assertEqual(window.waiting_for(changed, self.request, at, lambda now: True), 'maintenance_window')
+
+
+class NestActivity(unittest.TestCase):
+    now = datetime.datetime(2026, 9, 23, 12, 0, tzinfo=datetime.timezone.utc)
+
+    def write(self, directory, **fields):
+        report = {'schema': 'tiaris.nest.activity.v1', 'written_at': '2026-09-23T11:59:40Z',
+                  'idle_since': '2026-09-23T11:45:00Z', 'busy': [], **fields}
+        path = Path(directory) / 'activity.json'
+        path.unlink(missing_ok=True)
+        path.write_text(json.dumps(report))
+        path.chmod(0o644)
+        return path
+
+    def idle(self, path, uptime=7200):
+        with patch.object(window, 'UID', os.getuid()):
+            return window.idle(self.now, path, lambda: uptime)
+
+    def test_quiet_for_ten_minutes_is_idle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertTrue(self.idle(self.write(directory)))
+            self.assertFalse(self.idle(self.write(directory, idle_since='2026-09-23T11:51:00Z')))
+            self.assertFalse(self.idle(self.write(directory, idle_since=None, busy=['computers_starting'])))
+            self.assertFalse(self.idle(self.write(directory, busy=['building_apps'])))
+
+    def test_a_missing_stale_or_forged_report_waits_for_uptime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / 'missing.json'
+            self.assertFalse(self.idle(missing, uptime=600))
+            self.assertTrue(self.idle(missing, uptime=3600))
+            stale = self.write(directory, written_at='2026-09-23T11:50:00Z')
+            self.assertFalse(self.idle(stale, uptime=600))
+            self.assertTrue(self.idle(stale, uptime=3600))
+            future = self.write(directory, written_at='2026-09-23T12:05:00Z')
+            self.assertFalse(self.idle(future, uptime=600))
+            unknown = self.write(directory, schema='other')
+            self.assertFalse(self.idle(unknown, uptime=600))
+            writable = self.write(directory)
+            writable.chmod(0o666)
+            self.assertFalse(self.idle(writable, uptime=600))
+
+
+class PrepareThenSwitch(unittest.TestCase):
+    attempt = '11111111-1111-4111-8111-111111111111'
+    toplevel = '/nix/store/0c7c9lr2kqyskkqm1ppa0w1bx8hlh8sm-nixos-system-nest'
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.directory = Path(self.temporary.name)
+        self.body = state.canonical({'attempt_id': self.attempt})
+        self.roots = self.directory / 'roots'
+        self.roots.mkdir()
+        self.system = self.directory / 'system'
+        self.system.mkdir()
+        (self.roots / ('pending-' + self.attempt)).symlink_to(self.system)
+        self.prepared = {'schema': update.PREPARED_SCHEMA, 'attempt_id': self.attempt,
+                         'request_sha256': hashlib.sha256(self.body).hexdigest(),
+                         'source_system_generation': '1', 'source_system_toplevel': '/source',
+                         'cache_path': str(update.STAGING / 'private' / self.attempt / 'cache'),
+                         'system_toplevel': str(self.system), 'retire_generations': []}
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def found(self, prepared=None, source=None):
+        with patch.object(update, 'read', return_value=self.body), \
+                patch.object(update, 'load', return_value=prepared or self.prepared), \
+                patch.object(update, 'ROOTS', self.roots), \
+                patch.object(update, 'current', return_value=source or {'system_generation': '1', 'system_toplevel': '/source'}):
+            return update.prepared_update()
+
+    def test_reuses_only_the_exact_prepared_request_on_the_same_system(self):
+        self.assertEqual(self.found(), self.prepared)
+        for key, value in (('request_sha256', 'different'), ('schema', 'other'), ('attempt_id', 'x'),
+                           ('system_toplevel', '/elsewhere'), ('cache_path', '/tmp/cache')):
+            with self.subTest(key=key):
+                self.assertIsNone(self.found({**self.prepared, key: value}))
+        self.assertIsNone(self.found(source={'system_generation': '2', 'system_toplevel': '/source'}))
+        (self.roots / ('pending-' + self.attempt)).unlink()
+        self.assertIsNone(self.found())
+
+    def run_stage(self, prepared, waiting, started=False):
+        calls = []
+        with patch.object(update, 'REQUEST', self.directory / 'request.json'), \
+                patch.object(update, 'maintenance_lock', return_value=nullcontext()), \
+                patch.object(update, 'PENDING', self.directory / 'none'), \
+                patch.object(update, 'PREPARE', self.directory / 'none'), \
+                patch.object(update, 'COMMIT', self.directory / 'none'), \
+                patch.object(update, 'ROLLBACK', self.directory / 'none'), \
+                patch.object(update, 'prepared_update', return_value=prepared), \
+                patch.object(update, 'prepare', side_effect=lambda: calls.append('prepare') or self.prepared), \
+                patch.object(update, 'waiting_for', side_effect=lambda: calls.append('gate') or waiting), \
+                patch.object(update, 'started', return_value=started), \
+                patch.object(update, 'activate', side_effect=lambda receipt: calls.append('activate')), \
+                patch.object(update, 'emit_status', side_effect=lambda receipt, status, stage, *a: calls.append((status, stage))):
+            (self.directory / 'request.json').write_text('{}')
+            update.stage()
+        return calls
+
+    def test_prepares_before_waiting_and_switches_only_when_allowed(self):
+        self.assertEqual(self.run_stage(None, 'nest_busy'), ['prepare', 'gate', ('waiting_window', 'nest_busy')])
+        self.assertEqual(self.run_stage(self.prepared, 'maintenance_window'), ['gate', ('waiting_window', 'maintenance_window')])
+        self.assertEqual(self.run_stage(self.prepared, None), ['gate', 'activate'])
+        # After a crash during activation the report never goes back to waiting.
+        self.assertEqual(self.run_stage(self.prepared, 'nest_busy', started=True), ['activate'])
+
+    def test_the_gate_names_what_it_waits_for(self):
+        for code, output, expected in ((0, '', None), (75, 'nest_busy\n', 'nest_busy'),
+                                       (75, 'maintenance_window\n', 'maintenance_window'), (75, '', 'maintenance_window')):
+            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=code, stdout=output)):
+                self.assertEqual(update.waiting_for(), expected)
+        with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=1, stdout='')):
+            with self.assertRaisesRegex(ValueError, 'invalid update policy'):
+                update.waiting_for()
+
+    def test_nothing_touches_boot_state_before_the_gate_opens(self):
+        source = (RUNTIME / 'generation_update.py').read_text()
+        prepare = source[source.index('def prepare():'):source.index('def activate(')]
+        for mutation in ('save(PREPARE', 'set_default(', "'--set'", 'switch-to-configuration', 'bootctl', 'reboot', 'retire_generations('):
+            self.assertNotIn(mutation, prepare)
+        stage = source[source.index('def stage():'):source.index('BOOTSTRAP = ')]
+        self.assertLess(stage.index('prepare()'), stage.index('waiting_for()'))
+        self.assertLess(stage.index('waiting_for()'), stage.index('activate(prepared)'))
 
 
 class NetworkPolicy(unittest.TestCase):
@@ -385,10 +506,10 @@ class SchemaRehearsal(unittest.TestCase):
 
     def test_rehearsal_happens_before_anything_is_prepared(self):
         stage = (RUNTIME / 'generation_update.py').read_text()
-        stage = stage[stage.index('def stage():'):]
+        stage = stage[stage.index('def prepare():'):]
         candidate_check = stage.index("'verify-appliance-database'")
-        rehearsal = stage.index('if schema_changes(verified):')
-        retirement = stage.index('retire_generations(rehearse_database(verified, cache))')
+        rehearsal = stage.index('rehearse_database(verified, cache) if schema_changes(verified)')
+        retirement = stage.index("retire_generations(prepared['retire_generations'])")
         prepare = stage.index('save(PREPARE, receipt)')
         self.assertLess(candidate_check, rehearsal)
         self.assertLess(rehearsal, retirement)
@@ -486,7 +607,7 @@ class ReleaseOnlyClosure(unittest.TestCase):
 
     def test_import_checks_the_closure_before_running_it(self):
         source = (RUNTIME / 'generation_update.py').read_text()
-        stage = source[source.index('def stage():'):source.index('def contact_ready(')]
+        stage = source[source.index('def prepare():'):source.index('def contact_ready(')]
         imported = stage.index("'copy', '--from'")
         rooted = stage.index("pin(verified['system_toplevel'], 'pending-' + attempt)")
         checked = stage.index("verify_store_closure(cache, verified['system_toplevel'])")
