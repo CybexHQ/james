@@ -69,6 +69,26 @@ X-Tiaris-Backup-Format: tiaris.nest-state-backup.v1
 -> 200 {"backup_id", "sha256", "size_bytes", "stored_at"}
 ```
 
+Cloudflare, in front of Manage, caps one request body at 100 MB on its Free
+and Pro plans. A backup over 32 MiB therefore goes in chunks when Manage
+says it accepts them (`state_backup_chunked_upload_supported` in the Nest
+configuration, confirmed within the last day):
+
+```text
+POST /v1/agent/nest/state-backups/{backup_id}/upload       {sha256, size_bytes, created_at, format}
+-> 200 {"state": "open"|"stored", "chunk_bytes", "chunk_count", "received_chunks", "next_chunk", "receipt"}
+PUT  /v1/agent/nest/state-backups/{backup_id}/chunks/{n}   (one chunk, X-Tiaris-Chunk-Sha256: <hex>)
+POST /v1/agent/nest/state-backups/{backup_id}/complete     -> 200 the receipt above
+```
+
+Every request is signed and at most one chunk (32 MiB) long; the Nest reads
+one chunk at a time. It keeps no upload state of its own: a failed chunk
+fails the attempt (retried with the back-off below), and the next attempt
+opens the upload again and sends only the chunks Manage is missing. Manage
+removes an upload nobody continued for a day; the next attempt then starts
+over. A Manage that answers the open with 404 or 405 (rolled back) gets the
+single `PUT` in the same attempt; smaller backups always go in one `PUT`.
+
 The id is a UUID. Sending the same backup again gets the same answer; a 409
 (Manage holds other bytes under that id) is not retried. Other failures are
 retried after 1, 2, 4 … minutes, at most six hours apart. A Manage without
@@ -90,7 +110,7 @@ own record.
 | `last_local` | the newest kept backup: `backup_id`, `created_at`, `size_bytes` |
 | `kept` | how many backups the Nest keeps |
 | `last_uploaded` | the newest backup Manage confirmed: `backup_id`, `created_at`, `size_bytes`, `stored_at` |
-| `last_error` | the newest backup's last upload error code (`network`, `http_503`, `conflict`, `too_large`, `damaged`, …) |
+| `last_error` | the newest backup's last upload error code (`network`, `http_503`, `conflict`, `too_large`, `damaged`; for chunks also `upload_expired`, `upload_incomplete`, `upload_digest_mismatch`, `chunk_conflict`, …) |
 | `unsupported_since` | when Manage first answered 404/405 |
 | `last_run` | the last scheduled run: `at`, `outcome` (`backed_up`, `key_missing`, `low_disk`, `failed`) |
 
