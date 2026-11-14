@@ -1675,6 +1675,161 @@ def _workstation_netboot_message(descriptor: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+# The inputs that determine a published workstation runtime. The bundle is
+# built from the pinned Tiaris revision and nixpkgs pin only (byte-identical
+# across Nest revisions), so equal inputs at an equal version reuse the
+# published signed descriptor verbatim: its URL, bytes and signature.
+WORKSTATION_RUNTIME_REUSE_INPUTS = (
+    ("manage_source_revision", "Tiaris source revision"),
+    ("nixpkgs_revision", "nixpkgs revision"),
+    ("manage_source_sha256", "packaged Tiaris source SHA-256"),
+    ("manage_source_size_bytes", "packaged Tiaris source size"),
+)
+
+
+def _published_workstation_netboot(
+    manifest_path: Path, public_der: bytes
+) -> dict[str, Any]:
+    """The signed runtime descriptor of a published release manifest.
+
+    Every signature of that manifest must verify with the release key, so a
+    reused descriptor is always one this authority already published.
+    """
+    manifest = _load_manifest(manifest_path)
+    _version, _identities, signed_messages = _release_manifest_artifact_identities(
+        manifest
+    )
+    _verify_signed_messages(public_der, signed_messages)
+    descriptor = manifest.get("workstation_netboot")
+    if not isinstance(descriptor, dict):
+        _fail("the published release manifest carries no workstation runtime")
+    return descriptor
+
+
+def _workstation_runtime_reuse(
+    published: dict[str, Any], requested: dict[str, object]
+) -> bool:
+    """True when `published` is reused verbatim, False when a newer runtime is built.
+
+    A requested input of None is not compared (it is not known yet); the
+    NixOS closure check still binds the packaged source when signing.
+    """
+    requested_version = _validate_version(str(requested["runtime_version"]))
+    published_version = _validate_version(str(published.get("runtime_version")))
+    order = _compare_semver(requested_version, published_version)
+    if order > 0:
+        return False
+    if order < 0:
+        _fail(
+            f"workstation runtime {requested_version} is older than the published "
+            f"runtime {published_version}"
+        )
+    changed = [
+        f"{label} {published.get(field)} -> {requested[field]}"
+        for field, label in WORKSTATION_RUNTIME_REUSE_INPUTS
+        if requested.get(field) is not None and requested[field] != published.get(field)
+    ]
+    if changed:
+        _fail(
+            f"workstation runtime {requested_version} was already published from "
+            f"different inputs ({'; '.join(changed)}); advance "
+            "deploy/nixos/workstation-netboot-version, or pin the published "
+            "runtime's inputs to reuse it"
+        )
+    return True
+
+
+def _requested_workstation_runtime(arguments: argparse.Namespace) -> dict[str, object]:
+    if not arguments.workstation_netboot_runtime_version:
+        _fail("a reused workstation runtime needs --workstation-netboot-runtime-version")
+    requested: dict[str, object] = {
+        "runtime_version": _validate_version(arguments.workstation_netboot_runtime_version),
+        "manage_source_revision": _validate_revision(
+            arguments.workstation_netboot_manage_revision,
+            "workstation netboot Tiaris revision",
+        ),
+        "nixpkgs_revision": _validate_revision(
+            arguments.workstation_netboot_nixpkgs_revision,
+            "workstation netboot nixpkgs revision",
+        ),
+    }
+    source_sha256 = getattr(arguments, "workstation_netboot_manage_source_sha256", None)
+    source_size = getattr(arguments, "workstation_netboot_manage_source_size_bytes", None)
+    if (source_sha256 is None) != (source_size is None):
+        _fail("workstation netboot Tiaris source digest and size must be supplied together")
+    if source_sha256 is not None:
+        requested["manage_source_sha256"] = _require_sha256(
+            source_sha256, "workstation netboot Tiaris source SHA-256"
+        )
+        requested["manage_source_size_bytes"] = _require_positive_int(
+            source_size,
+            "workstation netboot Tiaris source size",
+            maximum=MANAGE_SOURCE_ARCHIVE_MAX_BYTES,
+        )
+    return requested
+
+
+def _reused_workstation_netboot(
+    arguments: argparse.Namespace, public_der: bytes
+) -> tuple[dict[str, Any], bytes]:
+    """The unsigned published descriptor and its signature, for verbatim reuse."""
+    if (
+        arguments.workstation_netboot_bundle
+        or arguments.workstation_netboot_tree
+        or arguments.workstation_netboot_url
+    ):
+        _fail(
+            "--reuse-workstation-netboot replaces the workstation netboot bundle, "
+            "tree and URL; do not supply them"
+        )
+    published = _published_workstation_netboot(
+        Path(arguments.reuse_workstation_netboot), public_der
+    )
+    if not _workstation_runtime_reuse(published, _requested_workstation_runtime(arguments)):
+        _fail(
+            "the requested workstation runtime version is newer than the published "
+            "one; build and sign the new runtime instead of reusing it"
+        )
+    unsigned = {key: value for key, value in published.items() if key != "signature"}
+    signature = _canonical_base64(
+        published.get("signature"), "workstation netboot signature", expected_bytes=64
+    )
+    return unsigned, signature
+
+
+def _manifest_public_der(private_key: Path) -> bytes:
+    private_fd = _open_regular(private_key, "private key", private=True)
+    try:
+        private_identity = _private_key_identity(private_fd)
+        public_der = _public_der(private_fd)
+        _require_stable_private_key(private_fd, private_identity)
+    finally:
+        os.close(private_fd)
+    return public_der
+
+
+def _workstation_runtime_plan_command(arguments: argparse.Namespace) -> None:
+    """Print whether a release reuses the published runtime (key=value lines)."""
+    public_der = ED25519_PUBLIC_DER_PREFIX + _trusted_public_key(
+        arguments.trusted_public_key
+    )
+    published = _published_workstation_netboot(
+        Path(arguments.previous_manifest), public_der
+    )
+    if not _workstation_runtime_reuse(published, _requested_workstation_runtime(arguments)):
+        print("reuse=false")
+        return
+    bundle_name = urlsplit(str(published["url"])).path.rsplit("/", 1)[-1]
+    print(
+        "reuse=true\n"
+        f"runtime_version={published['runtime_version']}\n"
+        f"url={published['url']}\n"
+        f"sha256={published['sha256']}\n"
+        f"size_bytes={published['size_bytes']}\n"
+        f"bundle_name={bundle_name}"
+    )
+
+
 def _workstation_netboot_inputs(
     arguments: argparse.Namespace,
 ) -> tuple[Path, Path, str, str, str, str, str | None, int | None] | None:
@@ -2050,9 +2205,19 @@ def _manifest_command(arguments: argparse.Namespace) -> None:
         and appliance_release_inputs is None
     ):
         _fail("network installer ISO templates require an appliance package snapshot")
-    workstation_netboot_inputs = _workstation_netboot_inputs(arguments)
     workstation_netboot: dict[str, Any] | None = None
+    reused_workstation_signature: bytes | None = None
     protected_inputs = [(artifact, "artifact"), (private_key, "private key")]
+    if getattr(arguments, "reuse_workstation_netboot", None):
+        workstation_netboot_inputs = None
+        workstation_netboot, reused_workstation_signature = _reused_workstation_netboot(
+            arguments, _manifest_public_der(private_key)
+        )
+        protected_inputs.append(
+            (Path(arguments.reuse_workstation_netboot), "reused workstation runtime manifest")
+        )
+    else:
+        workstation_netboot_inputs = _workstation_netboot_inputs(arguments)
     if installer_iso_template_inputs is not None:
         installer_iso_template = _inspect_installer_iso_template(
             installer_iso_template_inputs, version
@@ -2121,6 +2286,13 @@ def _manifest_command(arguments: argparse.Namespace) -> None:
                 _workstation_netboot_message(workstation_netboot),
             )
             _require_stable_private_key(private_fd, private_identity)
+            # Ed25519 is deterministic: the same key over the same published
+            # descriptor reproduces its signature byte for byte.
+            if (
+                reused_workstation_signature is not None
+                and workstation_netboot_signature != reused_workstation_signature
+            ):
+                _fail("the reused workstation runtime was not signed by this release key")
     finally:
         os.close(private_fd)
     _self_verify(public_der, signature, message)
@@ -3152,9 +3324,16 @@ def _enforce_runtime_identity_transition(
         or _canonical_json_body(current_runtime)
         != _canonical_json_body(previous_runtime)
     ):
+        changed = sorted(
+            field
+            for field in set(previous_runtime) | set(current_runtime)
+            if previous_runtime.get(field) != current_runtime.get(field)
+        )
         _fail(
             "workstation runtime descriptor identity changed at equal SemVer "
-            "precedence; bump the workstation runtime version"
+            f"precedence (changed: {', '.join(changed) or 'runtime_version'}); "
+            "bump the workstation runtime version, or reuse the published "
+            "descriptor with manifest --reuse-workstation-netboot"
         )
     previous_sha256 = _require_sha256(
         previous_runtime.get("sha256"),
@@ -3559,11 +3738,38 @@ def _verify_nixos_source_identity(closure, workstation):
         _fail("closure embedded Tiaris source must exactly match the workstation descriptor")
 
 
+def _verify_reused_workstation_netboot(
+    workstation: dict[str, Any],
+    published_manifest: Path,
+    public_der: bytes,
+    bundle: str | None,
+) -> None:
+    """A reused runtime is exactly the published descriptor; its bytes were
+    verified when it was first published. A supplied bundle is hashed again."""
+    published = _published_workstation_netboot(published_manifest, public_der)
+    if _canonical_json_body(published) != _canonical_json_body(workstation):
+        _fail("the reused workstation runtime differs from its published descriptor")
+    if bundle:
+        bundle_path = Path(bundle)
+        if bundle_path.name != urlsplit(str(workstation["url"])).path.rsplit("/", 1)[-1]:
+            _fail("the reused workstation runtime bundle is not named by its descriptor URL")
+        digest, size = _inspect_artifact(
+            bundle_path, "workstation netboot bundle", maximum_bytes=WORKSTATION_NETBOOT_MAX_BYTES
+        )
+        if digest != workstation["sha256"] or size != workstation["size_bytes"]:
+            _fail("the reused workstation runtime bundle differs from its signed descriptor")
+
+
 def _verify_nixos_command(arguments, manifest):
     version, _identities, messages = _release_manifest_artifact_identities(manifest)
     public_der = ED25519_PUBLIC_DER_PREFIX + _trusted_public_key(arguments.trusted_public_key)
     _verify_signed_messages(public_der, messages)
-    if not arguments.appliance_package_snapshot or not arguments.workstation_netboot_bundle or not arguments.workstation_netboot_tree:
+    reused_from = getattr(arguments, "workstation_netboot_reused_from", None)
+    if reused_from and arguments.workstation_netboot_tree:
+        _fail("a reused workstation runtime is verified against its published manifest, not a tree")
+    if not arguments.appliance_package_snapshot or not (
+        reused_from or (arguments.workstation_netboot_bundle and arguments.workstation_netboot_tree)
+    ):
         _fail("NixOS verification requires the complete closure, ISO and workstation artifacts")
     artifact = Path(arguments.artifact)
     if artifact.name != "tiaris-nest-x86_64-linux":
@@ -3597,7 +3803,11 @@ def _verify_nixos_command(arguments, manifest):
     closure = system_closure.verify_archive(closure_path, release, arguments.trusted_public_key, SimpleNamespace(**globals()))
     workstation = manifest["workstation_netboot"]
     _verify_nixos_source_identity(closure, workstation)
-    workstation_args = argparse.Namespace(
+    if reused_from:
+        _verify_reused_workstation_netboot(
+            workstation, Path(reused_from), public_der, arguments.workstation_netboot_bundle
+        )
+    workstation_args = None if reused_from else argparse.Namespace(
         workstation_netboot_bundle=arguments.workstation_netboot_bundle,
         workstation_netboot_tree=arguments.workstation_netboot_tree,
         workstation_netboot_url=workstation["url"],
@@ -3607,12 +3817,20 @@ def _verify_nixos_command(arguments, manifest):
         workstation_netboot_manage_source_sha256=workstation["manage_source_sha256"],
         workstation_netboot_manage_source_size_bytes=workstation["manage_source_size_bytes"],
     )
-    inspected_workstation, _ = _inspect_workstation_netboot(_workstation_netboot_inputs(workstation_args))
-    if inspected_workstation != {key: value for key, value in workstation.items() if key != "signature"}:
-        _fail("workstation artifact bytes differ from their signed descriptor")
+    if workstation_args is not None:
+        inspected_workstation, _ = _inspect_workstation_netboot(_workstation_netboot_inputs(workstation_args))
+        if inspected_workstation != {key: value for key, value in workstation.items() if key != "signature"}:
+            _fail("workstation artifact bytes differ from their signed descriptor")
     if arguments.appliance_package_snapshot_metadata:
         build_args = argparse.Namespace(
-            **vars(workstation_args),
+            workstation_netboot_bundle=arguments.workstation_netboot_bundle,
+            workstation_netboot_tree=arguments.workstation_netboot_tree,
+            workstation_netboot_url=workstation["url"],
+            workstation_netboot_runtime_version=workstation["runtime_version"],
+            workstation_netboot_manage_revision=workstation["manage_source_revision"],
+            workstation_netboot_nixpkgs_revision=workstation["nixpkgs_revision"],
+            workstation_netboot_manage_source_sha256=workstation["manage_source_sha256"],
+            workstation_netboot_manage_source_size_bytes=workstation["manage_source_size_bytes"],
             appliance_package_snapshot=arguments.appliance_package_snapshot,
             appliance_package_snapshot_metadata=arguments.appliance_package_snapshot_metadata,
             appliance_package_snapshot_url=release["system_closure"]["url"],
@@ -4111,11 +4329,40 @@ def _parser() -> argparse.ArgumentParser:
         help="size of the exact packaged Tiaris source archive",
     )
     manifest.add_argument(
+        "--reuse-workstation-netboot",
+        metavar="PUBLISHED_MANIFEST",
+        help=(
+            "signed release manifest whose workstation runtime this release reuses "
+            "verbatim (same version, Tiaris revision, nixpkgs and source archive); "
+            "replaces the workstation netboot bundle, tree and URL"
+        ),
+    )
+    manifest.add_argument(
         "--published-at",
         required=True,
         help="fixed UTC RFC3339 timestamp with second precision",
     )
     manifest.set_defaults(handler=_manifest_command)
+
+    runtime_plan = commands.add_parser(
+        "workstation-runtime-plan",
+        allow_abbrev=False,
+        help=(
+            "decide whether a release reuses the published workstation runtime "
+            "(reuse=true) or builds a newer one (reuse=false); refuses changed "
+            "inputs at the published version"
+        ),
+    )
+    runtime_plan.add_argument(
+        "--previous-manifest", required=True, help="the latest published signed release manifest"
+    )
+    runtime_plan.add_argument("--trusted-public-key", required=True)
+    runtime_plan.add_argument("--workstation-netboot-runtime-version", required=True)
+    runtime_plan.add_argument("--workstation-netboot-manage-revision", required=True)
+    runtime_plan.add_argument("--workstation-netboot-nixpkgs-revision", required=True)
+    runtime_plan.add_argument("--workstation-netboot-manage-source-sha256")
+    runtime_plan.add_argument("--workstation-netboot-manage-source-size-bytes", type=int)
+    runtime_plan.set_defaults(handler=_workstation_runtime_plan_command)
 
     verify_components = commands.add_parser(
         "verify-component-compatibility",
@@ -4318,6 +4565,14 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument(
         "--workstation-netboot-tree",
         help="exact extracted workstation netboot component tree",
+    )
+    verify.add_argument(
+        "--workstation-netboot-reused-from",
+        metavar="PUBLISHED_MANIFEST",
+        help=(
+            "NixOS releases: the signed manifest whose runtime descriptor this "
+            "release reuses; replaces --workstation-netboot-tree"
+        ),
     )
     verify.add_argument(
         "--trusted-public-key",
