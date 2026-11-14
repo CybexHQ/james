@@ -509,7 +509,7 @@ async fn upload_chunked(
             &format!("{base}/chunks/{index}"),
             "application/octet-stream",
             content,
-            Some(("X-Tiaris-Chunk-Sha256", &digest)),
+            Some(("X-Tiaris-Chunk-Sha256", digest.as_str())),
         )
         .await?;
         match response.status() {
