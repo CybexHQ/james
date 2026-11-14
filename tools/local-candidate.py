@@ -12,7 +12,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import time
 import zipfile
 
 SCHEMA = 'tiaris.nest.local-candidate.v1'
@@ -139,12 +138,18 @@ def select(root, expected, attempt):
         return False
 
 
-def prune(root):
+# Each candidate is several GB; a release reuses only its own run's (John, 2026-11-14: keep the newest two).
+KEEP_CANDIDATES = 2
+
+
+def prune(root, keep=None):
+    """Remove candidates older than the newest KEEP_CANDIDATES, except the run `keep` (this run: a retry reuses it)."""
     with locked(root):
-        for path in root.iterdir():
-            if not re.fullmatch(r'[1-9][0-9]*', path.name) or path.is_symlink() or not path.is_dir():
-                continue
-            if path.stat().st_mtime > time.time() - 30 * 86400:
+        runs = [path for path in root.iterdir()
+                if re.fullmatch(r'[1-9][0-9]*', path.name) and not path.is_symlink() and path.is_dir()]
+        runs.sort(key=lambda path: path.stat().st_mtime)
+        for path in runs[:-KEEP_CANDIDATES]:
+            if path.name == keep:
                 continue
             value = json.loads((path / RECEIPT).read_text())
             receipt(path / RECEIPT, identity(path.name, value['source'], value['tag']))
@@ -189,7 +194,7 @@ def main():
     parser.add_argument('--artifact-digest')
     args = parser.parse_args()
     if args.action == 'prune':
-        prune(args.root)
+        prune(args.root, args.run)
         return
     expected = identity(args.run, args.source, args.tag)
     if args.action == 'select':
