@@ -298,13 +298,16 @@ pub async fn plan(
     Ok(plan)
 }
 
+/// Called at each named migration boundary (tests only).
+type CrashHook = Box<dyn Fn(&'static str)>;
+
 thread_local! {
-    static CRASH_POINT: RefCell<Option<Box<dyn Fn(&'static str)>>> = const { RefCell::new(None) };
+    static CRASH_POINT: RefCell<Option<CrashHook>> = const { RefCell::new(None) };
 }
 
 /// Tests take a crash image (a copy of the database files) at each boundary.
 #[cfg(test)]
-pub(crate) fn set_crash_point(hook: Option<Box<dyn Fn(&'static str)>>) {
+pub(crate) fn set_crash_point(hook: Option<CrashHook>) {
     CRASH_POINT.with(|cell| *cell.borrow_mut() = hook);
 }
 
