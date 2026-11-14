@@ -155,6 +155,25 @@ The file stays on `main` because two readers still use it there:
   `workstation_netboot.runtime_version` and `workstation_netboot.manage_source_revision`.
   Use those, or the file at the release's tag or branch, never the copy on `main`.
 
+### Reusing an unchanged workstation runtime
+
+A Nest release does not need a new runtime version when its runtime is unchanged.
+The runtime bundle is built only from the pinned Tiaris revision and the nixpkgs
+pin: three development builds of one Tiaris revision with different Nest revisions
+gave byte-identical bundles. What used to differ was the signed descriptor, whose
+URL names the release that carries the bundle.
+
+When the release pins the published runtime's version, Tiaris revision and nixpkgs
+pin, it carries that runtime's signed descriptor verbatim
+(`tools/nest-release.py manifest --reuse-workstation-netboot PUBLISHED_MANIFEST`):
+same URL (still the release that first published it), bytes and signature. Nothing
+is rebuilt, and computers on that runtime see no update. `workstation-runtime-plan`
+answers `reuse=true` or `reuse=false` for a build; `release.yml` uses it, downloads
+the published bytes instead of building them and attaches the same bytes to the
+new release as well. A different revision, nixpkgs pin or packaged source at the
+published version is refused with the changed input named: advance
+`deploy/nixos/workstation-netboot-version`, or pin the published runtime's inputs.
+
 ## Release policy fast-v1 (owner, 2026-11-02)
 
 Production Nest releases must take roughly 10–30 minutes from tag to promotion.
