@@ -130,6 +130,8 @@ struct PeerContract {
     supports_scheduling: bool,
     accepts_uploads: bool,
     accepts_usb_installer: bool,
+    #[serde(default)]
+    accepts_when_idle: bool,
     runtime_epoch: bool,
     report_protocol: u32,
 }
@@ -186,6 +188,10 @@ struct AgentNestConfigResponse {
     >,
     #[serde(default)]
     update_schedule_supported: bool,
+    /// Manage accepts `appliance_update_when_idle_v1`; older Manage rejects
+    /// a report that lists an unknown capability.
+    #[serde(default)]
+    update_when_idle_supported: bool,
     #[serde(default)]
     update_schedule: Option<Value>,
     #[serde(default)]
@@ -1022,6 +1028,7 @@ async fn sync_nest_foundation(
                 supports_scheduling: desired.update_schedule_supported,
                 accepts_uploads: desired.software_cache_upload_supported,
                 accepts_usb_installer: desired.usb_installer_supported,
+                accepts_when_idle: desired.update_when_idle_supported,
                 runtime_epoch: desired
                     .compatibility
                     .as_ref()
@@ -1055,6 +1062,7 @@ async fn sync_nest_foundation(
         PeerReportSupport {
             uploads: peer.accepts_uploads,
             usb_installer: peer.accepts_usb_installer,
+            when_idle: peer.accepts_when_idle,
         },
         peer.report_protocol,
     )
@@ -1085,6 +1093,7 @@ fn peer_contract_after_failed_fetch(
         supports_scheduling: false,
         accepts_uploads: false,
         accepts_usb_installer: false,
+        accepts_when_idle: false,
         runtime_epoch: false,
         report_protocol: TIARIS_COMPONENT_PROTOCOL_VERSION,
     })
@@ -2802,6 +2811,7 @@ fn signed_request_with_digest(
 struct PeerReportSupport {
     uploads: bool,
     usb_installer: bool,
+    when_idle: bool,
 }
 
 fn nest_capabilities(
@@ -2814,11 +2824,22 @@ fn nest_capabilities(
         peer_supports_scheduling,
         crate::appliance::nixos::is_nixos(),
     );
+    push_when_idle_capability(
+        &mut capabilities,
+        peer_supports_scheduling && peer_support.when_idle,
+    );
     // The stick protocol always answers; the capability tells Manage that
     // this Nest also has a stick image to download.
     let usb_image = peer_support.usb_installer && crate::usb_installer::image_available();
     push_peer_capabilities(&mut capabilities, peer_support.uploads, usb_image);
     capabilities
+}
+
+/// Only next to the schedule capability, which needs the same Manage support.
+fn push_when_idle_capability(capabilities: &mut Vec<&'static str>, supported: bool) {
+    if supported && capabilities.contains(&crate::appliance::schedule::CAPABILITY) {
+        capabilities.push(crate::appliance::schedule::WHEN_IDLE_CAPABILITY);
+    }
 }
 
 fn push_peer_capabilities(capabilities: &mut Vec<&'static str>, uploads: bool, usb_image: bool) {
@@ -2856,7 +2877,6 @@ fn nest_capabilities_for_mode(
         capabilities.push(CAPABILITY_APPLIANCE_UPDATE_QUALIFICATION_TRANSPORT_V1);
         if peer_supports_scheduling {
             capabilities.push(crate::appliance::schedule::CAPABILITY);
-            capabilities.push(crate::appliance::schedule::WHEN_IDLE_CAPABILITY);
         }
     }
     if crate::netboot_multicast::binary_available(config) {
@@ -3705,6 +3725,7 @@ mod tests {
             supports_scheduling: true,
             accepts_uploads: true,
             accepts_usb_installer: true,
+            accepts_when_idle: true,
             runtime_epoch: true,
             report_protocol: TIARIS_DETECTED_COMMITS_PROTOCOL_VERSION,
         };
@@ -5012,6 +5033,7 @@ mod tests {
         let support = |desired: &AgentNestConfigResponse| PeerReportSupport {
             uploads: desired.software_cache_upload_supported,
             usb_installer: desired.usb_installer_supported,
+            when_idle: false,
         };
         let legacy = nest_capabilities(&config, false, support(&older));
         let modern = nest_capabilities(&config, false, support(&newer));
@@ -5054,6 +5076,7 @@ mod tests {
             PeerReportSupport {
                 uploads: false,
                 usb_installer: true,
+                when_idle: false,
             },
         );
         assert!(!reported.contains(&crate::usb_installer::CAPABILITY));
@@ -5069,18 +5092,44 @@ mod tests {
         let modern = nest_capabilities_for_mode(&config, newer.update_schedule_supported, true);
         assert!(!legacy.contains(&crate::appliance::schedule::CAPABILITY));
         assert!(modern.contains(&crate::appliance::schedule::CAPABILITY));
-        assert!(!legacy.contains(&crate::appliance::schedule::WHEN_IDLE_CAPABILITY));
-        assert!(modern.contains(&crate::appliance::schedule::WHEN_IDLE_CAPABILITY));
         assert_eq!(
             modern
                 .into_iter()
-                .filter(|cap| {
-                    *cap != crate::appliance::schedule::CAPABILITY
-                        && *cap != crate::appliance::schedule::WHEN_IDLE_CAPABILITY
-                })
+                .filter(|cap| *cap != crate::appliance::schedule::CAPABILITY)
                 .collect::<Vec<_>>(),
             legacy
         );
+    }
+
+    #[test]
+    fn when_idle_capability_requires_manage_support_and_scheduling() {
+        // A Manage that does not know `appliance_update_when_idle_v1` rejects
+        // the whole report, so Nest advertises it only when Manage says so.
+        let older: AgentNestConfigResponse =
+            serde_json::from_value(json!({"update_schedule_supported":true})).unwrap();
+        let newer: AgentNestConfigResponse = serde_json::from_value(
+            json!({"update_schedule_supported":true,"update_when_idle_supported":true}),
+        )
+        .unwrap();
+        assert!(!older.update_when_idle_supported && newer.update_when_idle_supported);
+        let idle = crate::appliance::schedule::WHEN_IDLE_CAPABILITY;
+        let scheduling = || vec![crate::appliance::schedule::CAPABILITY];
+        for (supported, base, expected) in [
+            (false, scheduling(), false),
+            (true, scheduling(), true),
+            (true, vec![], false),
+        ] {
+            let mut capabilities = base;
+            push_when_idle_capability(&mut capabilities, supported);
+            assert_eq!(capabilities.contains(&idle), expected);
+        }
+        // Contracts persisted before this field existed read as unsupported.
+        let stored: PeerContract = serde_json::from_value(json!({
+            "supports_scheduling": true, "accepts_uploads": true,
+            "accepts_usb_installer": true, "runtime_epoch": true, "report_protocol": 1
+        }))
+        .unwrap();
+        assert!(!stored.accepts_when_idle);
     }
 
     #[test]
