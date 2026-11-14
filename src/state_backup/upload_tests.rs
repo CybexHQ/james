@@ -22,6 +22,9 @@ use super::*;
 
 const SECRET: [u8; 32] = [7u8; 32];
 
+/// Declared digest and size, and the chunks received by index.
+type OpenUpload = (String, u64, BTreeMap<u64, Vec<u8>>);
+
 #[derive(Default)]
 struct FakeManage {
     /// Statuses answered before storing, in order.
@@ -31,7 +34,7 @@ struct FakeManage {
     /// Bytes per chunk of the chunked upload; 0: Manage has no such routes.
     chunk_bytes: u64,
     /// Open chunked uploads: declared digest and size, chunks received.
-    uploads: BTreeMap<String, (String, u64, BTreeMap<u64, Vec<u8>>)>,
+    uploads: BTreeMap<String, OpenUpload>,
     /// A chunk answered once with 503 before it is kept.
     fail_chunk: Option<u64>,
     /// A chunk answered 200 once but not kept.
