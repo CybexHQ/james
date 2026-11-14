@@ -1,6 +1,7 @@
 //! The upload client against a fake Manage: the signed contract, a repeated
 //! and a conflicting upload, an older Manage without the route, retries with
-//! back-off, and the `local_health` facts.
+//! back-off, the chunked upload (resume after a failed chunk, the single
+//! request to a Manage without chunks), and the `local_health` facts.
 use std::{
     fs,
     sync::{Arc, Mutex},
@@ -21,18 +22,31 @@ use super::*;
 
 const SECRET: [u8; 32] = [7u8; 32];
 
+/// Declared digest and size, and the chunks received by index.
+type OpenUpload = (String, u64, BTreeMap<u64, Vec<u8>>);
+
 #[derive(Default)]
 struct FakeManage {
     /// Statuses answered before storing, in order.
     fail_with: Vec<u16>,
     stored: BTreeMap<String, String>,
     requests: Vec<Seen>,
+    /// Bytes per chunk of the chunked upload; 0: Manage has no such routes.
+    chunk_bytes: u64,
+    /// Open chunked uploads: declared digest and size, chunks received.
+    uploads: BTreeMap<String, OpenUpload>,
+    /// A chunk answered once with 503 before it is kept.
+    fail_chunk: Option<u64>,
+    /// A chunk answered 200 once but not kept.
+    lose_chunk: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
 struct Seen {
+    method: String,
     path: String,
     sha256: Option<String>,
+    chunk_sha256: Option<String>,
     created_at: Option<String>,
     format: Option<String>,
     content_type: Option<String>,
@@ -86,8 +100,10 @@ async fn serve(state: Arc<Mutex<FakeManage>>) -> String {
                 let mut server = state.lock().unwrap();
                 let path = uri.path().to_string();
                 server.requests.push(Seen {
+                    method: method.to_string(),
                     path: path.clone(),
                     sha256: header(&headers, "x-tiaris-backup-sha256"),
+                    chunk_sha256: header(&headers, "x-tiaris-chunk-sha256"),
                     created_at: header(&headers, "x-tiaris-backup-created-at"),
                     format: header(&headers, "x-tiaris-backup-format"),
                     content_type: header(&headers, "content-type"),
@@ -101,6 +117,12 @@ async fn serve(state: Arc<Mutex<FakeManage>>) -> String {
                 let Some(id) = path.strip_prefix("/v1/agent/nest/state-backups/") else {
                     return (AxumStatus::NOT_FOUND, String::new());
                 };
+                if let Some((id, step)) = id.split_once('/') {
+                    if server.chunk_bytes == 0 {
+                        return (AxumStatus::NOT_FOUND, String::new());
+                    }
+                    return chunked(&mut server, id, step, &headers, &body);
+                }
                 let digest = hex::encode(Sha256::digest(&body));
                 if method != AxumMethod::PUT
                     || header(&headers, "x-tiaris-backup-sha256").as_deref()
@@ -123,6 +145,103 @@ async fn serve(state: Arc<Mutex<FakeManage>>) -> String {
             }
         },
     );
+    serve_app(app).await
+}
+
+fn receipt_json(id: &str, digest: &str, size: usize) -> String {
+    json!({
+        "backup_id": id, "sha256": digest, "size_bytes": size,
+        "stored_at": "2026-11-14T03:00:05Z",
+    })
+    .to_string()
+}
+
+/// The chunked upload's open, chunk and finalize requests.
+fn chunked(
+    server: &mut FakeManage,
+    id: &str,
+    step: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> (AxumStatus, String) {
+    let chunk_bytes = server.chunk_bytes;
+    let status = |server: &FakeManage| {
+        let (_, size, chunks) = &server.uploads[id];
+        let count = size.div_ceil(chunk_bytes);
+        let received: Vec<u64> = chunks.keys().copied().collect();
+        let next = (0..count).find(|index| !chunks.contains_key(index));
+        json!({
+            "backup_id": id, "state": "open", "chunk_bytes": chunk_bytes, "chunk_count": count,
+            "received_chunks": received, "next_chunk": next, "expires_at": "2026-11-15T04:00:00Z",
+            "receipt": null,
+        })
+        .to_string()
+    };
+    if step == "upload" {
+        let declared: Value = serde_json::from_slice(body).unwrap();
+        let digest = declared["sha256"].as_str().unwrap().to_owned();
+        if let Some(stored) = server.stored.get(id) {
+            if stored != &digest {
+                return (AxumStatus::CONFLICT, String::new());
+            }
+            let size = declared["size_bytes"].as_u64().unwrap() as usize;
+            let receipt: Value = serde_json::from_str(&receipt_json(id, &digest, size)).unwrap();
+            let answer = json!({
+                "backup_id": id, "state": "stored", "chunk_bytes": chunk_bytes, "chunk_count": 0,
+                "received_chunks": [], "next_chunk": null, "expires_at": null, "receipt": receipt,
+            });
+            return (AxumStatus::OK, answer.to_string());
+        }
+        server.uploads.entry(id.to_owned()).or_insert((
+            digest,
+            declared["size_bytes"].as_u64().unwrap(),
+            BTreeMap::new(),
+        ));
+        return (AxumStatus::OK, status(server));
+    }
+    if let Some(index) = step.strip_prefix("chunks/") {
+        let index: u64 = index.parse().unwrap();
+        if !server.uploads.contains_key(id)
+            || header(headers, "x-tiaris-chunk-sha256").as_deref()
+                != Some(hex::encode(Sha256::digest(body)).as_str())
+        {
+            return (AxumStatus::BAD_REQUEST, String::new());
+        }
+        if server.fail_chunk == Some(index) {
+            server.fail_chunk = None;
+            return (AxumStatus::SERVICE_UNAVAILABLE, String::new());
+        }
+        let lose = server.lose_chunk.take_if(|lost| *lost == index).is_some();
+        let chunks = &mut server.uploads.get_mut(id).unwrap().2;
+        if chunks.get(&index).is_some_and(|held| held != body) {
+            return (AxumStatus::CONFLICT, String::new());
+        }
+        if !lose {
+            chunks.insert(index, body.to_vec());
+        }
+        return (AxumStatus::OK, status(server));
+    }
+    let Some((digest, size, chunks)) = server.uploads.get(id).cloned() else {
+        return match server.stored.get(id) {
+            Some(digest) => (AxumStatus::OK, receipt_json(id, digest, 0)),
+            None => (AxumStatus::NOT_FOUND, String::new()),
+        };
+    };
+    let whole: Vec<u8> = chunks.values().flatten().copied().collect();
+    if chunks.len() as u64 != size.div_ceil(chunk_bytes) {
+        let code = json!({"diagnostic_code": "backup_upload_incomplete"}).to_string();
+        return (AxumStatus::CONFLICT, code);
+    }
+    if hex::encode(Sha256::digest(&whole)) != digest {
+        server.uploads.remove(id);
+        return (AxumStatus::BAD_REQUEST, String::new());
+    }
+    server.uploads.remove(id);
+    server.stored.insert(id.to_owned(), digest.clone());
+    (AxumStatus::OK, receipt_json(id, &digest, whole.len()))
+}
+
+async fn serve_app(app: Router) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -166,9 +285,37 @@ async fn fixture() -> Fixture {
             config,
             backup_dir,
             data_dir,
+            single_request_max_bytes: SINGLE_REQUEST_MAX_BYTES,
         },
         server,
     }
+}
+
+/// A Manage that takes chunks of `chunk_bytes` (and advertised them in its
+/// last configuration), for backups over `single_request_max_bytes`.
+async fn chunked_fixture(chunk_bytes: u64, single_request_max_bytes: u64) -> Fixture {
+    let mut fixture = fixture().await;
+    fixture.server.lock().unwrap().chunk_bytes = chunk_bytes;
+    fixture.uploader.single_request_max_bytes = single_request_max_bytes;
+    advertise_chunks(&fixture, true);
+    fixture
+}
+
+fn advertise_chunks(fixture: &Fixture, supported: bool) {
+    fs::write(
+        fixture.uploader.data_dir.join("manage-state.json"),
+        json!({
+            "device_id": "nest-1", "private_key_b64": STANDARD.encode(SECRET),
+            "last_peer_contract": {
+                "supports_scheduling": true, "accepts_uploads": false,
+                "accepts_usb_installer": true, "runtime_epoch": true, "report_protocol": 1,
+                "accepts_state_backup_chunks": supported,
+            },
+            "last_peer_contract_at": Utc::now().timestamp(),
+        })
+        .to_string(),
+    )
+    .unwrap();
 }
 
 /// Writes a kept backup as the scheduled run leaves it.
@@ -457,4 +604,202 @@ fn health_names_a_missing_key_and_reports_bounded_facts() {
     // Nothing secret or unbounded: no digest, fingerprint or path.
     let text = pending.fact.to_string();
     assert!(!text.contains(&file.sha256) && !text.contains(&file.recipient_fingerprint));
+}
+
+const BIG: &[u8] = b"ten bytes!";
+
+fn steps(fixture: &Fixture, file: &BackupFile) -> Vec<String> {
+    let prefix = format!("/v1/agent/nest/state-backups/{}", file.backup_id);
+    requests(fixture)
+        .iter()
+        .map(|seen| {
+            let rest = seen.path.strip_prefix(&prefix).unwrap_or(&seen.path);
+            format!("{} {}", seen.method, rest.trim_start_matches('/'))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_large_backup_goes_in_signed_chunks_with_their_own_digests() {
+    let fixture = chunked_fixture(4, 4).await;
+    let file = kept(&fixture, "2026-11-14T03:00:00+00:00", BIG);
+    let uploads = pass(&fixture.uploader, at("2026-11-14T04:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(uploads.backups[&file.backup_id].status, Status::Uploaded);
+    assert_eq!(
+        steps(&fixture, &file),
+        [
+            "POST upload",
+            "PUT chunks/0",
+            "PUT chunks/1",
+            "PUT chunks/2",
+            "POST complete"
+        ]
+    );
+    let seen = requests(&fixture);
+    assert!(seen.iter().all(|request| request.signed), "{seen:?}");
+    // Each chunk is at most one chunk long and carries its own digest.
+    let chunks: Vec<&Seen> = seen
+        .iter()
+        .filter(|seen| seen.path.contains("/chunks/"))
+        .collect();
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|seen| seen.body.as_slice())
+            .collect::<Vec<_>>(),
+        [&b"ten "[..], b"byte", b"s!"]
+    );
+    for chunk in &chunks {
+        assert_eq!(
+            chunk.chunk_sha256.as_deref(),
+            Some(hex::encode(Sha256::digest(&chunk.body)).as_str())
+        );
+    }
+    let declaration: Value = serde_json::from_slice(&seen[0].body).unwrap();
+    assert_eq!(declaration["sha256"], file.sha256);
+    assert_eq!(declaration["size_bytes"], BIG.len());
+    assert_eq!(declaration["created_at"], "2026-11-14T03:00:00+00:00");
+    assert_eq!(declaration["format"], FORMAT);
+    assert_eq!(
+        fixture.server.lock().unwrap().stored.get(&file.backup_id),
+        Some(&file.sha256)
+    );
+    assert_eq!(uploads.last_uploaded.unwrap().size_bytes, BIG.len() as u64);
+}
+
+#[tokio::test]
+async fn a_failed_chunk_resumes_from_the_first_missing_chunk() {
+    let fixture = chunked_fixture(4, 4).await;
+    let file = kept(&fixture, "2026-11-14T03:00:00+00:00", BIG);
+    fixture.server.lock().unwrap().fail_chunk = Some(1);
+    let now = at("2026-11-14T04:00:00Z");
+    let uploads = pass(&fixture.uploader, now).await.unwrap();
+    let attempt = &uploads.backups[&file.backup_id];
+    assert_eq!(attempt.status, Status::Failing);
+    assert_eq!(attempt.last_error.as_deref(), Some("http_503"));
+    assert_eq!(
+        steps(&fixture, &file),
+        ["POST upload", "PUT chunks/0", "PUT chunks/1"]
+    );
+    // After the back-off: only the chunks Manage is missing go again.
+    let later = pass(&fixture.uploader, now + chrono::Duration::minutes(2))
+        .await
+        .unwrap();
+    assert_eq!(later.backups[&file.backup_id].status, Status::Uploaded);
+    assert_eq!(
+        steps(&fixture, &file)[3..],
+        [
+            "POST upload",
+            "PUT chunks/1",
+            "PUT chunks/2",
+            "POST complete"
+        ]
+    );
+    assert_eq!(
+        fixture.server.lock().unwrap().stored.get(&file.backup_id),
+        Some(&file.sha256)
+    );
+}
+
+#[tokio::test]
+async fn without_manages_chunk_capability_a_large_backup_goes_in_one_request() {
+    // Manage has the routes but did not advertise them: one PUT.
+    let fixture = chunked_fixture(4, 4).await;
+    advertise_chunks(&fixture, false);
+    let file = kept(&fixture, "2026-11-14T03:00:00+00:00", BIG);
+    let uploads = pass(&fixture.uploader, at("2026-11-14T04:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(uploads.backups[&file.backup_id].status, Status::Uploaded);
+    assert_eq!(steps(&fixture, &file), ["PUT "]);
+    assert_eq!(requests(&fixture)[0].body, BIG);
+
+    // Advertised, but this Manage (rolled back) answers 404: the same attempt
+    // falls back to the single PUT.
+    let fixture = chunked_fixture(0, 4).await;
+    let file = kept(&fixture, "2026-11-14T03:00:00+00:00", BIG);
+    let uploads = pass(&fixture.uploader, at("2026-11-14T04:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(uploads.backups[&file.backup_id].status, Status::Uploaded);
+    assert_eq!(uploads.unsupported_since, None);
+    assert_eq!(steps(&fixture, &file), ["POST upload", "PUT "]);
+
+    // A small backup goes in one request even to a Manage with chunks.
+    let fixture = chunked_fixture(4, 64).await;
+    let file = kept(&fixture, "2026-11-14T03:00:00+00:00", BIG);
+    pass(&fixture.uploader, at("2026-11-14T04:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(steps(&fixture, &file), ["PUT "]);
+}
+
+#[tokio::test]
+async fn a_chunked_upload_of_a_stored_backup_takes_the_first_receipt() {
+    let fixture = chunked_fixture(4, 4).await;
+    let file = kept(&fixture, "2026-11-14T03:00:00+00:00", BIG);
+    fixture
+        .server
+        .lock()
+        .unwrap()
+        .stored
+        .insert(file.backup_id.clone(), file.sha256.clone());
+    let uploads = pass(&fixture.uploader, at("2026-11-14T04:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(uploads.backups[&file.backup_id].status, Status::Uploaded);
+    assert_eq!(steps(&fixture, &file), ["POST upload"]);
+
+    // Other bytes under that id: a conflict, never retried.
+    let fixture = chunked_fixture(4, 4).await;
+    let file = kept(&fixture, "2026-11-14T03:00:00+00:00", BIG);
+    fixture
+        .server
+        .lock()
+        .unwrap()
+        .stored
+        .insert(file.backup_id.clone(), "00".repeat(32));
+    let uploads = pass(&fixture.uploader, at("2026-11-14T04:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(uploads.backups[&file.backup_id].status, Status::Conflict);
+}
+
+#[tokio::test]
+async fn an_upload_open_from_an_earlier_run_sends_only_the_missing_chunks() {
+    let fixture = chunked_fixture(4, 4).await;
+    let file = kept(&fixture, "2026-11-14T03:00:00+00:00", BIG);
+    // The Nest restarted after two chunks: it kept no record, Manage did.
+    {
+        let mut server = fixture.server.lock().unwrap();
+        let chunks = BTreeMap::from([(0, b"ten ".to_vec()), (1, b"byte".to_vec())]);
+        server
+            .uploads
+            .insert(file.backup_id.clone(), (file.sha256.clone(), 10, chunks));
+    }
+    let now = at("2026-11-14T04:00:00Z");
+    let uploads = pass(&fixture.uploader, now).await.unwrap();
+    // Only chunk 2 is sent, then the upload is finalized.
+    assert_eq!(uploads.backups[&file.backup_id].status, Status::Uploaded);
+    assert_eq!(
+        steps(&fixture, &file),
+        ["POST upload", "PUT chunks/2", "POST complete"]
+    );
+}
+
+#[tokio::test]
+async fn an_incomplete_finalize_is_retried_and_not_a_conflict() {
+    let fixture = chunked_fixture(4, 4).await;
+    let file = kept(&fixture, "2026-11-14T03:00:00+00:00", BIG);
+    // Manage answers chunk 1 but does not keep it: finalize says incomplete.
+    fixture.server.lock().unwrap().lose_chunk = Some(1);
+    let uploads = pass(&fixture.uploader, at("2026-11-14T04:00:00Z"))
+        .await
+        .unwrap();
+    let attempt = &uploads.backups[&file.backup_id];
+    assert_eq!(attempt.status, Status::Failing);
+    assert_eq!(attempt.last_error.as_deref(), Some("upload_incomplete"));
+    assert!(attempt.next_attempt_at.is_some());
 }

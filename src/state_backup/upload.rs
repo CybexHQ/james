@@ -16,6 +16,22 @@
 //! asked again once a day and the backups stay on the Nest. The record of
 //! what was sent is `UPLOADS` in the daemon's data directory; `health` turns
 //! it into `local_health` facts.
+//!
+//! Cloudflare caps one request body at 100 MB on its Free and Pro plans. A
+//! backup larger than [`SINGLE_REQUEST_MAX_BYTES`] therefore goes in chunks
+//! when Manage advertises it (`state_backup_chunked_upload_supported`):
+//!
+//! ```text
+//! POST .../state-backups/{backup_id}/upload          {sha256, size_bytes, created_at, format}
+//!   -> {state: open|stored, chunk_bytes, chunk_count, received_chunks, next_chunk, receipt}
+//! PUT  .../state-backups/{backup_id}/chunks/{index}  (X-Tiaris-Chunk-Sha256; one chunk)
+//! POST .../state-backups/{backup_id}/complete        -> the receipt
+//! ```
+//!
+//! Each is a signed request of at most one chunk. The Nest keeps no upload
+//! state: a failed chunk fails the attempt, and the next one opens the upload
+//! again and sends only the chunks Manage is missing. A Manage that answers
+//! the open with 404/405 gets the single `PUT`.
 use std::{
     collections::BTreeMap,
     io::Read,
@@ -36,6 +52,10 @@ use crate::{config::AppConfig, state_files};
 
 pub const FORMAT: &str = "tiaris.nest-state-backup.v1";
 pub const MAX_UPLOAD_BYTES: u64 = 256 * 1024 * 1024;
+/// Backups up to this size go in one request (well below the edge's cap).
+pub const SINGLE_REQUEST_MAX_BYTES: u64 = 32 * 1024 * 1024;
+/// The largest chunk Manage may ask for: one chunk is held in memory.
+const MAX_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
 /// The upload record, in the daemon's data directory (STATE `agent/`).
 pub const UPLOADS: &str = "state-backup-uploads.json";
 const UPLOADS_SCHEMA: &str = "tiaris.nest.state-backup-uploads";
@@ -52,6 +72,7 @@ pub const FAILING_AFTER_ATTEMPTS: u32 = 3;
 const MIN_ASSUMED_BYTES_PER_SECOND: u64 = 128 * 1024;
 const REQUEST_SLACK: Duration = Duration::from_secs(120);
 const MAX_RECEIPT_BYTES: usize = 16 * 1024;
+const MAX_UPLOAD_STATUS_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -114,6 +135,9 @@ pub struct Uploader {
     pub config: AppConfig,
     pub backup_dir: PathBuf,
     pub data_dir: PathBuf,
+    /// Larger backups go in chunks to a Manage that accepts them
+    /// ([`SINGLE_REQUEST_MAX_BYTES`]).
+    pub single_request_max_bytes: u64,
 }
 
 pub fn spawn(state: crate::AppState) {
@@ -121,6 +145,7 @@ pub fn spawn(state: crate::AppState) {
         config: (*state.config).clone(),
         backup_dir: PathBuf::from(schedule::BACKUP_DIR),
         data_dir: state.config.paths.data_dir.clone(),
+        single_request_max_bytes: SINGLE_REQUEST_MAX_BYTES,
     };
     tokio::spawn(async move {
         tokio::time::sleep(START_DELAY).await;
@@ -271,21 +296,40 @@ async fn upload(uploader: &Uploader, file: &BackupFile) -> Result<Receipt, Failu
     if sha256 != file.sha256 || size != file.size_bytes {
         return Err(Failure::Damaged);
     }
-    let body = tokio::fs::File::open(&path)
+    if size > uploader.single_request_max_bytes
+        && crate::manage::state_backup_chunks_supported(&uploader.config)
+    {
+        match upload_chunked(uploader, file, &path, &sha256, size).await {
+            // Manage rolled back to a release without chunks: one request.
+            Err(Failure::Unsupported) => {}
+            outcome => return outcome,
+        }
+    }
+    upload_single(uploader, file, &path, &sha256, size).await
+}
+
+async fn upload_single(
+    uploader: &Uploader,
+    file: &BackupFile,
+    path: &Path,
+    sha256: &str,
+    size: u64,
+) -> Result<Receipt, Failure> {
+    let body = tokio::fs::File::open(path)
         .await
         .map_err(|_| Failure::Retry("local_read".into()))?;
     let request = crate::manage::signed_streaming_request(
         &uploader.config,
         Method::PUT,
         &format!("/v1/agent/nest/state-backups/{}", file.backup_id),
-        &sha256,
+        sha256,
     )
     .map_err(|_| Failure::Retry("not_enrolled".into()))?;
     let response = request
-        .timeout(REQUEST_SLACK + Duration::from_secs(size / MIN_ASSUMED_BYTES_PER_SECOND))
+        .timeout(request_timeout(size))
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::CONTENT_LENGTH, size)
-        .header("X-Tiaris-Backup-Sha256", &sha256)
+        .header("X-Tiaris-Backup-Sha256", sha256)
         .header("X-Tiaris-Backup-Created-At", &file.created_at)
         .header("X-Tiaris-Backup-Format", FORMAT)
         .body(reqwest::Body::wrap_stream(
@@ -306,11 +350,22 @@ async fn upload(uploader: &Uploader, file: &BackupFile) -> Result<Receipt, Failu
         }
         _ => {}
     }
-    let receipt: Receipt = read_receipt(response)
-        .await
-        .ok_or_else(|| Failure::Retry("receipt_invalid".into()))?;
+    checked_receipt(read_receipt(response).await, file, sha256, size)
+}
+
+fn request_timeout(bytes: u64) -> Duration {
+    REQUEST_SLACK + Duration::from_secs(bytes / MIN_ASSUMED_BYTES_PER_SECOND)
+}
+
+fn checked_receipt(
+    receipt: Option<Receipt>,
+    file: &BackupFile,
+    sha256: &str,
+    size: u64,
+) -> Result<Receipt, Failure> {
+    let receipt = receipt.ok_or_else(|| Failure::Retry("receipt_invalid".into()))?;
     if receipt.backup_id != file.backup_id
-        || !receipt.sha256.eq_ignore_ascii_case(&sha256)
+        || !receipt.sha256.eq_ignore_ascii_case(sha256)
         || receipt.size_bytes != size
     {
         return Err(Failure::Retry("receipt_mismatch".into()));
@@ -318,14 +373,180 @@ async fn upload(uploader: &Uploader, file: &BackupFile) -> Result<Receipt, Failu
     Ok(receipt)
 }
 
-async fn read_receipt(mut response: reqwest::Response) -> Option<Receipt> {
+/// Manage's answer to opening a chunked upload and to each chunk.
+#[derive(Debug, Deserialize)]
+struct UploadStatus {
+    state: String,
+    #[serde(default)]
+    chunk_bytes: u64,
+    #[serde(default)]
+    chunk_count: u64,
+    #[serde(default)]
+    received_chunks: Vec<u64>,
+    #[serde(default)]
+    receipt: Option<Receipt>,
+}
+
+/// A signed request of `body` (at most one chunk), sent once.
+async fn send(
+    uploader: &Uploader,
+    method: Method,
+    path: &str,
+    content_type: &'static str,
+    body: Vec<u8>,
+    extra: Option<(&'static str, &str)>,
+) -> Result<reqwest::Response, Failure> {
+    let digest = hex::encode(Sha256::digest(&body));
+    let mut request =
+        crate::manage::signed_streaming_request(&uploader.config, method, path, &digest)
+            .map_err(|_| Failure::Retry("not_enrolled".into()))?
+            .timeout(request_timeout(body.len() as u64))
+            .header(header::CONTENT_TYPE, content_type);
+    if let Some((name, value)) = extra {
+        request = request.header(name, value);
+    }
+    request
+        .body(body)
+        .send()
+        .await
+        .map_err(|_| Failure::Retry("network".into()))
+}
+
+async fn read_bounded(mut response: reqwest::Response, limit: usize) -> Option<Vec<u8>> {
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.ok()? {
-        if body.len() + chunk.len() > MAX_RECEIPT_BYTES {
+        if body.len() + chunk.len() > limit {
             return None;
         }
         body.extend_from_slice(&chunk);
     }
+    Some(body)
+}
+
+/// The `diagnostic_code` of a Manage error answer.
+async fn diagnostic_code(response: reqwest::Response) -> Option<String> {
+    let body = read_bounded(response, MAX_RECEIPT_BYTES).await?;
+    let value: Value = serde_json::from_slice(&body).ok()?;
+    value
+        .get("diagnostic_code")
+        .and_then(Value::as_str)
+        .filter(|code| code.len() <= 64)
+        .map(str::to_owned)
+}
+
+async fn upload_status(response: reqwest::Response) -> Result<UploadStatus, Failure> {
+    read_bounded(response, MAX_UPLOAD_STATUS_BYTES)
+        .await
+        .and_then(|body| serde_json::from_slice(&body).ok())
+        .ok_or_else(|| Failure::Retry("upload_status_invalid".into()))
+}
+
+/// Bytes `offset..offset + len` of the backup; one chunk in memory.
+fn read_chunk(path: &Path, offset: u64, len: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = super::open_nofollow(path).map_err(std::io::Error::other)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut buffer = vec![0u8; usize::try_from(len).map_err(std::io::Error::other)?];
+    file.read_exact(&mut buffer)?;
+    Ok(buffer)
+}
+
+/// Sends the backup in chunks, from the first one Manage is missing.
+async fn upload_chunked(
+    uploader: &Uploader,
+    file: &BackupFile,
+    path: &Path,
+    sha256: &str,
+    size: u64,
+) -> Result<Receipt, Failure> {
+    let base = format!("/v1/agent/nest/state-backups/{}", file.backup_id);
+    let declaration = serde_json::to_vec(&json!({
+        "sha256": sha256, "size_bytes": size, "created_at": file.created_at, "format": FORMAT,
+    }))
+    .map_err(|_| Failure::Retry("local_read".into()))?;
+    let response = send(
+        uploader,
+        Method::POST,
+        &format!("{base}/upload"),
+        "application/json",
+        declaration,
+        None,
+    )
+    .await?;
+    match response.status() {
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED => return Err(Failure::Unsupported),
+        StatusCode::CONFLICT => return Err(Failure::Conflict),
+        StatusCode::PAYLOAD_TOO_LARGE => return Err(Failure::TooLarge),
+        status if !status.is_success() => {
+            return Err(Failure::Retry(format!("http_{}", status.as_u16())));
+        }
+        _ => {}
+    }
+    let opened = upload_status(response).await?;
+    if opened.state == "stored" {
+        return checked_receipt(opened.receipt, file, sha256, size);
+    }
+    let chunk_bytes = opened.chunk_bytes;
+    if opened.state != "open"
+        || chunk_bytes == 0
+        || chunk_bytes > MAX_CHUNK_BYTES
+        || opened.chunk_count != size.div_ceil(chunk_bytes)
+    {
+        return Err(Failure::Retry("upload_status_invalid".into()));
+    }
+    for index in (0..opened.chunk_count).filter(|index| !opened.received_chunks.contains(index)) {
+        let offset = index * chunk_bytes;
+        let len = chunk_bytes.min(size - offset);
+        let source = path.to_path_buf();
+        let content = tokio::task::spawn_blocking(move || read_chunk(&source, offset, len))
+            .await
+            .map_err(|_| Failure::Retry("local_read".into()))?
+            .map_err(|_| Failure::Retry("local_read".into()))?;
+        let digest = hex::encode(Sha256::digest(&content));
+        let response = send(
+            uploader,
+            Method::PUT,
+            &format!("{base}/chunks/{index}"),
+            "application/octet-stream",
+            content,
+            Some(("X-Tiaris-Chunk-Sha256", digest.as_str())),
+        )
+        .await?;
+        match response.status() {
+            status if status.is_success() => {}
+            // The upload expired or was finalized meanwhile: open it again.
+            StatusCode::NOT_FOUND => return Err(Failure::Retry("upload_expired".into())),
+            StatusCode::CONFLICT => return Err(Failure::Retry("chunk_conflict".into())),
+            status => return Err(Failure::Retry(format!("http_{}", status.as_u16()))),
+        }
+    }
+    let response = send(
+        uploader,
+        Method::POST,
+        &format!("{base}/complete"),
+        "application/octet-stream",
+        Vec::new(),
+        None,
+    )
+    .await?;
+    match response.status() {
+        status if status.is_success() => {}
+        StatusCode::NOT_FOUND => return Err(Failure::Retry("upload_expired".into())),
+        StatusCode::CONFLICT => {
+            return Err(match diagnostic_code(response).await.as_deref() {
+                Some("backup_upload_incomplete") => Failure::Retry("upload_incomplete".into()),
+                _ => Failure::Conflict,
+            });
+        }
+        // The chunks did not add up (the file changed underway): start over.
+        StatusCode::BAD_REQUEST => return Err(Failure::Retry("upload_digest_mismatch".into())),
+        status => return Err(Failure::Retry(format!("http_{}", status.as_u16()))),
+    }
+    checked_receipt(read_receipt(response).await, file, sha256, size)
+}
+
+async fn read_receipt(response: reqwest::Response) -> Option<Receipt> {
+    let body = read_bounded(response, MAX_RECEIPT_BYTES).await?;
     let receipt: Receipt = serde_json::from_slice(&body).ok()?;
     (receipt.stored_at.len() <= 64 && DateTime::parse_from_rfc3339(&receipt.stored_at).is_ok())
         .then_some(receipt)
