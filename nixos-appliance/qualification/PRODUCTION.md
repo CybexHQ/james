@@ -35,8 +35,15 @@ below map to the existing `CYBEX_JAMES_*` GitHub variables; the runner retains
   The fixture then answers DNS and terminates TLS for both names, binds the
   predecessor to the former and the candidate to the current origin, and
   `switch_public_origin()` restarts its Manage with `TIARIS_PUBLIC_API_URL`
-  moved to the current origin (database kept). The qualification driver and
-  workflow do not call it yet: their origin checks still expect one origin.
+  moved to the current origin (database kept). With such a template, set
+  `TIARIS_NEST_QUALIFICATION_MANAGE_ORIGIN` to the candidate's (current)
+  origin: `run-production-qualification.py` installs the predecessor at the
+  former origin, calls `switch_public_origin()` and then `select_release('candidate')`,
+  and passes `--candidate-manage-origin` to `run-isolated-update.py`, which
+  refuses the update unless the fixture's Manage already serves that origin.
+  Only the update and rollback phases run; the candidate's fresh install is
+  qualified by an ordinary single-origin run. Release acceptance admits a
+  transition between origins only as former -> current.
 - `TIARIS_NEST_QUALIFICATION_STATE_ROOT`: an existing root-owned 0700 directory.
 - `TIARIS_NEST_QUALIFICATION_SUBNET`: an unused private IPv4 /24 with its gateway.
 - `TIARIS_NEST_NIXOS_QUALIFICATION_PREDECESSOR_DIR` and

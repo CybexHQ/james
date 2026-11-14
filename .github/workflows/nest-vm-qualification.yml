@@ -319,14 +319,23 @@ jobs:
           rollback="$evidence_dir/tiaris-nest-nixos-rollback-qualification.json"
           predecessor_identity="$evidence_dir/tiaris-nest-qualified-predecessor.json"
           predecessor_manifest="$evidence_dir/tiaris-nest-qualified-predecessor-release.json"
-          for file in "$evidence" "$update_evidence" "$rollback" "$predecessor_identity" "$predecessor_manifest"; do
+          # A production-rename template (transition_manage_origin) qualifies
+          # only the in-place update and rollback; a single-origin run of the
+          # same candidate supplies its fresh-install evidence.
+          transition="$(sudo -n python3 -B -c 'import sys,json; sys.path.insert(0,"nixos-appliance/qualification"); import isolated_manage_config as c; print(c.transition(json.loads(c.read_file(sys.argv[1]))) or "")' \
+            "$TIARIS_NEST_QUALIFICATION_CONFIG")"
+          required=("$update_evidence" "$rollback" "$predecessor_identity" "$predecessor_manifest")
+          [ -n "$transition" ] || required+=("$evidence")
+          for file in "${required[@]}"; do
             test -f "$file" && test ! -L "$file"
           done
           test "$(jq -er '.manifest_sha256' "$predecessor_identity")" = \
             "$(sha256sum "$predecessor_manifest" | awk '{print $1}')"
-          python3 -B nixos-appliance/qualification/release_acceptance.py \
-            --phase prepublication --manifest dist/tiaris-nest-release.json \
-            --evidence "$evidence" --source "$TIARIS_NEST_RELEASE_SOURCE"
+          if [ -z "$transition" ]; then
+            python3 -B nixos-appliance/qualification/release_acceptance.py \
+              --phase prepublication --manifest dist/tiaris-nest-release.json \
+              --evidence "$evidence" --source "$TIARIS_NEST_RELEASE_SOURCE"
+          fi
           python3 -B nixos-appliance/qualification/release_acceptance.py \
             --phase update --manifest dist/tiaris-nest-release.json \
             --evidence "$update_evidence" --source "$TIARIS_NEST_RELEASE_SOURCE" \

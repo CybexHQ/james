@@ -280,7 +280,10 @@ def qualify(directory, candidate, trusted_key, source=None, expected_sha=None):
         installer_iso_template_personalization_offset=iso['personalization_offset'],
         provisioning_public_key=iso['provisioning_public_keys'], installer_iso_template_package_delivery=release.appliance_v3.DELIVERY,
         expected_manage_origin=iso['manage_origin'], installer_iso_template_metadata=None), manifest['version'], require_build_metadata=False)
-    inspected = release._inspect_installer_iso_template(inputs, manifest['version'], base_os_version=iso['base_os_version'])
+    # A setup ISO may declare a longer envelope validity (signed in its
+    # descriptor); inspect with that declaration as release verification does.
+    inspected = release._inspect_installer_iso_template(inputs, manifest['version'], base_os_version=iso['base_os_version'],
+        envelope_max_validity_hours=iso.get(release.appliance_v3.TEMPLATE_ENVELOPE_VALIDITY))
     if inspected != {k: v for k, v in iso.items() if k != 'signature'}:
         raise ValueError('Predecessor ISO immutable identity changed')
     return identity(directory, manifest, schema='tiaris.nest.nixos-qualification-predecessor.v1')

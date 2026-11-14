@@ -27,6 +27,16 @@ def isolated_transport(state, bind, manifest_digest, filename):
     return transport
 
 
+def require_public_origin(state, scope, candidate_origin):
+    """Only a fixture whose Manage already moved to the candidate's origin may
+    admit the production-rename update."""
+    if scope.get('schema') != SCOPE['ISOLATED_SCHEMA']:
+        raise ValueError('A Management origin transition requires the isolated fixture')
+    origins = fixture_request(state, 'public_origin')
+    if origins != {'manage_origin': scope['manage_origin'], 'public_manage_origin': candidate_origin}:
+        raise ValueError('Fixture Manage has not moved to the candidate origin')
+
+
 def execute(args):
     # This is the first operation, before admission, listening sockets, or QEMU.
     state = private_state(args.state_dir)
@@ -39,8 +49,10 @@ def execute(args):
     previous, previous_body = release_predecessor.checked_json(args.predecessor_manifest)
     evidence, evidence_body = release_predecessor.checked_json(args.predecessor_evidence)
     source = subprocess.check_output(['git', '-C', str(HELPERS.parents[1]), 'rev-parse', 'HEAD'], text=True).strip()
+    candidate_origin = getattr(args, 'candidate_manage_origin', None)
     transition_lifecycle.validate_inputs(candidate, hashlib.sha256(candidate_body).hexdigest(), previous,
-        hashlib.sha256(previous_body).hexdigest(), evidence, scope['manage_origin'], source)
+        hashlib.sha256(previous_body).hexdigest(), evidence, scope['manage_origin'], source,
+        candidate_origin=candidate_origin)
     artifact = candidate['appliance_release_v1']['system_closure']
     filename = urlsplit(artifact['url']).path.rsplit('/', 1)[-1]
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]*', filename):
@@ -59,6 +71,8 @@ def execute(args):
     port_file = state / ('closure-' + uuid.uuid4().hex + '.port')
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if candidate_origin is not None:
+            require_public_origin(state, scope, candidate_origin)
         if scope.get('schema') == SCOPE['ISOLATED_SCHEMA']:
             transport = isolated_transport(state, bind, hashlib.sha256(candidate_body).hexdigest(), filename)
         else:
@@ -95,6 +109,8 @@ def main():
     for name in ('state-dir', 'fixture', 'predecessor-evidence', 'predecessor-manifest', 'candidate-manifest', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--rollback', action='store_true')
+    parser.add_argument('--candidate-manage-origin',
+        help='production rename only: the candidate is built for this current origin')
     parser.add_argument('--exercise-admission', action='store_true',
         help='exercise bounded Q07 schedule, hold, lease, and Update now policy')
     execute(parser.parse_args())

@@ -159,6 +159,27 @@ class NixosQualificationTests(unittest.TestCase):
             self.assertEqual(inputs['nest_repository'], str(ROOT))
             self.assertEqual((state / 'release-inputs.json').stat().st_mode & 0o777, 0o600)
 
+    def test_isolated_config_origins_bind_one_origin_or_the_production_rename(self):
+        fixture = module('nixos_fixture_origins', HELPERS / 'isolated_fixture.py')
+        with patch.dict(sys.modules, {'release_predecessor': P, 'isolated_fixture': fixture}), \
+                patch.object(sys, 'path', [str(HELPERS), *sys.path]):
+            runner = module('nixos_runner_origins', HELPERS / 'run-production-qualification.py')
+            former, current = 'https://manage.cybex.net', 'https://manage.tiaris.com'
+            single = {'manage_origin': current}
+            self.assertEqual(runner.qualification_origins(current, single), (current, current))
+            with self.assertRaisesRegex(ValueError, 'exact artifact origin'):
+                runner.qualification_origins(former, single)
+            rename = {'manage_origin': former, 'transition_manage_origin': current}
+            self.assertEqual(runner.qualification_origins(current, rename), (former, current))
+            with self.assertRaisesRegex(ValueError, 'current origin'):
+                runner.qualification_origins(former, rename)
+            with self.assertRaises(ValueError):  # never back to the former name
+                runner.qualification_origins(former, {'manage_origin': current, 'transition_manage_origin': former})
+            args = SimpleNamespace(manage_origin=current)
+            self.assertEqual(runner.fixture_origin(args), current)
+            args.fixture_origin = former
+            self.assertEqual(runner.fixture_origin(args), former)
+
     def test_partial_tap_setup_releases_only_the_nonpersistent_owned_fd(self):
         scope = {'owner': 'owner'}
         with patch.object(S, 'verify', return_value=(scope, {})), \
@@ -307,6 +328,28 @@ class NixosQualificationTests(unittest.TestCase):
             # for an authenticated current-authority NixOS upgrade predecessor.
             with self.assertRaises((ValueError, P.release.ReleaseError)):
                 P.qualify(directory, '0.2.5', auth['public_key'])
+
+    def test_predecessor_iso_is_inspected_with_its_declared_envelope_validity(self):
+        validity = P.release.appliance_v3.TEMPLATE_ENVELOPE_VALIDITY
+        iso = {'url': 'https://github.com/CybexHQ/james/releases/download/v0.2.99/t.iso',
+               'personalization_offset': 1, 'provisioning_public_keys': ['k'], 'manage_origin': 'https://manage.cybex.net',
+               'base_os_version': '26.05', validity: 744, 'signature': 's'}
+        manifest = {'version': '0.2.99', 'installer_iso_template_v3': iso,
+                    'appliance_release_v1': {'schema': P.release.appliance_v3.SCHEMA}, 'workstation_netboot': {}}
+        seen = {}
+        def inspect(_inputs, _version, **kwargs):
+            seen.update(kwargs)
+            return {k: v for k, v in iso.items() if k != 'signature'} if kwargs.get('envelope_max_validity_hours') == 744 \
+                else {**{k: v for k, v in iso.items() if k != 'signature'}, validity: None}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(P, 'verify_pair', return_value=manifest), patch.object(P, 'stage_media'), \
+                patch.object(P.release.system_closure, 'verify_archive'), \
+                patch.object(P.release, '_verify_nixos_source_identity'), \
+                patch.object(P.release, '_installer_iso_template_inputs', return_value=object()), \
+                patch.object(P.release, '_inspect_installer_iso_template', side_effect=inspect), \
+                patch.object(P, 'identity', return_value={'release_id': '0.2.99'}):
+            self.assertEqual(P.qualify(Path(temporary), '0.2.122', 'key'), {'release_id': '0.2.99'})
+        self.assertEqual(seen['envelope_max_validity_hours'], 744)
 
     def test_missing_historical_publication_is_not_first_release(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(P, 'github', return_value=[]):

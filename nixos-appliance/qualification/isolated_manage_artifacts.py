@@ -279,7 +279,12 @@ class Coordinator:
         if manifest.get('version') is None:
             raise ValueError('verified release lacks a version')
         iso = manifest.get('installer_iso_template_v3')
-        if not isinstance(iso, dict) or iso.get('manage_origin') != self.scope['manage_origin']:
+        expected_origin = self.scope['manage_origin']
+        if role == 'candidate' and self.scope.get('manage_alias_hosts'):
+            # A production-rename fixture's candidate is built for the name its
+            # Manage moves to (the one alias); the predecessor keeps the former.
+            expected_origin = 'https://' + self.scope['manage_alias_hosts'][0]
+        if not isinstance(iso, dict) or iso.get('manage_origin') != expected_origin:
             raise ValueError('verified release installer origin differs from fixture scope')
         manifest_size = len(manifest_body)
         if hashlib.sha256(manifest_body).hexdigest() != manifest_identity['sha256']:

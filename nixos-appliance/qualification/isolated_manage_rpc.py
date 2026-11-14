@@ -141,6 +141,12 @@ class Server:
             if digest != hashlib.sha256(body).hexdigest():
                 raise ValueError('personalization response does not bind its envelope digest')
             return {'body': base64.b64encode(body).decode(), 'envelope_sha256': digest}
+        if operation == 'public_origin' and set(value) == {'operation'}:
+            # The fixture origin and the name its Manage currently serves as
+            # TIARIS_PUBLIC_API_URL (they differ after switch_public_origin).
+            receipt = self.owner.verify()
+            return {'manage_origin': receipt['manage_origin'],
+                    'public_manage_origin': receipt.get('public_manage_origin', receipt['manage_origin'])}
         if operation == 'verify_artifacts' and set(value) == {'operation'}:
             # Explicit phase boundary: rehash every staged byte before evidence.
             self.owner.verify(full=True)
