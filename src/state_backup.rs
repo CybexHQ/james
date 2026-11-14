@@ -942,5 +942,7 @@ pub async fn restore(
     result
 }
 
+pub mod schedule;
+
 #[cfg(test)]
 mod tests;

@@ -55,6 +55,33 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", serde_json::to_string(&summary)?);
         return Ok(());
     }
+    if let Command::SetStateBackupKey {
+        public_key,
+        state_dir,
+    } = &command
+    {
+        if tiaris_nest::appliance::is_managed_appliance() && effective_uid() != 0 {
+            bail!("setting the Nest backup key must run as root");
+        }
+        let fingerprint = tiaris_nest::state_backup::schedule::set_key(state_dir, public_key)?;
+        println!(
+            "{}",
+            serde_json::json!({"recipient_fingerprint": fingerprint})
+        );
+        return Ok(());
+    }
+    if let Command::ScheduledStateBackup {
+        state_dir,
+        backup_dir,
+    } = &command
+    {
+        if tiaris_nest::appliance::is_managed_appliance() && effective_uid() != 0 {
+            bail!("a Nest state backup must run as root");
+        }
+        let outcome = tiaris_nest::state_backup::schedule::run(state_dir, backup_dir).await?;
+        println!("{}", serde_json::to_string(&outcome)?);
+        return Ok(());
+    }
     if let Command::RestoreApplianceState {
         backup,
         identity,
@@ -209,6 +236,8 @@ async fn main() -> anyhow::Result<()> {
         | Command::RehearseApplianceDatabase { .. }
         | Command::GenerateStateBackupKey { .. }
         | Command::BackupApplianceState { .. }
+        | Command::SetStateBackupKey { .. }
+        | Command::ScheduledStateBackup { .. }
         | Command::RestoreApplianceState { .. } => {
             unreachable!("database and state commands exit before config loading")
         }
@@ -269,6 +298,8 @@ fn managed_command_requires_service_user(
                 | Command::RehearseApplianceDatabase { .. }
                 | Command::GenerateStateBackupKey { .. }
                 | Command::BackupApplianceState { .. }
+                | Command::SetStateBackupKey { .. }
+                | Command::ScheduledStateBackup { .. }
                 | Command::RestoreApplianceState { .. }
                 | Command::ApplyApplianceUpdateSchedule
                 | Command::CheckApplianceUpdateSchedule

@@ -151,6 +151,8 @@ in {
       "d /var/cache/tiaris-nest/www/cache 0755 tiaris-nest tiaris-nest -"
       "d /var/cache/tiaris-nest/www/cache/nar 0755 tiaris-nest tiaris-nest -"
       "d /var/cache/tiaris-nest/www/cache/realisations 0755 tiaris-nest tiaris-nest -"
+      # Automatic state backups (root writes, the daemon reads and uploads).
+      "d /var/cache/tiaris-nest/state-backups 0750 root tiaris-nest -"
       "d /run/lock/tiaris-nest 0750 root tiaris-nest -"
       "f /run/lock/tiaris-nest/maintenance.lock 0660 root tiaris-nest -"
       "d /etc/tiaris-nest 0755 root root -"
@@ -246,6 +248,17 @@ in {
       pathConfig.PathChanged = [ "/var/lib/tiaris-nest/state/agent/cache-public.pem" "/var/lib/tiaris-nest/state/cache-public.pem" ];
     };
     systemd.timers.tiaris-nest-gc = { wantedBy = [ "timers.target" ]; timerConfig = { OnCalendar = "daily"; Persistent = true; }; };
+    # Daily encrypted state backup once an operator set the backup public key
+    # (`tiaris-nest set-state-backup-key`; docs/nest-state-backup.md). It
+    # writes outside STATE, keeps the newest three and skips a full disk; the
+    # daemon uploads each backup to Manage (src/state_backup/upload.rs).
+    systemd.services.tiaris-nest-state-backup = {
+      description = "Tiaris Nest state backup";
+      after = [ "tiaris-nest.service" "tiaris-nest-first-boot.service" ];
+      unitConfig = { ConditionPathExists = "/var/lib/tiaris-nest/state/backup/recipient.pub"; RequiresMountsFor = [ "/var/lib/tiaris-nest/state" ]; };
+      serviceConfig = { Type = "oneshot"; ExecStart = "${a.package}/bin/tiaris-nest scheduled-state-backup"; TimeoutStartSec = "2h"; UMask = "0077"; Nice = 10; IOSchedulingClass = "idle"; NoNewPrivileges = true; PrivateTmp = true; PrivateDevices = true; ProtectSystem = "strict"; ProtectHome = true; ReadWritePaths = [ "/var/lib/tiaris-nest/state/agent" "/var/lib/tiaris-nest/state/status" "/var/cache/tiaris-nest/state-backups" ]; };
+    };
+    systemd.timers.tiaris-nest-state-backup = { wantedBy = [ "timers.target" ]; timerConfig = { OnCalendar = "daily"; RandomizedDelaySec = "4h"; Persistent = true; }; };
     # Mask both login paths. A dedicated unit avoids getty@.service.d's
     # template ExecStart override replacing our console command with agetty.
     systemd.services."autovt@tty1".enable = false;

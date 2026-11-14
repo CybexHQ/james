@@ -79,6 +79,22 @@ pub enum Command {
         #[arg(long, default_value = crate::state_backup::STATE_DIR)]
         state_dir: PathBuf,
     },
+    /// Set the backup public key that automatic daily backups use (root).
+    SetStateBackupKey {
+        /// The public key (`generate-state-backup-key --public-key`), never
+        /// the private one.
+        #[arg(long)]
+        public_key: PathBuf,
+        #[arg(long, default_value = crate::state_backup::STATE_DIR)]
+        state_dir: PathBuf,
+    },
+    /// The daily automatic backup (`tiaris-nest-state-backup.timer`, root).
+    ScheduledStateBackup {
+        #[arg(long, default_value = crate::state_backup::STATE_DIR)]
+        state_dir: PathBuf,
+        #[arg(long, default_value = crate::state_backup::schedule::BACKUP_DIR)]
+        backup_dir: PathBuf,
+    },
     /// Restore a state backup onto this Nest (root, Nest service stopped).
     RestoreApplianceState {
         #[arg(long)]
